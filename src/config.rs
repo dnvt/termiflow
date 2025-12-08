@@ -88,7 +88,7 @@ fn load_file_config() -> Option<FileConfig> {
             eprintln!(
                 "termiflow: warning: {}: {}",
                 path.display(),
-                e.to_string()
+                e
             );
             None
         }

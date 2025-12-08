@@ -53,19 +53,16 @@ pub struct Cli {
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
+#[derive(Default)]
 pub enum StyleArg {
     Ascii,
+    #[default]
     Unicode,
     Double,
     Rounded,
     Heavy,
 }
 
-impl Default for StyleArg {
-    fn default() -> Self {
-        StyleArg::Unicode
-    }
-}
 
 impl From<StyleArg> for BorderStyle {
     fn from(arg: StyleArg) -> Self {
@@ -147,6 +144,23 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     // Print any warnings to stderr (parser + layout)
     for warning in &graph.warnings {
         eprintln!("{}", warning);
+    }
+
+    // Optional debug: dump layout coordinates
+    if cli.debug_layout {
+        eprintln!("-- layout --");
+        for n in &graph.nodes {
+            eprintln!(
+                "node {}: label='{}' x={} y={} w={} rank={}",
+                n.id, n.label, n.x, n.y, n.width, n.rank
+            );
+        }
+        for e in &graph.edges {
+            eprintln!(
+                "edge {} -> {} (back_edge={})",
+                e.from, e.to, e.is_back_edge
+            );
+        }
     }
 
     // Render to canvas
