@@ -138,16 +138,16 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     // Parse the Mermaid content (returns ParseResult with graph + in-file config)
     let parse_result = parser::parse(&input, cli.strict)?;
 
-    // Print any warnings to stderr
-    for warning in &parse_result.graph.warnings {
-        eprintln!("{}", warning);
-    }
-
     // Load configuration (CLI > in-file > config file)
     let config = Config::load(cli, &parse_result.config);
 
-    // Run layout algorithm
+    // Run layout algorithm (may add warnings)
     let graph = layout::waterfall(parse_result.graph)?;
+
+    // Print any warnings to stderr (parser + layout)
+    for warning in &graph.warnings {
+        eprintln!("{}", warning);
+    }
 
     // Render to canvas
     let output = canvas::render(&graph, &config)?;

@@ -6,9 +6,9 @@ Current status: `--print` mode is implemented; TUI navigation is stubbed and wil
 
 ## Features
 
-- **Mermaid-Lite parser** - Supports common flowchart syntax (`graph TD`, nodes, edges)
+- **Mermaid-Lite parser** - Supports common flowchart syntax (`graph TD`, nodes, edges) with strict/lenient modes
 - **9 border styles** - `ascii`, `unicode`, `double`, `rounded`, `heavy`, `dots`, `plus`, `stars`, `blocks`
-- **Composite styling** - Mix and match styles for different components (corners, borders, arrows, edges)
+- **Composite styling** - Mix and match style components: `corner:dots,border:heavy`
 - **Pipe-friendly** - Use `--print` for stdout output, pipe to other tools
 - **Cycle detection** - Back-edges rendered in gutter with warnings (or skipped when clipped)
 - **Config precedence** - CLI > in-file `%% termiflow:` directive > `~/.config/termiflow/config.toml`
@@ -22,17 +22,20 @@ cargo install --path .
 ## Usage
 
 ```bash
-# Print to stdout (pipe-friendly)
+# Print to stdout (pipe-friendly, unicode is default)
 termiflow --print diagram.md
 
 # Read from stdin
 cat diagram.md | termiflow --print
 
-# Use Unicode borders
-termiflow -s unicode diagram.md
+# Use a different style
+termiflow --print -s heavy diagram.md
+
+# Use composite styling
+termiflow --print -s "corner:rounded,border:double" diagram.md
 
 # Strict mode (exit on parse warnings)
-termiflow --strict diagram.md
+termiflow --strict --print diagram.md
 
 # Interactive mode (not yet implemented - will exit with message)
 termiflow diagram.md
@@ -40,38 +43,25 @@ termiflow diagram.md
 
 ## CLI Flags
 
-| Flag            | Description                                      | Default |
-| --------------- | ------------------------------------------------ | ------- |
-| `--print`       | Output to stdout (no TUI)                        | false   |
-| `--style`, `-s` | Border style: ascii/unicode/double/rounded/heavy/dots/plus/stars/blocks | unicode |
-| `--max-label`   | Max label width before truncation                | 20      |
-| `--strict`      | Exit on any parse warning                        | false   |
+| Flag            | Description                                      | Default   |
+| --------------- | ------------------------------------------------ | --------- |
+| `--print`       | Output to stdout (no TUI)                        | false     |
+| `--style`, `-s` | Border style or composite (see below)            | `unicode` |
+| `--max-label`   | Max label width before truncation                | 20        |
+| `--strict`      | Exit on any parse warning                        | false     |
 
-## Composite Styling
+### Border Styles
 
-Mix and match styles for different components:
+Simple styles: `ascii`, `unicode`, `double`, `rounded`, `heavy`, `dots`, `plus`, `stars`, `blocks`
 
+Composite syntax allows mixing components:
 ```bash
-# Simple style (applies to all components)
-echo 'graph TD
-%% termiflow: style=unicode
-A --> B' | termiflow --print
+# Mix corner style with border style
+termiflow -s "corner:dots,border:heavy" diagram.md
 
-# Composite style (mix and match)
-echo 'graph TD
-%% termiflow: style=corner:dots,border:heavy,arrow:unicode,edge:double
-A --> B' | termiflow --print
+# Available components: corner, border, arrow, edge, junction, back
+termiflow -s "corner:rounded,border:double,arrow:unicode" diagram.md
 ```
-
-**Components:**
-- `corner` - Box corners (rounded, dots, stars, plus, etc.)
-- `border` - Box borders/lines
-- `arrow` - Arrow heads
-- `edge` - Connection lines between boxes
-- `junction` - T-junctions where edges meet
-- `back` - Back edges for cycles
-
-See [COMPOSITE_STYLES.md](./docs/COMPOSITE_STYLES.md) for detailed styling guide.
 
 ## Supported Mermaid Syntax
 
@@ -93,12 +83,12 @@ graph TD
 - Click targets: `click ID "file.md"`
 - Config directives: `%% termiflow: key=value`
 
-### Unsupported (v1)
+### Not Yet Supported
 
 - Edge labels: `A -->|text| B`
 - Subgraphs
 - Node shapes other than rectangles
-- Mermaid styling/classes
+- Mermaid styling/classes (`classDef`, `:::`)
 
 ## Warnings and limits
 
@@ -131,21 +121,16 @@ cargo run -- --print --debug-layout tests/fixtures/inputs/simple.md
 
 ## Architecture
 
-See documentation in `docs/` folder:
-- [SPEC.md](./docs/SPEC.md) - Current technical specification
-- [COMPOSITE_STYLES.md](./docs/COMPOSITE_STYLES.md) - Complete styling system guide
-- [PHASE2_PLAN.md](./docs/PHASE2_PLAN.md) - Per-element styling architecture
-- [PHASE2_IMPLEMENTATION.md](./docs/PHASE2_IMPLEMENTATION.md) - Implementation details
-- [PHASE2_QUICK_REFERENCE.md](./docs/PHASE2_QUICK_REFERENCE.md) - Styling syntax guide
+User-facing docs live in `docs/`. Planning, specs, and future-phase notes live in `planning/` (including `planning/spec/SPEC.md`).
 
-| Module   | Description                                 |
-| -------- | ------------------------------------------- |
-| `parser` | Two-pass Mermaid-Lite parser with regex     |
-| `layout` | Waterfall layout algorithm (toposort + BFS) |
-| `canvas` | 2D char grid rendering with edge routing    |
-| `style`  | Border styles and unicode-width handling    |
-| `config` | Layered configuration loading               |
-| `tui`    | (planned) Ratatui-based interactive mode    |
+| Module   | Description                                      |
+| -------- | ------------------------------------------------ |
+| `parser` | Two-pass Mermaid-Lite parser with regex          |
+| `layout` | Waterfall layout algorithm (toposort + BFS)      |
+| `canvas` | 2D char grid rendering with edge routing         |
+| `style`  | 9 border styles with composite styling system    |
+| `config` | Layered configuration loading                    |
+| `tui`    | (planned) Ratatui-based interactive mode         |
 
 ## License
 
