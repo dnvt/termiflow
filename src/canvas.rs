@@ -356,12 +356,14 @@ fn calculate_mid_y(start_y: usize, end_y: usize, edge_index: usize) -> usize {
 }
 
 fn corner_char(from_x: usize, to_x: usize, is_source: bool, style: &StyleChars) -> char {
-    // is_source: true if this is where the edge starts turning, false if where it ends turning
+    // Source corner: vertical from above turns horizontal
+    // Target corner: horizontal turns vertical downward
+    // Note: target call swaps (end_x, start_x), so from_x < to_x is inverted for target
     match (from_x < to_x, is_source) {
-        (true, true) => style.corner_dr,   // Going right from source
-        (true, false) => style.corner_ul,  // Coming from left to target
-        (false, true) => style.corner_dl,  // Going left from source  
-        (false, false) => style.corner_ur, // Coming from right to target
+        (true, true) => style.corner_ul,   // Source going right: └
+        (true, false) => style.corner_dr,  // Target, edge came from right: ┐
+        (false, true) => style.corner_ur,  // Source going left: ┘
+        (false, false) => style.corner_dl, // Target, edge came from left: ┌
     }
 }
 
