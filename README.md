@@ -39,12 +39,12 @@ termiflow --strict diagram.md
 
 ## CLI Flags
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--print` | Output to stdout (no TUI) | false |
-| `--style`, `-s` | Border style: ascii/unicode/double/rounded/heavy | ascii |
-| `--max-label` | Max label width before truncation | 20 |
-| `--strict` | Exit on any parse warning | false |
+| Flag            | Description                                      | Default |
+| --------------- | ------------------------------------------------ | ------- |
+| `--print`       | Output to stdout (no TUI)                        | false   |
+| `--style`, `-s` | Border style: ascii/unicode/double/rounded/heavy | ascii   |
+| `--max-label`   | Max label width before truncation                | 20      |
+| `--strict`      | Exit on any parse warning                        | false   |
 
 ## Supported Mermaid Syntax
 
@@ -100,14 +100,14 @@ cargo run -- --print --debug-layout tests/fixtures/inputs/simple.md
 
 See [SPEC.md](./docs/SPEC.md) for detailed technical specification.
 
-| Module | Description |
-|--------|-------------|
-| `parser` | Two-pass Mermaid-Lite parser with regex |
+| Module   | Description                                 |
+| -------- | ------------------------------------------- |
+| `parser` | Two-pass Mermaid-Lite parser with regex     |
 | `layout` | Waterfall layout algorithm (toposort + BFS) |
-| `canvas` | 2D char grid rendering with edge routing |
-| `style` | Border styles and unicode-width handling |
-| `config` | Layered configuration loading |
-| `tui` | Ratatui-based interactive mode |
+| `canvas` | 2D char grid rendering with edge routing    |
+| `style`  | Border styles and unicode-width handling    |
+| `config` | Layered configuration loading               |
+| `tui`    | Ratatui-based interactive mode              |
 
 ## License
 
