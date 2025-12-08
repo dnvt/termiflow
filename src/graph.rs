@@ -7,10 +7,11 @@
 pub struct Node {
     pub id: String,
     pub label: String,
-    pub x: usize,     // Column position (set by layout)
-    pub y: usize,     // Row position (set by layout)
-    pub width: usize, // Calculated from label
-    pub rank: usize,  // Depth in graph (0 = root)
+    pub click_target: Option<String>, // Drill-down target from `click ID "file.md"`
+    pub x: usize,                      // Column position (set by layout)
+    pub y: usize,                      // Row position (set by layout)
+    pub width: usize,                  // Calculated from label
+    pub rank: usize,                   // Depth in graph (0 = root)
 }
 
 impl Node {
@@ -20,6 +21,7 @@ impl Node {
             id: id.into(),
             width: crate::style::box_width(&label),
             label,
+            click_target: None,
             x: 0,
             y: 0,
             rank: 0,

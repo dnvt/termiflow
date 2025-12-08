@@ -231,7 +231,8 @@ mod tests {
     #[test]
     fn test_truncate_label() {
         assert_eq!(truncate_label("Short", 10), "Short");
-        assert_eq!(truncate_label("VeryLongLabel", 10), "VeryLo...");
+        // max_width=10, ellipsis=3, so 7 chars fit + "..." = "VeryLon..."
+        assert_eq!(truncate_label("VeryLongLabel", 10), "VeryLon...");
     }
 
     #[test]

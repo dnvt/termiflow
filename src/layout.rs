@@ -27,8 +27,10 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
 
     // Placeholder: simple sequential layout
     for (i, node) in graph.nodes.iter_mut().enumerate() {
+        // Calculate node width from label
+        node.width = crate::style::box_width(&node.label);
         node.rank = i;
-        node.x = 0;
+        node.x = 2; // Left margin
         node.y = i * 5; // BOX_HEIGHT + ROW_SPACING
     }
 
@@ -53,6 +55,6 @@ mod tests {
         graph.add_node(Node::new("A", "Node A"));
         let result = waterfall(graph).unwrap();
         assert_eq!(result.nodes.len(), 1);
-        assert_eq!(result.nodes[0].x, 0);
+        assert_eq!(result.nodes[0].x, 2); // Left margin
     }
 }
