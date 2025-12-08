@@ -24,8 +24,10 @@ pub const RIGHT_GUTTER: usize = 4;
 
 /// Border style variants
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub enum BorderStyle {
     Ascii,
+    #[default]
     Unicode,
     Double,
     Rounded,
@@ -36,11 +38,6 @@ pub enum BorderStyle {
     Blocks,   // █ for lines
 }
 
-impl Default for BorderStyle {
-    fn default() -> Self {
-        BorderStyle::Unicode
-    }
-}
 
 /// Component-specific style configuration
 /// 
@@ -264,7 +261,7 @@ pub static UNICODE_CHARS: StyleChars = StyleChars {
     br: '┘',
     h: '─',
     v: '│',
-    arrow_down: 'v',
+    arrow_down: '▼',
     arrow_up: '^',
     arrow_left: '<',
     arrow_right: '>',
@@ -316,10 +313,10 @@ pub static ROUNDED_CHARS: StyleChars = StyleChars {
     br: '╯',
     h: '─',
     v: '│',
-    arrow_down: '▼',
-    arrow_up: '▲',
-    arrow_left: '◀',
-    arrow_right: '▶',
+    arrow_down: '↓',
+    arrow_up: '↑',
+    arrow_left: '←',
+    arrow_right: '→',
     edge_h: '─',
     edge_v: '│',
     corner_dr: '╮',
@@ -368,10 +365,10 @@ pub static DOTS_CHARS: StyleChars = StyleChars {
     br: '•',
     h: '─',
     v: '│',
-    arrow_down: '▼',
-    arrow_up: '▲',
-    arrow_left: '◀',
-    arrow_right: '▶',
+    arrow_down: '↓',
+    arrow_up: '↑',
+    arrow_left: '←',
+    arrow_right: '→',
     edge_h: '─',
     edge_v: '│',
     corner_dr: '┐',
@@ -420,10 +417,10 @@ pub static STARS_CHARS: StyleChars = StyleChars {
     br: '*',
     h: '─',
     v: '│',
-    arrow_down: '▼',
-    arrow_up: '▲',
-    arrow_left: '◀',
-    arrow_right: '▶',
+    arrow_down: '↓',
+    arrow_up: '↑',
+    arrow_left: '←',
+    arrow_right: '→',
     edge_h: '─',
     edge_v: '│',
     corner_dr: '┐',
@@ -573,7 +570,7 @@ mod tests {
         assert_eq!(chars.h, '━');
         assert_eq!(chars.v, '┃');
         
-        // Arrows should be heavy (same as unicode actually)
+        // Arrows should be heavy (uses heavy set → filled down arrow)
         assert_eq!(chars.arrow_down, '▼');
         
         // Lines should fall back to unicode

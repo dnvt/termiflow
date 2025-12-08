@@ -141,47 +141,75 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         }
     }
 
+    // Pre-calculate node widths before the mutable loop
+    let node_widths: Vec<usize> = graph.nodes.iter().map(|n| box_width(&n.label)).collect();
+
+    // Build a map of node_id -> (x, width) that we update as we go
+    // Initially just store the widths, x will be set during layout
+    let mut node_positions: HashMap<String, (usize, usize)> = HashMap::new();
+
     for (r, nodes) in by_rank.iter().enumerate() {
         let mut cursor_primary = 0usize;
         let rank_y = r * row_gap;
         let rank_x = rank_offset_x[r];
 
         for &idx in nodes {
+            let node_id = graph.nodes[idx].id.clone();
+            let node_width = node_widths[idx];
+
+            // Get parent info from already-placed nodes
+            let parent_info: Vec<(usize, usize)> = graph
+                .edges
+                .iter()
+                .filter(|e| !e.is_back_edge && e.to == node_id)
+                .filter_map(|e| node_positions.get(&e.from).copied())
+                .collect();
+
+            let node_x = match graph.direction {
+                Direction::TD | Direction::BT | Direction::TB => {
+                    if parent_info.is_empty() {
+                        // Root node: start at cursor
+                        cursor_primary
+                    } else if parent_info.len() == 1 {
+                        // Single parent: center child under parent
+                        let (parent_x, parent_width) = parent_info[0];
+                        let parent_center = parent_x + parent_width / 2;
+                        let child_x = parent_center.saturating_sub(node_width / 2);
+                        child_x.max(cursor_primary)
+                    } else {
+                        // Multiple parents: center under the average
+                        let avg_center = parent_info
+                            .iter()
+                            .map(|(px, pw)| px + pw / 2)
+                            .sum::<usize>() / parent_info.len();
+                        let mut x = avg_center.saturating_sub(node_width / 2);
+                        x = x.max(cursor_primary);
+                        x
+                    }
+                }
+                Direction::LR => rank_x,
+            };
+
+            // Update the node
             let node = &mut graph.nodes[idx];
-            node.width = box_width(&node.label);
+            node.width = node_width;
             node.rank = r;
+            node.x = node_x;
 
             match graph.direction {
                 Direction::TD | Direction::BT | Direction::TB => {
-                    // Center under parent(s) when possible
-                    let parents: Vec<usize> = graph
-                        .edges
-                        .iter()
-                        .filter(|e| !e.is_back_edge && e.to == node.id)
-                        .filter_map(|e| placed_centers.get(&e.from).copied())
-                        .collect();
-                    let desired_center = if parents.len() == 1 {
-                        parents[0]
-                    } else if parents.len() > 1 {
-                        parents.iter().sum::<usize>() / parents.len()
-                    } else {
-                        cursor_primary + node.width / 2
-                    };
-                    let mut x = desired_center.saturating_sub(node.width / 2);
-                    if x < cursor_primary {
-                        x = cursor_primary;
-                    }
-                    node.x = x;
                     node.y = rank_y;
                     cursor_primary = node.x + node.width + COL_SPACING;
                     placed_centers.insert(node.id.clone(), node.x + node.width / 2);
                 }
                 Direction::LR => {
-                    node.x = rank_x;
                     node.y = cursor_primary;
                     cursor_primary += BOX_HEIGHT + ROW_SPACING;
                 }
             }
+
+            // Store position for child nodes to reference
+            node_positions.insert(node_id, (node_x, node_width));
         }
     }
 
@@ -208,30 +236,76 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
     Ok(graph)
 }
 
-/// Center each row of nodes within the maximum row width
+/// Center each row of nodes within the diagram width
+/// For rows with multiple nodes, center the group
+/// For rows with single node that has edges, preserve parent-child alignment
 fn center_rows(graph: &mut Graph, by_rank: &[Vec<usize>]) {
-    // Calculate the rightmost edge of each rank
-    let rank_widths: Vec<usize> = by_rank
+    if graph.nodes.is_empty() {
+        return;
+    }
+
+    // Calculate the span (left_edge, right_edge) of each rank
+    let rank_spans: Vec<(usize, usize)> = by_rank
         .iter()
         .map(|nodes| {
-            nodes
+            if nodes.is_empty() {
+                return (0, 0);
+            }
+            let left = nodes.iter().map(|&idx| graph.nodes[idx].x).min().unwrap_or(0);
+            let right = nodes
                 .iter()
                 .map(|&idx| graph.nodes[idx].x + graph.nodes[idx].width)
                 .max()
-                .unwrap_or(0)
+                .unwrap_or(0);
+            (left, right)
         })
         .collect();
 
-    // Find the maximum width
-    let max_width = rank_widths.iter().copied().max().unwrap_or(0);
+    // Find the maximum row width (this becomes the diagram width)
+    let diagram_width = rank_spans
+        .iter()
+        .map(|(l, r)| r.saturating_sub(*l))
+        .max()
+        .unwrap_or(0);
 
-    // Center each rank by adding offset
+    if diagram_width == 0 {
+        return;
+    }
+
     for (r, nodes) in by_rank.iter().enumerate() {
-        let row_width = rank_widths[r];
-        let offset = (max_width.saturating_sub(row_width)) / 2;
-        if offset > 0 {
-            for &idx in nodes {
-                graph.nodes[idx].x += offset;
+        if nodes.is_empty() {
+            continue;
+        }
+
+        let (row_left, row_right) = rank_spans[r];
+        let row_width = row_right.saturating_sub(row_left);
+
+        if nodes.len() == 1 {
+            // Single-node row: center the node within the diagram width
+            let idx = nodes[0];
+            let target_left = (diagram_width.saturating_sub(graph.nodes[idx].width)) / 2;
+            let current_left = graph.nodes[idx].x;
+            if target_left != current_left {
+                if target_left > current_left {
+                    graph.nodes[idx].x += target_left - current_left;
+                } else {
+                    graph.nodes[idx].x = graph.nodes[idx].x.saturating_sub(current_left - target_left);
+                }
+            }
+        } else {
+            // Multi-node row: center the entire group of nodes
+            let target_left = (diagram_width.saturating_sub(row_width)) / 2;
+            let current_left = row_left;
+
+            if target_left != current_left {
+                let shift = target_left as isize - current_left as isize;
+                for &idx in nodes {
+                    if shift > 0 {
+                        graph.nodes[idx].x += shift as usize;
+                    } else {
+                        graph.nodes[idx].x = graph.nodes[idx].x.saturating_sub((-shift) as usize);
+                    }
+                }
             }
         }
     }
@@ -316,5 +390,112 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.contains("Cycle detected")));
+    }
+
+    #[test]
+    fn test_roots_anchor_at_zero_simple() {
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("A", "A"));
+        graph.add_node(Node::new("B", "B"));
+        graph.add_node(Node::new("C", "C"));
+        graph.add_edge(crate::graph::Edge::new("A", "B"));
+        graph.add_edge(crate::graph::Edge::new("A", "C"));
+
+        let result = waterfall(graph).unwrap();
+        let root = result.get_node("A").unwrap();
+        assert!(
+            root.x >= 0,
+            "root should not be negative (got {})",
+            root.x
+        );
+        // Children should be ordered left-to-right
+        assert!(
+            result.get_node("C").unwrap().x >= result.get_node("B").unwrap().x,
+            "children should be ordered left-to-right"
+        );
+    }
+
+    #[test]
+    fn test_roots_anchor_at_zero_multiple_ranks() {
+        // Fan-out followed by fan-in; earlier ranks should not shift right
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("A", "Root"));
+        graph.add_node(Node::new("B", "Left"));
+        graph.add_node(Node::new("C", "Right"));
+        graph.add_node(Node::new("D", "Sink"));
+        graph.add_edge(crate::graph::Edge::new("A", "B"));
+        graph.add_edge(crate::graph::Edge::new("A", "C"));
+        graph.add_edge(crate::graph::Edge::new("B", "D"));
+        graph.add_edge(crate::graph::Edge::new("C", "D"));
+
+        let result = waterfall(graph).unwrap();
+        assert!(
+            result.get_node("A").unwrap().x >= 0,
+            "root should not be negative"
+        );
+        assert!(
+            result.get_node("C").unwrap().x >= result.get_node("B").unwrap().x,
+            "children should remain ordered"
+        );
+    }
+
+    #[test]
+    fn test_fixtures_anchor_left() {
+        let fixtures = [
+            "tests/fixtures/inputs/chain.md",
+            "tests/fixtures/inputs/database_nodes.md",
+            "tests/fixtures/inputs/forward_ref.md",
+            "tests/fixtures/inputs/simple.md",
+            "tests/fixtures/inputs/with_config.md",
+            "tests/fixtures/inputs/unsupported.md",
+        ];
+
+        for path in fixtures {
+            let input = std::fs::read_to_string(path).expect("read fixture");
+            let parsed = crate::parser::parse(&input, false).expect("parse fixture");
+            let graph = waterfall(parsed.graph).expect("layout fixture");
+            let min_x = graph.nodes.iter().map(|n| n.x).min().unwrap_or(0);
+            assert_eq!(
+                min_x, 0,
+                "expected left anchor at x=0 for fixture {} (got {})",
+                path, min_x
+            );
+        }
+    }
+
+    #[test]
+    fn test_lr_orientation_positions() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::LR;
+        graph.add_node(Node::new("A", "Root"));
+        graph.add_node(Node::new("B", "Mid"));
+        graph.add_node(Node::new("C", "Leaf"));
+        graph.add_edge(crate::graph::Edge::new("A", "B"));
+        graph.add_edge(crate::graph::Edge::new("B", "C"));
+
+        let result = waterfall(graph).unwrap();
+        // Columns should advance in x; y resets per column
+        let a = result.get_node("A").unwrap();
+        let b = result.get_node("B").unwrap();
+        let c = result.get_node("C").unwrap();
+        assert_eq!(a.y, 0);
+        assert_eq!(b.y, 0);
+        assert_eq!(c.y, 0);
+        assert!(b.x > a.x, "next column should be to the right");
+        assert!(c.x > b.x, "third column should be further right");
+    }
+
+    #[test]
+    fn test_bt_orientation_flips_vertical() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::BT;
+        graph.add_node(Node::new("A", "Root"));
+        graph.add_node(Node::new("B", "Child"));
+        graph.add_edge(crate::graph::Edge::new("A", "B"));
+
+        let result = waterfall(graph).unwrap();
+        let a = result.get_node("A").unwrap();
+        let b = result.get_node("B").unwrap();
+        assert!(a.y > b.y, "BT should place root below its child");
     }
 }
