@@ -7,6 +7,7 @@
 pub struct Node {
     pub id: String,
     pub label: String,
+    #[allow(dead_code)]
     pub click_target: Option<String>, // Drill-down target from `click ID "file.md"`
     pub x: usize,                      // Column position (set by layout)
     pub y: usize,                      // Row position (set by layout)
@@ -61,6 +62,7 @@ pub struct Graph {
 pub enum Direction {
     #[default]
     TD, // Top-down (same as TB)
+    #[allow(dead_code)]
     TB, // Top to bottom
     LR, // Left to right
     BT, // Bottom to top

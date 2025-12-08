@@ -32,7 +32,7 @@ pub struct Cli {
     pub file: Option<PathBuf>,
 
     /// Border style
-    #[arg(short, long, default_value = "ascii", value_enum)]
+    #[arg(short, long, default_value = "unicode", value_enum)]
     pub style: StyleArg,
 
     /// Output to stdout (no interactive TUI)
@@ -52,14 +52,19 @@ pub struct Cli {
     pub debug_layout: bool,
 }
 
-#[derive(ValueEnum, Clone, Copy, Default, Debug, PartialEq)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
 pub enum StyleArg {
-    #[default]
     Ascii,
     Unicode,
     Double,
     Rounded,
     Heavy,
+}
+
+impl Default for StyleArg {
+    fn default() -> Self {
+        StyleArg::Unicode
+    }
 }
 
 impl From<StyleArg> for BorderStyle {
@@ -145,8 +150,7 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     let graph = layout::waterfall(parse_result.graph)?;
 
     // Render to canvas
-    let style = BorderStyle::from(cli.style);
-    let output = canvas::render(&graph, &style, config.max_label_width)?;
+    let output = canvas::render(&graph, &config)?;
 
     // Print to stdout
     print!("{}", output);

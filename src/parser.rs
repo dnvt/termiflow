@@ -20,7 +20,7 @@ lazy_static! {
     // Edge regex - handles optional [Label] after node IDs: A[Label] --> B[Label]
     static ref RE_EDGE: Regex = Regex::new(r"([a-zA-Z0-9_]+)(?:\[[^\]]*\])?\s*--+>\s*([a-zA-Z0-9_]+)").unwrap();
     static ref RE_CLICK: Regex = Regex::new(r#"click\s+(\w+)\s+["']([^"']+)["']"#).unwrap();
-    static ref RE_CONFIG: Regex = Regex::new(r"%%\s*termiflow:\s*(\w+)=(\w+)").unwrap();
+    static ref RE_CONFIG: Regex = Regex::new(r"%%\s*termiflow:\s*(\w+)=([^\s]+)").unwrap();
     static ref RE_COMMENT: Regex = Regex::new(r"^\s*%%").unwrap();
 
     // SPEC §1.2: Unsupported syntax patterns
@@ -69,6 +69,10 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     let mut direction_found = false;
     let mut direction_line = 0;
     let mut warnings: Vec<String> = Vec::new();
+
+    // Track lines that already emitted warnings to avoid double-reporting
+    let mut unsupported_lines: HashSet<usize> = HashSet::new();
+    let mut malformed_lines: HashSet<usize> = HashSet::new();
 
     // Pre-scan for direction (must appear before nodes/edges)
     for (i, line) in lines.iter().enumerate() {
@@ -136,6 +140,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     }
 
     // PASS 1: Collect all node identifiers
+    let mut ordered_ids: Vec<String> = Vec::new();
     let mut known_ids: HashSet<String> = HashSet::new();
     let mut node_labels: HashMap<String, String> = HashMap::new();
     let mut node_first_ref: HashMap<String, usize> = HashMap::new();
@@ -155,6 +160,17 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
         // Check for unsupported syntax (SPEC §1.2)
         if let Some(warning) = check_unsupported_syntax(trimmed, i + 1) {
             warnings.push(warning.clone());
+            unsupported_lines.insert(i);
+            if strict {
+                bail!("{}", warning);
+            }
+            continue;
+        }
+
+        // Malformed syntax: warn and skip parsing this line
+        if let Some(warning) = check_malformed(trimmed, i + 1) {
+            warnings.push(warning.clone());
+            malformed_lines.insert(i);
             if strict {
                 bail!("{}", warning);
             }
@@ -165,7 +181,9 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
         for caps in RE_NODE_DB.captures_iter(trimmed) {
             let id = caps[1].to_string();
             let label = caps[2].to_string();
-            known_ids.insert(id.clone());
+            if known_ids.insert(id.clone()) {
+                ordered_ids.push(id.clone());
+            }
             node_labels.insert(id.clone(), label);
             node_first_ref.entry(id).or_insert(i + 1);
         }
@@ -175,7 +193,9 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             let label = caps[2].to_string();
             // Don't overwrite if already defined (db nodes have priority)
             if !node_labels.contains_key(&id) {
-                known_ids.insert(id.clone());
+                if known_ids.insert(id.clone()) {
+                    ordered_ids.push(id.clone());
+                }
                 node_labels.insert(id.clone(), label);
             }
             node_first_ref.entry(id).or_insert(i + 1);
@@ -187,8 +207,12 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             if let Some(caps) = RE_EDGE.captures(&trimmed[start_pos..]) {
                 let from = caps[1].to_string();
                 let to = caps[2].to_string();
-                known_ids.insert(from.clone());
-                known_ids.insert(to.clone());
+                if known_ids.insert(from.clone()) {
+                    ordered_ids.push(from.clone());
+                }
+                if known_ids.insert(to.clone()) {
+                    ordered_ids.push(to.clone());
+                }
                 node_first_ref.entry(from).or_insert(i + 1);
                 node_first_ref.entry(to).or_insert(i + 1);
                 // Move to start of target ID so it can become source of next edge in chain
@@ -211,7 +235,8 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             || RE_CONFIG.is_match(trimmed)
             || RE_COMMENT.is_match(trimmed)
             || RE_DIRECTION.is_match(trimmed)
-            || check_unsupported_syntax(trimmed, i + 1).is_some()
+            || unsupported_lines.contains(&i)
+            || malformed_lines.contains(&i)
         {
             continue;
         }
@@ -243,7 +268,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     }
 
     // Create nodes (auto-create missing labels with INFORMATIONAL warning)
-    for id in &known_ids {
+    for id in &ordered_ids {
         let label = if let Some(l) = node_labels.get(id) {
             l.clone()
         } else {
@@ -351,6 +376,28 @@ fn check_unsupported_syntax(line: &str, line_num: usize) -> Option<String> {
         return Some(format!(
             "termiflow: warning: line {}: Only rectangular nodes [Label] supported in v1",
             line_num
+        ));
+    }
+
+    None
+}
+
+/// Detect malformed but supported-looking syntax (not matching expected regexes)
+/// Returns warning message if malformed syntax found
+fn check_malformed(line: &str, line_num: usize) -> Option<String> {
+    // Edge arrow present but doesn't match supported edge syntax
+    if line.contains("-->") && !RE_EDGE.is_match(line) {
+        return Some(format!(
+            "termiflow: warning: line {}: Malformed edge '{}'",
+            line_num, line
+        ));
+    }
+
+    // Node-like brackets but not a valid node pattern
+    if line.contains('[') && !RE_NODE.is_match(line) && !RE_NODE_DB.is_match(line) {
+        return Some(format!(
+            "termiflow: warning: line {}: Malformed node '{}'",
+            line_num, line
         ));
     }
 
@@ -590,5 +637,42 @@ click A "gateway.md""#;
         assert!(matches!(result.graph.direction, Direction::TD));
         // Should have warning
         assert!(result.graph.warnings.iter().any(|w| w.contains("Multiple graph directions")));
+    }
+
+    // === EDGE CHAIN TESTS ===
+
+    #[test]
+    fn test_edge_chain_simple() {
+        let input = "graph TD\nA --> B --> C --> D";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.edges.len(), 3);
+        assert_eq!(result.graph.edges[0].from, "A");
+        assert_eq!(result.graph.edges[0].to, "B");
+        assert_eq!(result.graph.edges[1].from, "B");
+        assert_eq!(result.graph.edges[1].to, "C");
+        assert_eq!(result.graph.edges[2].from, "C");
+        assert_eq!(result.graph.edges[2].to, "D");
+    }
+
+    #[test]
+    fn test_edge_chain_with_inline_labels() {
+        // Test chains where nodes have labels defined inline
+        let input = "graph TD\nA[Start] --> B[Middle] --> C[End]";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.edges.len(), 2);
+        assert_eq!(result.graph.nodes.len(), 3);
+        // Verify labels were captured
+        let b_node = result.graph.nodes.iter().find(|n| n.id == "B").unwrap();
+        assert_eq!(b_node.label, "Middle");
+    }
+
+    #[test]
+    fn test_edge_chain_mixed_definitions() {
+        // Mix of inline and separate definitions
+        let input = "graph TD\nA --> B[Process] --> C\nC[Output]";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.edges.len(), 2);
+        let c_node = result.graph.nodes.iter().find(|n| n.id == "C").unwrap();
+        assert_eq!(c_node.label, "Output");
     }
 }
