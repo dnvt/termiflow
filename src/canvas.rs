@@ -58,7 +58,10 @@ impl Canvas {
             // Cross when perpendicular lines meet
             (c, n) if is_horizontal(c, style) && is_vertical(n, style) => style.cross,
             (c, n) if is_vertical(c, style) && is_horizontal(n, style) => style.cross,
-            // Junction: when corner meets another corner going opposite direction
+            // Preserve corners when lines try to overwrite them
+            // (corners already have the line connectivity built in)
+            (c, n) if is_corner(c, style) && (is_horizontal(n, style) || is_vertical(n, style)) => c,
+            // Junction: when corner meets another corner going same direction
             (c, n) if is_corner(c, style) && is_corner(n, style) => {
                 // Two corners meeting - create junction based on their directions
                 if is_corner_down(c, style) && is_corner_down(n, style) {
@@ -356,14 +359,14 @@ fn calculate_mid_y(start_y: usize, end_y: usize, edge_index: usize) -> usize {
 }
 
 fn corner_char(from_x: usize, to_x: usize, is_source: bool, style: &StyleChars) -> char {
-    // Source corner: vertical from above turns horizontal
-    // Target corner: horizontal turns vertical downward
-    // Note: target call swaps (end_x, start_x), so from_x < to_x is inverted for target
+    // Source corner: vertical from above turns horizontal (UP + direction)
+    // Target corner: horizontal turns vertical downward (direction + DOWN)
+    // Note: target call uses (end_x, start_x), inverting the comparison
     match (from_x < to_x, is_source) {
-        (true, true) => style.corner_ul,   // Source going right: └
-        (true, false) => style.corner_dr,  // Target, edge came from right: ┐
-        (false, true) => style.corner_ur,  // Source going left: ┘
-        (false, false) => style.corner_dl, // Target, edge came from left: ┌
+        (true, true) => style.corner_ul,   // Source going right: └ (UP+RIGHT)
+        (true, false) => style.corner_dl,  // Target, came from right: ┌ (DOWN+RIGHT)
+        (false, true) => style.corner_ur,  // Source going left: ┘ (UP+LEFT)
+        (false, false) => style.corner_dr, // Target, came from left: ┐ (DOWN+LEFT)
     }
 }
 

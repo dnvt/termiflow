@@ -200,7 +200,41 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         }
     }
 
+    // Center rows within the diagram (TD/TB/BT only)
+    if matches!(graph.direction, Direction::TD | Direction::TB | Direction::BT) {
+        center_rows(&mut graph, &by_rank);
+    }
+
     Ok(graph)
+}
+
+/// Center each row of nodes within the maximum row width
+fn center_rows(graph: &mut Graph, by_rank: &[Vec<usize>]) {
+    // Calculate the rightmost edge of each rank
+    let rank_widths: Vec<usize> = by_rank
+        .iter()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .map(|&idx| graph.nodes[idx].x + graph.nodes[idx].width)
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+
+    // Find the maximum width
+    let max_width = rank_widths.iter().copied().max().unwrap_or(0);
+
+    // Center each rank by adding offset
+    for (r, nodes) in by_rank.iter().enumerate() {
+        let row_width = rank_widths[r];
+        let offset = (max_width.saturating_sub(row_width)) / 2;
+        if offset > 0 {
+            for &idx in nodes {
+                graph.nodes[idx].x += offset;
+            }
+        }
+    }
 }
 
 /// DFS-based cycle detection; marks back-edges in graph.edges and returns true if any cycles found
