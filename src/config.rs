@@ -6,7 +6,7 @@
 use std::fs;
 
 use crate::parser::ParseConfig;
-use crate::style::{BorderStyle, CompositeStyle};
+use crate::style::CompositeStyle;
 use crate::Cli;
 
 /// Application configuration

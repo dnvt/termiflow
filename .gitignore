@@ -15,3 +15,7 @@ Thumbs.db
 
 # Test outputs
 *.log
+
+# AI guidance docs (local only)
+AGENT.md
+CLAUDE.md
