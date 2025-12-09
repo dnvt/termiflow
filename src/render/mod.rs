@@ -23,6 +23,7 @@ pub mod edge;
 
 // Re-exports
 pub use canvas::Canvas;
+use canvas::is_vertical;
 
 use anyhow::Result;
 
@@ -33,7 +34,8 @@ use crate::style::{
     RIGHT_GUTTER, ROW_SPACING,
 };
 
-use edge::{center_x, route_back_edge, route_edge};
+use edge::{route_back_edge, route_expanded_edge};
+use std::collections::HashMap;
 
 // ============================================================================
 // Main Render Function
@@ -95,48 +97,11 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         .filter(|n| canvas.is_visible(n))
         .collect();
 
-    // Sort edges: straight edges first, then L-shaped edges
-    // This allows L-shaped edges to merge with existing straight paths
-    let mut edge_indices: Vec<(usize, bool)> = graph
-        .edges
-        .iter()
-        .enumerate()
-        .filter_map(|(i, e)| {
-            if e.is_back_edge {
-                return Some((i, false)); // Back edges last
-            }
-            let from = graph.get_node(&e.from)?;
-            let to = graph.get_node(&e.to)?;
-            if !canvas.is_visible(from) || !canvas.is_visible(to) {
-                return None;
-            }
-            // Check if edge needs L-shaped routing
-            let start_x = center_x(from);
-            let end_x = center_x(to);
-            let start_y = from.y + BOX_HEIGHT;
-            let end_y = to.y;
-            let x_diff = (start_x as isize - end_x as isize).unsigned_abs();
-            let needs_lshape = x_diff > 1
-                || visible_nodes.iter().any(|n| {
-                    if n.id == from.id || n.id == to.id {
-                        return false;
-                    }
-                    let node_bottom = n.y + BOX_HEIGHT;
-                    if node_bottom <= start_y || n.y >= end_y {
-                        return false;
-                    }
-                    end_x >= n.x && end_x < n.x + n.width
-                });
-            Some((i, needs_lshape))
-        })
-        .collect();
+    // Group forward edges by source node for expanded routing
+    let mut edges_by_source: HashMap<&str, Vec<&Node>> = HashMap::new();
+    let mut back_edges: Vec<(&Node, &Node)> = Vec::new();
 
-    // Sort: straight edges first (false < true)
-    edge_indices.sort_by_key(|(_, needs_lshape)| *needs_lshape);
-
-    // Draw edges FIRST (so boxes can overwrite them)
-    for (i, _) in edge_indices {
-        let e = &graph.edges[i];
+    for e in &graph.edges {
         let Some(from) = graph.get_node(&e.from) else {
             continue;
         };
@@ -145,10 +110,29 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         };
 
         if e.is_back_edge {
-            route_back_edge(from, to, &mut canvas, &chars);
-        } else {
-            route_edge(from, to, i, &mut canvas, &chars, &visible_nodes);
+            back_edges.push((from, to));
+        } else if canvas.is_visible(from) && canvas.is_visible(to) {
+            edges_by_source
+                .entry(&e.from)
+                .or_default()
+                .push(to);
         }
+    }
+
+    // Draw forward edges using expanded routing (grouped by source)
+    for (source_id, targets) in &edges_by_source {
+        let Some(from) = graph.get_node(source_id) else {
+            continue;
+        };
+
+        // Convert Vec<&Node> to Vec<&&Node> for route_expanded_edge
+        let target_refs: Vec<&Node> = targets.iter().copied().collect();
+        route_expanded_edge(from, &target_refs, &mut canvas, &chars);
+    }
+
+    // Draw back-edges (cycle edges)
+    for (from, to) in back_edges {
+        route_back_edge(from, to, &mut canvas, &chars);
     }
 
     // Draw boxes AFTER edges (boxes overwrite any edges passing through them)
@@ -193,10 +177,18 @@ fn draw_box(
     }
     canvas.set(x + width - 1, y + 1, style.v);
 
-    // Bottom border
+    // Bottom border - check for edge exits and place junctions
     canvas.set(x, y + 2, style.bl);
     for i in 1..width - 1 {
-        canvas.set(x + i, y + 2, style.h);
+        let pos_x = x + i;
+        // Check if there's a vertical edge below this position
+        let below = canvas.get(pos_x, y + 3);
+        let c = if is_vertical(below, style) {
+            style.junction_down // ┬ or + where edge exits
+        } else {
+            style.h
+        };
+        canvas.set(pos_x, y + 2, c);
     }
     canvas.set(x + width - 1, y + 2, style.br);
 }

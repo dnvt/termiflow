@@ -22,6 +22,9 @@ lazy_static! {
     static ref RE_CLICK: Regex = Regex::new(r#"click\s+(\w+)\s+["']([^"']+)["']"#).unwrap();
     static ref RE_CONFIG: Regex = Regex::new(r"%%\s*termiflow:\s*(\w+)=([^\s]+)").unwrap();
     static ref RE_COMMENT: Regex = Regex::new(r"^\s*%%").unwrap();
+    static ref RE_DIAGRAM_TYPE: Regex = Regex::new(
+        r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram-v2|stateDiagram|erDiagram|journey|gantt|pie|requirementDiagram|timeline|mindmap|gitGraph|block|quadrantChart)\b"
+    ).unwrap();
 
     // SPEC §1.2: Unsupported syntax patterns
     static ref RE_NESTED_BRACKET: Regex = Regex::new(r"\[[^\]]*\[").unwrap();
@@ -46,6 +49,21 @@ pub struct ParseConfig {
 pub struct ParseResult {
     pub graph: Graph,
     pub config: ParseConfig,
+}
+
+/// Find the first meaningful line (non-blank, non-config comment) and its index
+fn first_meaningful_line<'a>(lines: &[&'a str]) -> Option<(usize, &'a str)> {
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if RE_CONFIG.is_match(trimmed) || RE_COMMENT.is_match(trimmed) {
+            continue;
+        }
+        return Some((i, trimmed));
+    }
+    None
 }
 
 /// Parse Mermaid content into a Graph
@@ -73,6 +91,18 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     // Track lines that already emitted warnings to avoid double-reporting
     let mut unsupported_lines: HashSet<usize> = HashSet::new();
     let mut malformed_lines: HashSet<usize> = HashSet::new();
+
+    // Early diagram type detection: first meaningful line must be flowchart ("graph ...")
+    if let Some((line_num, first_content)) = first_meaningful_line(&lines) {
+        if let Some(caps) = RE_DIAGRAM_TYPE.captures(first_content) {
+            let keyword = &caps[1];
+            bail!(
+                "termiflow: error: line {}: diagram type not supported (found: '{}') — only flowchart `graph TD/LR/TB/BT` is supported",
+                line_num + 1,
+                keyword
+            );
+        }
+    }
 
     // Pre-scan for direction (must appear before nodes/edges)
     for (i, line) in lines.iter().enumerate() {
@@ -427,7 +457,20 @@ mod tests {
     fn test_no_direction_fails() {
         let result = parse("A[Node] --> B[Other]", false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No graph direction"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No graph direction"));
+    }
+
+    #[test]
+    fn test_unsupported_diagram_type_sequence() {
+        let result = parse("sequenceDiagram\nA->>B: hi", false);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("diagram type not supported"));
     }
 
     // === DIRECTION PARSING ===
@@ -533,7 +576,11 @@ mod tests {
         let c_node = result.graph.nodes.iter().find(|n| n.id == "C").unwrap();
         assert_eq!(c_node.label, "C");
         // Should have warning about auto-create
-        assert!(result.graph.warnings.iter().any(|w| w.contains("'C' referenced but never defined")));
+        assert!(result
+            .graph
+            .warnings
+            .iter()
+            .any(|w| w.contains("'C' referenced but never defined")));
     }
 
     // === CLICK TARGETS ===
@@ -544,14 +591,20 @@ mod tests {
 A[Gateway]
 click A "gateway.md""#;
         let result = parse(input, false).unwrap();
-        assert_eq!(result.graph.nodes[0].click_target, Some("gateway.md".to_string()));
+        assert_eq!(
+            result.graph.nodes[0].click_target,
+            Some("gateway.md".to_string())
+        );
     }
 
     #[test]
     fn test_click_target_single_quotes() {
         let input = "graph TD\nA[Node]\nclick A 'file.md'";
         let result = parse(input, false).unwrap();
-        assert_eq!(result.graph.nodes[0].click_target, Some("file.md".to_string()));
+        assert_eq!(
+            result.graph.nodes[0].click_target,
+            Some("file.md".to_string())
+        );
     }
 
     // === CONFIG DIRECTIVES ===
@@ -600,7 +653,11 @@ click A "gateway.md""#;
         let result = parse(input, true).unwrap();
         assert_eq!(result.graph.nodes.len(), 2);
         // Warning should still be present
-        assert!(result.graph.warnings.iter().any(|w| w.contains("'B' referenced")));
+        assert!(result
+            .graph
+            .warnings
+            .iter()
+            .any(|w| w.contains("'B' referenced")));
     }
 
     // === UNSUPPORTED SYNTAX DETECTION ===
@@ -609,7 +666,11 @@ click A "gateway.md""#;
     fn test_subgraph_unsupported() {
         let input = "graph TD\nsubgraph X\nA[Node]";
         let result = parse(input, false).unwrap();
-        assert!(result.graph.warnings.iter().any(|w| w.contains("Subgraphs not supported")));
+        assert!(result
+            .graph
+            .warnings
+            .iter()
+            .any(|w| w.contains("Subgraphs not supported")));
     }
 
     #[test]
@@ -617,14 +678,22 @@ click A "gateway.md""#;
         // Node definitions on separate lines since unsupported syntax skips whole line
         let input = "graph TD\nA[A]\nB[B]\nA -->|text| B";
         let result = parse(input, false).unwrap();
-        assert!(result.graph.warnings.iter().any(|w| w.contains("Edge labels not supported")));
+        assert!(result
+            .graph
+            .warnings
+            .iter()
+            .any(|w| w.contains("Edge labels not supported")));
     }
 
     #[test]
     fn test_style_unsupported() {
         let input = "graph TD\nA[Node]\nstyle A fill:#f00";
         let result = parse(input, false).unwrap();
-        assert!(result.graph.warnings.iter().any(|w| w.contains("Mermaid styling not supported")));
+        assert!(result
+            .graph
+            .warnings
+            .iter()
+            .any(|w| w.contains("Mermaid styling not supported")));
     }
 
     // === MULTIPLE GRAPH DIRECTIONS ===
@@ -636,7 +705,11 @@ click A "gateway.md""#;
         // Should use first direction (TD)
         assert!(matches!(result.graph.direction, Direction::TD));
         // Should have warning
-        assert!(result.graph.warnings.iter().any(|w| w.contains("Multiple graph directions")));
+        assert!(result
+            .graph
+            .warnings
+            .iter()
+            .any(|w| w.contains("Multiple graph directions")));
     }
 
     // === EDGE CHAIN TESTS ===

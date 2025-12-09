@@ -26,7 +26,8 @@ fn run_termiflow(args: &[&str]) -> (String, String) {
 fn golden_simple_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
-        "--style", "unicode",
+        "--style",
+        "unicode",
         "tests/fixtures/inputs/simple.md",
     ]);
     let expected = include_str!("fixtures/expected/simple.unicode.txt");
@@ -37,7 +38,8 @@ fn golden_simple_unicode() {
 fn golden_chain_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
-        "--style", "unicode",
+        "--style",
+        "unicode",
         "tests/fixtures/inputs/chain.md",
     ]);
     let expected = include_str!("fixtures/expected/chain.unicode.txt");
@@ -48,7 +50,8 @@ fn golden_chain_unicode() {
 fn golden_database_nodes_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
-        "--style", "unicode",
+        "--style",
+        "unicode",
         "tests/fixtures/inputs/database_nodes.md",
     ]);
     let expected = include_str!("fixtures/expected/database_nodes.unicode.txt");
@@ -59,7 +62,8 @@ fn golden_database_nodes_unicode() {
 fn golden_forward_ref_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
-        "--style", "unicode",
+        "--style",
+        "unicode",
         "tests/fixtures/inputs/forward_ref.md",
     ]);
     let expected = include_str!("fixtures/expected/forward_ref.unicode.txt");
@@ -70,7 +74,8 @@ fn golden_forward_ref_unicode() {
 fn golden_with_config_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
-        "--style", "unicode",
+        "--style",
+        "unicode",
         "tests/fixtures/inputs/with_config.md",
     ]);
     let expected = include_str!("fixtures/expected/with_config.unicode.txt");
@@ -81,12 +86,16 @@ fn golden_with_config_unicode() {
 fn golden_unsupported_unicode() {
     let (stdout, stderr) = run_termiflow(&[
         "--print",
-        "--style", "unicode",
+        "--style",
+        "unicode",
         "tests/fixtures/inputs/unsupported.md",
     ]);
 
     let expected_stdout = include_str!("fixtures/expected/unsupported.unicode.txt");
-    assert_eq!(stdout, expected_stdout, "Output mismatch for unsupported.md");
+    assert_eq!(
+        stdout, expected_stdout,
+        "Output mismatch for unsupported.md"
+    );
 
     let expected_stderr = include_str!("fixtures/expected/unsupported.unicode.err");
     assert!(
@@ -95,4 +104,32 @@ fn golden_unsupported_unicode() {
         expected_stderr.trim(),
         stderr
     );
+}
+
+// ============================================================================
+// ASCII Style Golden Tests
+// ============================================================================
+
+#[test]
+fn golden_simple_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/simple.md",
+    ]);
+    let expected = include_str!("fixtures/expected/simple.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for simple.md (ASCII)");
+}
+
+#[test]
+fn golden_chain_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/chain.md",
+    ]);
+    let expected = include_str!("fixtures/expected/chain.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for chain.md (ASCII)");
 }
