@@ -207,18 +207,20 @@ fn draw_box(
 
 /// Draw an edge label on the vertical segment between source and target.
 ///
-/// Labels are positioned on the junction row (between stem and arrow),
+/// Labels are positioned on the drop row (after junction, before arrow),
 /// centered horizontally around the edge path.
 fn draw_edge_label(canvas: &mut Canvas, from: &Node, to: &Node, label: &str) {
+    use crate::style::EDGE_JUNCTION_HEIGHT;
     use edge::center_x;
 
     // Calculate the vertical segment position (where the label will go)
     // The edge drops to the target's center_x, so that's where we place the label
     let edge_x = center_x(to);
 
-    // Calculate label y position - on the junction row between stem and arrow
-    // Layout: box -> stem -> label (junction row) -> arrow -> box
-    let label_y = from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT; // Junction row
+    // Calculate label y position - on the drop row after junction
+    // Layout: box -> stem -> junction -> label (drop row) -> arrow -> box
+    let junction_y = from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT;
+    let label_y = junction_y + EDGE_JUNCTION_HEIGHT; // Drop row (after junction)
 
     // Truncate label if too long
     let max_label_len = 12; // Keep labels reasonably short
