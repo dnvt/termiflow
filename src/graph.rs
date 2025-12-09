@@ -33,9 +33,10 @@ impl Node {
 /// Edge connecting two nodes
 #[derive(Debug, Clone)]
 pub struct Edge {
-    pub from: String,       // Source node ID
-    pub to: String,         // Target node ID
-    pub is_back_edge: bool, // True if this edge creates a cycle
+    pub from: String,         // Source node ID
+    pub to: String,           // Target node ID
+    pub label: Option<String>, // Optional edge label (from -->|label| syntax)
+    pub is_back_edge: bool,   // True if this edge creates a cycle
 }
 
 impl Edge {
@@ -43,6 +44,16 @@ impl Edge {
         Self {
             from: from.into(),
             to: to.into(),
+            label: None,
+            is_back_edge: false,
+        }
+    }
+
+    pub fn with_label(from: impl Into<String>, to: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            from: from.into(),
+            to: to.into(),
+            label: Some(label.into()),
             is_back_edge: false,
         }
     }

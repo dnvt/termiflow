@@ -18,7 +18,16 @@ lazy_static! {
     static ref RE_NODE: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[([^\[\]]*)\]").unwrap();
     static ref RE_NODE_DB: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[\(([^\)]*)\)\]").unwrap();
     // Edge regex - handles optional [Label] after node IDs: A[Label] --> B[Label]
+    // Also captures optional edge labels: A -->|label| B or A -- label --> B
     static ref RE_EDGE: Regex = Regex::new(r"([a-zA-Z0-9_]+)(?:\[[^\]]*\])?\s*--+>\s*([a-zA-Z0-9_]+)").unwrap();
+    // Edge with pipe-style label: A -->|label| B or A[Label] -->|label| B[Label]
+    static ref RE_EDGE_WITH_LABEL: Regex = Regex::new(
+        r"([a-zA-Z0-9_]+)(?:\[[^\]]*\])?\s*--+>\s*\|([^|]+)\|\s*([a-zA-Z0-9_]+)"
+    ).unwrap();
+    // Edge with text-style label: A -- label --> B
+    static ref RE_EDGE_TEXT_LABEL: Regex = Regex::new(
+        r"([a-zA-Z0-9_]+)(?:\[[^\]]*\])?\s*--\s+([^-]+?)\s+--+>\s*([a-zA-Z0-9_]+)"
+    ).unwrap();
     static ref RE_CLICK: Regex = Regex::new(r#"click\s+(\w+)\s+["']([^"']+)["']"#).unwrap();
     static ref RE_CONFIG: Regex = Regex::new(r"%%\s*termiflow:\s*(\w+)=([^\s]+)").unwrap();
     static ref RE_COMMENT: Regex = Regex::new(r"^\s*%%").unwrap();
@@ -29,7 +38,6 @@ lazy_static! {
     // SPEC §1.2: Unsupported syntax patterns
     static ref RE_NESTED_BRACKET: Regex = Regex::new(r"\[[^\]]*\[").unwrap();
     static ref RE_PIPE_IN_LABEL: Regex = Regex::new(r"\[[^\]]*\|[^\]]*\]").unwrap();
-    static ref RE_EDGE_LABEL: Regex = Regex::new(r"--+>\s*\|").unwrap();
     static ref RE_SUBGRAPH: Regex = Regex::new(r"^\s*subgraph\s").unwrap();
     static ref RE_STYLE: Regex = Regex::new(r"^\s*style\s+\w+").unwrap();
     static ref RE_CLASSDEF: Regex = Regex::new(r"^\s*classDef\s").unwrap();
@@ -232,9 +240,45 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
         }
 
         // Collect edge endpoints (handle chains like A --> B --> C)
+        // Also handles labeled edges: A -->|label| B
         let mut start_pos = 0;
         while start_pos < trimmed.len() {
-            if let Some(caps) = RE_EDGE.captures(&trimmed[start_pos..]) {
+            let remaining = &trimmed[start_pos..];
+
+            // Try pipe-style label first: A -->|label| B
+            if let Some(caps) = RE_EDGE_WITH_LABEL.captures(remaining) {
+                let from = caps[1].to_string();
+                let to = caps[3].to_string();
+                if known_ids.insert(from.clone()) {
+                    ordered_ids.push(from.clone());
+                }
+                if known_ids.insert(to.clone()) {
+                    ordered_ids.push(to.clone());
+                }
+                node_first_ref.entry(from).or_insert(i + 1);
+                node_first_ref.entry(to).or_insert(i + 1);
+                start_pos += caps.get(3).unwrap().start();
+                continue;
+            }
+
+            // Try text-style label: A -- label --> B
+            if let Some(caps) = RE_EDGE_TEXT_LABEL.captures(remaining) {
+                let from = caps[1].to_string();
+                let to = caps[3].to_string();
+                if known_ids.insert(from.clone()) {
+                    ordered_ids.push(from.clone());
+                }
+                if known_ids.insert(to.clone()) {
+                    ordered_ids.push(to.clone());
+                }
+                node_first_ref.entry(from).or_insert(i + 1);
+                node_first_ref.entry(to).or_insert(i + 1);
+                start_pos += caps.get(3).unwrap().start();
+                continue;
+            }
+
+            // Fall back to unlabeled edge
+            if let Some(caps) = RE_EDGE.captures(remaining) {
                 let from = caps[1].to_string();
                 let to = caps[2].to_string();
                 if known_ids.insert(from.clone()) {
@@ -245,11 +289,11 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 }
                 node_first_ref.entry(from).or_insert(i + 1);
                 node_first_ref.entry(to).or_insert(i + 1);
-                // Move to start of target ID so it can become source of next edge in chain
                 start_pos += caps.get(2).unwrap().start();
-            } else {
-                break;
+                continue;
             }
+
+            break;
         }
     }
 
@@ -279,21 +323,56 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
         }
 
         // Collect edges (handle chains like A --> B --> C)
+        // Try labeled edges first, then fall back to unlabeled
         let mut start_pos = 0;
         while start_pos < trimmed.len() {
-            if let Some(caps) = RE_EDGE.captures(&trimmed[start_pos..]) {
+            let remaining = &trimmed[start_pos..];
+
+            // Try pipe-style label first: A -->|label| B
+            if let Some(caps) = RE_EDGE_WITH_LABEL.captures(remaining) {
+                let from = caps[1].to_string();
+                let label = caps[2].trim().to_string();
+                let to = caps[3].to_string();
+                graph.edges.push(Edge {
+                    from,
+                    to,
+                    label: Some(label),
+                    is_back_edge: false,
+                });
+                start_pos += caps.get(3).unwrap().start();
+                continue;
+            }
+
+            // Try text-style label: A -- label --> B
+            if let Some(caps) = RE_EDGE_TEXT_LABEL.captures(remaining) {
+                let from = caps[1].to_string();
+                let label = caps[2].trim().to_string();
+                let to = caps[3].to_string();
+                graph.edges.push(Edge {
+                    from,
+                    to,
+                    label: Some(label),
+                    is_back_edge: false,
+                });
+                start_pos += caps.get(3).unwrap().start();
+                continue;
+            }
+
+            // Fall back to unlabeled edge
+            if let Some(caps) = RE_EDGE.captures(remaining) {
                 let from = caps[1].to_string();
                 let to = caps[2].to_string();
                 graph.edges.push(Edge {
                     from,
                     to,
-                    is_back_edge: false, // Will be computed during layout
+                    label: None,
+                    is_back_edge: false,
                 });
-                // Move to start of target ID so it can become source of next edge in chain
                 start_pos += caps.get(2).unwrap().start();
-            } else {
-                break;
+                continue;
             }
+
+            break;
         }
     }
 
@@ -367,13 +446,6 @@ fn check_unsupported_syntax(line: &str, line_num: usize) -> Option<String> {
         ));
     }
 
-    if RE_EDGE_LABEL.is_match(line) {
-        return Some(format!(
-            "termiflow: warning: line {}: Edge labels not supported in v1",
-            line_num
-        ));
-    }
-
     if RE_SUBGRAPH.is_match(line) {
         return Some(format!(
             "termiflow: warning: line {}: Subgraphs not supported in v1",
@@ -415,8 +487,12 @@ fn check_unsupported_syntax(line: &str, line_num: usize) -> Option<String> {
 /// Detect malformed but supported-looking syntax (not matching expected regexes)
 /// Returns warning message if malformed syntax found
 fn check_malformed(line: &str, line_num: usize) -> Option<String> {
-    // Edge arrow present but doesn't match supported edge syntax
-    if line.contains("-->") && !RE_EDGE.is_match(line) {
+    // Edge arrow present but doesn't match any supported edge syntax
+    if line.contains("-->")
+        && !RE_EDGE.is_match(line)
+        && !RE_EDGE_WITH_LABEL.is_match(line)
+        && !RE_EDGE_TEXT_LABEL.is_match(line)
+    {
         return Some(format!(
             "termiflow: warning: line {}: Malformed edge '{}'",
             line_num, line
@@ -674,15 +750,45 @@ click A "gateway.md""#;
     }
 
     #[test]
-    fn test_edge_label_unsupported() {
-        // Node definitions on separate lines since unsupported syntax skips whole line
-        let input = "graph TD\nA[A]\nB[B]\nA -->|text| B";
+    fn test_edge_label_pipe_style() {
+        // Test pipe-style edge labels: A -->|label| B
+        let input = "graph TD\nA[Start] -->|validate| B[Process]";
         let result = parse(input, false).unwrap();
-        assert!(result
-            .graph
-            .warnings
-            .iter()
-            .any(|w| w.contains("Edge labels not supported")));
+        assert_eq!(result.graph.edges.len(), 1);
+        assert_eq!(result.graph.edges[0].from, "A");
+        assert_eq!(result.graph.edges[0].to, "B");
+        assert_eq!(result.graph.edges[0].label, Some("validate".to_string()));
+    }
+
+    #[test]
+    fn test_edge_label_text_style() {
+        // Test text-style edge labels: A -- label --> B
+        let input = "graph TD\nA[Start] -- process --> B[End]";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.edges.len(), 1);
+        assert_eq!(result.graph.edges[0].from, "A");
+        assert_eq!(result.graph.edges[0].to, "B");
+        assert_eq!(result.graph.edges[0].label, Some("process".to_string()));
+    }
+
+    #[test]
+    fn test_edge_label_multiple() {
+        // Test multiple labeled edges
+        let input = "graph TD\nA[Start] -->|yes| B[Success]\nA -->|no| C[Retry]";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.edges.len(), 2);
+        assert_eq!(result.graph.edges[0].label, Some("yes".to_string()));
+        assert_eq!(result.graph.edges[1].label, Some("no".to_string()));
+    }
+
+    #[test]
+    fn test_edge_label_mixed_with_unlabeled() {
+        // Test mix of labeled and unlabeled edges
+        let input = "graph TD\nA --> B\nB -->|done| C";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.edges.len(), 2);
+        assert_eq!(result.graph.edges[0].label, None);
+        assert_eq!(result.graph.edges[1].label, Some("done".to_string()));
     }
 
     #[test]

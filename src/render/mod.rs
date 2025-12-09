@@ -30,8 +30,8 @@ use anyhow::Result;
 use crate::config::Config;
 use crate::graph::{Graph, Node};
 use crate::style::{
-    truncate_label, BorderStyle, BOX_HEIGHT, COL_SPACING, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH,
-    RIGHT_GUTTER, ROW_SPACING,
+    display_width, truncate_label, BorderStyle, BOX_HEIGHT, COL_SPACING, EDGE_JUNCTION_HEIGHT,
+    EDGE_STEM_HEIGHT, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, RIGHT_GUTTER, ROW_SPACING,
 };
 
 use edge::{route_back_edge, route_expanded_edge};
@@ -100,6 +100,8 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     // Group forward edges by source node for expanded routing
     let mut edges_by_source: HashMap<&str, Vec<&Node>> = HashMap::new();
     let mut back_edges: Vec<(&Node, &Node)> = Vec::new();
+    // Track labeled edges for later rendering: (from_node, to_node, label)
+    let mut labeled_edges: Vec<(&Node, &Node, &str)> = Vec::new();
 
     for e in &graph.edges {
         let Some(from) = graph.get_node(&e.from) else {
@@ -116,6 +118,11 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
                 .entry(&e.from)
                 .or_default()
                 .push(to);
+
+            // Track edges with labels
+            if let Some(ref label) = e.label {
+                labeled_edges.push((from, to, label.as_str()));
+            }
         }
     }
 
@@ -133,6 +140,11 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     // Draw back-edges (cycle edges)
     for (from, to) in back_edges {
         route_back_edge(from, to, &mut canvas, &chars);
+    }
+
+    // Draw edge labels on the vertical segments
+    for (from, to, label) in &labeled_edges {
+        draw_edge_label(&mut canvas, from, to, label);
     }
 
     // Draw boxes AFTER edges (boxes overwrite any edges passing through them)
@@ -191,6 +203,56 @@ fn draw_box(
         canvas.set(pos_x, y + 2, c);
     }
     canvas.set(x + width - 1, y + 2, style.br);
+}
+
+/// Draw an edge label on the vertical segment between source and target.
+///
+/// Labels are positioned on the vertical drop segment, centered horizontally
+/// around the edge path. The label appears above the target box.
+fn draw_edge_label(canvas: &mut Canvas, from: &Node, to: &Node, label: &str) {
+    use edge::center_x;
+
+    // Calculate the vertical segment position (where the label will go)
+    // The edge drops to the target's center_x, so that's where we place the label
+    let edge_x = center_x(to);
+
+    // Calculate label y position - on the row between junction and arrow
+    // Layout: stem -> junction -> (label here) -> arrow -> target box
+    let junction_y = from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT;
+    let label_y = junction_y + EDGE_JUNCTION_HEIGHT; // Row after junction
+
+    // Truncate label if too long
+    let max_label_len = 12; // Keep labels reasonably short
+    let display_label = if display_width(label) > max_label_len {
+        let mut truncated = String::new();
+        let mut width = 0;
+        for c in label.chars() {
+            let char_width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+            if width + char_width > max_label_len - 1 {
+                truncated.push('…');
+                break;
+            }
+            truncated.push(c);
+            width += char_width;
+        }
+        truncated
+    } else {
+        label.to_string()
+    };
+
+    let label_width = display_width(&display_label);
+
+    // Center the label around the edge position
+    let label_start_x = edge_x.saturating_sub(label_width / 2);
+
+    // Draw the label characters
+    let mut x_pos = label_start_x;
+    for c in display_label.chars() {
+        if x_pos < canvas.width {
+            canvas.set(x_pos, label_y, c);
+        }
+        x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+    }
 }
 
 // ============================================================================
