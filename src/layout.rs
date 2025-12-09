@@ -7,7 +7,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use anyhow::Result;
 
 use crate::graph::{Direction, Graph};
-use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH, COL_SPACING, ROW_SPACING};
+use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH, COL_SPACING};
+
+/// Row spacing for single-target edges (compact: stem → label → arrow)
+const ROW_SPACING_SINGLE: usize = 3;
+/// Row spacing for multi-target edges (needs extra row: stem → junction → label → arrow)
+const ROW_SPACING_MULTI: usize = 4;
 
 /// Apply waterfall layout to position all nodes
 pub fn waterfall(mut graph: Graph) -> Result<Graph> {
@@ -114,7 +119,39 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         nodes.sort_by_key(|&idx| graph.nodes[idx].id.clone()); // deterministic within rank
     }
 
-    let row_gap = BOX_HEIGHT + ROW_SPACING;
+    // Calculate per-rank spacing based on edge fan-out
+    // A rank needs ROW_SPACING_MULTI if ANY source at that rank has multiple targets
+    let rank_spacing: Vec<usize> = (0..=max_rank)
+        .map(|r| {
+            // Count targets per source node at this rank
+            let mut has_multi_target = false;
+            for &idx in &by_rank[r] {
+                let source_id = &graph.nodes[idx].id;
+                let target_count = graph
+                    .edges
+                    .iter()
+                    .filter(|e| !e.is_back_edge && &e.from == source_id)
+                    .count();
+                if target_count > 1 {
+                    has_multi_target = true;
+                    break;
+                }
+            }
+            if has_multi_target {
+                ROW_SPACING_MULTI
+            } else {
+                ROW_SPACING_SINGLE
+            }
+        })
+        .collect();
+
+    // Build cumulative Y offsets for each rank
+    let mut rank_y_offset: Vec<usize> = vec![0; max_rank + 1];
+    for r in 1..=max_rank {
+        // Y offset for rank r = previous rank's offset + box height + spacing from previous rank
+        rank_y_offset[r] = rank_y_offset[r - 1] + BOX_HEIGHT + rank_spacing[r - 1];
+    }
+
 
     // Precompute rank widths for LR spacing
     let rank_widths: Vec<usize> = by_rank
@@ -150,7 +187,7 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
 
     for (r, nodes) in by_rank.iter().enumerate() {
         let mut cursor_primary = 0usize;
-        let rank_y = r * row_gap;
+        let rank_y = rank_y_offset[r]; // Use dynamic Y offset based on edge complexity
         let rank_x = rank_offset_x[r];
 
         for &idx in nodes {
@@ -204,7 +241,7 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                 }
                 Direction::LR => {
                     node.y = cursor_primary;
-                    cursor_primary += BOX_HEIGHT + ROW_SPACING;
+                    cursor_primary += BOX_HEIGHT + ROW_SPACING_MULTI;
                 }
             }
 
@@ -215,9 +252,9 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
 
     // Flip coordinates for BT (bottom-to-top)
     if matches!(graph.direction, Direction::BT) {
-        let max_y = max_rank * row_gap;
+        let max_y = rank_y_offset[max_rank];
         for node in &mut graph.nodes {
-            node.y = max_y.saturating_sub(node.rank * row_gap);
+            node.y = max_y.saturating_sub(rank_y_offset[node.rank]);
         }
     }
 

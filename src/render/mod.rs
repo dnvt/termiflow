@@ -30,8 +30,8 @@ use anyhow::Result;
 use crate::config::Config;
 use crate::graph::{Graph, Node};
 use crate::style::{
-    display_width, truncate_label, BorderStyle, BOX_HEIGHT, COL_SPACING, EDGE_STEM_HEIGHT,
-    MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, RIGHT_GUTTER, ROW_SPACING,
+    display_width, truncate_label, BorderStyle, BOX_HEIGHT, COL_SPACING, EDGE_JUNCTION_HEIGHT,
+    EDGE_STEM_HEIGHT, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, RIGHT_GUTTER, ROW_SPACING,
 };
 
 use edge::{route_back_edge, route_expanded_edge};
@@ -140,11 +140,10 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             continue;
         }
 
-        // Check if this source has multiple targets (needs junction row)
+        // Check if this source has multiple targets (needs junction row with corners)
         let is_multi_target = edges_by_source
             .get(e.from.as_str())
-            .map(|targets| targets.len() > 1)
-            .unwrap_or(false);
+            .is_some_and(|targets| targets.len() > 1);
 
         labeled_edges.push((from, to, label.as_str(), is_multi_target));
     }
@@ -228,26 +227,25 @@ fn draw_box(
     canvas.set(x + width - 1, y + 2, style.br);
 }
 
-/// Draw an edge label on the vertical segment between source and target.
+/// Draw an edge label between stem and arrow.
 ///
-/// For single-target edges: label on stem+1 (compact, no junction row)
-/// For multi-target edges: label on drop row (after junction, before arrow)
+/// Labels are centered horizontally around the edge path.
+/// - Single-target: label on junction row (no corners to preserve)
+/// - Multi-target: label on drop row (after junction with corners)
 fn draw_edge_label(canvas: &mut Canvas, from: &Node, to: &Node, label: &str, is_multi_target: bool) {
-    use crate::style::EDGE_JUNCTION_HEIGHT;
     use edge::center_x;
 
     // Calculate the vertical segment position (where the label will go)
     // The edge drops to the target's center_x, so that's where we place the label
     let edge_x = center_x(to);
 
-    // Calculate label y position based on edge type
+    // Calculate label y position based on edge type:
+    // - Single-target: junction row (stem → label → arrow)
+    // - Multi-target: drop row (stem → junction with corners → label → arrow)
     let label_y = if is_multi_target {
-        // Multi-target: box -> stem -> junction -> label -> arrow
-        let junction_y = from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT;
-        junction_y + EDGE_JUNCTION_HEIGHT // Drop row (after junction)
+        from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT + EDGE_JUNCTION_HEIGHT
     } else {
-        // Single-target: box -> stem -> label -> arrow (compact, skip junction row)
-        from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT // Same row as junction would be
+        from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT
     };
 
     // Truncate label if too long

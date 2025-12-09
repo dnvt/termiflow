@@ -8,13 +8,13 @@ use unicode_width::UnicodeWidthStr;
 pub const BOX_HEIGHT: usize = 3;
 pub const BOX_MIN_WIDTH: usize = 5;
 pub const BOX_PADDING: usize = 2;
-pub const ROW_SPACING: usize = 4; // stem → junction → label → arrow
+pub const ROW_SPACING: usize = 4; // stem → junction → label/drop → arrow
 pub const COL_SPACING: usize = 3;
 
 // Edge routing constants for expanded layout
 pub const EDGE_STEM_HEIGHT: usize = 1;     // Vertical stem from source box
 pub const EDGE_JUNCTION_HEIGHT: usize = 1; // Horizontal junction row
-pub const EDGE_DROP_HEIGHT: usize = 1;     // Label row (between junction and arrow)
+pub const EDGE_DROP_HEIGHT: usize = 1;     // Label row (drop for multi-target)
 #[allow(dead_code)]
 pub const EDGE_VERTICAL_GAP: usize = 1;
 pub const MAX_LABEL_WIDTH: usize = 20;
