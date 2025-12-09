@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 // Use the termiflow library
-use termiflow::{parse, waterfall, render_canvas, Config, BorderStyle};
+use termiflow::{parse, waterfall, render_canvas, Config, BorderStyle, CompositeStyle};
 
 /// Interactive TUI graph explorer - jq for diagrams
 #[derive(Parser)]
@@ -24,9 +24,9 @@ pub struct Cli {
     #[arg(value_name = "FILE")]
     pub file: Option<PathBuf>,
 
-    /// Border style
-    #[arg(short, long, default_value = "unicode", value_enum)]
-    pub style: StyleArg,
+    /// Border style (overrides config file and in-file directives)
+    #[arg(short, long, value_enum)]
+    pub style: Option<StyleArg>,
 
     /// Output to stdout (no interactive TUI)
     #[arg(long)]
@@ -93,8 +93,8 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Check for Unicode capability
-    if cli.style != StyleArg::Ascii && !supports_unicode() {
+    // Check for Unicode capability (skip check if using ASCII)
+    if cli.style != Some(StyleArg::Ascii) && !supports_unicode() {
         eprintln!("termiflow: warning: Unicode may not display correctly");
         eprintln!(
             "  Terminal: {}",
@@ -129,10 +129,16 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     let parse_result = parse(&input, cli.strict)?;
 
     // Load configuration (CLI > in-file > config file)
-    let config = Config::builder()
+    let mut builder = Config::builder()
         .max_label_width(cli.max_label)
-        .strict(cli.strict)
-        .build(&parse_result.config);
+        .strict(cli.strict);
+
+    // Only apply style if explicitly provided on CLI
+    if let Some(style) = cli.style {
+        builder = builder.style(CompositeStyle::from_base(style.into()));
+    }
+
+    let config = builder.build(&parse_result.config);
 
     // Run layout algorithm (may add warnings)
     let graph = waterfall(parse_result.graph)?;
