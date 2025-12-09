@@ -8,44 +8,38 @@ use unicode_width::UnicodeWidthStr;
 pub const BOX_HEIGHT: usize = 3;
 pub const BOX_MIN_WIDTH: usize = 5;
 pub const BOX_PADDING: usize = 2;
-pub const ROW_SPACING: usize = 4; // stem → junction → label/drop → arrow
+pub const ROW_SPACING: usize = 2;
 pub const COL_SPACING: usize = 3;
 
 // Edge routing constants for expanded layout
-pub const EDGE_STEM_HEIGHT: usize = 1;     // Vertical stem from source box
+pub const EDGE_STEM_HEIGHT: usize = 1; // Vertical stem from source box
 pub const EDGE_JUNCTION_HEIGHT: usize = 1; // Horizontal junction row
-pub const EDGE_DROP_HEIGHT: usize = 1;     // Label row (drop for multi-target)
-#[allow(dead_code)]
-pub const EDGE_VERTICAL_GAP: usize = 1;
+pub const EDGE_DROP_HEIGHT: usize = 1; // Label row (drop for multi-target)
 pub const MAX_LABEL_WIDTH: usize = 20;
 
 pub const MAX_CANVAS_WIDTH: usize = 500;
 pub const MAX_CANVAS_HEIGHT: usize = 200;
-#[allow(dead_code)]
-pub const MAX_NODES: usize = 100;
 
 /// Back-edge gutter (reserved right margin for cycle rendering)
 pub const RIGHT_GUTTER: usize = 4;
 
 /// Border style variants
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
-pub enum BorderStyle {
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum BaseStyle {
     Ascii,
     #[default]
     Unicode,
     Double,
     Rounded,
     Heavy,
-    Dots,     // • for corners
-    Plus,     // + for corners  
-    Stars,    // * for corners
-    Blocks,   // █ for lines
+    Dots,   // • for corners
+    Plus,   // + for corners
+    Stars,  // * for corners
+    Blocks, // █ for lines
 }
 
-
 /// Component-specific style configuration
-/// 
+///
 /// Each component can be styled independently using any BorderStyle:
 /// - `corner` - Box corners (┌┐└┘ for unicode, ╭╮╰╯ for rounded, ╔╗╚╝ for double, • for dots, * for stars, etc.)
 /// - `border` - Box borders/lines (─│ for unicode, ═║ for double, ━┃ for heavy, etc.)
@@ -55,12 +49,12 @@ pub enum BorderStyle {
 /// - `back` - Back edges for cycles (dotted/dashed lines)
 #[derive(Debug, Clone, Default)]
 pub struct CompositeStyle {
-    pub corner: Option<BorderStyle>,    // Box corners
-    pub border: Option<BorderStyle>,    // Box borders (h/v lines)
-    pub arrow: Option<BorderStyle>,     // Arrow heads
-    pub edge: Option<BorderStyle>,      // Edge/connection lines
-    pub junction: Option<BorderStyle>,  // Junction characters
-    pub back: Option<BorderStyle>,      // Back edges for cycles
+    pub corner: Option<BaseStyle>,   // Box corners
+    pub border: Option<BaseStyle>,   // Box borders (h/v lines)
+    pub arrow: Option<BaseStyle>,    // Arrow heads
+    pub edge: Option<BaseStyle>,     // Edge/connection lines
+    pub junction: Option<BaseStyle>, // Junction characters
+    pub back: Option<BaseStyle>,     // Back edges for cycles
 }
 
 /// Character set for a border style
@@ -74,13 +68,11 @@ pub struct StyleChars {
     pub h: char,  // horizontal
     pub v: char,  // vertical
 
-    // Arrows
+    // Arrows (down/left used for TD/TB, up/right reserved for LR/RL layouts)
     pub arrow_down: char,
-    #[allow(dead_code)]
-    pub arrow_up: char,
+    pub arrow_up: char,   // Reserved: LR/RL layouts
     pub arrow_left: char,
-    #[allow(dead_code)]
-    pub arrow_right: char,
+    pub arrow_right: char, // Reserved: LR/RL layouts
 
     // Edges
     pub edge_h: char,
@@ -90,32 +82,30 @@ pub struct StyleChars {
     pub corner_ur: char, // up-right
     pub corner_ul: char, // up-left
     pub cross: char,
-    
-    // Junctions
-    pub junction_down: char,  // ┬ (T pointing down)
-    pub junction_up: char,    // ┴ (T pointing up)
-    #[allow(dead_code)]
-    pub junction_right: char, // ├ (T pointing right)
-    #[allow(dead_code)]
-    pub junction_left: char,  // ┤ (T pointing left)
+
+    // Junctions (down/up used for TD/TB, right/left reserved for LR/RL layouts)
+    pub junction_down: char, // ┬ (T pointing down)
+    pub junction_up: char,   // ┴ (T pointing up)
+    pub junction_right: char, // ├ Reserved: LR/RL layouts
+    pub junction_left: char, // ┤ Reserved: LR/RL layouts
 
     // Back-edges
     pub back_h: char,
     pub back_v: char,
 }
 
-impl BorderStyle {
+impl BaseStyle {
     pub fn chars(&self) -> &'static StyleChars {
         match self {
-            BorderStyle::Ascii => &ASCII_CHARS,
-            BorderStyle::Unicode => &UNICODE_CHARS,
-            BorderStyle::Double => &DOUBLE_CHARS,
-            BorderStyle::Rounded => &ROUNDED_CHARS,
-            BorderStyle::Heavy => &HEAVY_CHARS,
-            BorderStyle::Dots => &DOTS_CHARS,
-            BorderStyle::Plus => &PLUS_CHARS,
-            BorderStyle::Stars => &STARS_CHARS,
-            BorderStyle::Blocks => &BLOCKS_CHARS,
+            BaseStyle::Ascii => &ASCII_CHARS,
+            BaseStyle::Unicode => &UNICODE_CHARS,
+            BaseStyle::Double => &DOUBLE_CHARS,
+            BaseStyle::Rounded => &ROUNDED_CHARS,
+            BaseStyle::Heavy => &HEAVY_CHARS,
+            BaseStyle::Dots => &DOTS_CHARS,
+            BaseStyle::Plus => &PLUS_CHARS,
+            BaseStyle::Stars => &STARS_CHARS,
+            BaseStyle::Blocks => &BLOCKS_CHARS,
         }
     }
 
@@ -125,20 +115,20 @@ impl BorderStyle {
     }
 }
 
-impl std::str::FromStr for BorderStyle {
+impl std::str::FromStr for BaseStyle {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "ascii" => Ok(BorderStyle::Ascii),
-            "unicode" => Ok(BorderStyle::Unicode),
-            "double" => Ok(BorderStyle::Double),
-            "rounded" => Ok(BorderStyle::Rounded),
-            "heavy" => Ok(BorderStyle::Heavy),
-            "dots" | "dot" => Ok(BorderStyle::Dots),
-            "plus" => Ok(BorderStyle::Plus),
-            "stars" | "star" => Ok(BorderStyle::Stars),
-            "blocks" | "block" => Ok(BorderStyle::Blocks),
+            "ascii" => Ok(BaseStyle::Ascii),
+            "unicode" => Ok(BaseStyle::Unicode),
+            "double" => Ok(BaseStyle::Double),
+            "rounded" => Ok(BaseStyle::Rounded),
+            "heavy" => Ok(BaseStyle::Heavy),
+            "dots" | "dot" => Ok(BaseStyle::Dots),
+            "plus" => Ok(BaseStyle::Plus),
+            "stars" | "star" => Ok(BaseStyle::Stars),
+            "blocks" | "block" => Ok(BaseStyle::Blocks),
             _ => Err(()),
         }
     }
@@ -146,7 +136,7 @@ impl std::str::FromStr for BorderStyle {
 
 impl CompositeStyle {
     /// Create a CompositeStyle with all components set to the given base style
-    pub fn from_base(style: BorderStyle) -> Self {
+    pub fn from_base(style: BaseStyle) -> Self {
         Self {
             corner: Some(style),
             border: Some(style),
@@ -160,10 +150,10 @@ impl CompositeStyle {
     /// Parse a composite style string like "box:rounded,arrow:heavy,line:double"
     pub fn parse(s: &str) -> Self {
         let mut style = CompositeStyle::default();
-        
+
         // Handle simple style (backward compatibility)
         if !s.contains(':') {
-            if let Some(border_style) = BorderStyle::parse_name(s) {
+            if let Some(border_style) = BaseStyle::parse_name(s) {
                 // Apply to all components for backward compatibility
                 style.corner = Some(border_style);
                 style.border = Some(border_style);
@@ -174,18 +164,18 @@ impl CompositeStyle {
             }
             return style;
         }
-        
+
         // Parse component-specific styles
         for part in s.split(',') {
             let part = part.trim();
             if let Some((component, style_name)) = part.split_once(':') {
-                let border_style = BorderStyle::parse_name(style_name.trim());
+                let border_style = BaseStyle::parse_name(style_name.trim());
                 match component.trim() {
                     "box" => {
                         // Legacy: "box" applies to both corners and borders
                         style.corner = border_style;
                         style.border = border_style;
-                    },
+                    }
                     "corner" => style.corner = border_style,
                     "border" => style.border = border_style,
                     "arrow" => style.arrow = border_style,
@@ -193,7 +183,7 @@ impl CompositeStyle {
                     "junction" => style.junction = border_style,
                     "back" => style.back = border_style,
                     // Legacy aliases
-                    "line" => style.edge = border_style,  // "line" -> "edge"
+                    "line" => style.edge = border_style, // "line" -> "edge"
                     "box_corner" => style.corner = border_style,
                     "box_line" | "box_border" => style.border = border_style,
                     "back_edge" => style.back = border_style,
@@ -201,36 +191,36 @@ impl CompositeStyle {
                 }
             }
         }
-        
+
         style
     }
-    
+
     /// Create a mixed StyleChars from component styles with a fallback
-    pub fn to_style_chars(&self, fallback: BorderStyle) -> StyleChars {
+    pub fn to_style_chars(&self, fallback: BaseStyle) -> StyleChars {
         let corner_chars = self.corner.unwrap_or(fallback).chars();
         let border_chars = self.border.unwrap_or(fallback).chars();
         let arrow_chars = self.arrow.unwrap_or(fallback).chars();
         let edge_chars = self.edge.unwrap_or(fallback).chars();
         let junction_chars = self.junction.unwrap_or(fallback).chars();
         let back_chars = self.back.unwrap_or(fallback).chars();
-        
+
         StyleChars {
             // Box corners (from corner style)
             tl: corner_chars.tl,
             tr: corner_chars.tr,
             bl: corner_chars.bl,
             br: corner_chars.br,
-            
+
             // Box borders (from border style)
             h: border_chars.h,
             v: border_chars.v,
-            
+
             // Arrow components
             arrow_down: arrow_chars.arrow_down,
             arrow_up: arrow_chars.arrow_up,
             arrow_left: arrow_chars.arrow_left,
             arrow_right: arrow_chars.arrow_right,
-            
+
             // Edge components (connection lines)
             edge_h: edge_chars.edge_h,
             edge_v: edge_chars.edge_v,
@@ -239,13 +229,13 @@ impl CompositeStyle {
             corner_ur: edge_chars.corner_ur,
             corner_ul: edge_chars.corner_ul,
             cross: edge_chars.cross,
-            
+
             // Junction components
             junction_down: junction_chars.junction_down,
             junction_up: junction_chars.junction_up,
             junction_right: junction_chars.junction_right,
             junction_left: junction_chars.junction_left,
-            
+
             // Back-edge components
             back_h: back_chars.back_h,
             back_v: back_chars.back_v,
@@ -487,7 +477,6 @@ pub static BLOCKS_CHARS: StyleChars = StyleChars {
     back_v: '█',
 };
 
-
 /// Calculate display width of a string (handles CJK, emoji, etc.)
 pub fn display_width(s: &str) -> usize {
     s.width()
@@ -544,93 +533,96 @@ mod tests {
         assert_eq!(display_width("ABC"), 3);
         assert_eq!(display_width("日本語"), 6); // CJK = 2 width each
     }
-    
+
     #[test]
     fn test_composite_style_parse_simple() {
         let style = CompositeStyle::parse("unicode");
-        assert_eq!(style.corner, Some(BorderStyle::Unicode));
-        assert_eq!(style.border, Some(BorderStyle::Unicode));
-        assert_eq!(style.arrow, Some(BorderStyle::Unicode));
-        assert_eq!(style.edge, Some(BorderStyle::Unicode));
-        assert_eq!(style.junction, Some(BorderStyle::Unicode));
-        assert_eq!(style.back, Some(BorderStyle::Unicode));
+        assert_eq!(style.corner, Some(BaseStyle::Unicode));
+        assert_eq!(style.border, Some(BaseStyle::Unicode));
+        assert_eq!(style.arrow, Some(BaseStyle::Unicode));
+        assert_eq!(style.edge, Some(BaseStyle::Unicode));
+        assert_eq!(style.junction, Some(BaseStyle::Unicode));
+        assert_eq!(style.back, Some(BaseStyle::Unicode));
     }
-    
+
     #[test]
     fn test_composite_style_parse_complex() {
         let style = CompositeStyle::parse("corner:rounded,border:heavy,arrow:unicode,edge:double");
-        assert_eq!(style.corner, Some(BorderStyle::Rounded));
-        assert_eq!(style.border, Some(BorderStyle::Heavy));
-        assert_eq!(style.arrow, Some(BorderStyle::Unicode));
-        assert_eq!(style.edge, Some(BorderStyle::Double));
+        assert_eq!(style.corner, Some(BaseStyle::Rounded));
+        assert_eq!(style.border, Some(BaseStyle::Heavy));
+        assert_eq!(style.arrow, Some(BaseStyle::Unicode));
+        assert_eq!(style.edge, Some(BaseStyle::Double));
         assert_eq!(style.junction, None);
         assert_eq!(style.back, None);
     }
-    
+
     #[test]
     fn test_composite_style_parse_all_components() {
-        let style = CompositeStyle::parse("corner:dots,border:heavy,arrow:unicode,edge:double,junction:heavy,back:rounded");
-        assert_eq!(style.corner, Some(BorderStyle::Dots));
-        assert_eq!(style.border, Some(BorderStyle::Heavy));
-        assert_eq!(style.arrow, Some(BorderStyle::Unicode));
-        assert_eq!(style.edge, Some(BorderStyle::Double));
-        assert_eq!(style.junction, Some(BorderStyle::Heavy));
-        assert_eq!(style.back, Some(BorderStyle::Rounded));
+        let style = CompositeStyle::parse(
+            "corner:dots,border:heavy,arrow:unicode,edge:double,junction:heavy,back:rounded",
+        );
+        assert_eq!(style.corner, Some(BaseStyle::Dots));
+        assert_eq!(style.border, Some(BaseStyle::Heavy));
+        assert_eq!(style.arrow, Some(BaseStyle::Unicode));
+        assert_eq!(style.edge, Some(BaseStyle::Double));
+        assert_eq!(style.junction, Some(BaseStyle::Heavy));
+        assert_eq!(style.back, Some(BaseStyle::Rounded));
     }
-    
+
     #[test]
     fn test_composite_style_to_style_chars() {
         let mut composite = CompositeStyle::default();
-        composite.corner = Some(BorderStyle::Dots);
-        composite.border = Some(BorderStyle::Heavy);
-        composite.arrow = Some(BorderStyle::Heavy);
-        
-        let chars = composite.to_style_chars(BorderStyle::Unicode);
-        
+        composite.corner = Some(BaseStyle::Dots);
+        composite.border = Some(BaseStyle::Heavy);
+        composite.arrow = Some(BaseStyle::Heavy);
+
+        let chars = composite.to_style_chars(BaseStyle::Unicode);
+
         // Box corners should be dots
         assert_eq!(chars.tl, '•');
         assert_eq!(chars.tr, '•');
-        
+
         // Box lines should be heavy
         assert_eq!(chars.h, '━');
         assert_eq!(chars.v, '┃');
-        
+
         // Arrows should be heavy (uses heavy set → filled down arrow)
         assert_eq!(chars.arrow_down, '▼');
-        
+
         // Lines should fall back to unicode
         assert_eq!(chars.edge_h, '─');
     }
-    
+
     #[test]
     fn test_new_styles() {
         // Test dots style
-        assert_eq!(BorderStyle::parse_name("dots"), Some(BorderStyle::Dots));
-        assert_eq!(BorderStyle::parse_name("dot"), Some(BorderStyle::Dots));
+        assert_eq!(BaseStyle::parse_name("dots"), Some(BaseStyle::Dots));
+        assert_eq!(BaseStyle::parse_name("dot"), Some(BaseStyle::Dots));
 
         // Test plus style
-        assert_eq!(BorderStyle::parse_name("plus"), Some(BorderStyle::Plus));
+        assert_eq!(BaseStyle::parse_name("plus"), Some(BaseStyle::Plus));
 
         // Test stars style
-        assert_eq!(BorderStyle::parse_name("stars"), Some(BorderStyle::Stars));
-        assert_eq!(BorderStyle::parse_name("star"), Some(BorderStyle::Stars));
+        assert_eq!(BaseStyle::parse_name("stars"), Some(BaseStyle::Stars));
+        assert_eq!(BaseStyle::parse_name("star"), Some(BaseStyle::Stars));
 
         // Test blocks style
-        assert_eq!(BorderStyle::parse_name("blocks"), Some(BorderStyle::Blocks));
-        assert_eq!(BorderStyle::parse_name("block"), Some(BorderStyle::Blocks));
+        assert_eq!(BaseStyle::parse_name("blocks"), Some(BaseStyle::Blocks));
+        assert_eq!(BaseStyle::parse_name("block"), Some(BaseStyle::Blocks));
     }
-    
+
     #[test]
     fn test_legacy_compatibility() {
         // Test that legacy names still work
         let style = CompositeStyle::parse("box:rounded");
-        assert_eq!(style.corner, Some(BorderStyle::Rounded));
-        assert_eq!(style.border, Some(BorderStyle::Rounded));
-        
-        let style = CompositeStyle::parse("box_corner:dots,box_line:heavy,line:double,back_edge:ascii");
-        assert_eq!(style.corner, Some(BorderStyle::Dots));
-        assert_eq!(style.border, Some(BorderStyle::Heavy));
-        assert_eq!(style.edge, Some(BorderStyle::Double));
-        assert_eq!(style.back, Some(BorderStyle::Ascii));
+        assert_eq!(style.corner, Some(BaseStyle::Rounded));
+        assert_eq!(style.border, Some(BaseStyle::Rounded));
+
+        let style =
+            CompositeStyle::parse("box_corner:dots,box_line:heavy,line:double,back_edge:ascii");
+        assert_eq!(style.corner, Some(BaseStyle::Dots));
+        assert_eq!(style.border, Some(BaseStyle::Heavy));
+        assert_eq!(style.edge, Some(BaseStyle::Double));
+        assert_eq!(style.back, Some(BaseStyle::Ascii));
     }
 }

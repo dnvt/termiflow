@@ -167,3 +167,31 @@ fn golden_labeled_edges_ascii() {
         "Output mismatch for labeled_edges.md (ASCII)"
     );
 }
+
+// ============================================================================
+// Node Shapes Golden Tests
+// ============================================================================
+
+#[test]
+fn golden_shapes_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/shapes.md",
+    ]);
+    let expected = include_str!("fixtures/expected/shapes.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for shapes.md (Unicode)");
+}
+
+#[test]
+fn golden_shapes_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/shapes.md",
+    ]);
+    let expected = include_str!("fixtures/expected/shapes.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for shapes.md (ASCII)");
+}

@@ -114,14 +114,14 @@ fn load_file_config() -> Option<FileConfig> {
     match toml::from_str::<toml::Value>(&contents) {
         Ok(value) => {
             let style_str = value.get("style").and_then(|v| v.as_str());
-            
+
             // Parse composite style
             let composite_style = if let Some(s) = style_str {
                 CompositeStyle::parse(s)
             } else {
                 CompositeStyle::default()
             };
-            
+
             let max_label_width = value.get("max_label_width").and_then(|v| v.as_integer());
             Some(FileConfig {
                 max_label_width: max_label_width.map(|n| n as usize),
@@ -129,11 +129,7 @@ fn load_file_config() -> Option<FileConfig> {
             })
         }
         Err(e) => {
-            eprintln!(
-                "termiflow: warning: {}: {}",
-                path.display(),
-                e
-            );
+            eprintln!("termiflow: warning: {}: {}", path.display(), e);
             None
         }
     }

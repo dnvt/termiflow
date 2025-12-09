@@ -10,23 +10,45 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
-use crate::graph::{Direction, Edge, Graph, Node};
+use crate::graph::{Direction, Edge, Graph, Node, NodeShape};
 
 lazy_static! {
     // SPEC §1.1: Supported syntax patterns
     static ref RE_DIRECTION: Regex = Regex::new(r"graph\s+(TD|LR|TB|BT)").unwrap();
-    static ref RE_NODE: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[([^\[\]]*)\]").unwrap();
+
+    // Node shape regexes - order matters! More specific patterns first
+    // Database: ID[(label)]
     static ref RE_NODE_DB: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[\(([^\)]*)\)\]").unwrap();
-    // Edge regex - handles optional [Label] after node IDs: A[Label] --> B[Label]
-    // Also captures optional edge labels: A -->|label| B or A -- label --> B
-    static ref RE_EDGE: Regex = Regex::new(r"([a-zA-Z0-9_]+)(?:\[[^\]]*\])?\s*--+>\s*([a-zA-Z0-9_]+)").unwrap();
-    // Edge with pipe-style label: A -->|label| B or A[Label] -->|label| B[Label]
+    // Subroutine: ID[[label]]
+    static ref RE_NODE_SUBROUTINE: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[\[([^\]]*)\]\]").unwrap();
+    // Stadium: ID([label])
+    static ref RE_NODE_STADIUM: Regex = Regex::new(r"([a-zA-Z0-9_]+)\(\[([^\]]*)\]\)").unwrap();
+    // Circle: ID((label))
+    static ref RE_NODE_CIRCLE: Regex = Regex::new(r"([a-zA-Z0-9_]+)\(\(([^\)]*)\)\)").unwrap();
+    // Hexagon: ID{{label}}
+    static ref RE_NODE_HEXAGON: Regex = Regex::new(r"([a-zA-Z0-9_]+)\{\{([^\}]*)\}\}").unwrap();
+    // Diamond: ID{label}
+    static ref RE_NODE_DIAMOND: Regex = Regex::new(r"([a-zA-Z0-9_]+)\{([^\}]*)\}").unwrap();
+    // Rounded: ID(label)
+    static ref RE_NODE_ROUNDED: Regex = Regex::new(r"([a-zA-Z0-9_]+)\(([^\(\)]*)\)").unwrap();
+    // Asymmetric/Flag: ID>label]
+    static ref RE_NODE_ASYMMETRIC: Regex = Regex::new(r"([a-zA-Z0-9_]+)>([^\]]*)\]").unwrap();
+    // Parallelogram: ID[/label/]
+    static ref RE_NODE_PARALLELOGRAM: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[/([^/]*)(/|\\)\]").unwrap();
+    // Trapezoid: ID[/label\] or ID[\label/]
+    static ref RE_NODE_TRAPEZOID: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[(/|\\)([^/\\]*)(\\|/)\]").unwrap();
+    // Rectangle: ID[label] - default, must be last
+    static ref RE_NODE: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[([^\[\]]*)\]").unwrap();
+
+    // Edge regex - handles optional shape syntax after node IDs
+    static ref RE_EDGE: Regex = Regex::new(r"([a-zA-Z0-9_]+)(?:\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\}|>[^\]]*\])?\s*--+>\s*([a-zA-Z0-9_]+)").unwrap();
+    // Edge with pipe-style label: A -->|label| B
     static ref RE_EDGE_WITH_LABEL: Regex = Regex::new(
-        r"([a-zA-Z0-9_]+)(?:\[[^\]]*\])?\s*--+>\s*\|([^|]+)\|\s*([a-zA-Z0-9_]+)"
+        r"([a-zA-Z0-9_]+)(?:\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\}|>[^\]]*\])?\s*--+>\s*\|([^|]+)\|\s*([a-zA-Z0-9_]+)"
     ).unwrap();
     // Edge with text-style label: A -- label --> B
     static ref RE_EDGE_TEXT_LABEL: Regex = Regex::new(
-        r"([a-zA-Z0-9_]+)(?:\[[^\]]*\])?\s*--\s+([^-]+?)\s+--+>\s*([a-zA-Z0-9_]+)"
+        r"([a-zA-Z0-9_]+)(?:\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\}|>[^\]]*\])?\s*--\s+([^-]+?)\s+--+>\s*([a-zA-Z0-9_]+)"
     ).unwrap();
     static ref RE_CLICK: Regex = Regex::new(r#"click\s+(\w+)\s+["']([^"']+)["']"#).unwrap();
     static ref RE_CONFIG: Regex = Regex::new(r"%%\s*termiflow:\s*(\w+)=([^\s]+)").unwrap();
@@ -41,8 +63,6 @@ lazy_static! {
     static ref RE_SUBGRAPH: Regex = Regex::new(r"^\s*subgraph\s").unwrap();
     static ref RE_STYLE: Regex = Regex::new(r"^\s*style\s+\w+").unwrap();
     static ref RE_CLASSDEF: Regex = Regex::new(r"^\s*classDef\s").unwrap();
-    static ref RE_DIAMOND: Regex = Regex::new(r"\w+\{[^}]*\}").unwrap();
-    static ref RE_CIRCLE: Regex = Regex::new(r"\w+\(\([^)]*\)\)").unwrap();
 }
 
 /// Configuration parsed from in-file directives
@@ -72,6 +92,37 @@ fn first_meaningful_line<'a>(lines: &[&'a str]) -> Option<(usize, &'a str)> {
         return Some((i, trimmed));
     }
     None
+}
+
+/// Collect node definitions matching a specific shape regex.
+///
+/// Extracts node IDs and labels from regex captures, avoiding duplicates.
+/// First shape to match a node ID wins (order of calls matters).
+#[allow(clippy::too_many_arguments)]
+fn collect_shape_nodes(
+    trimmed: &str,
+    regex: &Regex,
+    shape: NodeShape,
+    node_labels: &mut HashMap<String, String>,
+    node_shapes: &mut HashMap<String, NodeShape>,
+    known_ids: &mut HashSet<String>,
+    ordered_ids: &mut Vec<String>,
+    node_first_ref: &mut HashMap<String, usize>,
+    line_num: usize,
+) {
+    for caps in regex.captures_iter(trimmed) {
+        let id = caps[1].to_string();
+        let label = caps[2].to_string();
+        // Don't overwrite if already defined (earlier shapes have priority)
+        if !node_labels.contains_key(&id) {
+            if known_ids.insert(id.clone()) {
+                ordered_ids.push(id.clone());
+            }
+            node_labels.insert(id.clone(), label);
+            node_shapes.insert(id.clone(), shape);
+        }
+        node_first_ref.entry(id).or_insert(line_num);
+    }
 }
 
 /// Parse Mermaid content into a Graph
@@ -181,6 +232,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     let mut ordered_ids: Vec<String> = Vec::new();
     let mut known_ids: HashSet<String> = HashSet::new();
     let mut node_labels: HashMap<String, String> = HashMap::new();
+    let mut node_shapes: HashMap<String, NodeShape> = HashMap::new();
     let mut node_first_ref: HashMap<String, usize> = HashMap::new();
 
     for (i, line) in lines.iter().enumerate() {
@@ -215,37 +267,41 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             continue;
         }
 
-        // Collect node definitions: A[Label] or A[(Database)]
-        for caps in RE_NODE_DB.captures_iter(trimmed) {
-            let id = caps[1].to_string();
-            let label = caps[2].to_string();
-            if known_ids.insert(id.clone()) {
-                ordered_ids.push(id.clone());
-            }
-            node_labels.insert(id.clone(), label);
-            node_first_ref.entry(id).or_insert(i + 1);
+        // Collect node definitions with shapes - order matters! More specific first
+        // Shape regexes ordered from most specific to least (Rectangle must be last)
+        let shape_patterns: &[(&Regex, NodeShape)] = &[
+            (&RE_NODE_DB, NodeShape::Database),           // ID[(label)]
+            (&RE_NODE_SUBROUTINE, NodeShape::Subroutine), // ID[[label]]
+            (&RE_NODE_STADIUM, NodeShape::Stadium),       // ID([label])
+            (&RE_NODE_CIRCLE, NodeShape::Circle),         // ID((label))
+            (&RE_NODE_HEXAGON, NodeShape::Hexagon),       // ID{{label}}
+            (&RE_NODE_DIAMOND, NodeShape::Diamond),       // ID{label}
+            (&RE_NODE_ROUNDED, NodeShape::Rounded),       // ID(label)
+            (&RE_NODE_ASYMMETRIC, NodeShape::Asymmetric), // ID>label]
+            (&RE_NODE, NodeShape::Rectangle),             // ID[label] - default, must be last
+        ];
+
+        for (regex, shape) in shape_patterns {
+            collect_shape_nodes(
+                trimmed,
+                regex,
+                *shape,
+                &mut node_labels,
+                &mut node_shapes,
+                &mut known_ids,
+                &mut ordered_ids,
+                &mut node_first_ref,
+                i + 1,
+            );
         }
 
-        for caps in RE_NODE.captures_iter(trimmed) {
-            let id = caps[1].to_string();
-            let label = caps[2].to_string();
-            // Don't overwrite if already defined (db nodes have priority)
-            if !node_labels.contains_key(&id) {
-                if known_ids.insert(id.clone()) {
-                    ordered_ids.push(id.clone());
-                }
-                node_labels.insert(id.clone(), label);
-            }
-            node_first_ref.entry(id).or_insert(i + 1);
-        }
+        // Note: labeled edges are parsed below and labels are preserved
 
-        // Collect edge endpoints (handle chains like A --> B --> C)
-        // Also handles labeled edges: A -->|label| B
+        // Collect edge endpoints (handle chains like A --> B --> C), including labeled variants
         let mut start_pos = 0;
         while start_pos < trimmed.len() {
             let remaining = &trimmed[start_pos..];
 
-            // Try pipe-style label first: A -->|label| B
             if let Some(caps) = RE_EDGE_WITH_LABEL.captures(remaining) {
                 let from = caps[1].to_string();
                 let to = caps[3].to_string();
@@ -257,11 +313,10 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 }
                 node_first_ref.entry(from).or_insert(i + 1);
                 node_first_ref.entry(to).or_insert(i + 1);
-                start_pos += caps.get(3).unwrap().start();
+                start_pos += caps.get(3).unwrap().start(); // Advance to 'to' node for chain parsing
                 continue;
             }
 
-            // Try text-style label: A -- label --> B
             if let Some(caps) = RE_EDGE_TEXT_LABEL.captures(remaining) {
                 let from = caps[1].to_string();
                 let to = caps[3].to_string();
@@ -273,11 +328,10 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 }
                 node_first_ref.entry(from).or_insert(i + 1);
                 node_first_ref.entry(to).or_insert(i + 1);
-                start_pos += caps.get(3).unwrap().start();
+                start_pos += caps.get(3).unwrap().start(); // Advance to 'to' node for chain parsing
                 continue;
             }
 
-            // Fall back to unlabeled edge
             if let Some(caps) = RE_EDGE.captures(remaining) {
                 let from = caps[1].to_string();
                 let to = caps[2].to_string();
@@ -289,7 +343,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 }
                 node_first_ref.entry(from).or_insert(i + 1);
                 node_first_ref.entry(to).or_insert(i + 1);
-                start_pos += caps.get(2).unwrap().start();
+                start_pos += caps.get(2).unwrap().start(); // Advance to 'to' node for chain parsing
                 continue;
             }
 
@@ -322,13 +376,12 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             click_targets.insert(id, target);
         }
 
-        // Collect edges (handle chains like A --> B --> C)
-        // Try labeled edges first, then fall back to unlabeled
+        // Collect edges (handle chains like A --> B --> C), preserving labels
         let mut start_pos = 0;
         while start_pos < trimmed.len() {
             let remaining = &trimmed[start_pos..];
 
-            // Try pipe-style label first: A -->|label| B
+            // Try labeled edges first (pipe style: -->|label|)
             if let Some(caps) = RE_EDGE_WITH_LABEL.captures(remaining) {
                 let from = caps[1].to_string();
                 let label = caps[2].trim().to_string();
@@ -343,7 +396,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 continue;
             }
 
-            // Try text-style label: A -- label --> B
+            // Try text-style labels (-- label -->)
             if let Some(caps) = RE_EDGE_TEXT_LABEL.captures(remaining) {
                 let from = caps[1].to_string();
                 let label = caps[2].trim().to_string();
@@ -358,7 +411,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 continue;
             }
 
-            // Fall back to unlabeled edge
+            // Try unlabeled edges
             if let Some(caps) = RE_EDGE.captures(remaining) {
                 let from = caps[1].to_string();
                 let to = caps[2].to_string();
@@ -391,9 +444,13 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             id.clone()
         };
 
+        // Get shape from detected shapes, default to Rectangle for undefined nodes
+        let shape = node_shapes.get(id).copied().unwrap_or(NodeShape::Rectangle);
+
         graph.nodes.push(Node {
             id: id.clone(),
             label,
+            shape,
             click_target: click_targets.get(id).cloned(),
             x: 0,
             y: 0,
@@ -432,7 +489,11 @@ fn parse_config_directive(caps: &regex::Captures, config: &mut ParseConfig) {
 /// Check for unsupported Mermaid syntax (SPEC §1.2)
 /// Returns warning message if unsupported syntax found
 fn check_unsupported_syntax(line: &str, line_num: usize) -> Option<String> {
-    if RE_NESTED_BRACKET.is_match(line) {
+    // Check for nested brackets, but allow subroutine [[label]] and database [(label)]
+    if RE_NESTED_BRACKET.is_match(line)
+        && !RE_NODE_SUBROUTINE.is_match(line)
+        && !RE_NODE_DB.is_match(line)
+    {
         return Some(format!(
             "termiflow: warning: line {}: Nested brackets not supported in node labels",
             line_num
@@ -467,20 +528,6 @@ fn check_unsupported_syntax(line: &str, line_num: usize) -> Option<String> {
         ));
     }
 
-    if RE_DIAMOND.is_match(line) && !RE_NODE.is_match(line) {
-        return Some(format!(
-            "termiflow: warning: line {}: Only rectangular nodes [Label] supported in v1",
-            line_num
-        ));
-    }
-
-    if RE_CIRCLE.is_match(line) {
-        return Some(format!(
-            "termiflow: warning: line {}: Only rectangular nodes [Label] supported in v1",
-            line_num
-        ));
-    }
-
     None
 }
 
@@ -499,8 +546,28 @@ fn check_malformed(line: &str, line_num: usize) -> Option<String> {
         ));
     }
 
-    // Node-like brackets but not a valid node pattern
-    if line.contains('[') && !RE_NODE.is_match(line) && !RE_NODE_DB.is_match(line) {
+    // Node-like brackets/braces/parens but not a valid node pattern
+    // Check all shape patterns
+    let has_node_delimiter =
+        line.contains('[') || line.contains('{') || line.contains('(') || line.contains('>');
+    let matches_any_shape = RE_NODE_DB.is_match(line)
+        || RE_NODE_SUBROUTINE.is_match(line)
+        || RE_NODE_STADIUM.is_match(line)
+        || RE_NODE_CIRCLE.is_match(line)
+        || RE_NODE_HEXAGON.is_match(line)
+        || RE_NODE_DIAMOND.is_match(line)
+        || RE_NODE_ROUNDED.is_match(line)
+        || RE_NODE_ASYMMETRIC.is_match(line)
+        || RE_NODE_PARALLELOGRAM.is_match(line)
+        || RE_NODE_TRAPEZOID.is_match(line)
+        || RE_NODE.is_match(line);
+
+    if has_node_delimiter
+        && !matches_any_shape
+        && !RE_EDGE.is_match(line)
+        && !RE_EDGE_WITH_LABEL.is_match(line)
+        && !RE_EDGE_TEXT_LABEL.is_match(line)
+    {
         return Some(format!(
             "termiflow: warning: line {}: Malformed node '{}'",
             line_num, line
@@ -751,7 +818,7 @@ click A "gateway.md""#;
 
     #[test]
     fn test_edge_label_pipe_style() {
-        // Test pipe-style edge labels: A -->|label| B
+        // Pipe-style edge labels should be parsed and preserved
         let input = "graph TD\nA[Start] -->|validate| B[Process]";
         let result = parse(input, false).unwrap();
         assert_eq!(result.graph.edges.len(), 1);
@@ -762,7 +829,7 @@ click A "gateway.md""#;
 
     #[test]
     fn test_edge_label_text_style() {
-        // Test text-style edge labels: A -- label --> B
+        // Text-style edge labels should be parsed and preserved
         let input = "graph TD\nA[Start] -- process --> B[End]";
         let result = parse(input, false).unwrap();
         assert_eq!(result.graph.edges.len(), 1);
@@ -773,7 +840,7 @@ click A "gateway.md""#;
 
     #[test]
     fn test_edge_label_multiple() {
-        // Test multiple labeled edges
+        // Multiple labeled edges should preserve all labels
         let input = "graph TD\nA[Start] -->|yes| B[Success]\nA -->|no| C[Retry]";
         let result = parse(input, false).unwrap();
         assert_eq!(result.graph.edges.len(), 2);
@@ -783,11 +850,15 @@ click A "gateway.md""#;
 
     #[test]
     fn test_edge_label_mixed_with_unlabeled() {
-        // Test mix of labeled and unlabeled edges
+        // Both labeled and unlabeled edges should be parsed
         let input = "graph TD\nA --> B\nB -->|done| C";
         let result = parse(input, false).unwrap();
         assert_eq!(result.graph.edges.len(), 2);
-        assert_eq!(result.graph.edges[0].label, None);
+        assert_eq!(result.graph.edges[0].from, "A");
+        assert_eq!(result.graph.edges[0].to, "B");
+        assert!(result.graph.edges[0].label.is_none()); // Unlabeled
+        assert_eq!(result.graph.edges[1].from, "B");
+        assert_eq!(result.graph.edges[1].to, "C");
         assert_eq!(result.graph.edges[1].label, Some("done".to_string()));
     }
 
@@ -853,5 +924,115 @@ click A "gateway.md""#;
         assert_eq!(result.graph.edges.len(), 2);
         let c_node = result.graph.nodes.iter().find(|n| n.id == "C").unwrap();
         assert_eq!(c_node.label, "Output");
+    }
+
+    // === NODE SHAPE TESTS ===
+
+    #[test]
+    fn test_node_shape_rectangle() {
+        let result = parse("graph TD\nA[Rectangle]", false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Rectangle);
+        assert_eq!(result.graph.nodes[0].label, "Rectangle");
+    }
+
+    #[test]
+    fn test_node_shape_rounded() {
+        let result = parse("graph TD\nA(Rounded)", false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Rounded);
+        assert_eq!(result.graph.nodes[0].label, "Rounded");
+    }
+
+    #[test]
+    fn test_node_shape_diamond() {
+        let result = parse("graph TD\nA{Decision}", false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Diamond);
+        assert_eq!(result.graph.nodes[0].label, "Decision");
+    }
+
+    #[test]
+    fn test_node_shape_circle() {
+        let result = parse("graph TD\nA((Circle))", false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Circle);
+        assert_eq!(result.graph.nodes[0].label, "Circle");
+    }
+
+    #[test]
+    fn test_node_shape_stadium() {
+        let result = parse("graph TD\nA([Stadium])", false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Stadium);
+        assert_eq!(result.graph.nodes[0].label, "Stadium");
+    }
+
+    #[test]
+    fn test_node_shape_hexagon() {
+        let result = parse("graph TD\nA{{Hexagon}}", false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Hexagon);
+        assert_eq!(result.graph.nodes[0].label, "Hexagon");
+    }
+
+    #[test]
+    fn test_node_shape_database() {
+        let result = parse("graph TD\nDB[(Database)]", false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Database);
+        assert_eq!(result.graph.nodes[0].label, "Database");
+    }
+
+    #[test]
+    fn test_node_shape_subroutine() {
+        let result = parse("graph TD\nA[[Subroutine]]", false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Subroutine);
+        assert_eq!(result.graph.nodes[0].label, "Subroutine");
+    }
+
+    #[test]
+    fn test_node_shape_asymmetric() {
+        let result = parse("graph TD\nA>Flag]", false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Asymmetric);
+        assert_eq!(result.graph.nodes[0].label, "Flag");
+    }
+
+    #[test]
+    fn test_node_shapes_mixed() {
+        let input = "graph TD\nA[Rectangle]\nB(Rounded)\nC{Diamond}\nD[(Database)]";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.nodes.len(), 4);
+
+        let a = result.graph.nodes.iter().find(|n| n.id == "A").unwrap();
+        assert_eq!(a.shape, NodeShape::Rectangle);
+
+        let b = result.graph.nodes.iter().find(|n| n.id == "B").unwrap();
+        assert_eq!(b.shape, NodeShape::Rounded);
+
+        let c = result.graph.nodes.iter().find(|n| n.id == "C").unwrap();
+        assert_eq!(c.shape, NodeShape::Diamond);
+
+        let d = result.graph.nodes.iter().find(|n| n.id == "D").unwrap();
+        assert_eq!(d.shape, NodeShape::Database);
+    }
+
+    #[test]
+    fn test_node_shapes_with_edges() {
+        let input = "graph TD\nA{Decision} --> B((Success))\nA --> C[Failure]";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.nodes.len(), 3);
+        assert_eq!(result.graph.edges.len(), 2);
+
+        let a = result.graph.nodes.iter().find(|n| n.id == "A").unwrap();
+        assert_eq!(a.shape, NodeShape::Diamond);
+
+        let b = result.graph.nodes.iter().find(|n| n.id == "B").unwrap();
+        assert_eq!(b.shape, NodeShape::Circle);
+
+        let c = result.graph.nodes.iter().find(|n| n.id == "C").unwrap();
+        assert_eq!(c.shape, NodeShape::Rectangle);
+    }
+
+    #[test]
+    fn test_undefined_node_default_rectangle() {
+        // Undefined nodes (from edges) should default to Rectangle
+        let input = "graph TD\nA --> B";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.nodes[0].shape, NodeShape::Rectangle);
+        assert_eq!(result.graph.nodes[1].shape, NodeShape::Rectangle);
     }
 }

@@ -40,10 +40,7 @@ pub fn route_expanded_edge(
     let junction_y = stem_start_y + EDGE_STEM_HEIGHT;
 
     // Get destination centers, sorted left to right
-    let mut dest_centers: Vec<usize> = visible_targets
-        .iter()
-        .map(|n| center_x(n))
-        .collect();
+    let mut dest_centers: Vec<usize> = visible_targets.iter().map(|n| center_x(n)).collect();
     dest_centers.sort();
 
     // Single target: draw stem, optional horizontal, then arrow
@@ -307,47 +304,44 @@ fn corner_char(from_x: usize, to_x: usize, is_source: bool, s: &StyleChars) -> c
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::canvas::Canvas;
-    use crate::style::BorderStyle;
+    use super::*;
+    use crate::style::{BaseStyle, CompositeStyle};
+
+    fn make_node(id: &str, x: usize, y: usize, width: usize) -> Node {
+        Node {
+            id: id.into(),
+            label: id.into(),
+            shape: crate::graph::NodeShape::Rectangle,
+            click_target: None,
+            x,
+            y,
+            width,
+            rank: 0,
+        }
+    }
+
+    fn unicode_chars() -> StyleChars {
+        CompositeStyle::default().to_style_chars(BaseStyle::Unicode)
+    }
+
+    // ==========================================================================
+    // Expanded Edge Routing Tests
+    // ==========================================================================
 
     #[test]
     fn expanded_edge_connects_when_targets_on_one_side() {
-        let chars = BorderStyle::Unicode.chars();
+        let chars = unicode_chars();
         let mut canvas = Canvas::new(80, 40);
 
-        let src = Node {
-            id: "S".into(),
-            label: "S".into(),
-            click_target: None,
-            x: 2,
-            y: 2,
-            width: 7,
-            rank: 0,
-        };
-        let t1 = Node {
-            id: "T1".into(),
-            label: "T1".into(),
-            click_target: None,
-            x: 30,
-            y: 12,
-            width: 7,
-            rank: 1,
-        };
-        let t2 = Node {
-            id: "T2".into(),
-            label: "T2".into(),
-            click_target: None,
-            x: 40,
-            y: 12,
-            width: 7,
-            rank: 1,
-        };
+        let src = make_node("S", 2, 2, 7);
+        let t1 = make_node("T1", 30, 12, 7);
+        let t2 = make_node("T2", 40, 12, 7);
 
         let stem_start_y = src.y + BOX_HEIGHT;
         let junction_y = stem_start_y + EDGE_STEM_HEIGHT;
 
-        route_expanded_edge(&src, &[&t1, &t2], &mut canvas, chars);
+        route_expanded_edge(&src, &[&t1, &t2], &mut canvas, &chars);
 
         // Junction row must include the source center so the stem connects
         let stem_x = center_x(&src);
@@ -356,5 +350,189 @@ mod tests {
             chars.junction_up,
             "expected stem to connect into junction span"
         );
+    }
+
+    #[test]
+    fn expanded_edge_single_target_aligned() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(80, 40);
+
+        // Source and target aligned vertically
+        let src = make_node("S", 10, 2, 7);
+        let target = make_node("T", 10, 12, 7);
+
+        route_expanded_edge(&src, &[&target], &mut canvas, &chars);
+
+        // Arrow should be right above target box
+        let arrow_y = target.y.saturating_sub(1);
+        let edge_x = center_x(&target);
+        assert_eq!(canvas.get(edge_x, arrow_y), chars.arrow_down);
+
+        // Vertical line should connect source to arrow
+        let stem_start_y = src.y + BOX_HEIGHT;
+        assert_eq!(canvas.get(edge_x, stem_start_y), chars.edge_v);
+    }
+
+    #[test]
+    fn expanded_edge_single_target_offset() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(80, 40);
+
+        // Source and target NOT aligned (L-shaped routing)
+        let src = make_node("S", 5, 2, 7);
+        let target = make_node("T", 30, 12, 7);
+
+        route_expanded_edge(&src, &[&target], &mut canvas, &chars);
+
+        // Arrow should be right above target box
+        let arrow_y = target.y.saturating_sub(1);
+        let target_x = center_x(&target);
+        assert_eq!(canvas.get(target_x, arrow_y), chars.arrow_down);
+
+        // Junction should have corner characters
+        let junction_y = src.y + BOX_HEIGHT + EDGE_STEM_HEIGHT;
+        let src_x = center_x(&src);
+
+        // Source corner (going right)
+        assert_eq!(canvas.get(src_x, junction_y), chars.corner_ul);
+        // Target corner (coming from left)
+        assert_eq!(canvas.get(target_x, junction_y), chars.corner_dr);
+    }
+
+    #[test]
+    fn expanded_edge_empty_targets_is_noop() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(80, 40);
+        let src = make_node("S", 10, 2, 7);
+
+        route_expanded_edge(&src, &[], &mut canvas, &chars);
+
+        // Canvas should still be empty (only spaces)
+        assert_eq!(canvas.get(center_x(&src), src.y + BOX_HEIGHT), ' ');
+    }
+
+    // ==========================================================================
+    // Back-Edge Routing Tests
+    // ==========================================================================
+
+    #[test]
+    fn back_edge_routes_through_gutter() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(80, 40);
+
+        let src = make_node("S", 10, 15, 7);
+        let target = make_node("T", 10, 2, 7); // Target is ABOVE source (back-edge)
+
+        route_back_edge(&src, &target, &mut canvas, &chars);
+
+        // Back-edge uses right gutter
+        let gutter_x = canvas.width - 2;
+
+        // Vertical line should exist in gutter
+        let src_mid_y = src.y + BOX_HEIGHT / 2;
+        let target_mid_y = target.y + BOX_HEIGHT / 2;
+        assert_eq!(canvas.get(gutter_x, src_mid_y), chars.back_v);
+        assert_eq!(canvas.get(gutter_x, target_mid_y), chars.back_v);
+
+        // Arrow should point into target
+        assert_eq!(
+            canvas.get(target.x + target.width, target_mid_y),
+            chars.arrow_left
+        );
+    }
+
+    #[test]
+    fn back_edge_invisible_nodes_is_noop() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(20, 20); // Small canvas
+
+        // Nodes outside canvas bounds
+        let src = make_node("S", 100, 100, 7);
+        let target = make_node("T", 100, 50, 7);
+
+        route_back_edge(&src, &target, &mut canvas, &chars);
+
+        // Nothing should be drawn (gutter would be at x=18)
+        assert_eq!(canvas.get(18, 10), ' ');
+    }
+
+    // ==========================================================================
+    // Helper Function Tests
+    // ==========================================================================
+
+    #[test]
+    fn center_x_calculates_correctly() {
+        // Odd width: (7-1)/2 = 3, so center is at x+3
+        let node_odd = make_node("A", 10, 0, 7);
+        assert_eq!(center_x(&node_odd), 13); // 10 + 3
+
+        // Even width: (8-1)/2 = 3, so center is at x+3
+        let node_even = make_node("B", 10, 0, 8);
+        assert_eq!(center_x(&node_even), 13); // 10 + 3
+
+        // Width 1: (1-1)/2 = 0, center is at x
+        let node_min = make_node("C", 10, 0, 1);
+        assert_eq!(center_x(&node_min), 10);
+    }
+
+    #[test]
+    fn corner_char_selects_correct_direction() {
+        let s = unicode_chars();
+
+        // Source going right: └
+        assert_eq!(corner_char(5, 10, true, &s), s.corner_ul);
+        // Source going left: ┘
+        assert_eq!(corner_char(10, 5, true, &s), s.corner_ur);
+        // Target from left: ┐
+        assert_eq!(corner_char(10, 5, false, &s), s.corner_dr);
+        // Target from right: ┌
+        assert_eq!(corner_char(5, 10, false, &s), s.corner_dl);
+    }
+
+    // ==========================================================================
+    // Route Edge Tests (L-shaped routing)
+    // ==========================================================================
+
+    #[test]
+    fn route_edge_straight_vertical() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(80, 40);
+
+        let src = make_node("S", 10, 2, 7);
+        let target = make_node("T", 10, 12, 7);
+        let all_nodes = [&src, &target];
+
+        route_edge(&src, &target, 0, &mut canvas, &chars, &all_nodes);
+
+        // Arrow at target
+        let arrow_y = target.y.saturating_sub(1);
+        let edge_x = center_x(&target);
+        assert_eq!(canvas.get(edge_x, arrow_y), chars.arrow_down);
+
+        // Vertical line connecting
+        let start_y = src.y + BOX_HEIGHT;
+        assert_eq!(canvas.get(edge_x, start_y), chars.edge_v);
+    }
+
+    #[test]
+    fn route_edge_l_shaped_horizontal_then_vertical() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(80, 40);
+
+        let src = make_node("S", 5, 2, 7);
+        let target = make_node("T", 30, 12, 7);
+        let all_nodes = [&src, &target];
+
+        route_edge(&src, &target, 0, &mut canvas, &chars, &all_nodes);
+
+        // Arrow at target
+        let arrow_y = target.y.saturating_sub(1);
+        let target_x = center_x(&target);
+        assert_eq!(canvas.get(target_x, arrow_y), chars.arrow_down);
+
+        // Source should have vertical stem
+        let src_x = center_x(&src);
+        let start_y = src.y + BOX_HEIGHT;
+        assert_eq!(canvas.get(src_x, start_y), chars.edge_v);
     }
 }
