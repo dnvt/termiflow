@@ -134,6 +134,70 @@ fn golden_chain_ascii() {
     assert_eq!(stdout, expected, "Output mismatch for chain.md (ASCII)");
 }
 
+#[test]
+fn golden_database_nodes_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/database_nodes.md",
+    ]);
+    let expected = include_str!("fixtures/expected/database_nodes.ascii.txt");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for database_nodes.md (ASCII)"
+    );
+}
+
+#[test]
+fn golden_forward_ref_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/forward_ref.md",
+    ]);
+    let expected = include_str!("fixtures/expected/forward_ref.ascii.txt");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for forward_ref.md (ASCII)"
+    );
+}
+
+#[test]
+fn golden_with_config_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/with_config.md",
+    ]);
+    let expected = include_str!("fixtures/expected/with_config.ascii.txt");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for with_config.md (ASCII)"
+    );
+}
+
+#[test]
+fn golden_unsupported_ascii() {
+    let (stdout, stderr) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/unsupported.md",
+    ]);
+    let expected = include_str!("fixtures/expected/unsupported.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for unsupported.md (ASCII)");
+
+    // Should still emit warning about unsupported subgraph syntax
+    assert!(
+        stderr.contains("Subgraphs not supported"),
+        "Expected warning about unsupported subgraph in stderr, got: {}",
+        stderr
+    );
+}
+
 // ============================================================================
 // Edge Labels Golden Tests
 // ============================================================================
