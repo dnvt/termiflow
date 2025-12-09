@@ -14,7 +14,7 @@ use crate::graph::{Direction, Edge, Graph, Node, NodeShape};
 
 lazy_static! {
     // SPEC §1.1: Supported syntax patterns
-    static ref RE_DIRECTION: Regex = Regex::new(r"graph\s+(TD|LR|TB|BT)").unwrap();
+    static ref RE_DIRECTION: Regex = Regex::new(r"graph\s+(TD|LR|RL|TB|BT)").unwrap();
 
     // Node shape regexes - order matters! More specific patterns first
     // Database: ID[(label)]
@@ -199,6 +199,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 graph.direction = match &caps[1] {
                     "TD" | "TB" => Direction::TD,
                     "LR" => Direction::LR,
+                    "RL" => Direction::RL,
                     "BT" => Direction::BT,
                     _ => Direction::TD,
                 };
