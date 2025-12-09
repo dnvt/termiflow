@@ -9,11 +9,83 @@
 use crate::graph::Node;
 use crate::style::{StyleChars, BOX_HEIGHT, EDGE_STEM_HEIGHT, EDGE_STEM_WIDTH_LR, RIGHT_GUTTER};
 
-use super::canvas::{is_arrow, is_vertical, Canvas};
+use super::canvas::{is_arrow, is_vertical, is_junction, Canvas};
 
 // ============================================================================
 // Public Edge Routing
 // ============================================================================
+
+/// Route edges from multiple sources to a single target (convergence) in horizontal layout.
+///
+/// For LR diagrams when multiple nodes connect to the same target.
+/// Draws: source lines → vertical merge → horizontal line → arrow
+pub fn route_horizontal_convergence(
+    from_nodes: &[&Node],
+    to: &Node,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+) {
+    if from_nodes.is_empty() || !canvas.is_visible(to) {
+        return;
+    }
+
+    // Filter to visible sources only
+    let visible_sources: Vec<&Node> = from_nodes.iter()
+        .filter(|n| canvas.is_visible(n))
+        .copied()
+        .collect();
+    if visible_sources.is_empty() {
+        return;
+    }
+
+    let target_center_y = center_y(to);
+    let target_arrow_x = to.x.saturating_sub(1);
+    
+    // Calculate merge point (before the target)
+    let merge_x = target_arrow_x.saturating_sub(EDGE_STEM_WIDTH_LR);
+    
+    // Get source centers, sorted top to bottom
+    let mut source_centers: Vec<(usize, &Node)> = visible_sources
+        .iter()
+        .map(|n| (center_y(n), *n))
+        .collect();
+    source_centers.sort_by_key(|(y, _)| *y);
+    
+    // Calculate vertical span for merge line
+    let top_y = source_centers.first().unwrap().0.min(target_center_y);
+    let bottom_y = source_centers.last().unwrap().0.max(target_center_y);
+    
+    // Draw from each source to the merge point
+    for (src_y, source) in &source_centers {
+        let src_end_x = source.x + source.width;
+        
+        // Horizontal line from source to merge column
+        for x in src_end_x..merge_x {
+            canvas.set_edge_char(x, *src_y, style.edge_h, style);
+        }
+        
+        // Junction where source line meets merge column (┤ = line enters from left)
+        canvas.set_edge_char(merge_x, *src_y, style.junction_left, style);
+    }
+    
+    // Draw vertical merge line
+    for y in top_y..=bottom_y {
+        let c = canvas.get(merge_x, y);
+        // Don't overwrite junctions
+        if c == ' ' || (is_vertical(c, style) && !is_junction(c, style)) {
+            canvas.set_edge_char(merge_x, y, style.edge_v, style);
+        }
+    }
+    
+    // Draw horizontal line from merge to target (├ = line exits to right)
+    canvas.set_edge_char(merge_x, target_center_y, style.junction_right, style);
+    for x in (merge_x + 1)..target_arrow_x {
+        canvas.set_edge_char(x, target_center_y, style.edge_h, style);
+    }
+    
+    // Arrow into target
+    canvas.set(target_arrow_x, target_center_y, style.arrow_right);
+}
 
 /// Route edges from a single source to multiple targets using expanded layout (horizontal).
 ///
