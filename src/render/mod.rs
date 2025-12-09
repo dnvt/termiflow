@@ -34,7 +34,7 @@ use crate::style::{
     EDGE_STEM_HEIGHT, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, RIGHT_GUTTER, ROW_SPACING,
 };
 
-use edge::{route_back_edge, route_expanded_edge, route_expanded_edge_horizontal};
+use edge::{route_back_edge, route_expanded_edge, route_expanded_edge_horizontal, route_horizontal_convergence};
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
@@ -133,21 +133,66 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         }
     }
 
-    // Draw forward edges using expanded routing (grouped by source), deterministic order
-    let mut source_ids: Vec<&str> = sources_with_edges.into_iter().collect();
-    source_ids.sort();
-    for source_id in source_ids {
-        let Some(from) = graph.get_node(source_id) else {
-            continue;
-        };
-        if let Some(targets) = edges_by_source.get_mut(source_id) {
-            targets.sort_by_key(|n| (n.y, n.x, n.id.clone()));
-            let target_refs: Vec<&Node> = targets.to_vec();
-            
-            // Use horizontal routing for LR direction, vertical for others
-            match graph.direction {
-                Direction::LR => route_expanded_edge_horizontal(from, &target_refs, &mut canvas, &chars),
-                _ => route_expanded_edge(from, &target_refs, &mut canvas, &chars),
+    // For LR diagrams, we need to handle both divergence and convergence
+    if matches!(graph.direction, Direction::LR) {
+        // Group edges by target for convergence handling
+        let mut edges_by_target: HashMap<&str, Vec<&Node>> = HashMap::new();
+        for e in &graph.edges {
+            if e.is_back_edge { continue; }
+            let Some(from) = graph.get_node(&e.from) else { continue; };
+            let Some(to) = graph.get_node(&e.to) else { continue; };
+            if canvas.is_visible(from) && canvas.is_visible(to) {
+                edges_by_target.entry(&e.to).or_default().push(from);
+            }
+        }
+        
+        // Process edges: prioritize convergence (multiple sources to one target)
+        let mut processed_edges: HashSet<(&str, &str)> = HashSet::new();
+        
+        // First, handle convergence cases (multiple sources → one target)
+        for (target_id, sources) in &edges_by_target {
+            if sources.len() > 1 {
+                let Some(target) = graph.get_node(target_id) else { continue; };
+                let mut source_refs: Vec<&Node> = sources.clone();
+                source_refs.sort_by_key(|n| (n.y, n.x, n.id.clone()));
+                route_horizontal_convergence(&source_refs, target, &mut canvas, &chars);
+                for source in sources {
+                    processed_edges.insert((&source.id, target_id));
+                }
+            }
+        }
+        
+        // Then, handle remaining divergence cases (one source → multiple targets)
+        let mut source_ids: Vec<&str> = sources_with_edges.into_iter().collect();
+        source_ids.sort();
+        for source_id in source_ids {
+            let Some(from) = graph.get_node(source_id) else { continue; };
+            if let Some(targets) = edges_by_source.get_mut(source_id) {
+                // Filter out already processed edges
+                let unprocessed: Vec<&Node> = targets.iter()
+                    .filter(|t| !processed_edges.contains(&(source_id, t.id.as_str())))
+                    .copied()
+                    .collect();
+                
+                if !unprocessed.is_empty() {
+                    let mut target_refs: Vec<&Node> = unprocessed;
+                    target_refs.sort_by_key(|n| (n.y, n.x, n.id.clone()));
+                    route_expanded_edge_horizontal(from, &target_refs, &mut canvas, &chars);
+                }
+            }
+        }
+    } else {
+        // Original vertical routing for TD/TB/BT
+        let mut source_ids: Vec<&str> = sources_with_edges.into_iter().collect();
+        source_ids.sort();
+        for source_id in source_ids {
+            let Some(from) = graph.get_node(source_id) else {
+                continue;
+            };
+            if let Some(targets) = edges_by_source.get_mut(source_id) {
+                targets.sort_by_key(|n| (n.y, n.x, n.id.clone()));
+                let target_refs: Vec<&Node> = targets.to_vec();
+                route_expanded_edge(from, &target_refs, &mut canvas, &chars);
             }
         }
     }
