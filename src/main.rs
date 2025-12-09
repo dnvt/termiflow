@@ -3,12 +3,12 @@
 //! "jq for diagrams" - visualize Mermaid flowcharts in your terminal
 
 use anyhow::Result;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
 // Use the termiflow library
-use termiflow::{parse, render_canvas, waterfall, BaseStyle, CompositeStyle, Config};
+use termiflow::{parse, render_canvas, waterfall, CompositeStyle, Config};
 
 /// Interactive TUI graph explorer - jq for diagrams
 #[derive(Parser)]
@@ -29,9 +29,10 @@ pub struct Cli {
     #[arg(short = 'f', long = "file", value_name = "FILE")]
     pub file_flag: Option<PathBuf>,
 
-    /// Border style (overrides config file and in-file directives)
-    #[arg(short, long, value_enum)]
-    pub style: Option<StyleArg>,
+    /// Border style: simple (ascii, unicode, double, rounded, heavy, dots, plus, stars, blocks)
+    /// or composite (corner:rounded,border:heavy,arrow:unicode)
+    #[arg(short, long, value_name = "STYLE")]
+    pub style: Option<String>,
 
     /// Output to stdout (no interactive TUI)
     #[arg(long)]
@@ -50,27 +51,6 @@ pub struct Cli {
     pub debug_layout: bool,
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Default)]
-pub enum StyleArg {
-    Ascii,
-    #[default]
-    Unicode,
-    Double,
-    Rounded,
-    Heavy,
-}
-
-impl From<StyleArg> for BaseStyle {
-    fn from(arg: StyleArg) -> Self {
-        match arg {
-            StyleArg::Ascii => BaseStyle::Ascii,
-            StyleArg::Unicode => BaseStyle::Unicode,
-            StyleArg::Double => BaseStyle::Double,
-            StyleArg::Rounded => BaseStyle::Rounded,
-            StyleArg::Heavy => BaseStyle::Heavy,
-        }
-    }
-}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -97,7 +77,8 @@ fn main() -> Result<()> {
     }
 
     // Check for Unicode capability (skip check if using ASCII)
-    if cli.style != Some(StyleArg::Ascii) && !supports_unicode() {
+    let is_ascii = cli.style.as_deref() == Some("ascii");
+    if !is_ascii && !supports_unicode() {
         eprintln!("termiflow: warning: Unicode may not display correctly");
         eprintln!("  Terminal: {}", std::env::var("TERM").unwrap_or_default());
         eprintln!("  Hint: Use --style ascii for maximum compatibility");
@@ -134,8 +115,8 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
         .strict(cli.strict);
 
     // Only apply style if explicitly provided on CLI
-    if let Some(style) = cli.style {
-        builder = builder.style(CompositeStyle::from_base(style.into()));
+    if let Some(ref style_str) = cli.style {
+        builder = builder.style(CompositeStyle::parse(style_str));
     }
 
     let config = builder.build(&parse_result.config);
