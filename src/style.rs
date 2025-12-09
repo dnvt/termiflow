@@ -132,6 +132,18 @@ impl BorderStyle {
 }
 
 impl CompositeStyle {
+    /// Create a CompositeStyle with all components set to the given base style
+    pub fn from_base(style: BorderStyle) -> Self {
+        Self {
+            corner: Some(style),
+            border: Some(style),
+            arrow: Some(style),
+            edge: Some(style),
+            junction: Some(style),
+            back: Some(style),
+        }
+    }
+
     /// Parse a composite style string like "box:rounded,arrow:heavy,line:double"
     pub fn parse(s: &str) -> Self {
         let mut style = CompositeStyle::default();

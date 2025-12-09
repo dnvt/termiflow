@@ -1,4 +1,4 @@
-//! Canvas rendering - 2D character grid for diagram output.
+//! Render module - 2D character grid rendering for diagrams.
 //!
 //! This module handles the final rendering phase:
 //! - Box drawing for nodes with labels
@@ -6,6 +6,12 @@
 //! - Junction/crossing detection for overlapping paths
 //!
 //! Rendering order: edges first, then boxes (so boxes overwrite edge lines).
+//!
+//! # Future Structure
+//! This module is designed to be split into submodules:
+//! - `canvas.rs` - Core Canvas struct and character classification
+//! - `edge.rs` - Edge routing algorithms
+//! - `draw.rs` - Box and primitive drawing
 
 use anyhow::Result;
 use crate::graph::{Graph, Node};

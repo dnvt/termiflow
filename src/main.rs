@@ -1,4 +1,4 @@
-//! TermiFlow - Interactive TUI graph explorer
+//! TermiFlow CLI - Interactive TUI graph explorer
 //!
 //! "jq for diagrams" - visualize Mermaid flowcharts in your terminal
 
@@ -7,15 +7,8 @@ use clap::{Parser, ValueEnum};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-mod canvas;
-mod config;
-mod graph;
-mod layout;
-mod parser;
-mod style;
-
-use config::Config;
-use style::BorderStyle;
+// Use the termiflow library
+use termiflow::{parse, waterfall, render_canvas, Config, BorderStyle};
 
 /// Interactive TUI graph explorer - jq for diagrams
 #[derive(Parser)]
@@ -133,13 +126,16 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     let input = read_input(cli)?;
 
     // Parse the Mermaid content (returns ParseResult with graph + in-file config)
-    let parse_result = parser::parse(&input, cli.strict)?;
+    let parse_result = parse(&input, cli.strict)?;
 
     // Load configuration (CLI > in-file > config file)
-    let config = Config::load(cli, &parse_result.config);
+    let config = Config::builder()
+        .max_label_width(cli.max_label)
+        .strict(cli.strict)
+        .build(&parse_result.config);
 
     // Run layout algorithm (may add warnings)
-    let graph = layout::waterfall(parse_result.graph)?;
+    let graph = waterfall(parse_result.graph)?;
 
     // Print any warnings to stderr (parser + layout)
     for warning in &graph.warnings {
@@ -164,7 +160,7 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     }
 
     // Render to canvas
-    let output = canvas::render(&graph, &config)?;
+    let output = render_canvas(&graph, &config)?;
 
     // Print to stdout
     print!("{}", output);
