@@ -28,13 +28,13 @@ pub use canvas::Canvas;
 use anyhow::Result;
 
 use crate::config::Config;
-use crate::graph::{Graph, Node, NodeShape};
+use crate::graph::{Direction, Graph, Node, NodeShape};
 use crate::style::{
     display_width, truncate_label, BaseStyle, BOX_HEIGHT, COL_SPACING, EDGE_JUNCTION_HEIGHT,
     EDGE_STEM_HEIGHT, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, RIGHT_GUTTER, ROW_SPACING,
 };
 
-use edge::{route_back_edge, route_expanded_edge};
+use edge::{route_back_edge, route_expanded_edge, route_expanded_edge_horizontal};
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
@@ -143,7 +143,12 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         if let Some(targets) = edges_by_source.get_mut(source_id) {
             targets.sort_by_key(|n| (n.y, n.x, n.id.clone()));
             let target_refs: Vec<&Node> = targets.to_vec();
-            route_expanded_edge(from, &target_refs, &mut canvas, &chars);
+            
+            // Use horizontal routing for LR direction, vertical for others
+            match graph.direction {
+                Direction::LR => route_expanded_edge_horizontal(from, &target_refs, &mut canvas, &chars),
+                _ => route_expanded_edge(from, &target_refs, &mut canvas, &chars),
+            }
         }
     }
 
