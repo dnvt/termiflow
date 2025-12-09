@@ -402,12 +402,9 @@ mod tests {
         graph.add_edge(crate::graph::Edge::new("A", "C"));
 
         let result = waterfall(graph).unwrap();
-        let root = result.get_node("A").unwrap();
-        assert!(
-            root.x >= 0,
-            "root should not be negative (got {})",
-            root.x
-        );
+        // Verify layout produces valid positions (leftmost node at reasonable position)
+        let min_x = result.nodes.iter().map(|n| n.x).min().unwrap_or(0);
+        assert_eq!(min_x, 0, "leftmost node should anchor at x=0");
         // Children should be ordered left-to-right
         assert!(
             result.get_node("C").unwrap().x >= result.get_node("B").unwrap().x,
@@ -429,10 +426,9 @@ mod tests {
         graph.add_edge(crate::graph::Edge::new("C", "D"));
 
         let result = waterfall(graph).unwrap();
-        assert!(
-            result.get_node("A").unwrap().x >= 0,
-            "root should not be negative"
-        );
+        // Verify layout anchors leftmost node at x=0
+        let min_x = result.nodes.iter().map(|n| n.x).min().unwrap_or(0);
+        assert_eq!(min_x, 0, "leftmost node should anchor at x=0");
         assert!(
             result.get_node("C").unwrap().x >= result.get_node("B").unwrap().x,
             "children should remain ordered"

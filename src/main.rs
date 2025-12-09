@@ -16,6 +16,7 @@ use termiflow::{parse, waterfall, render_canvas, Config, BorderStyle, CompositeS
 #[command(version, about, long_about = None)]
 #[command(after_help = "Examples:
   termiflow diagram.md              Interactive mode
+  termiflow -f diagram.md           File flag (jq-style)
   termiflow --print diagram.md      Output to stdout
   cat file.md | termiflow --print   Read from stdin
   termiflow -s unicode diagram.md   Use Unicode borders")]
@@ -23,6 +24,10 @@ pub struct Cli {
     /// Input Mermaid file (reads from stdin if omitted)
     #[arg(value_name = "FILE")]
     pub file: Option<PathBuf>,
+
+    /// Input Mermaid file (flag form, jq-style parity)
+    #[arg(short = 'f', long = "file", value_name = "FILE")]
+    pub file_flag: Option<PathBuf>,
 
     /// Border style (overrides config file and in-file directives)
     #[arg(short, long, value_enum)]
@@ -86,7 +91,7 @@ fn main() -> Result<()> {
     }
 
     // TUI mode: stdin pipe without file arg is ambiguous
-    if !std::io::stdin().is_terminal() && cli.file.is_none() {
+    if !std::io::stdin().is_terminal() && cli.input_path().is_none() {
         eprintln!("termiflow: error: Cannot read from stdin pipe in TUI mode.");
         eprintln!("  Hint: Provide a file argument or use --print");
         eprintln!("  Example: cat diagram.md | termiflow --print");
@@ -183,15 +188,19 @@ fn run_tui_mode(_cli: &Cli) -> Result<()> {
 fn read_input(cli: &Cli) -> Result<String> {
     use std::io::Read;
 
-    match &cli.file {
-        Some(path) => {
-            std::fs::read_to_string(path)
-                .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))
-        }
-        None => {
-            let mut input = String::new();
-            std::io::stdin().read_to_string(&mut input)?;
-            Ok(input)
-        }
+    if let Some(path) = cli.input_path() {
+        return std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e));
+    }
+
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    Ok(input)
+}
+
+impl Cli {
+    /// Unified accessor for the input file (positional or -f/--file)
+    fn input_path(&self) -> Option<&PathBuf> {
+        self.file.as_ref().or(self.file_flag.as_ref())
     }
 }

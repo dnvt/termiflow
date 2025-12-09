@@ -99,12 +99,17 @@ pub fn resolve_overlap(existing: char, new: char, s: &StyleChars) -> char {
         return new;
     }
 
-    // Sacred characters that must never be overwritten
-    if is_arrow(existing) || is_box_char(existing, s) || is_junction(existing, s) {
+    // Arrows are endpoints - never overwrite
+    if is_arrow(existing) {
         return existing;
     }
 
-    // Corner + line = junction
+    // Junctions are already merged - preserve them
+    if is_junction(existing, s) {
+        return existing;
+    }
+
+    // Corner + line = junction (existing corner)
     if is_corner(existing, s) {
         if is_vertical(new, s) {
             return if is_corner_left(existing, s) {
@@ -139,11 +144,36 @@ pub fn resolve_overlap(existing: char, new: char, s: &StyleChars) -> char {
         }
     }
 
+    // Line + corner = junction (existing line, new corner)
+    if is_horizontal(existing, s) && is_corner(new, s) {
+        return if is_corner_up(new, s) {
+            s.junction_up // ┴
+        } else if is_corner_down(new, s) {
+            s.junction_down // ┬
+        } else {
+            s.cross
+        };
+    }
+    if is_vertical(existing, s) && is_corner(new, s) {
+        return if is_corner_left(new, s) {
+            s.junction_right // ├
+        } else if is_corner_right(new, s) {
+            s.junction_left // ┤
+        } else {
+            s.cross
+        };
+    }
+
     // Perpendicular lines crossing = cross
     if (is_horizontal(existing, s) && is_vertical(new, s))
         || (is_vertical(existing, s) && is_horizontal(new, s))
     {
         return s.cross;
+    }
+
+    // Box content (labels) - preserve
+    if is_box_char(existing, s) {
+        return existing;
     }
 
     // Default: new character wins

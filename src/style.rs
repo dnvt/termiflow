@@ -8,8 +8,13 @@ use unicode_width::UnicodeWidthStr;
 pub const BOX_HEIGHT: usize = 3;
 pub const BOX_MIN_WIDTH: usize = 5;
 pub const BOX_PADDING: usize = 2;
-pub const ROW_SPACING: usize = 2;
+pub const ROW_SPACING: usize = 4; // Expanded for vertical stem routing (was 2)
 pub const COL_SPACING: usize = 3;
+
+// Edge routing constants for expanded layout
+pub const EDGE_STEM_HEIGHT: usize = 1;     // Vertical stem from source box
+pub const EDGE_JUNCTION_HEIGHT: usize = 1; // Horizontal junction row
+pub const EDGE_DROP_HEIGHT: usize = 1;     // Vertical drop to destination
 #[allow(dead_code)]
 pub const EDGE_VERTICAL_GAP: usize = 1;
 pub const MAX_LABEL_WIDTH: usize = 20;
@@ -114,19 +119,27 @@ impl BorderStyle {
         }
     }
 
-    /// Parse a string into a BorderStyle (case-insensitive)
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse a string into a BorderStyle (case-insensitive), returning None if invalid
+    pub fn parse_name(s: &str) -> Option<Self> {
+        s.parse().ok()
+    }
+}
+
+impl std::str::FromStr for BorderStyle {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "ascii" => Some(BorderStyle::Ascii),
-            "unicode" => Some(BorderStyle::Unicode),
-            "double" => Some(BorderStyle::Double),
-            "rounded" => Some(BorderStyle::Rounded),
-            "heavy" => Some(BorderStyle::Heavy),
-            "dots" | "dot" => Some(BorderStyle::Dots),
-            "plus" => Some(BorderStyle::Plus),
-            "stars" | "star" => Some(BorderStyle::Stars),
-            "blocks" | "block" => Some(BorderStyle::Blocks),
-            _ => None,
+            "ascii" => Ok(BorderStyle::Ascii),
+            "unicode" => Ok(BorderStyle::Unicode),
+            "double" => Ok(BorderStyle::Double),
+            "rounded" => Ok(BorderStyle::Rounded),
+            "heavy" => Ok(BorderStyle::Heavy),
+            "dots" | "dot" => Ok(BorderStyle::Dots),
+            "plus" => Ok(BorderStyle::Plus),
+            "stars" | "star" => Ok(BorderStyle::Stars),
+            "blocks" | "block" => Ok(BorderStyle::Blocks),
+            _ => Err(()),
         }
     }
 }
@@ -150,7 +163,7 @@ impl CompositeStyle {
         
         // Handle simple style (backward compatibility)
         if !s.contains(':') {
-            if let Some(border_style) = BorderStyle::from_str(s) {
+            if let Some(border_style) = BorderStyle::parse_name(s) {
                 // Apply to all components for backward compatibility
                 style.corner = Some(border_style);
                 style.border = Some(border_style);
@@ -166,7 +179,7 @@ impl CompositeStyle {
         for part in s.split(',') {
             let part = part.trim();
             if let Some((component, style_name)) = part.split_once(':') {
-                let border_style = BorderStyle::from_str(style_name.trim());
+                let border_style = BorderStyle::parse_name(style_name.trim());
                 match component.trim() {
                     "box" => {
                         // Legacy: "box" applies to both corners and borders
@@ -273,10 +286,10 @@ pub static UNICODE_CHARS: StyleChars = StyleChars {
     br: '┘',
     h: '─',
     v: '│',
-    arrow_down: '▼',
-    arrow_up: '^',
-    arrow_left: '<',
-    arrow_right: '>',
+    arrow_down: '↓',
+    arrow_up: '↑',
+    arrow_left: '←',
+    arrow_right: '→',
     edge_h: '─',
     edge_v: '│',
     corner_dr: '┐',
@@ -592,19 +605,19 @@ mod tests {
     #[test]
     fn test_new_styles() {
         // Test dots style
-        assert_eq!(BorderStyle::from_str("dots"), Some(BorderStyle::Dots));
-        assert_eq!(BorderStyle::from_str("dot"), Some(BorderStyle::Dots));
-        
+        assert_eq!(BorderStyle::parse_name("dots"), Some(BorderStyle::Dots));
+        assert_eq!(BorderStyle::parse_name("dot"), Some(BorderStyle::Dots));
+
         // Test plus style
-        assert_eq!(BorderStyle::from_str("plus"), Some(BorderStyle::Plus));
-        
+        assert_eq!(BorderStyle::parse_name("plus"), Some(BorderStyle::Plus));
+
         // Test stars style
-        assert_eq!(BorderStyle::from_str("stars"), Some(BorderStyle::Stars));
-        assert_eq!(BorderStyle::from_str("star"), Some(BorderStyle::Stars));
-        
+        assert_eq!(BorderStyle::parse_name("stars"), Some(BorderStyle::Stars));
+        assert_eq!(BorderStyle::parse_name("star"), Some(BorderStyle::Stars));
+
         // Test blocks style
-        assert_eq!(BorderStyle::from_str("blocks"), Some(BorderStyle::Blocks));
-        assert_eq!(BorderStyle::from_str("block"), Some(BorderStyle::Blocks));
+        assert_eq!(BorderStyle::parse_name("blocks"), Some(BorderStyle::Blocks));
+        assert_eq!(BorderStyle::parse_name("block"), Some(BorderStyle::Blocks));
     }
     
     #[test]

@@ -1,18 +1,131 @@
 //! Edge routing algorithms for connecting nodes.
 //!
 //! Handles three types of edge routing:
+//! - **Expanded**: Multi-target with vertical stems and junction spans (new)
 //! - **Straight**: Direct vertical line when nodes are aligned
 //! - **L-shaped**: Horizontal then vertical when nodes are offset
 //! - **Back-edge**: Cycle edges routed through the right gutter
 
 use crate::graph::Node;
-use crate::style::{StyleChars, BOX_HEIGHT, RIGHT_GUTTER};
+use crate::style::{StyleChars, BOX_HEIGHT, RIGHT_GUTTER, EDGE_STEM_HEIGHT, EDGE_JUNCTION_HEIGHT, EDGE_DROP_HEIGHT};
 
 use super::canvas::{is_arrow, is_vertical, Canvas};
 
 // ============================================================================
 // Public Edge Routing
 // ============================================================================
+
+/// Route edges from a single source to multiple targets using expanded layout.
+///
+/// Draws: stem → junction span → drops → arrows
+/// This creates clearer visual routing than compact L-shaped edges.
+pub fn route_expanded_edge(
+    from: &Node,
+    to_nodes: &[&Node],
+    canvas: &mut Canvas,
+    style: &StyleChars,
+) {
+    if to_nodes.is_empty() || !canvas.is_visible(from) {
+        return;
+    }
+
+    // Filter to visible targets only
+    let visible_targets: Vec<&&Node> = to_nodes.iter().filter(|n| canvas.is_visible(n)).collect();
+    if visible_targets.is_empty() {
+        return;
+    }
+
+    let src_center_x = center_x(from);
+    let stem_start_y = from.y + BOX_HEIGHT;
+    let junction_y = stem_start_y + EDGE_STEM_HEIGHT;
+    let drop_start_y = junction_y + EDGE_JUNCTION_HEIGHT;
+    let arrow_y = drop_start_y + EDGE_DROP_HEIGHT;
+
+    // Get destination centers, sorted left to right
+    let mut dest_centers: Vec<usize> = visible_targets
+        .iter()
+        .map(|n| center_x(n))
+        .collect();
+    dest_centers.sort();
+
+    // Single target: draw stem, optional horizontal, then drop to arrow
+    if dest_centers.len() == 1 {
+        let dest_x = dest_centers[0];
+
+        if src_center_x == dest_x {
+            // Aligned: straight vertical line
+            for y in stem_start_y..arrow_y {
+                canvas.set_edge_char(dest_x, y, style.edge_v, style);
+            }
+        } else {
+            // Not aligned: L-shaped route
+            // Stem from source
+            for y in stem_start_y..junction_y {
+                canvas.set_edge_char(src_center_x, y, style.edge_v, style);
+            }
+            // Horizontal span - skip corner positions
+            let (left, right) = if src_center_x < dest_x {
+                (src_center_x, dest_x)
+            } else {
+                (dest_x, src_center_x)
+            };
+            for x in left..=right {
+                if x != src_center_x && x != dest_x {
+                    canvas.set_edge_char(x, junction_y, style.edge_h, style);
+                }
+            }
+            // Corners - placed separately so they can merge with other edges
+            if src_center_x < dest_x {
+                canvas.set_edge_char(src_center_x, junction_y, style.corner_ul, style);
+                canvas.set_edge_char(dest_x, junction_y, style.corner_dr, style);
+            } else {
+                canvas.set_edge_char(src_center_x, junction_y, style.corner_ur, style);
+                canvas.set_edge_char(dest_x, junction_y, style.corner_dl, style);
+            }
+            // Drop to arrow
+            for y in (junction_y + 1)..arrow_y {
+                canvas.set_edge_char(dest_x, y, style.edge_v, style);
+            }
+        }
+        canvas.set(dest_x, arrow_y, style.arrow_down);
+        return;
+    }
+
+    // Multiple targets: stem → junction → drops → arrows
+    let left_x = *dest_centers.first().unwrap();
+    let right_x = *dest_centers.last().unwrap();
+    let span_left = left_x.min(src_center_x);
+    let span_right = right_x.max(src_center_x);
+
+    // Phase 1: Draw source stem (from source center down to junction)
+    for y in stem_start_y..junction_y {
+        canvas.set_edge_char(src_center_x, y, style.edge_v, style);
+    }
+
+    // Phase 2: Draw horizontal junction span with corners and junction
+    for x in span_left..=span_right {
+        let c = if x == src_center_x {
+            style.junction_up
+        } else if x == span_left {
+            style.corner_dl
+        } else if x == span_right {
+            style.corner_dr
+        } else {
+            style.edge_h
+        };
+        canvas.set_edge_char(x, junction_y, c, style);
+    }
+
+    // Phase 3 & 4: Draw drops and arrows for each destination
+    for &dest_x in &dest_centers {
+        // Draw vertical drop
+        for y in (junction_y + 1)..arrow_y {
+            canvas.set_edge_char(dest_x, y, style.edge_v, style);
+        }
+        // Place arrow
+        canvas.set(dest_x, arrow_y, style.arrow_down);
+    }
+}
 
 /// Route an edge from source to target node.
 ///
@@ -184,5 +297,59 @@ fn corner_char(from_x: usize, to_x: usize, is_source: bool, s: &StyleChars) -> c
         (false, true) => s.corner_ur,  // Source going left:  ┘
         (false, false) => s.corner_dr, // Target from left:   ┐
         (true, false) => s.corner_dl,  // Target from right:  ┌
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::canvas::Canvas;
+    use crate::style::BorderStyle;
+
+    #[test]
+    fn expanded_edge_connects_when_targets_on_one_side() {
+        let chars = BorderStyle::Unicode.chars();
+        let mut canvas = Canvas::new(80, 40);
+
+        let src = Node {
+            id: "S".into(),
+            label: "S".into(),
+            click_target: None,
+            x: 2,
+            y: 2,
+            width: 7,
+            rank: 0,
+        };
+        let t1 = Node {
+            id: "T1".into(),
+            label: "T1".into(),
+            click_target: None,
+            x: 30,
+            y: 12,
+            width: 7,
+            rank: 1,
+        };
+        let t2 = Node {
+            id: "T2".into(),
+            label: "T2".into(),
+            click_target: None,
+            x: 40,
+            y: 12,
+            width: 7,
+            rank: 1,
+        };
+
+        let stem_start_y = src.y + BOX_HEIGHT;
+        let junction_y = stem_start_y + EDGE_STEM_HEIGHT;
+
+        route_expanded_edge(&src, &[&t1, &t2], &mut canvas, chars);
+
+        // Junction row must include the source center so the stem connects
+        let stem_x = center_x(&src);
+        assert_eq!(
+            canvas.get(stem_x, junction_y),
+            chars.junction_up,
+            "expected stem to connect into junction span"
+        );
     }
 }

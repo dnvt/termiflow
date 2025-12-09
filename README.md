@@ -25,6 +25,9 @@ cargo install --path .
 # Print to stdout (pipe-friendly, unicode is default)
 termiflow --print diagram.md
 
+# jq-style file flag
+termiflow --print -f diagram.md
+
 # Read from stdin
 cat diagram.md | termiflow --print
 
@@ -46,6 +49,7 @@ termiflow diagram.md
 | Flag            | Description                                      | Default   |
 | --------------- | ------------------------------------------------ | --------- |
 | `--print`       | Output to stdout (no TUI)                        | false     |
+| `--file`, `-f`  | Input file (jq-style alias for positional arg)   | -         |
 | `--style`, `-s` | Border style or composite (see below)            | `unicode` |
 | `--max-label`   | Max label width before truncation                | 20        |
 | `--strict`      | Exit on any parse warning                        | false     |
@@ -82,13 +86,20 @@ graph TD
 - Edges: `A --> B`, `A ---> B`
 - Click targets: `click ID "file.md"`
 - Config directives: `%% termiflow: key=value`
+- Diagram type: **flowchart only** (`graph TD/LR/TB/BT`). Other Mermaid diagram types (sequence, class, state, ER, gantt, etc.) are rejected with a clear error.
 
 ### Not Yet Supported
 
 - Edge labels: `A -->|text| B`
-- Subgraphs
+- Subgraphs (planned single-level grouping)
 - Node shapes other than rectangles
 - Mermaid styling/classes (`classDef`, `:::`)
+- Non-flowchart diagram types (sequence, class, state, ER, gantt, pie, etc.)
+
+### Aliases
+
+- Binary name: `termiflow`
+- Recommended short alias: symlink `tw` → `termiflow` (we do **not** ship `tf` to avoid Terraform conflicts)
 
 ## Warnings and limits
 
@@ -100,10 +111,31 @@ graph TD
 
 Config priority: CLI flags > in-file directives > config file
 
+### Config File Location (Platform-Specific)
+
+| Platform | Path |
+|----------|------|
+| macOS    | `~/Library/Application Support/termiflow/config.toml` |
+| Linux    | `~/.config/termiflow/config.toml` |
+| Windows  | `%APPDATA%\termiflow\config.toml` |
+
+### Config File Format
+
 ```toml
-# ~/.config/termiflow/config.toml
-style = "unicode"
+# Example config.toml
+style = "unicode"           # or composite: "corner:rounded,border:heavy"
 max_label_width = 25
+```
+
+### In-File Directives
+
+Override config file settings per-diagram:
+
+```mermaid
+graph TD
+    %% termiflow: style=rounded
+    %% termiflow: max_label=15
+    A[Node] --> B[Other]
 ```
 
 ## Development
@@ -112,12 +144,35 @@ max_label_width = 25
 # Build
 cargo build
 
-# Test
+# Test (runs 60 tests: unit, golden, integration, doc)
 cargo test
 
 # Run with debug layout (prints coordinates)
 cargo run -- --print --debug-layout tests/fixtures/inputs/simple.md
 ```
+
+### Golden Tests
+
+Golden tests compare actual output against expected files in `tests/fixtures/expected/`.
+
+**Regenerating golden files** (after intentional rendering changes):
+
+```bash
+# Regenerate all Unicode golden files
+for f in tests/fixtures/inputs/*.md; do
+  name=$(basename "$f" .md)
+  cargo run --quiet -- --print --style unicode "$f" > "tests/fixtures/expected/${name}.unicode.txt"
+done
+
+# Regenerate ASCII variants
+cargo run --quiet -- --print --style ascii tests/fixtures/inputs/simple.md > tests/fixtures/expected/simple.ascii.txt
+cargo run --quiet -- --print --style ascii tests/fixtures/inputs/chain.md > tests/fixtures/expected/chain.ascii.txt
+```
+
+**Adding new fixtures:**
+1. Create `tests/fixtures/inputs/new_case.md`
+2. Generate expected output: `cargo run --quiet -- --print tests/fixtures/inputs/new_case.md > tests/fixtures/expected/new_case.unicode.txt`
+3. Add test to `tests/golden.rs`
 
 ## Architecture
 
