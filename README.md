@@ -9,6 +9,8 @@ Current status: `--print` mode is implemented; TUI navigation is stubbed and wil
 - **Mermaid-Lite parser** - Supports common flowchart syntax (`graph TD`, nodes, edges) with strict/lenient modes
 - **9 border styles** - `ascii`, `unicode`, `double`, `rounded`, `heavy`, `dots`, `plus`, `stars`, `blocks`
 - **Composite styling** - Mix and match style components: `corner:dots,border:heavy`
+- **9 node shapes** - Rectangle, rounded, diamond, circle, stadium, hexagon, database, subroutine, asymmetric
+- **Edge labels** - Pipe syntax `A -->|label| B` and text syntax `A -- label --> B`
 - **Pipe-friendly** - Use `--print` for stdout output, pipe to other tools
 - **Cycle detection** - Back-edges rendered in gutter with warnings (or skipped when clipped)
 - **Config precedence** - CLI > in-file `%% termiflow:` directive > `~/.config/termiflow/config.toml`
@@ -82,17 +84,25 @@ graph TD
 ### Supported Patterns
 
 - Direction: `graph TD`, `graph LR`, `graph TB`, `graph BT`
-- Nodes: `ID[Label]`, `ID[(Database)]`
-- Edges: `A --> B`, `A ---> B`
+- **Node shapes**:
+  - Rectangle: `ID[Label]` (default)
+  - Rounded: `ID(Label)`
+  - Diamond: `ID{Label}`
+  - Circle: `ID((Label))`
+  - Stadium: `ID([Label])`
+  - Hexagon: `ID{{Label}}`
+  - Database: `ID[(Label)]`
+  - Subroutine: `ID[[Label]]`
+  - Asymmetric: `ID>Label]`
+- **Edges**: `A --> B`, `A ---> B`
+- **Edge labels**: `A -->|text| B` or `A -- text --> B`
 - Click targets: `click ID "file.md"`
 - Config directives: `%% termiflow: key=value`
 - Diagram type: **flowchart only** (`graph TD/LR/TB/BT`). Other Mermaid diagram types (sequence, class, state, ER, gantt, etc.) are rejected with a clear error.
 
 ### Not Yet Supported
 
-- Edge labels: `A -->|text| B`
 - Subgraphs (planned single-level grouping)
-- Node shapes other than rectangles
 - Mermaid styling/classes (`classDef`, `:::`)
 - Non-flowchart diagram types (sequence, class, state, ER, gantt, pie, etc.)
 
@@ -144,7 +154,7 @@ graph TD
 # Build
 cargo build
 
-# Test (runs 60 tests: unit, golden, integration, doc)
+# Test (runs 110 tests: unit, golden, integration, doc)
 cargo test
 
 # Run with debug layout (prints coordinates)

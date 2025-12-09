@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 // Use the termiflow library
-use termiflow::{parse, waterfall, render_canvas, Config, BorderStyle, CompositeStyle};
+use termiflow::{parse, render_canvas, waterfall, BaseStyle, CompositeStyle, Config};
 
 /// Interactive TUI graph explorer - jq for diagrams
 #[derive(Parser)]
@@ -50,8 +50,7 @@ pub struct Cli {
     pub debug_layout: bool,
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Default)]
 pub enum StyleArg {
     Ascii,
     #[default]
@@ -61,15 +60,14 @@ pub enum StyleArg {
     Heavy,
 }
 
-
-impl From<StyleArg> for BorderStyle {
+impl From<StyleArg> for BaseStyle {
     fn from(arg: StyleArg) -> Self {
         match arg {
-            StyleArg::Ascii => BorderStyle::Ascii,
-            StyleArg::Unicode => BorderStyle::Unicode,
-            StyleArg::Double => BorderStyle::Double,
-            StyleArg::Rounded => BorderStyle::Rounded,
-            StyleArg::Heavy => BorderStyle::Heavy,
+            StyleArg::Ascii => BaseStyle::Ascii,
+            StyleArg::Unicode => BaseStyle::Unicode,
+            StyleArg::Double => BaseStyle::Double,
+            StyleArg::Rounded => BaseStyle::Rounded,
+            StyleArg::Heavy => BaseStyle::Heavy,
         }
     }
 }
@@ -101,10 +99,7 @@ fn main() -> Result<()> {
     // Check for Unicode capability (skip check if using ASCII)
     if cli.style != Some(StyleArg::Ascii) && !supports_unicode() {
         eprintln!("termiflow: warning: Unicode may not display correctly");
-        eprintln!(
-            "  Terminal: {}",
-            std::env::var("TERM").unwrap_or_default()
-        );
+        eprintln!("  Terminal: {}", std::env::var("TERM").unwrap_or_default());
         eprintln!("  Hint: Use --style ascii for maximum compatibility");
     }
 
@@ -163,10 +158,7 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
             );
         }
         for e in &graph.edges {
-            eprintln!(
-                "edge {} -> {} (back_edge={})",
-                e.from, e.to, e.is_back_edge
-            );
+            eprintln!("edge {} -> {} (back_edge={})", e.from, e.to, e.is_back_edge);
         }
     }
 

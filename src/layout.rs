@@ -40,8 +40,7 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
     if detect_cycles(&mut graph, &adj) {
         graph
             .warnings
-            .push("termiflow: warning: Cycle detected, rendering back-edges in gutter"
-                .to_string());
+            .push("termiflow: warning: Cycle detected, rendering back-edges in gutter".to_string());
     }
 
     // Recompute indegree ignoring back-edges for rank assignment
@@ -78,7 +77,12 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
     while let Some(u) = queue.pop_front() {
         order.push(u);
         for &(v, edge_idx) in &adj[u] {
-            if graph.edges.get(edge_idx).map(|e| e.is_back_edge).unwrap_or(false) {
+            if graph
+                .edges
+                .get(edge_idx)
+                .map(|e| e.is_back_edge)
+                .unwrap_or(false)
+            {
                 continue;
             }
             if indegree[v] > 0 {
@@ -178,7 +182,6 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         rank_y_offset[r] = rank_y_offset[r - 1] + BOX_HEIGHT + rank_spacing[r - 1];
     }
 
-
     // Precompute rank widths for LR spacing
     let rank_widths: Vec<usize> = by_rank
         .iter()
@@ -244,7 +247,8 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                         let avg_center = parent_info
                             .iter()
                             .map(|(px, pw)| px + pw / 2)
-                            .sum::<usize>() / parent_info.len();
+                            .sum::<usize>()
+                            / parent_info.len();
                         let mut x = avg_center.saturating_sub(node_width / 2);
                         x = x.max(cursor_primary);
                         x
@@ -292,7 +296,10 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
     }
 
     // Center rows within the diagram (TD/TB/BT only)
-    if matches!(graph.direction, Direction::TD | Direction::TB | Direction::BT) {
+    if matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) {
         center_rows(&mut graph, &by_rank);
     }
 
@@ -314,7 +321,11 @@ fn center_rows(graph: &mut Graph, by_rank: &[Vec<usize>]) {
             if nodes.is_empty() {
                 return (0, 0);
             }
-            let left = nodes.iter().map(|&idx| graph.nodes[idx].x).min().unwrap_or(0);
+            let left = nodes
+                .iter()
+                .map(|&idx| graph.nodes[idx].x)
+                .min()
+                .unwrap_or(0);
             let right = nodes
                 .iter()
                 .map(|&idx| graph.nodes[idx].x + graph.nodes[idx].width)
@@ -352,7 +363,9 @@ fn center_rows(graph: &mut Graph, by_rank: &[Vec<usize>]) {
                 if target_left > current_left {
                     graph.nodes[idx].x += target_left - current_left;
                 } else {
-                    graph.nodes[idx].x = graph.nodes[idx].x.saturating_sub(current_left - target_left);
+                    graph.nodes[idx].x = graph.nodes[idx]
+                        .x
+                        .saturating_sub(current_left - target_left);
                 }
             }
         } else {
@@ -449,10 +462,7 @@ mod tests {
 
         let result = waterfall(graph).unwrap();
         assert!(result.edges.iter().any(|e| e.is_back_edge));
-        assert!(result
-            .warnings
-            .iter()
-            .any(|w| w.contains("Cycle detected")));
+        assert!(result.warnings.iter().any(|w| w.contains("Cycle detected")));
     }
 
     #[test]

@@ -35,11 +35,11 @@ pub mod style;
 // ============================================================================
 
 pub use config::{Config, ConfigBuilder};
-pub use graph::{Graph, Node, Edge};
-pub use parser::{parse, ParseResult, ParseConfig};
+pub use graph::{Edge, Graph, Node};
 pub use layout::waterfall;
+pub use parser::{parse, ParseConfig, ParseResult};
 pub use render::render as render_canvas;
-pub use style::{BorderStyle, CompositeStyle};
+pub use style::{BaseStyle, CompositeStyle};
 
 // ============================================================================
 // High-Level API
@@ -51,7 +51,7 @@ use anyhow::Result;
 #[derive(Debug, Clone, Default)]
 pub struct RenderOptions {
     /// Border style (default: Unicode)
-    pub style: BorderStyle,
+    pub style: BaseStyle,
     /// Maximum label width before truncation (default: 20)
     pub max_label_width: usize,
     /// Strict mode - fail on any parse warning (default: false)
@@ -61,13 +61,13 @@ pub struct RenderOptions {
 impl RenderOptions {
     pub fn new() -> Self {
         Self {
-            style: BorderStyle::default(),
+            style: BaseStyle::default(),
             max_label_width: 20,
             strict: false,
         }
     }
 
-    pub fn with_style(mut self, style: BorderStyle) -> Self {
+    pub fn with_style(mut self, style: BaseStyle) -> Self {
         self.style = style;
         self
     }
@@ -98,11 +98,11 @@ impl RenderOptions {
 ///
 /// # Example
 /// ```rust
-/// use termiflow::{render, RenderOptions, BorderStyle};
+/// use termiflow::{render, RenderOptions, BaseStyle};
 ///
 /// let diagram = render(
 ///     "graph TD\n    A[Hello] --> B[World]",
-///     RenderOptions::new().with_style(BorderStyle::Rounded)
+///     RenderOptions::new().with_style(BaseStyle::Rounded)
 /// ).unwrap();
 /// ```
 pub fn render(input: &str, options: RenderOptions) -> Result<String> {
