@@ -199,7 +199,7 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
     let mut placed_centers: HashMap<String, usize> = HashMap::new();
 
     let mut rank_offset_x: Vec<usize> = vec![0; by_rank.len()];
-    if matches!(graph.direction, Direction::LR) {
+    if matches!(graph.direction, Direction::LR | Direction::RL) {
         let mut offset = 0usize;
         for (r, w) in rank_widths.iter().enumerate() {
             rank_offset_x[r] = offset;
@@ -254,7 +254,7 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                         x
                     }
                 }
-                Direction::LR => rank_x,
+                Direction::LR | Direction::RL => rank_x,
             };
 
             // Update the node
@@ -269,9 +269,9 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                     cursor_primary = node.x + node.width + COL_SPACING;
                     placed_centers.insert(node.id.clone(), node.x + node.width / 2);
                 }
-                Direction::LR => {
+                Direction::LR | Direction::RL => {
                     node.y = cursor_primary;
-                    cursor_primary += BOX_HEIGHT + 1; // Minimal spacing for LR layout
+                    cursor_primary += BOX_HEIGHT + 1; // Minimal spacing for horizontal layouts
                 }
             }
 
@@ -300,8 +300,16 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         Direction::TD | Direction::TB | Direction::BT => {
             center_rows(&mut graph, &by_rank);
         }
-        Direction::LR => {
+        Direction::LR | Direction::RL => {
             center_columns(&mut graph, &by_rank);
+        }
+    }
+
+    // For RL (Right-to-Left), reverse X coordinates
+    if matches!(graph.direction, Direction::RL) {
+        let max_x = graph.nodes.iter().map(|n| n.x + n.width).max().unwrap_or(0);
+        for node in &mut graph.nodes {
+            node.x = max_x.saturating_sub(node.x + node.width);
         }
     }
 

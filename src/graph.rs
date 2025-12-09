@@ -107,6 +107,7 @@ pub enum Direction {
     #[allow(dead_code)]
     TB, // Top to bottom
     LR, // Left to right
+    RL, // Right to left
     BT, // Bottom to top
 }
 
