@@ -7,14 +7,13 @@ use std::fs;
 
 use crate::parser::ParseConfig;
 use crate::style::CompositeStyle;
-use crate::Cli;
 
 /// Application configuration
 #[derive(Debug, Clone)]
 pub struct Config {
     pub max_label_width: usize,
     pub strict_parsing: bool,
-    pub composite_style: CompositeStyle,  // Component-specific styles
+    pub composite_style: CompositeStyle,
 }
 
 impl Default for Config {
@@ -28,9 +27,14 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load configuration with priority: CLI > in-file directives > config file
-    pub fn load(cli: &Cli, parse_config: &ParseConfig) -> Self {
-        // Start with defaults
+    /// Create a new config builder
+    pub fn builder() -> ConfigBuilder {
+        ConfigBuilder::new()
+    }
+
+    /// Load configuration from file config + in-file directives
+    /// Used by the library API
+    pub fn from_parse_config(parse_config: &ParseConfig) -> Self {
         let mut config = Self::default();
 
         // Config file (lowest priority)
@@ -38,7 +42,6 @@ impl Config {
             if let Some(max_label) = file_cfg.max_label_width {
                 config.max_label_width = max_label;
             }
-            // Apply composite styles from config file
             config.composite_style = file_cfg.composite_style;
         }
 
@@ -47,14 +50,55 @@ impl Config {
             config.max_label_width = max_label;
         }
         if let Some(style_str) = parse_config.style.as_ref() {
-            // Parse as composite style
             config.composite_style = CompositeStyle::parse(style_str);
         }
 
-        // CLI flags (highest priority) - always override
-        config.max_label_width = cli.max_label;
-        config.strict_parsing = cli.strict;
-        // Note: CLI style is handled separately in main.rs when explicitly provided
+        config
+    }
+}
+
+/// Builder for Config - allows CLI to override settings
+#[derive(Debug, Clone, Default)]
+pub struct ConfigBuilder {
+    max_label_width: Option<usize>,
+    strict_parsing: Option<bool>,
+    composite_style: Option<CompositeStyle>,
+}
+
+impl ConfigBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn max_label_width(mut self, width: usize) -> Self {
+        self.max_label_width = Some(width);
+        self
+    }
+
+    pub fn strict(mut self, strict: bool) -> Self {
+        self.strict_parsing = Some(strict);
+        self
+    }
+
+    pub fn style(mut self, style: CompositeStyle) -> Self {
+        self.composite_style = Some(style);
+        self
+    }
+
+    /// Build config, applying CLI overrides to parse_config base
+    pub fn build(self, parse_config: &ParseConfig) -> Config {
+        let mut config = Config::from_parse_config(parse_config);
+
+        // CLI overrides (highest priority)
+        if let Some(width) = self.max_label_width {
+            config.max_label_width = width;
+        }
+        if let Some(strict) = self.strict_parsing {
+            config.strict_parsing = strict;
+        }
+        if let Some(style) = self.composite_style {
+            config.composite_style = style;
+        }
 
         config
     }
