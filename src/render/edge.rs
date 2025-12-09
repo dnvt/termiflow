@@ -7,7 +7,7 @@
 //! - **Back-edge**: Cycle edges routed through the right gutter
 
 use crate::graph::Node;
-use crate::style::{StyleChars, BOX_HEIGHT, EDGE_STEM_HEIGHT, RIGHT_GUTTER};
+use crate::style::{StyleChars, BOX_HEIGHT, EDGE_STEM_HEIGHT, EDGE_STEM_WIDTH_LR, RIGHT_GUTTER};
 
 use super::canvas::{is_arrow, is_vertical, Canvas};
 
@@ -37,7 +37,7 @@ pub fn route_expanded_edge_horizontal(
 
     let src_center_y = center_y(from);
     let stem_start_x = from.x + from.width;
-    let junction_x = stem_start_x + EDGE_STEM_HEIGHT;
+    let junction_x = stem_start_x + EDGE_STEM_WIDTH_LR;
 
     // Get destination centers, sorted top to bottom
     let mut dest_centers: Vec<usize> = visible_targets.iter().map(|n| center_y(n)).collect();

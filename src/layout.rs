@@ -271,7 +271,7 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                 }
                 Direction::LR => {
                     node.y = cursor_primary;
-                    cursor_primary += BOX_HEIGHT + ROW_SPACING_MULTI;
+                    cursor_primary += BOX_HEIGHT + 1; // Minimal spacing for LR layout
                 }
             }
 
@@ -295,15 +295,67 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         }
     }
 
-    // Center rows within the diagram (TD/TB/BT only)
-    if matches!(
-        graph.direction,
-        Direction::TD | Direction::TB | Direction::BT
-    ) {
-        center_rows(&mut graph, &by_rank);
+    // Center rows/columns within the diagram based on direction
+    match graph.direction {
+        Direction::TD | Direction::TB | Direction::BT => {
+            center_rows(&mut graph, &by_rank);
+        }
+        Direction::LR => {
+            center_columns(&mut graph, &by_rank);
+        }
     }
 
     Ok(graph)
+}
+
+/// Center columns of nodes vertically for LR layout
+fn center_columns(graph: &mut Graph, by_rank: &[Vec<usize>]) {
+    if graph.nodes.is_empty() {
+        return;
+    }
+
+    // Calculate the vertical span (top_edge, bottom_edge) of each rank/column
+    let rank_spans: Vec<(usize, usize)> = by_rank
+        .iter()
+        .map(|nodes| {
+            if nodes.is_empty() {
+                return (0, 0);
+            }
+            let top = nodes
+                .iter()
+                .map(|&idx| graph.nodes[idx].y)
+                .min()
+                .unwrap_or(0);
+            let bottom = nodes
+                .iter()
+                .map(|&idx| graph.nodes[idx].y + BOX_HEIGHT)
+                .max()
+                .unwrap_or(0);
+            (top, bottom)
+        })
+        .collect();
+
+    // Find the maximum vertical span
+    let max_height = rank_spans
+        .iter()
+        .map(|(_, bottom)| *bottom)
+        .max()
+        .unwrap_or(0);
+
+    // Center each column vertically
+    for (rank, nodes) in by_rank.iter().enumerate() {
+        let (top, bottom) = rank_spans[rank];
+        let span_height = bottom - top;
+        
+        if span_height < max_height {
+            let offset = (max_height - span_height) / 2;
+            
+            // Apply offset to all nodes in this column
+            for &idx in nodes {
+                graph.nodes[idx].y += offset;
+            }
+        }
+    }
 }
 
 /// Center each row of nodes within the diagram width
