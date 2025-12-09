@@ -48,9 +48,12 @@ pub fn route_expanded_edge(
         .collect();
     dest_centers.sort();
 
-    // Single target: draw stem, optional horizontal, then arrow (compact - no drop row)
+    // Single target: draw stem, optional horizontal, then arrow
+    // Layout: stem (row 0) → label (row 1) → arrow (row 2) → blank (row 3)
     if dest_centers.len() == 1 {
         let dest_x = dest_centers[0];
+        // Single-target arrow is right after label row, not after drop row
+        let single_arrow_y = junction_y + 1;
 
         if src_center_x == dest_x {
             // Aligned: stem only (junction row left empty for label)
@@ -82,13 +85,9 @@ pub fn route_expanded_edge(
                 canvas.set_edge_char(src_center_x, junction_y, style.corner_ur, style);
                 canvas.set_edge_char(dest_x, junction_y, style.corner_dl, style);
             }
-            // Drop to arrow (for L-shaped, still need drop line)
-            for y in (junction_y + 1)..drop_start_y {
-                canvas.set_edge_char(dest_x, y, style.edge_v, style);
-            }
         }
-        // Arrow at drop_start_y (compact - one row after label)
-        canvas.set(dest_x, drop_start_y, style.arrow_down);
+        // Arrow right after label row for single-target
+        canvas.set(dest_x, single_arrow_y, style.arrow_down);
         return;
     }
 
