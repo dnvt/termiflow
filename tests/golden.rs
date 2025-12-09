@@ -107,6 +107,34 @@ fn golden_unsupported_unicode() {
 }
 
 // ============================================================================
+// LR (Left-Right) Orientation Golden Tests
+// ============================================================================
+
+#[test]
+fn golden_lr_simple_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/lr_simple.md",
+    ]);
+    let expected = include_str!("fixtures/expected/lr_simple.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for lr_simple.md");
+}
+
+#[test]
+fn golden_lr_branch_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/lr_branch.md",
+    ]);
+    let expected = include_str!("fixtures/expected/lr_branch.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for lr_branch.md");
+}
+
+// ============================================================================
 // ASCII Style Golden Tests
 // ============================================================================
 

@@ -15,8 +15,131 @@ use super::canvas::{is_arrow, is_vertical, Canvas};
 // Public Edge Routing
 // ============================================================================
 
+/// Route edges from a single source to multiple targets using expanded layout (horizontal).
+///
+/// For LR (left-to-right) diagrams.
+/// Draws: horizontal stem → vertical junction → horizontal lines → arrows
+pub fn route_expanded_edge_horizontal(
+    from: &Node,
+    to_nodes: &[&Node],
+    canvas: &mut Canvas,
+    style: &StyleChars,
+) {
+    if to_nodes.is_empty() || !canvas.is_visible(from) {
+        return;
+    }
+
+    // Filter to visible targets only
+    let visible_targets: Vec<&&Node> = to_nodes.iter().filter(|n| canvas.is_visible(n)).collect();
+    if visible_targets.is_empty() {
+        return;
+    }
+
+    let src_center_y = center_y(from);
+    let stem_start_x = from.x + from.width;
+    let junction_x = stem_start_x + EDGE_STEM_HEIGHT;
+
+    // Get destination centers, sorted top to bottom
+    let mut dest_centers: Vec<usize> = visible_targets.iter().map(|n| center_y(n)).collect();
+    dest_centers.sort();
+
+    // Single target: draw horizontal stem, optional vertical, then arrow
+    if dest_centers.len() == 1 {
+        let target = visible_targets[0];
+        let dest_y = dest_centers[0];
+        let target_arrow_x = target.x.saturating_sub(1);
+
+        if src_center_y == dest_y {
+            // Aligned: draw horizontal stem to arrow
+            for x in stem_start_x..target_arrow_x {
+                canvas.set_edge_char(x, dest_y, style.edge_h, style);
+            }
+        } else {
+            // Not aligned: L-shaped route
+            // Horizontal stem from source
+            for x in stem_start_x..junction_x {
+                canvas.set_edge_char(x, src_center_y, style.edge_h, style);
+            }
+            // Vertical span - skip corner positions
+            let (top, bottom) = if src_center_y < dest_y {
+                (src_center_y, dest_y)
+            } else {
+                (dest_y, src_center_y)
+            };
+            for y in top..=bottom {
+                if y != src_center_y && y != dest_y {
+                    canvas.set_edge_char(junction_x, y, style.edge_v, style);
+                }
+            }
+            // Corners - horizontal line turns to vertical
+            if src_center_y < dest_y {
+                canvas.set_edge_char(junction_x, src_center_y, style.corner_dl, style); // └ (turn down)
+                canvas.set_edge_char(junction_x, dest_y, style.corner_ur, style);      // ┐ (turn right)
+            } else {
+                canvas.set_edge_char(junction_x, src_center_y, style.corner_ul, style); // ┌ (turn up)  
+                canvas.set_edge_char(junction_x, dest_y, style.corner_dr, style);      // ┘ (turn right)
+            }
+            // Horizontal line from corner to arrow
+            for x in (junction_x + 1)..target_arrow_x {
+                canvas.set_edge_char(x, dest_y, style.edge_h, style);
+            }
+        }
+        // Arrow right before target box
+        canvas.set(target_arrow_x, dest_y, style.arrow_right);
+        return;
+    }
+
+    // Multiple targets: horizontal stem → vertical junction → horizontal lines → arrows
+    let top_y = *dest_centers.first().unwrap();
+    let bottom_y = *dest_centers.last().unwrap();
+    let span_top = top_y.min(src_center_y);
+    let span_bottom = bottom_y.max(src_center_y);
+
+    // Phase 1: Draw source stem (from source right edge to junction)
+    for x in stem_start_x..junction_x {
+        canvas.set_edge_char(x, src_center_y, style.edge_h, style);
+    }
+
+    // Phase 2: Draw junction at stem/span intersection
+    let junction_char = if src_center_y < top_y {
+        style.junction_right  // ├ (stem enters from left, continues down)
+    } else if src_center_y > bottom_y {
+        style.junction_right  // ├ (stem enters from left, continues up)
+    } else {
+        style.junction_right  // ├ (stem enters from left, splits both ways)
+    };
+    canvas.set_edge_char(junction_x, src_center_y, junction_char, style);
+
+    // Phase 3: Draw vertical span (connecting all targets)
+    for y in span_top..=span_bottom {
+        let c = canvas.get(junction_x, y);
+        // Skip if we already placed a junction or corner
+        if c == ' ' || is_vertical(c, style) {
+            canvas.set_edge_char(junction_x, y, style.edge_v, style);
+        }
+    }
+
+    // Phase 4: Draw horizontal lines and arrows to each target
+    for target in visible_targets {
+        let dest_y = center_y(target);
+        let arrow_x = target.x.saturating_sub(1);
+
+        // Place T-junction at the vertical span for this target (├ = stem goes right from vertical)
+        canvas.set_edge_char(junction_x, dest_y, style.junction_right, style);
+
+        // Horizontal line from junction to arrow
+        for x in (junction_x + 1)..arrow_x {
+            canvas.set_edge_char(x, dest_y, style.edge_h, style);
+        }
+
+        // Arrow pointing right into target
+        canvas.set(arrow_x, dest_y, style.arrow_right);
+    }
+}
+
 /// Route edges from a single source to multiple targets using expanded layout.
 ///
+/// For TD (top-down) diagrams.
 /// Draws: stem → junction span → drops → arrows
 /// This creates clearer visual routing than compact L-shaped edges.
 pub fn route_expanded_edge(
@@ -277,6 +400,10 @@ pub fn route_back_edge(from: &Node, to: &Node, canvas: &mut Canvas, style: &Styl
 #[inline]
 pub fn center_x(node: &Node) -> usize {
     node.x + (node.width.saturating_sub(1)) / 2
+}
+
+pub fn center_y(node: &Node) -> usize {
+    node.y + BOX_HEIGHT / 2
 }
 
 /// Calculate the y-coordinate for the horizontal segment of an L-shaped edge.
