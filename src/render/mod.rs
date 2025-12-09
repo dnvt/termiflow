@@ -100,9 +100,10 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     // Group forward edges by source node for expanded routing
     let mut edges_by_source: HashMap<&str, Vec<&Node>> = HashMap::new();
     let mut back_edges: Vec<(&Node, &Node)> = Vec::new();
-    // Track labeled edges for later rendering: (from_node, to_node, label)
-    let mut labeled_edges: Vec<(&Node, &Node, &str)> = Vec::new();
+    // Track labeled edges for later rendering: (from_node, to_node, label, is_multi_target)
+    let mut labeled_edges: Vec<(&Node, &Node, &str, bool)> = Vec::new();
 
+    // First pass: group edges by source
     for e in &graph.edges {
         let Some(from) = graph.get_node(&e.from) else {
             continue;
@@ -118,12 +119,34 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
                 .entry(&e.from)
                 .or_default()
                 .push(to);
-
-            // Track edges with labels
-            if let Some(ref label) = e.label {
-                labeled_edges.push((from, to, label.as_str()));
-            }
         }
+    }
+
+    // Second pass: collect labeled edges with multi-target info
+    for e in &graph.edges {
+        if e.is_back_edge {
+            continue;
+        }
+        let Some(ref label) = e.label else {
+            continue;
+        };
+        let Some(from) = graph.get_node(&e.from) else {
+            continue;
+        };
+        let Some(to) = graph.get_node(&e.to) else {
+            continue;
+        };
+        if !canvas.is_visible(from) || !canvas.is_visible(to) {
+            continue;
+        }
+
+        // Check if this source has multiple targets (needs junction row)
+        let is_multi_target = edges_by_source
+            .get(e.from.as_str())
+            .map(|targets| targets.len() > 1)
+            .unwrap_or(false);
+
+        labeled_edges.push((from, to, label.as_str(), is_multi_target));
     }
 
     // Draw forward edges using expanded routing (grouped by source)
@@ -143,8 +166,8 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     }
 
     // Draw edge labels on the vertical segments
-    for (from, to, label) in &labeled_edges {
-        draw_edge_label(&mut canvas, from, to, label);
+    for (from, to, label, is_multi_target) in &labeled_edges {
+        draw_edge_label(&mut canvas, from, to, label, *is_multi_target);
     }
 
     // Draw boxes AFTER edges (boxes overwrite any edges passing through them)
@@ -207,9 +230,9 @@ fn draw_box(
 
 /// Draw an edge label on the vertical segment between source and target.
 ///
-/// Labels are positioned on the drop row (after junction, before arrow),
-/// centered horizontally around the edge path.
-fn draw_edge_label(canvas: &mut Canvas, from: &Node, to: &Node, label: &str) {
+/// For single-target edges: label on stem+1 (compact, no junction row)
+/// For multi-target edges: label on drop row (after junction, before arrow)
+fn draw_edge_label(canvas: &mut Canvas, from: &Node, to: &Node, label: &str, is_multi_target: bool) {
     use crate::style::EDGE_JUNCTION_HEIGHT;
     use edge::center_x;
 
@@ -217,10 +240,15 @@ fn draw_edge_label(canvas: &mut Canvas, from: &Node, to: &Node, label: &str) {
     // The edge drops to the target's center_x, so that's where we place the label
     let edge_x = center_x(to);
 
-    // Calculate label y position - on the drop row after junction
-    // Layout: box -> stem -> junction -> label (drop row) -> arrow -> box
-    let junction_y = from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT;
-    let label_y = junction_y + EDGE_JUNCTION_HEIGHT; // Drop row (after junction)
+    // Calculate label y position based on edge type
+    let label_y = if is_multi_target {
+        // Multi-target: box -> stem -> junction -> label -> arrow
+        let junction_y = from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT;
+        junction_y + EDGE_JUNCTION_HEIGHT // Drop row (after junction)
+    } else {
+        // Single-target: box -> stem -> label -> arrow (compact, skip junction row)
+        from.y + BOX_HEIGHT + EDGE_STEM_HEIGHT // Same row as junction would be
+    };
 
     // Truncate label if too long
     let max_label_len = 12; // Keep labels reasonably short
