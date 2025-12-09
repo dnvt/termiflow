@@ -133,3 +133,37 @@ fn golden_chain_ascii() {
     let expected = include_str!("fixtures/expected/chain.ascii.txt");
     assert_eq!(stdout, expected, "Output mismatch for chain.md (ASCII)");
 }
+
+// ============================================================================
+// Edge Labels Golden Tests
+// ============================================================================
+
+#[test]
+fn golden_labeled_edges_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/labeled_edges.md",
+    ]);
+    let expected = include_str!("fixtures/expected/labeled_edges.unicode.txt");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for labeled_edges.md (Unicode)"
+    );
+}
+
+#[test]
+fn golden_labeled_edges_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/labeled_edges.md",
+    ]);
+    let expected = include_str!("fixtures/expected/labeled_edges.ascii.txt");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for labeled_edges.md (ASCII)"
+    );
+}
