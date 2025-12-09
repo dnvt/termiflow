@@ -119,12 +119,14 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         nodes.sort_by_key(|&idx| graph.nodes[idx].id.clone()); // deterministic within rank
     }
 
-    // Calculate per-rank spacing based on edge fan-out
-    // A rank needs ROW_SPACING_MULTI if ANY source at that rank has multiple targets
+    // Calculate per-rank spacing based on edge complexity
+    // A rank needs ROW_SPACING_MULTI if:
+    // 1. Fan-out: ANY source at that rank has multiple targets, OR
+    // 2. Fan-in: ANY target at the next rank has multiple sources from this rank
     let rank_spacing: Vec<usize> = (0..=max_rank)
         .map(|r| {
-            // Count targets per source node at this rank
-            let mut has_multi_target = false;
+            // Check fan-out: source has multiple targets
+            let mut has_fan_out = false;
             for &idx in &by_rank[r] {
                 let source_id = &graph.nodes[idx].id;
                 let target_count = graph
@@ -133,11 +135,35 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                     .filter(|e| !e.is_back_edge && &e.from == source_id)
                     .count();
                 if target_count > 1 {
-                    has_multi_target = true;
+                    has_fan_out = true;
                     break;
                 }
             }
-            if has_multi_target {
+
+            // Check fan-in: target at next rank has multiple sources from this rank
+            let mut has_fan_in = false;
+            if r < max_rank {
+                for &idx in &by_rank[r + 1] {
+                    let target_id = &graph.nodes[idx].id;
+                    let source_count = graph
+                        .edges
+                        .iter()
+                        .filter(|e| {
+                            !e.is_back_edge
+                                && &e.to == target_id
+                                && by_rank[r]
+                                    .iter()
+                                    .any(|&src_idx| graph.nodes[src_idx].id == e.from)
+                        })
+                        .count();
+                    if source_count > 1 {
+                        has_fan_in = true;
+                        break;
+                    }
+                }
+            }
+
+            if has_fan_out || has_fan_in {
                 ROW_SPACING_MULTI
             } else {
                 ROW_SPACING_SINGLE
