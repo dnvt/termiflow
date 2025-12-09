@@ -7,7 +7,7 @@
 //! - **Back-edge**: Cycle edges routed through the right gutter
 
 use crate::graph::Node;
-use crate::style::{StyleChars, BOX_HEIGHT, RIGHT_GUTTER, EDGE_STEM_HEIGHT, EDGE_JUNCTION_HEIGHT, EDGE_DROP_HEIGHT};
+use crate::style::{StyleChars, BOX_HEIGHT, EDGE_STEM_HEIGHT, RIGHT_GUTTER};
 
 use super::canvas::{is_arrow, is_vertical, Canvas};
 
@@ -38,8 +38,6 @@ pub fn route_expanded_edge(
     let src_center_x = center_x(from);
     let stem_start_y = from.y + BOX_HEIGHT;
     let junction_y = stem_start_y + EDGE_STEM_HEIGHT;
-    let drop_start_y = junction_y + EDGE_JUNCTION_HEIGHT;
-    let arrow_y = drop_start_y + EDGE_DROP_HEIGHT;
 
     // Get destination centers, sorted left to right
     let mut dest_centers: Vec<usize> = visible_targets
@@ -49,15 +47,15 @@ pub fn route_expanded_edge(
     dest_centers.sort();
 
     // Single target: draw stem, optional horizontal, then arrow
-    // Layout: stem (row 0) → label (row 1) → arrow (row 2) → blank (row 3)
+    // Arrow is always right above target box (target.y - 1)
     if dest_centers.len() == 1 {
+        let target = visible_targets[0];
         let dest_x = dest_centers[0];
-        // Single-target arrow is right after label row, not after drop row
-        let single_arrow_y = junction_y + 1;
+        let target_arrow_y = target.y.saturating_sub(1);
 
         if src_center_x == dest_x {
-            // Aligned: stem only (junction row left empty for label)
-            for y in stem_start_y..junction_y {
+            // Aligned: draw vertical stem down to arrow
+            for y in stem_start_y..target_arrow_y {
                 canvas.set_edge_char(dest_x, y, style.edge_v, style);
             }
         } else {
@@ -77,7 +75,7 @@ pub fn route_expanded_edge(
                     canvas.set_edge_char(x, junction_y, style.edge_h, style);
                 }
             }
-            // Corners - placed separately so they can merge with other edges
+            // Corners
             if src_center_x < dest_x {
                 canvas.set_edge_char(src_center_x, junction_y, style.corner_ul, style);
                 canvas.set_edge_char(dest_x, junction_y, style.corner_dr, style);
@@ -85,9 +83,13 @@ pub fn route_expanded_edge(
                 canvas.set_edge_char(src_center_x, junction_y, style.corner_ur, style);
                 canvas.set_edge_char(dest_x, junction_y, style.corner_dl, style);
             }
+            // Vertical drop from corner to arrow
+            for y in (junction_y + 1)..target_arrow_y {
+                canvas.set_edge_char(dest_x, y, style.edge_v, style);
+            }
         }
-        // Arrow right after label row for single-target
-        canvas.set(dest_x, single_arrow_y, style.arrow_down);
+        // Arrow right above target box
+        canvas.set(dest_x, target_arrow_y, style.arrow_down);
         return;
     }
 
@@ -117,13 +119,16 @@ pub fn route_expanded_edge(
     }
 
     // Phase 3 & 4: Draw drops and arrows for each destination
-    for &dest_x in &dest_centers {
-        // Draw vertical drop
-        for y in (junction_y + 1)..arrow_y {
+    // Arrow positioned right above each target box
+    for target in &visible_targets {
+        let dest_x = center_x(target);
+        let target_arrow_y = target.y.saturating_sub(1);
+        // Draw vertical drop from junction to arrow
+        for y in (junction_y + 1)..target_arrow_y {
             canvas.set_edge_char(dest_x, y, style.edge_v, style);
         }
-        // Place arrow
-        canvas.set(dest_x, arrow_y, style.arrow_down);
+        // Place arrow right above target box
+        canvas.set(dest_x, target_arrow_y, style.arrow_down);
     }
 }
 
