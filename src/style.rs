@@ -15,6 +15,7 @@ pub const COL_SPACING: usize = 3;
 pub const EDGE_STEM_HEIGHT: usize = 1; // Vertical stem from source box
 pub const EDGE_JUNCTION_HEIGHT: usize = 1; // Horizontal junction row
 pub const EDGE_DROP_HEIGHT: usize = 1; // Label row (drop for multi-target)
+pub const EDGE_STEM_WIDTH_LR: usize = 3; // Horizontal stem width for LR layouts
 pub const MAX_LABEL_WIDTH: usize = 20;
 
 pub const MAX_CANVAS_WIDTH: usize = 500;
