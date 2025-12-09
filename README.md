@@ -154,7 +154,7 @@ graph TD
 # Build
 cargo build
 
-# Test (runs 110 tests: unit, golden, integration, doc)
+# Test (runs 114 tests: unit, golden, integration, doc)
 cargo test
 
 # Run with debug layout (prints coordinates)
