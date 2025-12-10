@@ -19,6 +19,11 @@ lazy_static = "1.5"
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+criterion = "0.5"
+
+[[bench]]
+name = "rendering"
+harness = false
 
 [profile.release]
 lto = true

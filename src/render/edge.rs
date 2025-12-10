@@ -1,538 +1,452 @@
-//! Edge routing algorithms for connecting nodes.
+//! Unified, direction-agnostic edge routing.
 //!
-//! Handles three types of edge routing:
-//! - **Expanded**: Multi-target with vertical stems and junction spans (new)
-//! - **Straight**: Direct vertical line when nodes are aligned
-//! - **L-shaped**: Horizontal then vertical when nodes are offset
-//! - **Back-edge**: Cycle edges routed through the right gutter
+//! This module provides a single edge routing algorithm that works for all
+//! diagram orientations (TD, LR, BT, RL) using the orientation abstraction.
 
-use crate::graph::Node;
-use crate::style::{StyleChars, BOX_HEIGHT, EDGE_STEM_HEIGHT, RIGHT_GUTTER};
+use crate::graph::{Direction, Node};
+use crate::orientation::{OrientedCoords, is_before};
+use crate::style::{StyleChars, BOX_HEIGHT, STEM_LENGTH_VERTICAL, STEM_LENGTH_HORIZONTAL};
 
-use super::canvas::{is_arrow, is_vertical, Canvas};
+use super::canvas::{is_junction, Canvas};
 
-// ============================================================================
-// Public Edge Routing
-// ============================================================================
-
-/// Route edges from a single source to multiple targets using expanded layout.
-///
-/// Draws: stem → junction span → drops → arrows
-/// This creates clearer visual routing than compact L-shaped edges.
-pub fn route_expanded_edge(
+/// Route edges from a single source to multiple targets (divergence)
+/// Works for all orientations using the abstraction layer
+pub fn route_divergent_edges(
     from: &Node,
     to_nodes: &[&Node],
     canvas: &mut Canvas,
     style: &StyleChars,
+    direction: Direction,
 ) {
     if to_nodes.is_empty() || !canvas.is_visible(from) {
         return;
     }
 
+    let coords = OrientedCoords::new(direction);
+    
     // Filter to visible targets only
     let visible_targets: Vec<&&Node> = to_nodes.iter().filter(|n| canvas.is_visible(n)).collect();
     if visible_targets.is_empty() {
         return;
     }
 
-    let src_center_x = center_x(from);
-    let stem_start_y = from.y + BOX_HEIGHT;
-    let junction_y = stem_start_y + EDGE_STEM_HEIGHT;
+    // Calculate source center based on orientation
+    let (src_x, src_y) = get_node_center(from);
+    
+    // Calculate stem start position (edge of source box on primary axis)
+    let (stem_start_x, stem_start_y) = edge_exit_point(from, direction);
+    
+    // Calculate junction position (stem length away from source)
+    let stem_length = match direction {
+        Direction::LR | Direction::RL => STEM_LENGTH_HORIZONTAL,
+        _ => STEM_LENGTH_VERTICAL,
+    };
+    
+    let (junction_x, junction_y) = coords.advance(stem_start_x, stem_start_y, stem_length);
 
-    // Get destination centers, sorted left to right
-    let mut dest_centers: Vec<usize> = visible_targets.iter().map(|n| center_x(n)).collect();
-    dest_centers.sort();
+    // Get target centers and sort them on secondary axis
+    let mut target_positions: Vec<(usize, usize, &Node)> = visible_targets
+        .into_iter()
+        .map(|n| {
+            let (tx, ty) = get_node_center(n);
+            (tx, ty, *n)
+        })
+        .collect();
+    
+    target_positions.sort_by_key(|(x, y, _)| coords.secondary_coord(*x, *y));
 
-    // Single target: draw stem, optional horizontal, then arrow
-    // Arrow is always right above target box (target.y - 1)
-    if dest_centers.len() == 1 {
-        let target = visible_targets[0];
-        let dest_x = dest_centers[0];
-        let target_arrow_y = target.y.saturating_sub(1);
-
-        if src_center_x == dest_x {
-            // Aligned: draw vertical stem down to arrow
-            for y in stem_start_y..target_arrow_y {
-                canvas.set_edge_char(dest_x, y, style.edge_v, style);
-            }
+    // Single target: direct route
+    if target_positions.len() == 1 {
+        let (target_x, target_y, target) = (target_positions[0].0, target_positions[0].1, target_positions[0].2);
+        let (arrow_x, arrow_y) = edge_entry_point(target, direction);
+        
+        let src_secondary = coords.secondary_coord(src_x, src_y);
+        let target_secondary = coords.secondary_coord(target_x, target_y);
+        
+        if src_secondary == target_secondary {
+            // Aligned: straight line on primary axis
+            draw_line_primary(stem_start_x, stem_start_y, arrow_x, arrow_y, &coords, canvas, style);
         } else {
-            // Not aligned: L-shaped route
-            // Stem from source
-            for y in stem_start_y..junction_y {
-                canvas.set_edge_char(src_center_x, y, style.edge_v, style);
-            }
-            // Horizontal span - skip corner positions
-            let (left, right) = if src_center_x < dest_x {
-                (src_center_x, dest_x)
-            } else {
-                (dest_x, src_center_x)
-            };
-            for x in left..=right {
-                if x != src_center_x && x != dest_x {
-                    canvas.set_edge_char(x, junction_y, style.edge_h, style);
-                }
-            }
-            // Corners
-            if src_center_x < dest_x {
-                canvas.set_edge_char(src_center_x, junction_y, style.corner_ul, style);
-                canvas.set_edge_char(dest_x, junction_y, style.corner_dr, style);
-            } else {
-                canvas.set_edge_char(src_center_x, junction_y, style.corner_ur, style);
-                canvas.set_edge_char(dest_x, junction_y, style.corner_dl, style);
-            }
-            // Vertical drop from corner to arrow
-            for y in (junction_y + 1)..target_arrow_y {
-                canvas.set_edge_char(dest_x, y, style.edge_v, style);
-            }
+            // L-shaped route
+            // 1. Stem from source
+            draw_line_primary(stem_start_x, stem_start_y, junction_x, junction_y, &coords, canvas, style);
+            
+            // 2. Turn at junction
+            let going_before = is_before(src_secondary, target_secondary);
+            let corner = coords.corner_start_to_secondary(going_before, style);
+            canvas.set(junction_x, junction_y, corner);
+            
+            // 3. Secondary span to target column
+            draw_line_secondary(junction_x, junction_y, junction_x, target_y, &coords, canvas, style);
+            
+            // 4. Turn to target
+            let corner2 = coords.corner_secondary_to_end(going_before, style);
+            let (corner2_x, corner2_y) = (
+                coords.secondary_coord(junction_x, arrow_x),
+                coords.secondary_coord(junction_y, arrow_y)
+            );
+            canvas.set(corner2_x, corner2_y, corner2);
+            
+            // 5. Final segment to arrow
+            let (seg_start_x, seg_start_y) = coords.advance(corner2_x, corner2_y, 1);
+            draw_line_primary(seg_start_x, seg_start_y, arrow_x, arrow_y, &coords, canvas, style);
         }
-        // Arrow right above target box
-        canvas.set(dest_x, target_arrow_y, style.arrow_down);
+        
+        // Arrow at target
+        canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
         return;
     }
 
-    // Multiple targets: stem → junction → drops → arrows
-    let left_x = *dest_centers.first().unwrap();
-    let right_x = *dest_centers.last().unwrap();
-    let span_left = left_x.min(src_center_x);
-    let span_right = right_x.max(src_center_x);
+    // Multiple targets: draw branching structure
 
-    // Phase 1: Draw source stem (from source center down to junction)
-    for y in stem_start_y..junction_y {
-        canvas.set_edge_char(src_center_x, y, style.edge_v, style);
+    // 1. Draw stem from source to junction (not including junction)
+    let stem_length = match direction {
+        Direction::LR | Direction::RL => STEM_LENGTH_HORIZONTAL,
+        _ => STEM_LENGTH_VERTICAL,
+    };
+    for i in 0..stem_length {
+        let (px, py) = coords.advance(stem_start_x, stem_start_y, i);
+        canvas.set_edge_char(px, py, coords.primary_edge_char(style), style);
     }
+    
+    // 2. Calculate span on secondary axis
+    let first_secondary = coords.secondary_coord(target_positions[0].0, target_positions[0].1);
+    let last_secondary = coords.secondary_coord(
+        target_positions[target_positions.len()-1].0,
+        target_positions[target_positions.len()-1].1
+    );
+    let src_secondary = coords.secondary_coord(src_x, src_y);
+    
+    let span_start = first_secondary.min(src_secondary);
+    let span_end = last_secondary.max(src_secondary);
+    
+    // 3. Draw horizontal junction span with corners and junction
+    for pos in span_start..=span_end {
+        let (span_x, span_y) = coords.with_secondary(junction_x, junction_y, pos);
 
-    // Phase 2: Draw horizontal junction span with corners and junction
-    for x in span_left..=span_right {
-        let c = if x == src_center_x {
-            style.junction_up
-        } else if x == span_left {
-            style.corner_dl
-        } else if x == span_right {
-            style.corner_dr
+        let c = if pos == src_secondary {
+            // Junction at source position - stem meets vertical span
+            // For LR: stem comes from LEFT, span goes UP/DOWN → ┤ (junction_left)
+            // For RL: stem comes from RIGHT, span goes UP/DOWN → ├ (junction_right)
+            match direction {
+                Direction::TD | Direction::TB => style.junction_up,    // ┴
+                Direction::LR => style.junction_left,                  // ┤
+                Direction::RL => style.junction_right,                 // ├
+                Direction::BT => style.junction_down,                  // ┬
+            }
+        } else if pos == span_start {
+            // Corner at top/left end of span
+            match direction {
+                Direction::TD | Direction::TB => style.corner_dl,  // ┌ (opens down-right)
+                Direction::LR => style.corner_dl,  // ┌ (opens down-right for vertical span)
+                Direction::RL => style.corner_dr,  // ┐ (opens down-left for vertical span)
+                Direction::BT => style.corner_ul,  // └ (opens up-right)
+            }
+        } else if pos == span_end {
+            // Corner at bottom/right end of span
+            match direction {
+                Direction::TD | Direction::TB => style.corner_dr,  // ┐ (opens down-left)
+                Direction::LR => style.corner_ul,  // └ (opens up-right for vertical span)
+                Direction::RL => style.corner_ur,  // ┘ (opens up-left for vertical span)
+                Direction::BT => style.corner_ur,  // ┘ (opens up-left)
+            }
         } else {
-            style.edge_h
+            coords.secondary_edge_char(style)
         };
-        canvas.set_edge_char(x, junction_y, c, style);
+        canvas.set_edge_char(span_x, span_y, c, style);
     }
-
-    // Phase 3 & 4: Draw drops and arrows for each destination
-    // Arrow positioned right above each target box
-    for target in &visible_targets {
-        let dest_x = center_x(target);
-        let target_arrow_y = target.y.saturating_sub(1);
-        // Draw vertical drop from junction to arrow
-        for y in (junction_y + 1)..target_arrow_y {
-            canvas.set_edge_char(dest_x, y, style.edge_v, style);
+    
+    // 4. Draw drops and arrows for each target
+    for (target_x, target_y, target) in &target_positions {
+        let target_secondary = coords.secondary_coord(*target_x, *target_y);
+        let (arrow_x, arrow_y) = edge_entry_point(target, direction);
+        
+        // Draw vertical drop from junction+1 to arrow
+        let (drop_x, drop_y) = coords.with_secondary(junction_x, junction_y, target_secondary);
+        let (drop_start_x, drop_start_y) = coords.advance(drop_x, drop_y, 1);
+        
+        // Only draw if there's actually a drop to draw
+        if drop_start_x != arrow_x || drop_start_y != arrow_y {
+            draw_line_primary(drop_start_x, drop_start_y, arrow_x, arrow_y, &coords, canvas, style);
         }
-        // Place arrow right above target box
-        canvas.set(dest_x, target_arrow_y, style.arrow_down);
+        
+        // Arrow
+        canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
     }
 }
 
-/// Route an edge from source to target node.
-///
-/// Handles three cases:
-/// 1. Straight vertical line (nodes nearly aligned)
-/// 2. Reuse existing path (when blocked by intervening node)
-/// 3. L-shaped routing (horizontal then vertical)
-pub fn route_edge(
-    from: &Node,
-    to: &Node,
-    edge_index: usize,
+// Helper: Draw lines from sources to merge point (on primary axis)
+fn draw_source_lines_to_merge(
+    source_positions: &[(usize, usize, &Node)],
+    merge_x: usize,
+    merge_y: usize,
+    coords: &OrientedCoords,
     canvas: &mut Canvas,
     style: &StyleChars,
-    all_nodes: &[&Node],
-) {
-    if !canvas.is_visible(from) || !canvas.is_visible(to) {
-        return;
-    }
+    direction: Direction,
+) -> (usize, usize) {
+    let mut span_start = usize::MAX;
+    let mut span_end = 0;
 
-    let start_x = center_x(from);
-    let start_y = from.y + BOX_HEIGHT;
-    let end_x = center_x(to);
-    let end_y = to.y.saturating_sub(1);
+    for &(src_x, src_y, source) in source_positions {
+        let (edge_x, edge_y) = edge_exit_point(source, direction);
+        let src_secondary = coords.secondary_coord(src_x, src_y);
 
-    // Check if vertical line at x would pass through an intervening node
-    let is_blocked = |x: usize| {
-        all_nodes.iter().any(|n| {
-            n.id != from.id
-                && n.id != to.id
-                && n.y + BOX_HEIGHT > start_y
-                && n.y < end_y
-                && x >= n.x
-                && x < n.x + n.width
-        })
-    };
+        // Update span bounds
+        span_start = span_start.min(src_secondary);
+        span_end = span_end.max(src_secondary);
 
-    let x_diff = (start_x as isize - end_x as isize).unsigned_abs();
+        // Line from source to just before merge point (along primary axis)
+        let (merge_col_x, merge_col_y) = coords.with_secondary(merge_x, merge_y, src_secondary);
 
-    // Case 1: Nearly aligned with clear path - draw straight vertical
-    if x_diff <= 1 && !is_blocked(end_x) {
-        for y in start_y..end_y {
-            canvas.set_edge_char(end_x, y, style.edge_v, style);
+        // Draw line from source to merge span (direction-aware)
+        match direction {
+            Direction::TD | Direction::TB => {
+                // Vertical layout: draw vertical line
+                if edge_y < merge_col_y {
+                    for y in edge_y..merge_col_y {
+                        canvas.set_edge_char(src_x, y, style.edge_v, style);
+                    }
+                }
+            }
+            Direction::LR => {
+                // LR layout: draw horizontal line from source right edge to merge column
+                if edge_x < merge_col_x {
+                    for x in edge_x..merge_col_x {
+                        canvas.set_edge_char(x, src_y, style.edge_h, style);
+                    }
+                }
+            }
+            Direction::RL => {
+                // RL layout: draw horizontal line from source left edge to merge column
+                if merge_col_x < edge_x {
+                    for x in (merge_col_x + 1)..=edge_x {
+                        canvas.set_edge_char(x, src_y, style.edge_h, style);
+                    }
+                }
+            }
+            Direction::BT => {
+                // BT layout: draw vertical line upward
+                if merge_col_y < edge_y {
+                    for y in (merge_col_y + 1)..=edge_y {
+                        canvas.set_edge_char(src_x, y, style.edge_v, style);
+                    }
+                }
+            }
         }
-        canvas.set(end_x, end_y, style.arrow_down);
-        return;
+
+        // Corner where source line meets merge span
+        let corner_char = get_convergence_corner(src_secondary, span_start, span_end, direction, style, coords);
+        canvas.set_edge_char(merge_col_x, merge_col_y, corner_char, style);
     }
 
-    // Case 2: Blocked - check if existing path reaches target (edge sorting ensures this)
-    if is_blocked(end_x) {
-        let existing = canvas.get(end_x, end_y.saturating_sub(1));
-        if is_vertical(existing, style) || is_arrow(existing) {
-            // Path exists - just add arrow
-            canvas.set(end_x, end_y, style.arrow_down);
-            return;
+    (span_start, span_end)
+}
+
+/// Get the appropriate corner character for convergence based on position on span.
+fn get_convergence_corner(
+    src_secondary: usize,
+    span_start: usize,
+    span_end: usize,
+    direction: Direction,
+    style: &StyleChars,
+    coords: &OrientedCoords,
+) -> char {
+    if src_secondary == span_start {
+        // Topmost/leftmost position on span - edge from source turns down/right
+        match direction {
+            Direction::TD | Direction::TB => style.corner_ul, // ┌ - from above, turns right
+            Direction::LR => style.corner_dr,                 // ┐ - from left, turns down
+            Direction::RL => style.corner_dl,                 // ┌ - from right, turns down
+            Direction::BT => style.corner_dl,                 // └ - from below, turns right
         }
-    }
-
-    // Case 3: L-shaped routing needed
-    let mid_y = calculate_mid_y(start_y, end_y, edge_index);
-
-    // Merge with adjacent vertical line if exists
-    let use_x = [start_x.saturating_sub(1), start_x + 1, start_x]
-        .into_iter()
-        .find(|&x| {
-            let c = canvas.get(x, start_y);
-            x != start_x && (is_vertical(c, style) || is_arrow(c))
-        })
-        .unwrap_or(start_x);
-
-    // Draw vertical line down from source to mid_y
-    for y in start_y..mid_y {
-        canvas.set_edge_char(use_x, y, style.edge_v, style);
-    }
-
-    // Draw horizontal line at mid_y with corners
-    let (left, right) = if use_x < end_x {
-        (use_x, end_x)
+    } else if src_secondary == span_end {
+        // Bottommost/rightmost position on span - edge from source turns up/left
+        match direction {
+            Direction::TD | Direction::TB => style.corner_ur, // ┐ - from above, turns left
+            Direction::LR => style.corner_ur,                 // ┘ - from left, turns up
+            Direction::RL => style.corner_ul,                 // └ - from right, turns up
+            Direction::BT => style.corner_dr,                 // ┘ - from below, turns left
+        }
     } else {
-        (end_x, use_x)
-    };
-    for x in left..=right {
-        canvas.set_edge_char(x, mid_y, style.edge_h, style);
-    }
-
-    // Place corners
-    canvas.set_edge_char(use_x, mid_y, corner_char(use_x, end_x, true, style), style);
-    canvas.set_edge_char(end_x, mid_y, corner_char(end_x, use_x, false, style), style);
-
-    // Draw vertical line down to target
-    for y in (mid_y + 1)..end_y {
-        canvas.set_edge_char(end_x, y, style.edge_v, style);
-    }
-
-    // Place arrow at target
-    if mid_y < end_y {
-        canvas.set(end_x, end_y, style.arrow_down);
+        // Middle sources get junction
+        coords.junction_merge(style)
     }
 }
 
-/// Route a back-edge (cycle) through the right gutter.
-///
-/// Back-edges go: right from source -> down/up in gutter -> left to target
-pub fn route_back_edge(from: &Node, to: &Node, canvas: &mut Canvas, style: &StyleChars) {
-    if !canvas.is_visible(from) || !canvas.is_visible(to) {
+// Helper: Draw the horizontal merge line
+fn draw_merge_line(
+    merge_x: usize,
+    merge_y: usize,
+    span_start: usize,
+    span_end: usize,
+    coords: &OrientedCoords,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+) {
+    for pos in span_start..=span_end {
+        let (span_x, span_y) = coords.with_secondary(merge_x, merge_y, pos);
+        let c = canvas.get(span_x, span_y);
+        
+        if c == ' ' || (is_secondary_line(c, coords, style) && !is_junction(c, style)) {
+            canvas.set_edge_char(span_x, span_y, coords.secondary_edge_char(style), style);
+        }
+    }
+}
+
+/// Route edges from multiple sources to a single target (convergence)
+pub fn route_convergent_edges(
+    from_nodes: &[&Node],
+    to: &Node,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    direction: Direction,
+) {
+    if from_nodes.is_empty() || !canvas.is_visible(to) {
         return;
     }
 
-    if canvas.width <= RIGHT_GUTTER {
+    let coords = OrientedCoords::new(direction);
+    
+    // Filter to visible sources
+    let visible_sources: Vec<&Node> = from_nodes.iter()
+        .filter(|n| canvas.is_visible(n))
+        .copied()
+        .collect();
+    if visible_sources.is_empty() {
         return;
     }
 
-    let gutter_x = canvas.width - 2;
-
-    let from_y = from.y + BOX_HEIGHT / 2;
-    let to_y = to.y + BOX_HEIGHT / 2;
-
-    // Horizontal line from source to gutter
-    for x in (from.x + from.width)..gutter_x {
-        canvas.set_edge_char(x, from_y, style.back_h, style);
-    }
-
-    // Vertical line in gutter
-    let (top, bottom) = if from_y < to_y {
-        (from_y, to_y)
-    } else {
-        (to_y, from_y)
+    // Get target position
+    let (target_x, target_y) = get_node_center(to);
+    let (arrow_x, arrow_y) = edge_entry_point(to, direction);
+    
+    // Calculate merge point (before target on primary axis)
+    let merge_distance = match direction {
+        Direction::LR | Direction::RL => STEM_LENGTH_HORIZONTAL,
+        _ => STEM_LENGTH_VERTICAL,
     };
-    for y in top..=bottom {
-        canvas.set_edge_char(gutter_x, y, style.back_v, style);
-    }
-
-    // Horizontal line from gutter to target
-    for x in (to.x + to.width)..gutter_x {
-        canvas.set_edge_char(x, to_y, style.back_h, style);
-    }
-
-    // Arrow pointing into target
-    canvas.set(to.x + to.width, to_y, style.arrow_left);
+    let (merge_x, merge_y) = coords.retreat(arrow_x, arrow_y, merge_distance);
+    
+    // Get source positions sorted on secondary axis
+    let mut source_positions: Vec<(usize, usize, &Node)> = visible_sources
+        .iter()
+        .map(|n| {
+            let (sx, sy) = get_node_center(n);
+            (sx, sy, *n)
+        })
+        .collect();
+    
+    source_positions.sort_by_key(|(x, y, _)| coords.secondary_coord(*x, *y));
+    
+    // Calculate target position on secondary axis
+    let target_secondary = coords.secondary_coord(target_x, target_y);
+    
+    // Draw from each source to merge point
+    let (actual_span_start, actual_span_end) = draw_source_lines_to_merge(
+        &source_positions,
+        merge_x,
+        merge_y,
+        &coords,
+        canvas,
+        style,
+        direction,
+    );
+    
+    // Expand span to include target if needed
+    let final_span_start = actual_span_start.min(target_secondary);
+    let final_span_end = actual_span_end.max(target_secondary);
+    
+    // Draw horizontal merge line
+    draw_merge_line(merge_x, merge_y, final_span_start, final_span_end, &coords, canvas, style);
+    
+    // Junction at merge point and line to target
+    // The junction shows where edges from above/below exit toward the target
+    let junction_char = match direction {
+        Direction::TD | Direction::TB => style.junction_down,  // ┬ - edges from left/right, exits down
+        Direction::LR => style.junction_right,                 // ├ - edges from above/below, exits right
+        Direction::RL => style.junction_left,                  // ┤ - edges from above/below, exits left
+        Direction::BT => style.junction_up,                    // ┴ - edges from left/right, exits up
+    };
+    canvas.set_edge_char(merge_x, merge_y, junction_char, style);
+    let (final_start_x, final_start_y) = coords.advance(merge_x, merge_y, 1);
+    draw_line_primary(final_start_x, final_start_y, arrow_x, arrow_y, &coords, canvas, style);
+    
+    // Arrow
+    canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
 }
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
 
-/// Calculate the visual center x-coordinate of a node.
-/// Uses (width-1)/2 for proper centering of odd-width boxes.
-#[inline]
-pub fn center_x(node: &Node) -> usize {
-    node.x + (node.width.saturating_sub(1)) / 2
+fn get_node_center(node: &Node) -> (usize, usize) {
+    (node.center_x(), node.center_y())
 }
 
-/// Calculate the y-coordinate for the horizontal segment of an L-shaped edge.
-/// Spreads multiple edges slightly to avoid perfect overlap.
-fn calculate_mid_y(start_y: usize, end_y: usize, edge_index: usize) -> usize {
-    let base_mid = start_y + (end_y.saturating_sub(start_y)) / 2;
-    let offset = (edge_index % 3) as isize - 1; // -1, 0, or 1
-    let mid_y = (base_mid as isize + offset).max(start_y as isize + 1) as usize;
-    mid_y.min(end_y.saturating_sub(1)) // Leave room for vertical to target
-}
-
-/// Select the appropriate corner character for an L-shaped edge.
-///
-/// - `from_x`: position where we're placing the corner
-/// - `to_x`: position we're connecting to
-/// - `is_source`: true for source corner (vertical->horizontal), false for target (horizontal->vertical)
-fn corner_char(from_x: usize, to_x: usize, is_source: bool, s: &StyleChars) -> char {
-    match (from_x < to_x, is_source) {
-        (true, true) => s.corner_ul,   // Source going right: └
-        (false, true) => s.corner_ur,  // Source going left:  ┘
-        (false, false) => s.corner_dr, // Target from left:   ┐
-        (true, false) => s.corner_dl,  // Target from right:  ┌
+/// Where an incoming edge enters a target node (arrow position).
+fn edge_entry_point(node: &Node, direction: Direction) -> (usize, usize) {
+    match direction {
+        Direction::TD | Direction::TB => (node.center_x(), node.y.saturating_sub(1)),
+        Direction::LR => (node.x.saturating_sub(1), node.center_y()),
+        Direction::RL => (node.x + node.width, node.center_y()),
+        Direction::BT => (node.center_x(), node.y + BOX_HEIGHT),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::canvas::Canvas;
-    use super::*;
-    use crate::style::{BaseStyle, CompositeStyle};
+/// Where an outgoing edge exits a source node (stem start position).
+fn edge_exit_point(node: &Node, direction: Direction) -> (usize, usize) {
+    match direction {
+        Direction::TD | Direction::TB => (node.center_x(), node.y + BOX_HEIGHT),
+        Direction::LR => (node.x + node.width, node.center_y()),
+        Direction::RL => (node.x.saturating_sub(1), node.center_y()),
+        Direction::BT => (node.center_x(), node.y.saturating_sub(1)),
+    }
+}
 
-    fn make_node(id: &str, x: usize, y: usize, width: usize) -> Node {
-        Node {
-            id: id.into(),
-            label: id.into(),
-            shape: crate::graph::NodeShape::Rectangle,
-            click_target: None,
-            x,
-            y,
-            width,
-            rank: 0,
+fn draw_line_primary(x1: usize, y1: usize, x2: usize, y2: usize, coords: &OrientedCoords, canvas: &mut Canvas, style: &StyleChars) {
+    let char = coords.primary_edge_char(style);
+    
+    match coords.primary {
+        crate::orientation::Axis::Horizontal => {
+            let (start, end) = if x1 < x2 { (x1, x2) } else { (x2, x1) };
+            for x in start..=end {
+                canvas.set_edge_char(x, y1, char, style);
+            }
+        }
+        crate::orientation::Axis::Vertical => {
+            let (start, end) = if y1 < y2 { (y1, y2) } else { (y2, y1) };
+            for y in start..=end {
+                canvas.set_edge_char(x1, y, char, style);
+            }
         }
     }
+}
 
-    fn unicode_chars() -> StyleChars {
-        CompositeStyle::default().to_style_chars(BaseStyle::Unicode)
+fn draw_line_secondary(x1: usize, y1: usize, x2: usize, y2: usize, coords: &OrientedCoords, canvas: &mut Canvas, style: &StyleChars) {
+    let char = coords.secondary_edge_char(style);
+    
+    match coords.secondary {
+        crate::orientation::Axis::Horizontal => {
+            let (start, end) = if x1 < x2 { (x1, x2) } else { (x2, x1) };
+            for x in start..=end {
+                if x != x1 && x != x2 {  // Skip corners
+                    canvas.set_edge_char(x, y1, char, style);
+                }
+            }
+        }
+        crate::orientation::Axis::Vertical => {
+            let (start, end) = if y1 < y2 { (y1, y2) } else { (y2, y1) };
+            for y in start..=end {
+                if y != y1 && y != y2 {  // Skip corners
+                    canvas.set_edge_char(x1, y, char, style);
+                }
+            }
+        }
     }
+}
 
-    // ==========================================================================
-    // Expanded Edge Routing Tests
-    // ==========================================================================
-
-    #[test]
-    fn expanded_edge_connects_when_targets_on_one_side() {
-        let chars = unicode_chars();
-        let mut canvas = Canvas::new(80, 40);
-
-        let src = make_node("S", 2, 2, 7);
-        let t1 = make_node("T1", 30, 12, 7);
-        let t2 = make_node("T2", 40, 12, 7);
-
-        let stem_start_y = src.y + BOX_HEIGHT;
-        let junction_y = stem_start_y + EDGE_STEM_HEIGHT;
-
-        route_expanded_edge(&src, &[&t1, &t2], &mut canvas, &chars);
-
-        // Junction row must include the source center so the stem connects
-        let stem_x = center_x(&src);
-        assert_eq!(
-            canvas.get(stem_x, junction_y),
-            chars.junction_up,
-            "expected stem to connect into junction span"
-        );
-    }
-
-    #[test]
-    fn expanded_edge_single_target_aligned() {
-        let chars = unicode_chars();
-        let mut canvas = Canvas::new(80, 40);
-
-        // Source and target aligned vertically
-        let src = make_node("S", 10, 2, 7);
-        let target = make_node("T", 10, 12, 7);
-
-        route_expanded_edge(&src, &[&target], &mut canvas, &chars);
-
-        // Arrow should be right above target box
-        let arrow_y = target.y.saturating_sub(1);
-        let edge_x = center_x(&target);
-        assert_eq!(canvas.get(edge_x, arrow_y), chars.arrow_down);
-
-        // Vertical line should connect source to arrow
-        let stem_start_y = src.y + BOX_HEIGHT;
-        assert_eq!(canvas.get(edge_x, stem_start_y), chars.edge_v);
-    }
-
-    #[test]
-    fn expanded_edge_single_target_offset() {
-        let chars = unicode_chars();
-        let mut canvas = Canvas::new(80, 40);
-
-        // Source and target NOT aligned (L-shaped routing)
-        let src = make_node("S", 5, 2, 7);
-        let target = make_node("T", 30, 12, 7);
-
-        route_expanded_edge(&src, &[&target], &mut canvas, &chars);
-
-        // Arrow should be right above target box
-        let arrow_y = target.y.saturating_sub(1);
-        let target_x = center_x(&target);
-        assert_eq!(canvas.get(target_x, arrow_y), chars.arrow_down);
-
-        // Junction should have corner characters
-        let junction_y = src.y + BOX_HEIGHT + EDGE_STEM_HEIGHT;
-        let src_x = center_x(&src);
-
-        // Source corner (going right)
-        assert_eq!(canvas.get(src_x, junction_y), chars.corner_ul);
-        // Target corner (coming from left)
-        assert_eq!(canvas.get(target_x, junction_y), chars.corner_dr);
-    }
-
-    #[test]
-    fn expanded_edge_empty_targets_is_noop() {
-        let chars = unicode_chars();
-        let mut canvas = Canvas::new(80, 40);
-        let src = make_node("S", 10, 2, 7);
-
-        route_expanded_edge(&src, &[], &mut canvas, &chars);
-
-        // Canvas should still be empty (only spaces)
-        assert_eq!(canvas.get(center_x(&src), src.y + BOX_HEIGHT), ' ');
-    }
-
-    // ==========================================================================
-    // Back-Edge Routing Tests
-    // ==========================================================================
-
-    #[test]
-    fn back_edge_routes_through_gutter() {
-        let chars = unicode_chars();
-        let mut canvas = Canvas::new(80, 40);
-
-        let src = make_node("S", 10, 15, 7);
-        let target = make_node("T", 10, 2, 7); // Target is ABOVE source (back-edge)
-
-        route_back_edge(&src, &target, &mut canvas, &chars);
-
-        // Back-edge uses right gutter
-        let gutter_x = canvas.width - 2;
-
-        // Vertical line should exist in gutter
-        let src_mid_y = src.y + BOX_HEIGHT / 2;
-        let target_mid_y = target.y + BOX_HEIGHT / 2;
-        assert_eq!(canvas.get(gutter_x, src_mid_y), chars.back_v);
-        assert_eq!(canvas.get(gutter_x, target_mid_y), chars.back_v);
-
-        // Arrow should point into target
-        assert_eq!(
-            canvas.get(target.x + target.width, target_mid_y),
-            chars.arrow_left
-        );
-    }
-
-    #[test]
-    fn back_edge_invisible_nodes_is_noop() {
-        let chars = unicode_chars();
-        let mut canvas = Canvas::new(20, 20); // Small canvas
-
-        // Nodes outside canvas bounds
-        let src = make_node("S", 100, 100, 7);
-        let target = make_node("T", 100, 50, 7);
-
-        route_back_edge(&src, &target, &mut canvas, &chars);
-
-        // Nothing should be drawn (gutter would be at x=18)
-        assert_eq!(canvas.get(18, 10), ' ');
-    }
-
-    // ==========================================================================
-    // Helper Function Tests
-    // ==========================================================================
-
-    #[test]
-    fn center_x_calculates_correctly() {
-        // Odd width: (7-1)/2 = 3, so center is at x+3
-        let node_odd = make_node("A", 10, 0, 7);
-        assert_eq!(center_x(&node_odd), 13); // 10 + 3
-
-        // Even width: (8-1)/2 = 3, so center is at x+3
-        let node_even = make_node("B", 10, 0, 8);
-        assert_eq!(center_x(&node_even), 13); // 10 + 3
-
-        // Width 1: (1-1)/2 = 0, center is at x
-        let node_min = make_node("C", 10, 0, 1);
-        assert_eq!(center_x(&node_min), 10);
-    }
-
-    #[test]
-    fn corner_char_selects_correct_direction() {
-        let s = unicode_chars();
-
-        // Source going right: └
-        assert_eq!(corner_char(5, 10, true, &s), s.corner_ul);
-        // Source going left: ┘
-        assert_eq!(corner_char(10, 5, true, &s), s.corner_ur);
-        // Target from left: ┐
-        assert_eq!(corner_char(10, 5, false, &s), s.corner_dr);
-        // Target from right: ┌
-        assert_eq!(corner_char(5, 10, false, &s), s.corner_dl);
-    }
-
-    // ==========================================================================
-    // Route Edge Tests (L-shaped routing)
-    // ==========================================================================
-
-    #[test]
-    fn route_edge_straight_vertical() {
-        let chars = unicode_chars();
-        let mut canvas = Canvas::new(80, 40);
-
-        let src = make_node("S", 10, 2, 7);
-        let target = make_node("T", 10, 12, 7);
-        let all_nodes = [&src, &target];
-
-        route_edge(&src, &target, 0, &mut canvas, &chars, &all_nodes);
-
-        // Arrow at target
-        let arrow_y = target.y.saturating_sub(1);
-        let edge_x = center_x(&target);
-        assert_eq!(canvas.get(edge_x, arrow_y), chars.arrow_down);
-
-        // Vertical line connecting
-        let start_y = src.y + BOX_HEIGHT;
-        assert_eq!(canvas.get(edge_x, start_y), chars.edge_v);
-    }
-
-    #[test]
-    fn route_edge_l_shaped_horizontal_then_vertical() {
-        let chars = unicode_chars();
-        let mut canvas = Canvas::new(80, 40);
-
-        let src = make_node("S", 5, 2, 7);
-        let target = make_node("T", 30, 12, 7);
-        let all_nodes = [&src, &target];
-
-        route_edge(&src, &target, 0, &mut canvas, &chars, &all_nodes);
-
-        // Arrow at target
-        let arrow_y = target.y.saturating_sub(1);
-        let target_x = center_x(&target);
-        assert_eq!(canvas.get(target_x, arrow_y), chars.arrow_down);
-
-        // Source should have vertical stem
-        let src_x = center_x(&src);
-        let start_y = src.y + BOX_HEIGHT;
-        assert_eq!(canvas.get(src_x, start_y), chars.edge_v);
-    }
+fn is_secondary_line(c: char, coords: &OrientedCoords, style: &StyleChars) -> bool {
+    let expected = coords.secondary_edge_char(style);
+    c == expected
 }
