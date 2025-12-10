@@ -695,7 +695,7 @@ mod tests {
             "tests/fixtures/inputs/parse_forward_td.md",
             "tests/fixtures/inputs/flow_branch_td.md",
             "tests/fixtures/inputs/config_style_td.md",
-            "tests/fixtures/inputs/error_subgraph_td.md",
+            "tests/fixtures/inputs/subgraph_basic_td.md",
         ];
 
         for path in fixtures {
