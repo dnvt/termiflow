@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 // Use the termiflow library
-use termiflow::{parse, render_canvas, waterfall, CompositeStyle, Config};
+use termiflow::{layout_spike, parse, render_canvas, waterfall, CompositeStyle, Config};
 
 /// Interactive TUI graph explorer - jq for diagrams
 #[derive(Parser)]
@@ -49,6 +49,10 @@ pub struct Cli {
     /// Dump layout coordinates (debugging)
     #[arg(long, hide = true)]
     pub debug_layout: bool,
+
+    /// Use the experimental layout/routing spike instead of the stable waterfall
+    #[arg(long, hide = true)]
+    pub experimental_layout: bool,
 }
 
 
@@ -122,7 +126,15 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     let config = builder.build(&parse_result.config);
 
     // Run layout algorithm (may add warnings)
-    let graph = waterfall(parse_result.graph)?;
+    let graph = if cli.experimental_layout {
+        layout_spike::apply_spike_layout(
+            parse_result.graph,
+            None,
+            termiflow::layout_spike::CoarseLayoutConfig::default(),
+        )?
+    } else {
+        waterfall(parse_result.graph)?
+    };
 
     // Print any warnings to stderr (parser + layout)
     for warning in &graph.warnings {
