@@ -598,47 +598,39 @@ fn golden_config_style_td_ascii() {
 }
 
 // ============================================================================
-// Error Tests - Unsupported features
+// Subgraph Tests - Basic subgraph parsing (rendering is Phase 5)
 // ============================================================================
 
 #[test]
-fn golden_error_subgraph_td_unicode() {
-    let (stdout, stderr) = run_termiflow(&[
+fn golden_subgraph_basic_td_unicode() {
+    // Subgraphs are parsed but visual rendering is not yet implemented
+    // This test verifies parsing works - nodes inside subgraph are rendered normally
+    let (stdout, _stderr) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
-        "tests/fixtures/inputs/error_subgraph_td.md",
+        "tests/fixtures/inputs/subgraph_basic_td.md",
     ]);
 
-    let expected_stdout = include_str!("fixtures/expected/error_subgraph_td.unicode.txt");
-    assert_eq!(stdout, expected_stdout, "Output mismatch for error_subgraph_td.md");
-
-    let expected_stderr = include_str!("fixtures/expected/error_subgraph_td.unicode.err");
-    assert!(
-        stderr.contains(expected_stderr.trim()),
-        "Expected warning '{}' not found in stderr: '{}'",
-        expected_stderr.trim(),
-        stderr
-    );
+    let expected = include_str!("fixtures/expected/subgraph_basic_td_unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for subgraph_basic_td.md");
 }
 
 #[test]
-fn golden_error_subgraph_td_ascii() {
-    let (stdout, stderr) = run_termiflow(&[
+fn golden_subgraph_basic_td_ascii() {
+    let (stdout, _stderr) = run_termiflow(&[
         "--print",
         "--style",
         "ascii",
-        "tests/fixtures/inputs/error_subgraph_td.md",
+        "tests/fixtures/inputs/subgraph_basic_td.md",
     ]);
-    let expected = include_str!("fixtures/expected/error_subgraph_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for error_subgraph_td.md (ASCII)");
-
-    assert!(
-        stderr.contains("Subgraphs not supported"),
-        "Expected warning about unsupported subgraph in stderr, got: {}",
-        stderr
-    );
+    let expected = include_str!("fixtures/expected/subgraph_basic_td_ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for subgraph_basic_td.md (ASCII)");
 }
+
+// ============================================================================
+// Error Tests - Unsupported features
+// ============================================================================
 
 #[test]
 fn golden_error_sequence_unicode() {

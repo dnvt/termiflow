@@ -1,7 +1,6 @@
 graph TD
+subgraph SG [My Group]
 A[Node A]
 B[Node B]
-subgraph Cluster
-C[Node C]
-end
 A --> B
+end

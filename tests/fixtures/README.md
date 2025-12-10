@@ -17,7 +17,7 @@ fixtures/
 [category]_[name]_[direction].md
 ```
 
-- **Categories**: `flow`, `edge`, `label`, `shape`, `parse`, `config`, `error`
+- **Categories**: `flow`, `edge`, `label`, `shape`, `parse`, `config`, `subgraph`, `error`
 - **Direction**: `td` (top-down), `lr` (left-right), `bt` (bottom-top), `rl` (right-left)
 
 ## Test Inventory
@@ -43,12 +43,17 @@ fixtures/
 | `shape_all_td` | All 9 node shapes |
 | `shape_database_td` | Database cylinder shape |
 
+### Subgraph Tests
+
+| Test Name | Description |
+|-----------|-------------|
+| `subgraph_basic_td` | Basic subgraph parsing (visual rendering Phase 5) |
+
 ### Error Tests
 
 | Test Name | Description |
 |-----------|-------------|
 | `error_sequence` | Unsupported diagram type |
-| `error_subgraph_td` | Subgraph syntax (not supported) |
 
 ## Test Counts
 
