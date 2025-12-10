@@ -291,7 +291,7 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
             // Add extra spacing for divergent/convergent edges (junction/merge span needs room)
             // STEM_LENGTH_HORIZONTAL (3) + junction span (1) + box-edge junction (1) + padding (2) = 7
             let junction_spacing = if has_divergent_per_rank[r] || has_convergent_per_rank[r] {
-                STEM_LENGTH_HORIZONTAL + 4
+                STEM_LENGTH_HORIZONTAL + 1 + 1 + 2 // junction span + box-edge + padding
             } else {
                 0
             };

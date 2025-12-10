@@ -3,6 +3,9 @@
 //! Naming convention: [category]_[name]_[direction].md
 //! Categories: flow, edge, label, shape, parse, config, error
 //! Direction: td (default), lr, rl, bt
+//!
+//! Note: Error tests for invalid diagram types (e.g., error_sequence.md) may omit
+//! the direction suffix since they're rejected before direction processing.
 
 use std::process::Command;
 
