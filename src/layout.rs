@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use anyhow::Result;
 
-use crate::graph::{Direction, Graph};
+use crate::graph::{Direction, Graph, Rectangle};
 use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH, COL_SPACING, STEM_LENGTH_HORIZONTAL};
 
 /// Row spacing for simple edges without labels (minimal: stem → arrow)
@@ -19,6 +19,11 @@ const ROW_SPACING_FANIN: usize = 3;
 const ROW_SPACING_FANOUT: usize = 4;
 /// Row spacing for multi-target edges with labels (stem → junction → label → arrow)
 const ROW_SPACING_MULTI_LABELED: usize = 4;
+
+/// Padding inside subgraph border (space between border and contained nodes)
+const SUBGRAPH_PADDING: usize = 1;
+/// Extra space for subgraph title line
+const SUBGRAPH_TITLE_HEIGHT: usize = 1;
 
 /// Apply waterfall layout to position all nodes
 pub fn waterfall(mut graph: Graph) -> Result<Graph> {
@@ -432,6 +437,11 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         }
     }
 
+    // Calculate subgraph bounds after all node positioning is complete
+    if graph.has_subgraphs() {
+        calculate_subgraph_bounds(&mut graph);
+    }
+
     Ok(graph)
 }
 
@@ -610,6 +620,79 @@ fn detect_cycles(graph: &mut Graph, adj: &[Vec<(usize, usize)>]) -> bool {
     has_cycle
 }
 
+/// Calculate bounding boxes for all subgraphs based on their contained nodes.
+///
+/// For each subgraph:
+/// 1. Find min/max coordinates of all contained nodes
+/// 2. Add padding for the subgraph border
+/// 3. Add title space if the subgraph has a title
+/// 4. Store bounds and rank_range on the subgraph
+fn calculate_subgraph_bounds(graph: &mut Graph) {
+    // Build node_id -> (x, y, width, rank) lookup from current graph state
+    let node_info: HashMap<&str, (usize, usize, usize, usize)> = graph
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), (n.x, n.y, n.width, n.rank)))
+        .collect();
+
+    for subgraph in &mut graph.subgraphs {
+        if subgraph.node_ids.is_empty() {
+            // Empty subgraph - no bounds to calculate
+            subgraph.bounds = Rectangle::default();
+            subgraph.rank_range = (0, 0);
+            continue;
+        }
+
+        // Find min/max coordinates and ranks of all nodes in this subgraph
+        let mut min_x = usize::MAX;
+        let mut min_y = usize::MAX;
+        let mut max_x = 0usize;
+        let mut max_y = 0usize;
+        let mut min_rank = usize::MAX;
+        let mut max_rank = 0usize;
+
+        for node_id in &subgraph.node_ids {
+            if let Some(&(x, y, width, rank)) = node_info.get(node_id.as_str()) {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x + width);
+                max_y = max_y.max(y + BOX_HEIGHT);
+                min_rank = min_rank.min(rank);
+                max_rank = max_rank.max(rank);
+            }
+        }
+
+        // Ensure we found at least one node
+        if min_x == usize::MAX {
+            subgraph.bounds = Rectangle::default();
+            subgraph.rank_range = (0, 0);
+            continue;
+        }
+
+        // Add padding for the subgraph border
+        // Border takes 1 char on each side, plus internal padding
+        let padding = SUBGRAPH_PADDING;
+
+        // Title space: if subgraph has a title, add extra height at top
+        // For now, title goes at top regardless of direction (Phase 5 can adjust)
+        let title_space = if subgraph.has_title() {
+            SUBGRAPH_TITLE_HEIGHT
+        } else {
+            0
+        };
+
+        // Calculate bounds with padding
+        // x/y are the top-left corner of the subgraph border
+        let bounds_x = min_x.saturating_sub(padding);
+        let bounds_y = min_y.saturating_sub(padding + title_space);
+        let bounds_width = (max_x - min_x) + (padding * 2);
+        let bounds_height = (max_y - min_y) + (padding * 2) + title_space;
+
+        subgraph.bounds = Rectangle::new(bounds_x, bounds_y, bounds_width, bounds_height);
+        subgraph.rank_range = (min_rank, max_rank);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,5 +828,104 @@ mod tests {
         let a = result.get_node("A").unwrap();
         let b = result.get_node("B").unwrap();
         assert!(a.y > b.y, "BT should place root below its child");
+    }
+
+    // === SUBGRAPH BOUNDS TESTS ===
+
+    #[test]
+    fn test_subgraph_bounds_basic() {
+        use crate::graph::Subgraph;
+
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("A", "Node A"));
+        graph.add_node(Node::new("B", "Node B"));
+        graph.add_edge(crate::graph::Edge::new("A", "B"));
+
+        // Create subgraph containing both nodes
+        let mut sg = Subgraph::new("SG1", Some("Test Group".to_string()));
+        sg.add_node("A");
+        sg.add_node("B");
+        graph.add_subgraph(sg);
+        graph.associate_node_with_subgraph("A", "SG1");
+        graph.associate_node_with_subgraph("B", "SG1");
+
+        let result = waterfall(graph).unwrap();
+
+        // Verify subgraph bounds were calculated
+        assert_eq!(result.subgraphs.len(), 1);
+        let sg_bounds = &result.subgraphs[0].bounds;
+        assert!(sg_bounds.is_valid(), "subgraph should have valid bounds");
+
+        // Bounds should encompass both nodes with padding
+        let a = result.get_node("A").unwrap();
+        let b = result.get_node("B").unwrap();
+        assert!(
+            sg_bounds.x <= a.x,
+            "bounds x should be at or before node A"
+        );
+        assert!(
+            sg_bounds.y <= a.y,
+            "bounds y should be at or before node A (with title space)"
+        );
+
+        // Verify rank_range
+        let (min_rank, max_rank) = result.subgraphs[0].rank_range;
+        assert_eq!(min_rank, 0);
+        assert_eq!(max_rank, 1);
+    }
+
+    #[test]
+    fn test_subgraph_bounds_empty() {
+        use crate::graph::Subgraph;
+
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("A", "Node A"));
+
+        // Create empty subgraph
+        let sg = Subgraph::new("Empty", None);
+        graph.add_subgraph(sg);
+
+        let result = waterfall(graph).unwrap();
+
+        // Empty subgraph should have default (zero) bounds
+        let sg_bounds = &result.subgraphs[0].bounds;
+        assert!(!sg_bounds.is_valid(), "empty subgraph should have invalid bounds");
+    }
+
+    #[test]
+    fn test_subgraph_bounds_with_title() {
+        use crate::graph::Subgraph;
+
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("A", "Node"));
+
+        // Subgraph with title
+        let mut sg_with_title = Subgraph::new("SG1", Some("My Title".to_string()));
+        sg_with_title.add_node("A");
+        graph.add_subgraph(sg_with_title);
+        graph.associate_node_with_subgraph("A", "SG1");
+
+        let result = waterfall(graph).unwrap();
+        let bounds_with_title = result.subgraphs[0].bounds.height;
+
+        // Now test without title
+        let mut graph2 = Graph::new();
+        graph2.add_node(Node::new("A", "Node"));
+
+        let mut sg_no_title = Subgraph::new("SG2", None);
+        sg_no_title.add_node("A");
+        graph2.add_subgraph(sg_no_title);
+        graph2.associate_node_with_subgraph("A", "SG2");
+
+        let result2 = waterfall(graph2).unwrap();
+        let bounds_no_title = result2.subgraphs[0].bounds.height;
+
+        // Subgraph with title should be taller
+        assert!(
+            bounds_with_title > bounds_no_title,
+            "subgraph with title ({}) should be taller than without ({})",
+            bounds_with_title,
+            bounds_no_title
+        );
     }
 }
