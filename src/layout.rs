@@ -24,6 +24,8 @@ const ROW_SPACING_MULTI_LABELED: usize = 4;
 const SUBGRAPH_PADDING: usize = 2;
 /// Extra space for subgraph title line (0 since title is on border row)
 const SUBGRAPH_TITLE_HEIGHT: usize = 0;
+/// Minimum vertical gap between adjacent subgraphs
+const SUBGRAPH_SPACING: usize = 1;
 
 /// Apply waterfall layout to position all nodes
 pub fn waterfall(mut graph: Graph) -> Result<Graph> {
@@ -444,22 +446,30 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         let offset_x = SUBGRAPH_PADDING + 1; // 1 for border character
         let offset_y = SUBGRAPH_PADDING + SUBGRAPH_TITLE_HEIGHT + 1; // +1 for border
 
-        // Find which nodes are in subgraphs
-        let nodes_in_subgraphs: HashSet<&str> = graph
+        // Find which nodes are in subgraphs (owned strings to avoid borrow issues)
+        let nodes_in_subgraphs: HashSet<String> = graph
             .subgraphs
             .iter()
-            .flat_map(|sg| sg.node_ids.iter().map(|s| s.as_str()))
+            .flat_map(|sg| sg.node_ids.iter().cloned())
             .collect();
 
         // Apply offset to nodes in subgraphs
         for node in &mut graph.nodes {
-            if nodes_in_subgraphs.contains(node.id.as_str()) {
+            if nodes_in_subgraphs.contains(&node.id) {
                 node.x += offset_x;
                 node.y += offset_y;
             }
         }
 
         calculate_subgraph_bounds(&mut graph);
+
+        // Ensure proper spacing between multiple subgraphs
+        if graph.subgraphs.len() > 1 {
+            ensure_subgraph_spacing(&mut graph);
+        }
+
+        // Adjust nodes outside subgraphs that overlap with subgraph bounds
+        adjust_outside_nodes(&mut graph, &nodes_in_subgraphs);
     }
 
     Ok(graph)
@@ -710,6 +720,142 @@ fn calculate_subgraph_bounds(graph: &mut Graph) {
 
         subgraph.bounds = Rectangle::new(bounds_x, bounds_y, bounds_width, bounds_height);
         subgraph.rank_range = (min_rank, max_rank);
+    }
+}
+
+/// Ensure proper spacing between multiple subgraphs.
+///
+/// When subgraphs are vertically adjacent (their bounds overlap or are too close),
+/// shift the lower subgraph(s) down to create proper spacing.
+fn ensure_subgraph_spacing(graph: &mut Graph) {
+    if graph.subgraphs.len() < 2 {
+        return;
+    }
+
+    // Sort subgraph indices by top Y coordinate
+    let mut sg_order: Vec<usize> = (0..graph.subgraphs.len()).collect();
+    sg_order.sort_by_key(|&i| graph.subgraphs[i].bounds.y);
+
+    // Track how much each subgraph needs to shift
+    let mut shifts: Vec<usize> = vec![0; graph.subgraphs.len()];
+
+    // Process subgraphs in Y order
+    for i in 1..sg_order.len() {
+        let current_idx = sg_order[i];
+        let current_bounds = &graph.subgraphs[current_idx].bounds;
+
+        if !current_bounds.is_valid() {
+            continue;
+        }
+
+        let current_top = current_bounds.y;
+        let current_left = current_bounds.x;
+        let current_right = current_bounds.x + current_bounds.width;
+
+        // Find the maximum bottom Y of all previous subgraphs that horizontally overlap
+        let mut max_prev_bottom = 0usize;
+
+        for &prev_idx in sg_order.iter().take(i) {
+            let prev_bounds = &graph.subgraphs[prev_idx].bounds;
+
+            if !prev_bounds.is_valid() {
+                continue;
+            }
+
+            // Check horizontal overlap
+            let prev_left = prev_bounds.x;
+            let prev_right = prev_bounds.x + prev_bounds.width;
+
+            // Two ranges overlap if neither is completely to the left/right of the other
+            let horizontally_overlaps = !(current_right <= prev_left || current_left >= prev_right);
+
+            if horizontally_overlaps {
+                // Account for any shift already applied to the previous subgraph
+                let prev_bottom = prev_bounds.y + prev_bounds.height + shifts[prev_idx];
+                max_prev_bottom = max_prev_bottom.max(prev_bottom);
+            }
+        }
+
+        // Calculate required shift to ensure spacing
+        if max_prev_bottom > 0 {
+            let required_top = max_prev_bottom + SUBGRAPH_SPACING;
+            if current_top < required_top {
+                shifts[current_idx] = required_top - current_top;
+            }
+        }
+    }
+
+    // Apply shifts to all nodes in shifted subgraphs
+    for (sg_idx, &shift) in shifts.iter().enumerate() {
+        if shift > 0 {
+            let node_ids: Vec<String> = graph.subgraphs[sg_idx].node_ids.iter().cloned().collect();
+            for node in &mut graph.nodes {
+                if node_ids.contains(&node.id) {
+                    node.y += shift;
+                }
+            }
+        }
+    }
+
+    // Recalculate bounds after shifting
+    if shifts.iter().any(|&s| s > 0) {
+        calculate_subgraph_bounds(graph);
+    }
+}
+
+/// Adjust nodes outside subgraphs to not overlap with subgraph bounds.
+/// Nodes that would visually overlap with a subgraph are shifted below it.
+fn adjust_outside_nodes(graph: &mut Graph, nodes_in_subgraphs: &HashSet<String>) {
+    use crate::style::BOX_HEIGHT;
+
+    // Collect all subgraph bounds
+    let subgraph_bounds: Vec<Rectangle> = graph
+        .subgraphs
+        .iter()
+        .map(|sg| sg.bounds.clone())
+        .filter(|b| b.is_valid())
+        .collect();
+
+    if subgraph_bounds.is_empty() {
+        return;
+    }
+
+    // For each node not in any subgraph, check if it overlaps with subgraph bounds
+    for node in &mut graph.nodes {
+        if nodes_in_subgraphs.contains(&node.id) {
+            continue;
+        }
+
+        let node_top = node.y;
+        let node_bottom = node.y + BOX_HEIGHT;
+        let node_left = node.x;
+        let node_right = node.x + node.width;
+
+        // Find maximum shift needed to clear all overlapping subgraphs
+        let mut max_shift = 0usize;
+
+        for bounds in &subgraph_bounds {
+            let sg_top = bounds.y;
+            let sg_bottom = bounds.y + bounds.height;
+            let sg_left = bounds.x;
+            let sg_right = bounds.x + bounds.width;
+
+            // Check horizontal overlap
+            let h_overlap = !(node_right <= sg_left || node_left >= sg_right);
+
+            // Check vertical overlap
+            let v_overlap = !(node_bottom <= sg_top || node_top >= sg_bottom);
+
+            if h_overlap && v_overlap {
+                // Node overlaps with this subgraph - need to shift below it
+                let shift_needed = sg_bottom.saturating_sub(node_top) + SUBGRAPH_SPACING;
+                max_shift = max_shift.max(shift_needed);
+            }
+        }
+
+        if max_shift > 0 {
+            node.y += max_shift;
+        }
     }
 }
 
