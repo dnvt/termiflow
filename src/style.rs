@@ -24,17 +24,6 @@ pub const MAX_CANVAS_HEIGHT: usize = 200;
 /// Cycle edge gutter size (right margin for TD/BT, bottom for LR/RL)
 pub const CYCLE_GUTTER: usize = 4;
 
-// ============================================================================
-// Subgraph Border Characters (fixed style per design decision)
-// ============================================================================
-
-/// Subgraph border corner character (all four corners)
-pub const SUBGRAPH_CORNER: char = '+';
-/// Subgraph border horizontal line
-pub const SUBGRAPH_H: char = '-';
-/// Subgraph border vertical line (triple dash vertical U+254E)
-pub const SUBGRAPH_V: char = '╎';
-
 /// Border style variants
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum BaseStyle {
@@ -59,6 +48,7 @@ pub enum BaseStyle {
 /// - `edge` - Connection lines between boxes
 /// - `junction` - T-junctions where edges meet (┬┴├┤ for unicode, ╦╩╠╣ for double, etc.)
 /// - `back` - Back edges for cycles (dotted/dashed lines)
+/// - `subgraph` - Subgraph container borders (defaults to ascii for visual distinction)
 #[derive(Debug, Clone, Default)]
 pub struct CompositeStyle {
     pub corner: Option<BaseStyle>,   // Box corners
@@ -67,6 +57,7 @@ pub struct CompositeStyle {
     pub edge: Option<BaseStyle>,     // Edge/connection lines
     pub junction: Option<BaseStyle>, // Junction characters
     pub back: Option<BaseStyle>,     // Back edges for cycles
+    pub subgraph: Option<BaseStyle>, // Subgraph container borders
 }
 
 /// Character set for a border style
@@ -156,6 +147,7 @@ impl CompositeStyle {
             edge: Some(style),
             junction: Some(style),
             back: Some(style),
+            subgraph: Some(style),
         }
     }
 
@@ -173,6 +165,7 @@ impl CompositeStyle {
                 style.edge = Some(border_style);
                 style.junction = Some(border_style);
                 style.back = Some(border_style);
+                style.subgraph = Some(border_style);
             } else if !s.is_empty() {
                 // Invalid style name - warn and use default
                 eprintln!(
@@ -200,6 +193,7 @@ impl CompositeStyle {
                     "edge" => style.edge = border_style,
                     "junction" => style.junction = border_style,
                     "back" => style.back = border_style,
+                    "subgraph" => style.subgraph = border_style,
                     // Legacy aliases
                     "line" => style.edge = border_style, // "line" -> "edge"
                     "box_corner" => style.corner = border_style,
@@ -271,6 +265,15 @@ impl CompositeStyle {
             back_h: back_chars.back_h,
             back_v: back_chars.back_v,
         }
+    }
+
+    /// Get StyleChars for subgraph borders.
+    ///
+    /// Subgraphs default to ASCII style for visual distinction from node boxes.
+    /// This can be overridden with `--style="subgraph:unicode"` etc.
+    pub fn to_subgraph_chars(&self) -> &'static StyleChars {
+        // Default to ASCII for subgraphs (visual distinction from nodes)
+        self.subgraph.unwrap_or(BaseStyle::Ascii).chars()
     }
 }
 
