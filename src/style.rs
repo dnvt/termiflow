@@ -162,6 +162,12 @@ impl CompositeStyle {
                 style.edge = Some(border_style);
                 style.junction = Some(border_style);
                 style.back = Some(border_style);
+            } else if !s.is_empty() {
+                // Invalid style name - warn and use default
+                eprintln!(
+                    "termiflow: warning: Unknown style '{}', using default (unicode)",
+                    s
+                );
             }
             return style;
         }
@@ -188,7 +194,20 @@ impl CompositeStyle {
                     "box_corner" => style.corner = border_style,
                     "box_line" | "box_border" => style.border = border_style,
                     "back_edge" => style.back = border_style,
-                    _ => {} // Ignore unknown components
+                    unknown => {
+                        eprintln!(
+                            "termiflow: warning: Unknown style component '{}', ignoring",
+                            unknown
+                        );
+                    }
+                }
+                // Also warn if the style name within the component is invalid
+                if border_style.is_none() {
+                    eprintln!(
+                        "termiflow: warning: Unknown style name '{}' for component '{}', using default",
+                        style_name.trim(),
+                        component.trim()
+                    );
                 }
             }
         }

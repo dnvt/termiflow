@@ -38,7 +38,7 @@ pub fn route_divergent_edges(
     
     // Calculate junction position (stem length away from source)
     let stem_length = match direction {
-        Direction::LR => EDGE_STEM_WIDTH_LR,
+        Direction::LR | Direction::RL => EDGE_STEM_WIDTH_LR,
         _ => EDGE_STEM_HEIGHT,
     };
     
@@ -103,7 +103,7 @@ pub fn route_divergent_edges(
     }
 
     // Multiple targets: draw branching structure
-    
+
     // 1. Draw stem from source to junction (not including junction)
     let stem_length = match direction {
         Direction::LR | Direction::RL => EDGE_STEM_WIDTH_LR,
@@ -128,30 +128,32 @@ pub fn route_divergent_edges(
     // 3. Draw horizontal junction span with corners and junction
     for pos in span_start..=span_end {
         let (span_x, span_y) = set_secondary_get_coords(junction_x, junction_y, pos, &coords);
-        
+
         let c = if pos == src_secondary {
-            // Junction at source position - stem meets horizontal span
+            // Junction at source position - stem meets vertical span
+            // For LR: stem comes from LEFT, span goes UP/DOWN → ┤ (junction_left)
+            // For RL: stem comes from RIGHT, span goes UP/DOWN → ├ (junction_right)
             match direction {
                 Direction::TD | Direction::TB => style.junction_up,    // ┴
-                Direction::LR => style.junction_right,                 // ├
-                Direction::RL => style.junction_left,                  // ┤
+                Direction::LR => style.junction_left,                  // ┤
+                Direction::RL => style.junction_right,                 // ├
                 Direction::BT => style.junction_down,                  // ┬
             }
         } else if pos == span_start {
-            // Corner at left/top end
+            // Corner at top/left end of span
             match direction {
-                Direction::TD | Direction::TB => style.corner_dl,  // ┌
-                Direction::LR => style.corner_ul,  // ┌ for vertical span
-                Direction::RL => style.corner_ur,  // ┐ for vertical span
-                Direction::BT => style.corner_ul,  // ┌
+                Direction::TD | Direction::TB => style.corner_dl,  // ┌ (opens down-right)
+                Direction::LR => style.corner_dl,  // ┌ (opens down-right for vertical span)
+                Direction::RL => style.corner_dr,  // ┐ (opens down-left for vertical span)
+                Direction::BT => style.corner_ul,  // └ (opens up-right)
             }
         } else if pos == span_end {
-            // Corner at right/bottom end
+            // Corner at bottom/right end of span
             match direction {
-                Direction::TD | Direction::TB => style.corner_dr,  // ┐
-                Direction::LR => style.corner_dl,  // └ for vertical span
-                Direction::RL => style.corner_ul,  // ┌ for vertical span
-                Direction::BT => style.corner_ur,  // ┐
+                Direction::TD | Direction::TB => style.corner_dr,  // ┐ (opens down-left)
+                Direction::LR => style.corner_ul,  // └ (opens up-right for vertical span)
+                Direction::RL => style.corner_ur,  // ┘ (opens up-left for vertical span)
+                Direction::BT => style.corner_ur,  // ┘ (opens up-left)
             }
         } else {
             coords.secondary_edge_char(style)
@@ -178,7 +180,7 @@ pub fn route_divergent_edges(
     }
 }
 
-// Helper: Draw vertical lines from sources to merge row
+// Helper: Draw lines from sources to merge point (on primary axis)
 fn draw_source_lines_to_merge(
     source_positions: &[(usize, usize, &Node)],
     merge_x: usize,
@@ -190,31 +192,60 @@ fn draw_source_lines_to_merge(
 ) -> (usize, usize) {
     let mut span_start = usize::MAX;
     let mut span_end = 0;
-    
+
     for i in 0..source_positions.len() {
         let (src_x, src_y, source) = source_positions[i];
-        let (_, edge_y) = get_box_edge_end(source, direction);
+        let (edge_x, edge_y) = get_box_edge_end(source, direction);
         let src_secondary = coords.secondary_coord(src_x, src_y);
-        
+
         // Update span bounds
         span_start = span_start.min(src_secondary);
         span_end = span_end.max(src_secondary);
-        
-        // Line from source down to just before merge row
+
+        // Line from source to just before merge point (along primary axis)
         let (merge_col_x, merge_col_y) = set_secondary_get_coords(merge_x, merge_y, src_secondary, &coords);
-        
-        // Draw vertical line from source to merge row
-        if edge_y < merge_col_y {
-            for y in edge_y..merge_col_y {
-                canvas.set_edge_char(src_x, y, style.edge_v, style);
+
+        // Draw line from source to merge span (direction-aware)
+        match direction {
+            Direction::TD | Direction::TB => {
+                // Vertical layout: draw vertical line
+                if edge_y < merge_col_y {
+                    for y in edge_y..merge_col_y {
+                        canvas.set_edge_char(src_x, y, style.edge_v, style);
+                    }
+                }
+            }
+            Direction::LR => {
+                // LR layout: draw horizontal line from source right edge to merge column
+                if edge_x < merge_col_x {
+                    for x in edge_x..merge_col_x {
+                        canvas.set_edge_char(x, src_y, style.edge_h, style);
+                    }
+                }
+            }
+            Direction::RL => {
+                // RL layout: draw horizontal line from source left edge to merge column
+                if merge_col_x < edge_x {
+                    for x in (merge_col_x + 1)..=edge_x {
+                        canvas.set_edge_char(x, src_y, style.edge_h, style);
+                    }
+                }
+            }
+            Direction::BT => {
+                // BT layout: draw vertical line upward
+                if merge_col_y < edge_y {
+                    for y in (merge_col_y + 1)..=edge_y {
+                        canvas.set_edge_char(src_x, y, style.edge_v, style);
+                    }
+                }
             }
         }
-        
-        // Corner where source line meets horizontal merge span
+
+        // Corner where source line meets merge span
         let corner_char = get_convergence_corner(i, source_positions.len(), src_secondary, span_start, span_end, direction, style, coords);
         canvas.set_edge_char(merge_col_x, merge_col_y, corner_char, style);
     }
-    
+
     (span_start, span_end)
 }
 
@@ -230,20 +261,20 @@ fn get_convergence_corner(
     coords: &OrientedCoords,
 ) -> char {
     if src_secondary == span_start {
-        // Leftmost position on span
+        // Topmost/leftmost position on span - edge from source turns down/right
         match direction {
-            Direction::TD | Direction::TB => style.corner_ul,
-            Direction::LR => style.corner_dr,
-            Direction::RL => style.corner_dl,
-            Direction::BT => style.corner_dl,
+            Direction::TD | Direction::TB => style.corner_ul, // ┌ - from above, turns right
+            Direction::LR => style.corner_dr,                 // ┐ - from left, turns down
+            Direction::RL => style.corner_dl,                 // ┌ - from right, turns down
+            Direction::BT => style.corner_dl,                 // └ - from below, turns right
         }
     } else if src_secondary == span_end {
-        // Rightmost position on span
+        // Bottommost/rightmost position on span - edge from source turns up/left
         match direction {
-            Direction::TD | Direction::TB => style.corner_ur,
-            Direction::LR => style.corner_ur,
-            Direction::RL => style.corner_ul,
-            Direction::BT => style.corner_dr,
+            Direction::TD | Direction::TB => style.corner_ur, // ┐ - from above, turns left
+            Direction::LR => style.corner_ur,                 // ┘ - from left, turns up
+            Direction::RL => style.corner_ul,                 // └ - from right, turns up
+            Direction::BT => style.corner_dr,                 // ┘ - from below, turns left
         }
     } else {
         // Middle sources get junction
@@ -338,11 +369,12 @@ pub fn route_convergent_edges(
     draw_merge_line(merge_x, merge_y, final_span_start, final_span_end, &coords, canvas, style);
     
     // Junction at merge point and line to target
+    // The junction shows where edges from above/below exit toward the target
     let junction_char = match direction {
-        Direction::TD | Direction::TB => style.junction_down,  // ┬
-        Direction::LR => style.junction_left,                  // ┤
-        Direction::RL => style.junction_right,                 // ├
-        Direction::BT => style.junction_up,                    // ┴
+        Direction::TD | Direction::TB => style.junction_down,  // ┬ - edges from left/right, exits down
+        Direction::LR => style.junction_right,                 // ├ - edges from above/below, exits right
+        Direction::RL => style.junction_left,                  // ┤ - edges from above/below, exits left
+        Direction::BT => style.junction_up,                    // ┴ - edges from left/right, exits up
     };
     canvas.set_edge_char(merge_x, merge_y, junction_char, style);
     let (final_start_x, final_start_y) = advance_on_primary(merge_x, merge_y, 1, &coords);

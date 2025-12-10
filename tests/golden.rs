@@ -1,8 +1,8 @@
 //! Golden tests - compare actual output against expected fixtures
 //!
-//! These tests verify that termiflow produces consistent, expected output
-//! for a set of reference inputs. Changes to rendering will cause these
-//! tests to fail, requiring explicit regeneration of expected files.
+//! Naming convention: [category]_[name]_[direction].md
+//! Categories: flow, edge, label, shape, parse, config, error
+//! Direction: td (default), lr, rl, bt
 
 use std::process::Command;
 
@@ -19,85 +19,598 @@ fn run_termiflow(args: &[&str]) -> (String, String) {
 }
 
 // ============================================================================
-// Unicode Style Golden Tests
+// Flow Tests - Basic flowchart flow
 // ============================================================================
 
 #[test]
-fn golden_simple_unicode() {
+fn golden_flow_simple_td_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
-        "tests/fixtures/inputs/simple.md",
+        "tests/fixtures/inputs/flow_simple_td.md",
     ]);
-    let expected = include_str!("fixtures/expected/simple.unicode.txt");
-    assert_eq!(stdout, expected, "Output mismatch for simple.md");
+    let expected = include_str!("fixtures/expected/flow_simple_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_simple_td.md");
 }
 
 #[test]
-fn golden_chain_unicode() {
+fn golden_flow_simple_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/flow_simple_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/flow_simple_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_simple_td.md (ASCII)");
+}
+
+#[test]
+fn golden_flow_branch_td_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
-        "tests/fixtures/inputs/chain.md",
+        "tests/fixtures/inputs/flow_branch_td.md",
     ]);
-    let expected = include_str!("fixtures/expected/chain.unicode.txt");
-    assert_eq!(stdout, expected, "Output mismatch for chain.md");
+    let expected = include_str!("fixtures/expected/flow_branch_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_branch_td.md");
 }
 
 #[test]
-fn golden_database_nodes_unicode() {
+fn golden_flow_branch_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/flow_branch_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/flow_branch_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_branch_td.md (ASCII)");
+}
+
+#[test]
+fn golden_flow_chain_td_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
-        "tests/fixtures/inputs/database_nodes.md",
+        "tests/fixtures/inputs/flow_chain_td.md",
     ]);
-    let expected = include_str!("fixtures/expected/database_nodes.unicode.txt");
-    assert_eq!(stdout, expected, "Output mismatch for database_nodes.md");
+    let expected = include_str!("fixtures/expected/flow_chain_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_chain_td.md");
 }
 
 #[test]
-fn golden_forward_ref_unicode() {
+fn golden_flow_chain_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/flow_chain_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/flow_chain_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_chain_td.md (ASCII)");
+}
+
+#[test]
+fn golden_flow_simple_lr_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
-        "tests/fixtures/inputs/forward_ref.md",
+        "tests/fixtures/inputs/flow_simple_lr.md",
     ]);
-    let expected = include_str!("fixtures/expected/forward_ref.unicode.txt");
-    assert_eq!(stdout, expected, "Output mismatch for forward_ref.md");
+    let expected = include_str!("fixtures/expected/flow_simple_lr.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_simple_lr.md");
 }
 
 #[test]
-fn golden_with_config_unicode() {
+fn golden_flow_simple_lr_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/flow_simple_lr.md",
+    ]);
+    let expected = include_str!("fixtures/expected/flow_simple_lr.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_simple_lr.md (ASCII)");
+}
+
+#[test]
+fn golden_flow_simple_rl_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
-        "tests/fixtures/inputs/with_config.md",
+        "tests/fixtures/inputs/flow_simple_rl.md",
     ]);
-    let expected = include_str!("fixtures/expected/with_config.unicode.txt");
-    assert_eq!(stdout, expected, "Output mismatch for with_config.md");
+    let expected = include_str!("fixtures/expected/flow_simple_rl.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_simple_rl.md");
 }
 
 #[test]
-fn golden_unsupported_unicode() {
+fn golden_flow_simple_rl_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/flow_simple_rl.md",
+    ]);
+    let expected = include_str!("fixtures/expected/flow_simple_rl.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_simple_rl.md (ASCII)");
+}
+
+#[test]
+fn golden_flow_simple_bt_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/flow_simple_bt.md",
+    ]);
+    let expected = include_str!("fixtures/expected/flow_simple_bt.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_simple_bt.md");
+}
+
+#[test]
+fn golden_flow_simple_bt_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/flow_simple_bt.md",
+    ]);
+    let expected = include_str!("fixtures/expected/flow_simple_bt.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for flow_simple_bt.md (ASCII)");
+}
+
+// ============================================================================
+// Edge Tests - Edge routing (branch, converge, complex)
+// ============================================================================
+
+#[test]
+fn golden_edge_branch_td_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_branch_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_branch_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_branch_td.md");
+}
+
+#[test]
+fn golden_edge_branch_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_branch_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_branch_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_branch_td.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_branch_lr_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_branch_lr.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_branch_lr.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_branch_lr.md");
+}
+
+#[test]
+fn golden_edge_branch_lr_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_branch_lr.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_branch_lr.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_branch_lr.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_branch_rl_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_branch_rl.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_branch_rl.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_branch_rl.md");
+}
+
+#[test]
+fn golden_edge_branch_rl_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_branch_rl.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_branch_rl.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_branch_rl.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_branch_bt_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_branch_bt.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_branch_bt.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_branch_bt.md");
+}
+
+#[test]
+fn golden_edge_branch_bt_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_branch_bt.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_branch_bt.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_branch_bt.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_complex_td_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_complex_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_complex_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_complex_td.md");
+}
+
+#[test]
+fn golden_edge_complex_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_complex_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_complex_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_complex_td.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_complex_lr_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_complex_lr.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_complex_lr.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_complex_lr.md");
+}
+
+#[test]
+fn golden_edge_complex_lr_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_complex_lr.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_complex_lr.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_complex_lr.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_complex_rl_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_complex_rl.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_complex_rl.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_complex_rl.md");
+}
+
+#[test]
+fn golden_edge_complex_rl_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_complex_rl.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_complex_rl.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_complex_rl.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_complex_bt_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_complex_bt.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_complex_bt.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_complex_bt.md");
+}
+
+#[test]
+fn golden_edge_complex_bt_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_complex_bt.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_complex_bt.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_complex_bt.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_converge_td_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_converge_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_converge_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_converge_td.md");
+}
+
+#[test]
+fn golden_edge_converge_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_converge_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_converge_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_converge_td.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_converge_lr_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_converge_lr.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_converge_lr.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_converge_lr.md");
+}
+
+#[test]
+fn golden_edge_converge_lr_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_converge_lr.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_converge_lr.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_converge_lr.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_converge_rl_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_converge_rl.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_converge_rl.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_converge_rl.md");
+}
+
+#[test]
+fn golden_edge_converge_rl_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_converge_rl.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_converge_rl.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_converge_rl.md (ASCII)");
+}
+
+#[test]
+fn golden_edge_converge_bt_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/edge_converge_bt.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_converge_bt.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_converge_bt.md");
+}
+
+#[test]
+fn golden_edge_converge_bt_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/edge_converge_bt.md",
+    ]);
+    let expected = include_str!("fixtures/expected/edge_converge_bt.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for edge_converge_bt.md (ASCII)");
+}
+
+// ============================================================================
+// Label Tests - Edge labels
+// ============================================================================
+
+#[test]
+fn golden_label_basic_td_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/label_basic_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/label_basic_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for label_basic_td.md");
+}
+
+#[test]
+fn golden_label_basic_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/label_basic_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/label_basic_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for label_basic_td.md (ASCII)");
+}
+
+// ============================================================================
+// Shape Tests - Node shapes
+// ============================================================================
+
+#[test]
+fn golden_shape_all_td_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/shape_all_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/shape_all_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for shape_all_td.md");
+}
+
+#[test]
+fn golden_shape_all_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/shape_all_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/shape_all_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for shape_all_td.md (ASCII)");
+}
+
+#[test]
+fn golden_shape_database_td_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/shape_database_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/shape_database_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for shape_database_td.md");
+}
+
+#[test]
+fn golden_shape_database_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/shape_database_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/shape_database_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for shape_database_td.md (ASCII)");
+}
+
+// ============================================================================
+// Parse Tests - Parser features
+// ============================================================================
+
+#[test]
+fn golden_parse_forward_td_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/parse_forward_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/parse_forward_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for parse_forward_td.md");
+}
+
+#[test]
+fn golden_parse_forward_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/parse_forward_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/parse_forward_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for parse_forward_td.md (ASCII)");
+}
+
+// ============================================================================
+// Config Tests - Configuration directives
+// ============================================================================
+
+#[test]
+fn golden_config_style_td_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/config_style_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/config_style_td.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for config_style_td.md");
+}
+
+#[test]
+fn golden_config_style_td_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/config_style_td.md",
+    ]);
+    let expected = include_str!("fixtures/expected/config_style_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for config_style_td.md (ASCII)");
+}
+
+// ============================================================================
+// Error Tests - Unsupported features
+// ============================================================================
+
+#[test]
+fn golden_error_subgraph_td_unicode() {
     let (stdout, stderr) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
-        "tests/fixtures/inputs/unsupported.md",
+        "tests/fixtures/inputs/error_subgraph_td.md",
     ]);
 
-    let expected_stdout = include_str!("fixtures/expected/unsupported.unicode.txt");
-    assert_eq!(
-        stdout, expected_stdout,
-        "Output mismatch for unsupported.md"
-    );
+    let expected_stdout = include_str!("fixtures/expected/error_subgraph_td.unicode.txt");
+    assert_eq!(stdout, expected_stdout, "Output mismatch for error_subgraph_td.md");
 
-    let expected_stderr = include_str!("fixtures/expected/unsupported.unicode.err");
+    let expected_stderr = include_str!("fixtures/expected/error_subgraph_td.unicode.err");
     assert!(
         stderr.contains(expected_stderr.trim()),
         "Expected warning '{}' not found in stderr: '{}'",
@@ -106,119 +619,17 @@ fn golden_unsupported_unicode() {
     );
 }
 
-// ============================================================================
-// LR (Left-Right) Orientation Golden Tests
-// ============================================================================
-
 #[test]
-fn golden_lr_simple_unicode() {
-    let (stdout, _) = run_termiflow(&[
-        "--print",
-        "--style",
-        "unicode",
-        "tests/fixtures/inputs/lr_simple.md",
-    ]);
-    let expected = include_str!("fixtures/expected/lr_simple.unicode.txt");
-    assert_eq!(stdout, expected, "Output mismatch for lr_simple.md");
-}
-
-#[test]
-fn golden_lr_branch_unicode() {
-    let (stdout, _) = run_termiflow(&[
-        "--print",
-        "--style",
-        "unicode",
-        "tests/fixtures/inputs/lr_branch.md",
-    ]);
-    let expected = include_str!("fixtures/expected/lr_branch.unicode.txt");
-    assert_eq!(stdout, expected, "Output mismatch for lr_branch.md");
-}
-
-// ============================================================================
-// ASCII Style Golden Tests
-// ============================================================================
-
-#[test]
-fn golden_simple_ascii() {
-    let (stdout, _) = run_termiflow(&[
-        "--print",
-        "--style",
-        "ascii",
-        "tests/fixtures/inputs/simple.md",
-    ]);
-    let expected = include_str!("fixtures/expected/simple.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for simple.md (ASCII)");
-}
-
-#[test]
-fn golden_chain_ascii() {
-    let (stdout, _) = run_termiflow(&[
-        "--print",
-        "--style",
-        "ascii",
-        "tests/fixtures/inputs/chain.md",
-    ]);
-    let expected = include_str!("fixtures/expected/chain.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for chain.md (ASCII)");
-}
-
-#[test]
-fn golden_database_nodes_ascii() {
-    let (stdout, _) = run_termiflow(&[
-        "--print",
-        "--style",
-        "ascii",
-        "tests/fixtures/inputs/database_nodes.md",
-    ]);
-    let expected = include_str!("fixtures/expected/database_nodes.ascii.txt");
-    assert_eq!(
-        stdout, expected,
-        "Output mismatch for database_nodes.md (ASCII)"
-    );
-}
-
-#[test]
-fn golden_forward_ref_ascii() {
-    let (stdout, _) = run_termiflow(&[
-        "--print",
-        "--style",
-        "ascii",
-        "tests/fixtures/inputs/forward_ref.md",
-    ]);
-    let expected = include_str!("fixtures/expected/forward_ref.ascii.txt");
-    assert_eq!(
-        stdout, expected,
-        "Output mismatch for forward_ref.md (ASCII)"
-    );
-}
-
-#[test]
-fn golden_with_config_ascii() {
-    let (stdout, _) = run_termiflow(&[
-        "--print",
-        "--style",
-        "ascii",
-        "tests/fixtures/inputs/with_config.md",
-    ]);
-    let expected = include_str!("fixtures/expected/with_config.ascii.txt");
-    assert_eq!(
-        stdout, expected,
-        "Output mismatch for with_config.md (ASCII)"
-    );
-}
-
-#[test]
-fn golden_unsupported_ascii() {
+fn golden_error_subgraph_td_ascii() {
     let (stdout, stderr) = run_termiflow(&[
         "--print",
         "--style",
         "ascii",
-        "tests/fixtures/inputs/unsupported.md",
+        "tests/fixtures/inputs/error_subgraph_td.md",
     ]);
-    let expected = include_str!("fixtures/expected/unsupported.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for unsupported.md (ASCII)");
+    let expected = include_str!("fixtures/expected/error_subgraph_td.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for error_subgraph_td.md (ASCII)");
 
-    // Should still emit warning about unsupported subgraph syntax
     assert!(
         stderr.contains("Subgraphs not supported"),
         "Expected warning about unsupported subgraph in stderr, got: {}",
@@ -226,64 +637,26 @@ fn golden_unsupported_ascii() {
     );
 }
 
-// ============================================================================
-// Edge Labels Golden Tests
-// ============================================================================
-
 #[test]
-fn golden_labeled_edges_unicode() {
+fn golden_error_sequence_unicode() {
     let (stdout, _) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
-        "tests/fixtures/inputs/labeled_edges.md",
+        "tests/fixtures/inputs/error_sequence.md",
     ]);
-    let expected = include_str!("fixtures/expected/labeled_edges.unicode.txt");
-    assert_eq!(
-        stdout, expected,
-        "Output mismatch for labeled_edges.md (Unicode)"
-    );
+    let expected = include_str!("fixtures/expected/error_sequence.unicode.txt");
+    assert_eq!(stdout, expected, "Output mismatch for error_sequence.md");
 }
 
 #[test]
-fn golden_labeled_edges_ascii() {
+fn golden_error_sequence_ascii() {
     let (stdout, _) = run_termiflow(&[
         "--print",
         "--style",
         "ascii",
-        "tests/fixtures/inputs/labeled_edges.md",
+        "tests/fixtures/inputs/error_sequence.md",
     ]);
-    let expected = include_str!("fixtures/expected/labeled_edges.ascii.txt");
-    assert_eq!(
-        stdout, expected,
-        "Output mismatch for labeled_edges.md (ASCII)"
-    );
-}
-
-// ============================================================================
-// Node Shapes Golden Tests
-// ============================================================================
-
-#[test]
-fn golden_shapes_unicode() {
-    let (stdout, _) = run_termiflow(&[
-        "--print",
-        "--style",
-        "unicode",
-        "tests/fixtures/inputs/shapes.md",
-    ]);
-    let expected = include_str!("fixtures/expected/shapes.unicode.txt");
-    assert_eq!(stdout, expected, "Output mismatch for shapes.md (Unicode)");
-}
-
-#[test]
-fn golden_shapes_ascii() {
-    let (stdout, _) = run_termiflow(&[
-        "--print",
-        "--style",
-        "ascii",
-        "tests/fixtures/inputs/shapes.md",
-    ]);
-    let expected = include_str!("fixtures/expected/shapes.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for shapes.md (ASCII)");
+    let expected = include_str!("fixtures/expected/error_sequence.ascii.txt");
+    assert_eq!(stdout, expected, "Output mismatch for error_sequence.md (ASCII)");
 }
