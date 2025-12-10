@@ -1,73 +1,53 @@
-# Layout & Routing Spike (Draft)
+# Layout & Routing Spike (Implemented)
 
 Branch: `feat/layout-routing-spike` (based on `feat/mergin-subgraphs`)
 
+## Status
+**Implemented.** This layout strategy is available via the `--experimental-layout` CLI flag. It is the recommended engine for complex graphs and supports subgraphs, centering, and all four orientations (TD, LR, BT, RL).
+
 ## Why
-- Current waterfall layout is deterministic but tightly coupled to edge routing and spacing constants; subgraphs add another axis of complexity.
-- We need a clearer geometry model, spacing rules, and collision handling so box positioning, connections, and subgraph bounds stay predictable across directions.
-- Goal: a small, composable pipeline we can iterate on (first a simple grid/layered approach, then smarter routing/collision handling).
+- The legacy waterfall layout was deterministic but tightly coupled to edge routing and spacing constants; subgraphs added another axis of complexity it couldn't handle.
+- We needed a clearer geometry model, strict spacing rules, and collision handling so box positioning, connections, and subgraph bounds stay predictable across directions.
+- Goal achieved: a composable pipeline with an explicit geometry model and A* grid routing.
 
-## Working Assumptions
-- Keep direction-agnostic math via `OrientedCoords`.
-- Single-level subgraphs for now; nested is out of scope.
-- ASCII and Unicode must both stay legible; do not regress compactness too much.
-- Determinism > perfection. Stability across edits is a key UX requirement.
-
-## Architecture Sketch
+## Architecture
 - **Geometry model**
-  - `Rect { center, size }` for nodes and subgraphs; `Port { offset, side }` for connection points.
-  - `EdgeRoute` as a list of oriented segments (grid-aligned first, optional smoothing later).
-  - Spatial index (quadtree or uniform grid) keyed by inflated rects for spacing/collision tests.
+  - `Rect { x, y, width, height }` for nodes and subgraphs.
+  - `EdgeRoute` as a list of orthogonal `Segment`s.
+  - `OccupancyGrid` for collision detection and pathfinding.
 - **Pipeline**
-  1) **Measure** nodes/subgraphs (text width, padding, label space).
+  1) **Measure** nodes (text width, padding).
   2) **Layer** (Sugiyama/longest-path) with rank reuse for cycles.
-  3) **Order** within layer (median heuristic; keep user-locked nodes fixed when present).
-  4) **Place** on a coarse grid: primary axis by layer index; secondary axis by ordered slot; apply min col/row spacing and subgraph gutters.
-  5) **Route edges** separately: Manhattan on the coarse grid with obstacles from inflated rects; prefer V-then-H (or H-then-V) based on direction; allow short doglegs around occupied cells; round corners at render time.
-  6) **Tidy**: local overlap pushes within a layer, then re-route only affected edges; optional edge bundling per layer.
-  7) **Stabilize**: reuse previous coordinates when available; only relax locally after edits.
+  3) **Place** on a coarse grid: primary axis by layer index; secondary axis by slot.
+  4) **Center** layers along the secondary axis to align the diagram visually.
+  5) **Flip** coordinates for BT/RL orientations to match flow direction.
+  6) **Shift** layout to accommodate subgraph gutters if present.
+  7) **Route edges** using Manhattan A* on the occupancy grid with obstacles from inflated rects and subgraph borders.
 - **Subgraphs**
-  - Bounds from member rects + padding + title band.
-  - Entry/exit ports on the primary edge (direction-aware); route internal edges first, then external edges that target entry/exit bands as obstacles.
-  - Enforce a gutter between subgraph bounds and external nodes/edges.
-- **Spacing & collisions**
-  - Inflate rects by padding + min edge clearance before collision checks.
-  - Broadphase via quadtree; narrow phase resolves overlaps with small secondary-axis pushes (stay within layer to keep rank semantics).
-  - Keep a cheap grid occupancy map for routing; reroute edges that cross newly occupied cells.
-- **Labels/ports**
-  - Reserve space for edge labels on the first horizontal/vertical span after the source stem.
-  - Allow port hints (top/left/right/bottom) to bias entry/exit side when we add port syntax.
+  - Bounds calculated from member rects + padding + title band.
+  - Subgraphs are drawn with heavy borders and titles.
+  - "Portals" are carved into the occupancy grid to allow edges to enter/exit nodes and subgraphs.
 
-## Minimal Prototype Plan
-1) Extract/define `Rect`, `Port`, `EdgeRoute` types in `graph` or a `geom` module; keep adapters to existing `Node`/`Edge`.
-2) Add a coarse grid allocator that maps layer/slot to coordinates using existing spacing constants; emit rects and occupancy map.
-3) Implement Manhattan router with obstacle awareness on the occupancy grid; start with V-then-H (primary then secondary) and dogleg fallback.
-4) Add overlap resolution within a layer (secondary-axis pushes) and reroute affected edges.
-5) Integrate subgraph bounds, entry/exit bands, and gutters; reroute external edges against those obstacles.
-6) Add stability hooks: optional prior positions in `Graph`, lockable nodes, and minimal-move heuristics.
-7) Tests: golden layouts for TD/LR/BT/RL with and without subgraphs; focused unit tests for router detours and collision pushes.
-
-## API Sketch (direction-agnostic)
+## API (direction-agnostic)
 ```rust
 pub struct LayoutInput<'a> {
     pub graph: &'a Graph,
-    pub prior_positions: Option<HashMap<NodeId, Point>>,
+    pub prior_positions: Option<HashMap<String, Point>>,
 }
 
 pub struct LayoutOutput {
-    pub positions: HashMap<NodeId, Point>,
-    pub subgraph_bounds: HashMap<SubgraphId, Rect>,
-    pub routes: HashMap<EdgeId, EdgeRoute>,
+    pub positions: HashMap<String, Point>,
+    pub subgraph_bounds: HashMap<String, SubgraphBounds>,
+    pub routes: HashMap<usize, EdgeRoute>,
+    pub canvas: Rect,
     pub warnings: Vec<String>,
 }
 
-pub trait LayoutEngine {
-    fn layout(&self, input: LayoutInput) -> Result<LayoutOutput>;
-}
+pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOutput>;
 ```
 
-## Risks / Open Questions
-- Router complexity: A* on a fine grid could explode; start coarse and only refine when congested.
-- Stability vs. compactness: Keeping prior positions may lock in suboptimal spacing; need heuristics to cap drift.
-- Subgraph gutters: How much padding is enough to keep labels and edges from colliding without over-expanding?
-- Performance: Spatial index adds overhead; ensure O(n log n) with modest constants for typical diagrams.
+## Risks / Open Questions (Resolved)
+- **Router complexity:** Resolved by using a coarse grid (character-level but integer coordinates) and A*. Performance is acceptable for typical terminal diagrams.
+- **Subgraph gutters:** Implemented with `subgraph_gutter` config (default: 2). Nodes are shifted to make room for the border.
+- **Artifacts:** "Corner stomping" artifacts (`├┬`) were resolved by making the renderer aware of pre-existing corners when drawing segments.
+- **Orientation:** BT and RL are handled via coordinate flipping at the end of the layout phase, allowing the core logic to assume Top-Down/Left-Right flow.
