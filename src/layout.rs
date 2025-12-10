@@ -9,10 +9,16 @@ use anyhow::Result;
 use crate::graph::{Direction, Graph};
 use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH, COL_SPACING, STEM_LENGTH_HORIZONTAL};
 
-/// Row spacing for single-target edges (compact: stem → label → arrow)
-const ROW_SPACING_SINGLE: usize = 3;
-/// Row spacing for multi-target edges (needs extra row: stem → junction → label → arrow)
-const ROW_SPACING_MULTI: usize = 4;
+/// Row spacing for simple edges without labels (minimal: stem → arrow)
+const ROW_SPACING_MINIMAL: usize = 2;
+/// Row spacing for labeled edges (stem → label → arrow)
+const ROW_SPACING_LABELED: usize = 3;
+/// Row spacing for fan-in (convergent) edges without labels (stems → junction → arrow)
+const ROW_SPACING_FANIN: usize = 3;
+/// Row spacing for fan-out (divergent) edges without labels (stem → junction → drops → arrows)
+const ROW_SPACING_FANOUT: usize = 4;
+/// Row spacing for multi-target edges with labels (stem → junction → label → arrow)
+const ROW_SPACING_MULTI_LABELED: usize = 4;
 
 /// Apply waterfall layout to position all nodes
 pub fn waterfall(mut graph: Graph) -> Result<Graph> {
@@ -123,10 +129,11 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         nodes.sort_by_key(|&idx| graph.nodes[idx].id.clone()); // deterministic within rank
     }
 
-    // Calculate per-rank spacing based on edge complexity
-    // A rank needs ROW_SPACING_MULTI if:
-    // 1. Fan-out: ANY source at that rank has multiple targets, OR
-    // 2. Fan-in: ANY target at the next rank has multiple sources from this rank
+    // Calculate per-rank spacing based on edge complexity and labels
+    // Priority: ROW_SPACING_MULTI > ROW_SPACING_LABELED > ROW_SPACING_MINIMAL
+    // - MULTI: Fan-out (source has multiple targets) or fan-in (target has multiple sources)
+    // - LABELED: Any edge from this rank has a label
+    // - MINIMAL: Simple edges without labels (most compact)
     let rank_spacing: Vec<usize> = (0..=max_rank)
         .map(|r| {
             // Check fan-out: source has multiple targets
@@ -167,10 +174,29 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                 }
             }
 
+            // Check for labeled edges from this rank
+            let has_labels = by_rank[r].iter().any(|&idx| {
+                let source_id = &graph.nodes[idx].id;
+                graph.edges.iter().any(|e| {
+                    !e.is_back_edge && &e.from == source_id && e.label.is_some()
+                })
+            });
+
+            // Priority: labeled multi > unlabeled fanout > unlabeled fanin > labeled > minimal
             if has_fan_out || has_fan_in {
-                ROW_SPACING_MULTI
+                if has_labels {
+                    ROW_SPACING_MULTI_LABELED
+                } else if has_fan_out {
+                    // Divergent needs space for drops: stem → junction → drops → arrows
+                    ROW_SPACING_FANOUT
+                } else {
+                    // Convergent is more compact: stems → junction → arrow
+                    ROW_SPACING_FANIN
+                }
+            } else if has_labels {
+                ROW_SPACING_LABELED
             } else {
-                ROW_SPACING_SINGLE
+                ROW_SPACING_MINIMAL
             }
         })
         .collect();
