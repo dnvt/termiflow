@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::style::BOX_HEIGHT;
+use crate::geom::EdgeRoute;
 
 /// Node shape variants from Mermaid syntax
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -197,6 +198,8 @@ pub struct Graph {
     pub subgraphs: Vec<Subgraph>,
     /// Maps node ID to its containing subgraph ID (if any)
     pub node_subgraph: HashMap<String, String>,
+    /// Optional precomputed routes (used by experimental layout/routing spike)
+    pub edge_routes: HashMap<usize, EdgeRoute>,
 }
 
 /// Graph direction (from Mermaid `graph TD/LR/TB/BT`)
