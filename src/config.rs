@@ -14,6 +14,7 @@ pub struct Config {
     pub max_label_width: usize,
     pub strict_parsing: bool,
     pub composite_style: CompositeStyle,
+    pub enable_subgraphs: bool,
 }
 
 impl Default for Config {
@@ -22,6 +23,7 @@ impl Default for Config {
             max_label_width: 20,
             strict_parsing: false,
             composite_style: CompositeStyle::default(),
+            enable_subgraphs: true, // Subgraphs enabled by default
         }
     }
 }
@@ -63,6 +65,7 @@ pub struct ConfigBuilder {
     max_label_width: Option<usize>,
     strict_parsing: Option<bool>,
     composite_style: Option<CompositeStyle>,
+    enable_subgraphs: Option<bool>,
 }
 
 impl ConfigBuilder {
@@ -85,6 +88,11 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn enable_subgraphs(mut self, enable: bool) -> Self {
+        self.enable_subgraphs = Some(enable);
+        self
+    }
+
     /// Build config, applying CLI overrides to parse_config base
     pub fn build(self, parse_config: &ParseConfig) -> Config {
         let mut config = Config::from_parse_config(parse_config);
@@ -98,6 +106,9 @@ impl ConfigBuilder {
         }
         if let Some(style) = self.composite_style {
             config.composite_style = style;
+        }
+        if let Some(enable) = self.enable_subgraphs {
+            config.enable_subgraphs = enable;
         }
 
         config

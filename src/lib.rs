@@ -37,7 +37,7 @@ pub mod style;
 pub use config::{Config, ConfigBuilder};
 pub use graph::{Edge, Graph, Node};
 pub use layout::waterfall;
-pub use parser::{parse, ParseConfig, ParseResult};
+pub use parser::{parse, parse_with_config, ParseConfig, ParseResult};
 pub use render::render as render_canvas;
 pub use style::{BaseStyle, CompositeStyle};
 
@@ -106,7 +106,7 @@ impl RenderOptions {
 /// ).unwrap();
 /// ```
 pub fn render(input: &str, options: RenderOptions) -> Result<String> {
-    // Parse
+    // Parse (subgraphs disabled by default in library API)
     let parse_result = parser::parse(input, options.strict)?;
 
     // Layout

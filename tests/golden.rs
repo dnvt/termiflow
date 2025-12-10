@@ -84,7 +84,8 @@ fn golden_with_config_unicode() {
 
 #[test]
 fn golden_unsupported_unicode() {
-    let (stdout, stderr) = run_termiflow(&[
+    // Note: This fixture now renders correctly since subgraphs are enabled by default
+    let (stdout, _) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
@@ -95,14 +96,6 @@ fn golden_unsupported_unicode() {
     assert_eq!(
         stdout, expected_stdout,
         "Output mismatch for unsupported.md"
-    );
-
-    let expected_stderr = include_str!("fixtures/expected/unsupported.unicode.err");
-    assert!(
-        stderr.contains(expected_stderr.trim()),
-        "Expected warning '{}' not found in stderr: '{}'",
-        expected_stderr.trim(),
-        stderr
     );
 }
 
@@ -181,7 +174,8 @@ fn golden_with_config_ascii() {
 
 #[test]
 fn golden_unsupported_ascii() {
-    let (stdout, stderr) = run_termiflow(&[
+    // Note: This fixture now renders correctly since subgraphs are enabled by default
+    let (stdout, _) = run_termiflow(&[
         "--print",
         "--style",
         "ascii",
@@ -189,13 +183,6 @@ fn golden_unsupported_ascii() {
     ]);
     let expected = include_str!("fixtures/expected/unsupported.ascii.txt");
     assert_eq!(stdout, expected, "Output mismatch for unsupported.md (ASCII)");
-
-    // Should still emit warning about unsupported subgraph syntax
-    assert!(
-        stderr.contains("Subgraphs not supported"),
-        "Expected warning about unsupported subgraph in stderr, got: {}",
-        stderr
-    );
 }
 
 // ============================================================================
@@ -258,4 +245,68 @@ fn golden_shapes_ascii() {
     ]);
     let expected = include_str!("fixtures/expected/shapes.ascii.txt");
     assert_eq!(stdout, expected, "Output mismatch for shapes.md (ASCII)");
+}
+
+// ============================================================================
+// Subgraph Golden Tests (subgraphs enabled by default)
+// ============================================================================
+
+#[test]
+fn golden_subgraph_basic_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/subgraph_basic.md",
+    ]);
+    let expected = include_str!("fixtures/expected/subgraph_basic.unicode.txt");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for subgraph_basic.md (Unicode)"
+    );
+}
+
+#[test]
+fn golden_subgraph_basic_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/subgraph_basic.md",
+    ]);
+    let expected = include_str!("fixtures/expected/subgraph_basic.ascii.txt");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for subgraph_basic.md (ASCII)"
+    );
+}
+
+#[test]
+fn golden_subgraph_cross_edges_unicode() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "unicode",
+        "tests/fixtures/inputs/subgraph_cross_edges.md",
+    ]);
+    let expected = include_str!("fixtures/expected/subgraph_cross_edges.unicode.txt");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for subgraph_cross_edges.md (Unicode)"
+    );
+}
+
+#[test]
+fn golden_subgraph_cross_edges_ascii() {
+    let (stdout, _) = run_termiflow(&[
+        "--print",
+        "--style",
+        "ascii",
+        "tests/fixtures/inputs/subgraph_cross_edges.md",
+    ]);
+    let expected = include_str!("fixtures/expected/subgraph_cross_edges.ascii.txt");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for subgraph_cross_edges.md (ASCII)"
+    );
 }

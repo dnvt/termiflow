@@ -10,7 +10,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
-use crate::graph::{Direction, Edge, Graph, Node, NodeShape};
+use crate::graph::{Direction, Edge, Graph, Node, NodeShape, Subgraph};
 
 lazy_static! {
     // SPEC §1.1: Supported syntax patterns
@@ -63,6 +63,25 @@ lazy_static! {
     static ref RE_SUBGRAPH: Regex = Regex::new(r"^\s*subgraph\s").unwrap();
     static ref RE_STYLE: Regex = Regex::new(r"^\s*style\s+\w+").unwrap();
     static ref RE_CLASSDEF: Regex = Regex::new(r"^\s*classDef\s").unwrap();
+
+    // Subgraph support (when enabled)
+    // Mermaid subgraph syntax:
+    //   subgraph [title]           → bracketed title, auto-generate ID
+    //   subgraph id [title]        → explicit ID with bracketed title
+    //   subgraph title text here   → unbracketed title (everything is the title), auto-generate ID
+    //
+    // RE_SUBGRAPH_BRACKET: Handles bracketed titles
+    //   Group 1: ID before bracket (e.g., "SG1" in "subgraph SG1 [Title]")
+    //   Group 2: Bracketed title (e.g., "Title" in "subgraph [Title]")
+    // RE_SUBGRAPH_PLAIN: Handles unbracketed titles (entire rest of line is title)
+    //   Group 1: Everything after "subgraph " (becomes the title)
+    static ref RE_SUBGRAPH_BRACKET: Regex = Regex::new(
+        r"^\s*subgraph\s+(?:([a-zA-Z_][a-zA-Z0-9_]*)\s+)?\[([^\]]*)\]\s*$"
+    ).unwrap();
+    static ref RE_SUBGRAPH_PLAIN: Regex = Regex::new(
+        r"^\s*subgraph(?:\s+(.+))?$"
+    ).unwrap();
+    static ref RE_SUBGRAPH_END: Regex = Regex::new(r"^\s*end\s*$").unwrap();
 }
 
 /// Configuration parsed from in-file directives
@@ -135,6 +154,16 @@ fn collect_shape_nodes(
 /// * `input` - Mermaid flowchart content
 /// * `strict` - If true, exit on any warning (except INFORMATIONAL)
 pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
+    parse_with_config(input, strict, true) // Subgraphs enabled by default
+}
+
+/// Parse Mermaid content with optional subgraph support
+///
+/// # Arguments
+/// * `input` - Mermaid flowchart content
+/// * `strict` - If true, exit on any warning (except INFORMATIONAL)
+/// * `enable_subgraphs` - If true, parse subgraph blocks (experimental)
+pub fn parse_with_config(input: &str, strict: bool, enable_subgraphs: bool) -> Result<ParseResult> {
     // FATAL: Empty file
     if input.trim().is_empty() {
         bail!("termiflow: error: Empty file (no nodes)");
@@ -235,6 +264,11 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     let mut node_shapes: HashMap<String, NodeShape> = HashMap::new();
     let mut node_first_ref: HashMap<String, usize> = HashMap::new();
 
+    // Subgraph tracking (single-level only)
+    let mut current_subgraph: Option<String> = None;
+    let mut subgraphs: Vec<(String, Option<String>)> = Vec::new(); // (id, title)
+    let mut node_to_subgraph: HashMap<String, String> = HashMap::new();
+
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
@@ -247,8 +281,88 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             continue;
         }
 
+        // Handle subgraph blocks if enabled (single-level only)
+        if enable_subgraphs {
+            // Parse subgraph syntax:
+            // 1. subgraph ID [Title]    → explicit ID with bracketed title
+            // 2. subgraph [Title]       → bracketed title, auto-generate ID
+            // 3. subgraph ID            → just ID (single word, no title)
+            // 4. subgraph Multi Word    → multi-word title, auto-generate ID
+
+            let subgraph_match = if let Some(caps) = RE_SUBGRAPH_BRACKET.captures(trimmed) {
+                // Bracketed syntax: subgraph ID [title] or subgraph [title]
+                let explicit_id = caps.get(1).map(|m| m.as_str().trim().to_string());
+                let title = caps.get(2).map(|m| m.as_str().trim().to_string());
+                Some((explicit_id, title))
+            } else if let Some(caps) = RE_SUBGRAPH_PLAIN.captures(trimmed) {
+                // Plain syntax: rest of line after "subgraph"
+                let text = caps.get(1).map(|m| m.as_str().trim().to_string());
+
+                if let Some(ref t) = text {
+                    if t.is_empty() {
+                        // Just "subgraph" with nothing after
+                        Some((None, None))
+                    } else if t.contains(' ') || t.contains('\t') {
+                        // Multi-word: treat as title, auto-generate ID
+                        Some((None, Some(t.clone())))
+                    } else {
+                        // Single word: treat as ID, no title
+                        Some((Some(t.clone()), None))
+                    }
+                } else {
+                    Some((None, None))
+                }
+            } else {
+                None
+            };
+
+            if let Some((explicit_id, title)) = subgraph_match {
+                // If already in a subgraph, warn about nested subgraphs
+                if current_subgraph.is_some() {
+                    warnings.push(format!(
+                        "termiflow: warning: line {}: Nested subgraphs not supported (single-level only)",
+                        i + 1
+                    ));
+                    if strict {
+                        bail!("{}", warnings.last().unwrap());
+                    }
+                    continue;
+                }
+
+                // Filter out empty titles
+                let title = title.filter(|s| !s.is_empty());
+
+                // Determine ID: use explicit if provided, otherwise generate from title or index
+                let id = explicit_id.unwrap_or_else(|| {
+                    if let Some(ref t) = title {
+                        // Sanitize title to create ID: replace spaces/special chars with underscore
+                        t.chars()
+                            .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                            .collect::<String>()
+                    } else {
+                        format!("subgraph_{}", subgraphs.len())
+                    }
+                });
+
+                current_subgraph = Some(id.clone());
+                subgraphs.push((id, title));
+                continue;
+            }
+
+            if RE_SUBGRAPH_END.is_match(trimmed) {
+                current_subgraph = None;
+                continue;
+            }
+        }
+
         // Check for unsupported syntax (SPEC §1.2)
+        // Skip subgraph warning if subgraphs are enabled
         if let Some(warning) = check_unsupported_syntax(trimmed, i + 1) {
+            // Skip the subgraph warning if subgraphs are enabled
+            if enable_subgraphs && warning.contains("Subgraphs not supported") {
+                // Already handled above
+                continue;
+            }
             warnings.push(warning.clone());
             unsupported_lines.insert(i);
             if strict {
@@ -282,6 +396,9 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
         ];
 
         for (regex, shape) in shape_patterns {
+            // Before collecting nodes, save the current known IDs to detect new ones
+            let ids_before = known_ids.len();
+            
             collect_shape_nodes(
                 trimmed,
                 regex,
@@ -293,6 +410,16 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 &mut node_first_ref,
                 i + 1,
             );
+
+            // If nodes were added and we're in a subgraph, associate them
+            if enable_subgraphs && known_ids.len() > ids_before {
+                if let Some(ref sg_id) = current_subgraph {
+                    // Find the newly added node IDs
+                    for node_id in &ordered_ids[ordered_ids.len() - (known_ids.len() - ids_before)..] {
+                        node_to_subgraph.insert(node_id.clone(), sg_id.clone());
+                    }
+                }
+            }
         }
 
         // Note: labeled edges are parsed below and labels are preserved
@@ -457,6 +584,25 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             width: 0,
             rank: 0,
         });
+    }
+
+    // Create subgraphs and associate nodes (if enabled)
+    if enable_subgraphs {
+        for (sg_id, sg_title) in subgraphs {
+            let mut subgraph = Subgraph::new(sg_id.clone(), sg_title);
+            
+            // Find all nodes that belong to this subgraph
+            for node in &graph.nodes {
+                if let Some(sg) = node_to_subgraph.get(&node.id) {
+                    if sg == &sg_id {
+                        subgraph.node_ids.insert(node.id.clone());
+                        graph.node_subgraph.insert(node.id.clone(), sg_id.clone());
+                    }
+                }
+            }
+            
+            graph.add_subgraph(subgraph);
+        }
     }
 
     // Store warnings in graph
@@ -779,10 +925,12 @@ click A "gateway.md""#;
 
     #[test]
     fn test_strict_mode_unsupported_syntax() {
-        let input = "graph TD\nsubgraph X\nA[Node]";
+        // Use style directive which is unsupported (not subgraph, since that's now supported)
+        let input = "graph TD\nA[Node]\nstyle A fill:#f00";
         // Lenient mode: should warn but parse
         let lenient = parse(input, false).unwrap();
         assert!(!lenient.graph.warnings.is_empty());
+        assert!(lenient.graph.warnings.iter().any(|w| w.contains("Mermaid styling not supported")));
 
         // Strict mode: should fail
         let strict = parse(input, true);
@@ -806,14 +954,30 @@ click A "gateway.md""#;
     // === UNSUPPORTED SYNTAX DETECTION ===
 
     #[test]
-    fn test_subgraph_unsupported() {
-        let input = "graph TD\nsubgraph X\nA[Node]";
-        let result = parse(input, false).unwrap();
+    fn test_subgraph_disabled_explicitly() {
+        // When subgraphs are explicitly disabled, should emit warning
+        let input = "graph TD\nsubgraph X\nA[Node]\nend";
+        let result = parse_with_config(input, false, false).unwrap();
         assert!(result
             .graph
             .warnings
             .iter()
             .any(|w| w.contains("Subgraphs not supported")));
+    }
+
+    #[test]
+    fn test_subgraph_enabled_by_default() {
+        // Subgraphs are now enabled by default in parse()
+        let input = "graph TD\nsubgraph X\nA[Node]\nend";
+        let result = parse(input, false).unwrap();
+        // No warning about unsupported subgraphs
+        assert!(!result
+            .graph
+            .warnings
+            .iter()
+            .any(|w| w.contains("Subgraphs not supported")));
+        // Subgraph should be parsed
+        assert_eq!(result.graph.subgraphs.len(), 1);
     }
 
     #[test]
@@ -1034,5 +1198,215 @@ click A "gateway.md""#;
         let result = parse(input, false).unwrap();
         assert_eq!(result.graph.nodes[0].shape, NodeShape::Rectangle);
         assert_eq!(result.graph.nodes[1].shape, NodeShape::Rectangle);
+    }
+
+    #[test]
+    fn test_subgraph_parsing() {
+        // Test with bracketed syntax for explicit IDs (Mermaid standard)
+        let input = "graph TD
+            A[Node A]
+            subgraph SG1 [Title One]
+            B[Node B]
+            C[Node C]
+            end
+            subgraph SG2
+            D[Node D]
+            end
+            A --> B";
+
+        // Subgraphs are now enabled by default in parse()
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 2);
+
+        // Check first subgraph (explicit ID with bracketed title)
+        let sg1 = &result.graph.subgraphs[0];
+        assert_eq!(sg1.id, "SG1");
+        assert_eq!(sg1.title, Some("Title One".to_string()));
+        assert!(sg1.node_ids.contains("B"));
+        assert!(sg1.node_ids.contains("C"));
+
+        // Check second subgraph (just ID, no title)
+        let sg2 = &result.graph.subgraphs[1];
+        assert_eq!(sg2.id, "SG2");
+        assert_eq!(sg2.title, None);
+        assert!(sg2.node_ids.contains("D"));
+
+        // Check node-to-subgraph mapping
+        assert_eq!(
+            result.graph.node_subgraph.get("B"),
+            Some(&"SG1".to_string())
+        );
+        assert_eq!(
+            result.graph.node_subgraph.get("C"),
+            Some(&"SG1".to_string())
+        );
+        assert_eq!(
+            result.graph.node_subgraph.get("D"),
+            Some(&"SG2".to_string())
+        );
+        assert_eq!(result.graph.node_subgraph.get("A"), None); // A is not in any subgraph
+    }
+
+    #[test]
+    fn test_subgraph_plain_title() {
+        // Test plain syntax (entire rest of line is title, ID auto-generated)
+        let input = "graph TD
+            subgraph Backend Services
+            A[API]
+            end";
+
+        let result = parse_with_config(input, false, true).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 1);
+
+        let sg = &result.graph.subgraphs[0];
+        // ID is sanitized from title
+        assert_eq!(sg.id, "Backend_Services");
+        // Title is the full text
+        assert_eq!(sg.title, Some("Backend Services".to_string()));
+        assert!(sg.node_ids.contains("A"));
+    }
+
+    #[test]
+    fn test_nested_subgraph_warning() {
+        let input = "graph TD
+            A[Node A]
+            subgraph SG1
+            B[Node B]
+            subgraph SG2
+            C[Node C]
+            end
+            end";
+        
+        let result = parse_with_config(input, false, true).unwrap();
+        assert!(result
+            .graph
+            .warnings
+            .iter()
+            .any(|w| w.contains("Nested subgraphs not supported")));
+    }
+
+    #[test]
+    fn test_subgraph_empty() {
+        // Empty subgraph (no nodes inside)
+        let input = "graph TD
+            subgraph Empty
+            end
+            A[Node A]";
+
+        let result = parse_with_config(input, false, true).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 1);
+
+        let sg = &result.graph.subgraphs[0];
+        assert_eq!(sg.id, "Empty");
+        assert_eq!(sg.title, None);
+        assert!(sg.node_ids.is_empty()); // No nodes in subgraph
+    }
+
+    #[test]
+    fn test_subgraph_single_node() {
+        // Single node in subgraph
+        let input = "graph TD
+            subgraph Single [One Node]
+            A[Solo]
+            end";
+
+        let result = parse_with_config(input, false, true).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 1);
+
+        let sg = &result.graph.subgraphs[0];
+        assert_eq!(sg.id, "Single");
+        assert_eq!(sg.title, Some("One Node".to_string()));
+        assert_eq!(sg.node_ids.len(), 1);
+        assert!(sg.node_ids.contains("A"));
+    }
+
+    #[test]
+    fn test_subgraph_title_special_chars() {
+        // Title with special characters (should work)
+        let input = "graph TD
+            subgraph Backend (v2.0) - Services
+            A[API]
+            end";
+
+        let result = parse_with_config(input, false, true).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 1);
+
+        let sg = &result.graph.subgraphs[0];
+        assert_eq!(sg.title, Some("Backend (v2.0) - Services".to_string()));
+        // ID has special chars replaced
+        assert_eq!(sg.id, "Backend__v2_0____Services");
+    }
+
+    #[test]
+    fn test_subgraph_bracketed_title_with_spaces() {
+        // Bracketed title allows spaces and special chars
+        let input = "graph TD
+            subgraph API [API Gateway (Load Balanced)]
+            A[Server 1]
+            end";
+
+        let result = parse_with_config(input, false, true).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 1);
+
+        let sg = &result.graph.subgraphs[0];
+        assert_eq!(sg.id, "API");
+        assert_eq!(
+            sg.title,
+            Some("API Gateway (Load Balanced)".to_string())
+        );
+    }
+
+    #[test]
+    fn test_subgraph_multiple_independent() {
+        // Multiple independent subgraphs
+        let input = "graph TD
+            subgraph Frontend
+            A[React App]
+            end
+            subgraph Backend [Backend Services]
+            B[API]
+            C[Worker]
+            end
+            subgraph Database
+            D[PostgreSQL]
+            end
+            A --> B
+            B --> D
+            C --> D";
+
+        let result = parse_with_config(input, false, true).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 3);
+
+        // Check each subgraph
+        assert_eq!(result.graph.subgraphs[0].id, "Frontend");
+        assert!(result.graph.subgraphs[0].node_ids.contains("A"));
+
+        assert_eq!(result.graph.subgraphs[1].id, "Backend");
+        assert_eq!(
+            result.graph.subgraphs[1].title,
+            Some("Backend Services".to_string())
+        );
+        assert!(result.graph.subgraphs[1].node_ids.contains("B"));
+        assert!(result.graph.subgraphs[1].node_ids.contains("C"));
+
+        assert_eq!(result.graph.subgraphs[2].id, "Database");
+        assert!(result.graph.subgraphs[2].node_ids.contains("D"));
+    }
+
+    #[test]
+    fn test_subgraph_just_keyword() {
+        // Just "subgraph" with no name (edge case)
+        let input = "graph TD
+            subgraph
+            A[Node]
+            end";
+
+        let result = parse_with_config(input, false, true).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 1);
+
+        let sg = &result.graph.subgraphs[0];
+        // Auto-generated ID
+        assert_eq!(sg.id, "subgraph_0");
+        assert_eq!(sg.title, None);
     }
 }

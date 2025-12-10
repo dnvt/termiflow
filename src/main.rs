@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 // Use the termiflow library
-use termiflow::{parse, render_canvas, waterfall, CompositeStyle, Config};
+use termiflow::{parse_with_config, render_canvas, waterfall, CompositeStyle, Config};
 
 /// Interactive TUI graph explorer - jq for diagrams
 #[derive(Parser)]
@@ -106,8 +106,8 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     // Read input
     let input = read_input(cli)?;
 
-    // Parse the Mermaid content (returns ParseResult with graph + in-file config)
-    let parse_result = parse(&input, cli.strict)?;
+    // Parse the Mermaid content with subgraph support enabled by default
+    let parse_result = parse_with_config(&input, cli.strict, true)?;
 
     // Load configuration (CLI > in-file > config file)
     let mut builder = Config::builder()
@@ -140,6 +140,12 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
         }
         for e in &graph.edges {
             eprintln!("edge {} -> {} (back_edge={})", e.from, e.to, e.is_back_edge);
+        }
+        if !graph.subgraphs.is_empty() {
+            eprintln!("-- subgraphs --");
+            for sg in &graph.subgraphs {
+                eprintln!("subgraph {}: title={:?} nodes={:?}", sg.id, sg.title, sg.node_ids);
+            }
         }
     }
 

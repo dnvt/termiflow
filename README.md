@@ -11,6 +11,7 @@ Current status: `--print` mode is implemented; TUI navigation is stubbed and wil
 - **Composite styling** - Mix and match style components: `corner:dots,border:heavy`
 - **9 node shapes** - Rectangle, rounded, diamond, circle, stadium, hexagon, database, subroutine, asymmetric
 - **Edge labels** - Pipe syntax `A -->|label| B` and text syntax `A -- label --> B`
+- **Subgraphs** - Group nodes with `subgraph name ... end` (single-level, enabled by default)
 - **Pipe-friendly** - Use `--print` for stdout output, pipe to other tools
 - **Cycle detection** - Back-edges rendered in gutter with warnings (or skipped when clipped)
 - **Config precedence** - CLI > in-file `%% termiflow:` directive > `~/.config/termiflow/config.toml`
@@ -96,13 +97,14 @@ graph TD
   - Asymmetric: `ID>Label]`
 - **Edges**: `A --> B`, `A ---> B`
 - **Edge labels**: `A -->|text| B` or `A -- text --> B`
+- **Subgraphs**: `subgraph name ... end` (single-level grouping)
 - Click targets: `click ID "file.md"`
 - Config directives: `%% termiflow: key=value`
 - Diagram type: **flowchart only** (`graph TD/LR/TB/BT`). Other Mermaid diagram types (sequence, class, state, ER, gantt, etc.) are rejected with a clear error.
 
 ### Not Yet Supported
 
-- Subgraphs (planned single-level grouping)
+- Nested subgraphs (single-level only)
 - Mermaid styling/classes (`classDef`, `:::`)
 - Non-flowchart diagram types (sequence, class, state, ER, gantt, pie, etc.)
 
@@ -154,7 +156,7 @@ graph TD
 # Build
 cargo build
 
-# Test (runs 114 tests: unit, golden, integration, doc)
+# Test (runs 135 tests: unit, golden, integration, doc)
 cargo test
 
 # Run with debug layout (prints coordinates)

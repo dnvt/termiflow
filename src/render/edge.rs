@@ -6,6 +6,8 @@
 //! - **L-shaped**: Horizontal then vertical when nodes are offset
 //! - **Back-edge**: Cycle edges routed through the right gutter
 
+use std::collections::HashMap;
+
 use crate::graph::Node;
 use crate::style::{StyleChars, BOX_HEIGHT, EDGE_STEM_HEIGHT, RIGHT_GUTTER};
 
@@ -19,11 +21,18 @@ use super::canvas::{is_arrow, is_vertical, Canvas};
 ///
 /// Draws: stem → junction span → drops → arrows
 /// This creates clearer visual routing than compact L-shaped edges.
+///
+/// The `subgraph_entry_y` parameter allows overriding arrow positions for nodes
+/// that are entry points into subgraphs (arrow drawn at subgraph border).
+/// The `subgraph_exit_y` parameter allows extending stems to subgraph borders
+/// for clean exit when source is in a subgraph.
 pub fn route_expanded_edge(
     from: &Node,
     to_nodes: &[&Node],
     canvas: &mut Canvas,
     style: &StyleChars,
+    subgraph_entry_y: &HashMap<String, usize>,
+    subgraph_exit_y: &HashMap<String, usize>,
 ) {
     if to_nodes.is_empty() || !canvas.is_visible(from) {
         return;
@@ -44,11 +53,14 @@ pub fn route_expanded_edge(
     dest_centers.sort();
 
     // Single target: draw stem, optional horizontal, then arrow
-    // Arrow is always right above target box (target.y - 1)
+    // Arrow position: use subgraph entry Y if this node is an entry point, else target.y - 1
     if dest_centers.len() == 1 {
         let target = visible_targets[0];
         let dest_x = dest_centers[0];
-        let target_arrow_y = target.y.saturating_sub(1);
+        let target_arrow_y = subgraph_entry_y
+            .get(&target.id)
+            .copied()
+            .unwrap_or_else(|| target.y.saturating_sub(1));
 
         if src_center_x == dest_x {
             // Aligned: draw vertical stem down to arrow
@@ -57,8 +69,35 @@ pub fn route_expanded_edge(
             }
         } else {
             // Not aligned: L-shaped route
-            // Stem from source
-            for y in stem_start_y..junction_y {
+            // Handle subgraph crossings:
+            // - If source exits a subgraph, junction must be AT or AFTER exit Y
+            // - If target enters a subgraph, junction must be BEFORE entry Y
+            let exit_y = subgraph_exit_y.get(&from.id).copied();
+            let entry_y = subgraph_entry_y.get(&target.id).copied();
+
+            let effective_junction_y = match (exit_y, entry_y) {
+                (Some(exit), Some(_entry)) => {
+                    // Cross-subgraph: junction MUST be outside source subgraph
+                    // Always use exit + 1 (one row below source subgraph border)
+                    // Layout must ensure sufficient space between subgraphs
+                    exit + 1
+                }
+                (Some(exit), None) => {
+                    // Source exits subgraph, target not in subgraph
+                    exit + 1 // Junction just after exit
+                }
+                (None, Some(entry)) => {
+                    // Source not in subgraph, target enters subgraph
+                    junction_y.min(entry.saturating_sub(1)).max(stem_start_y)
+                }
+                (None, None) => {
+                    // Neither in subgraph - use default
+                    junction_y
+                }
+            };
+
+            // Stem from source to junction
+            for y in stem_start_y..effective_junction_y {
                 canvas.set_edge_char(src_center_x, y, style.edge_v, style);
             }
             // Horizontal span - skip corner positions
@@ -69,19 +108,19 @@ pub fn route_expanded_edge(
             };
             for x in left..=right {
                 if x != src_center_x && x != dest_x {
-                    canvas.set_edge_char(x, junction_y, style.edge_h, style);
+                    canvas.set_edge_char(x, effective_junction_y, style.edge_h, style);
                 }
             }
             // Corners
             if src_center_x < dest_x {
-                canvas.set_edge_char(src_center_x, junction_y, style.corner_ul, style);
-                canvas.set_edge_char(dest_x, junction_y, style.corner_dr, style);
+                canvas.set_edge_char(src_center_x, effective_junction_y, style.corner_ul, style);
+                canvas.set_edge_char(dest_x, effective_junction_y, style.corner_dr, style);
             } else {
-                canvas.set_edge_char(src_center_x, junction_y, style.corner_ur, style);
-                canvas.set_edge_char(dest_x, junction_y, style.corner_dl, style);
+                canvas.set_edge_char(src_center_x, effective_junction_y, style.corner_ur, style);
+                canvas.set_edge_char(dest_x, effective_junction_y, style.corner_dl, style);
             }
             // Vertical drop from corner to arrow
-            for y in (junction_y + 1)..target_arrow_y {
+            for y in (effective_junction_y + 1)..target_arrow_y {
                 canvas.set_edge_char(dest_x, y, style.edge_v, style);
             }
         }
@@ -96,8 +135,51 @@ pub fn route_expanded_edge(
     let span_left = left_x.min(src_center_x);
     let span_right = right_x.max(src_center_x);
 
+    // Calculate effective junction Y:
+    // - Must be below source's subgraph exit (if source is in a subgraph)
+    // - Must be above all target subgraph entry points (so horizontal span doesn't cross borders)
+    // - Must have at least 1 row of stem
+    let source_exit_y = subgraph_exit_y.get(&from.id).copied();
+    let min_entry_y = visible_targets
+        .iter()
+        .filter_map(|t| subgraph_entry_y.get(&t.id).copied())
+        .min();
+
+    let effective_junction_y = match (source_exit_y, min_entry_y) {
+        (Some(exit_y), Some(min_entry)) => {
+            // Source exits a subgraph AND targets enter subgraphs
+            // Junction must be:
+            // - At or after source subgraph's bottom border (exit_y + 1)
+            // - Before target subgraph's top border (min_entry - 1)
+            // If there's not enough space, prefer being after exit (safer for rendering)
+            let after_exit = exit_y + 1;
+            let before_entry = min_entry.saturating_sub(1);
+            if after_exit <= before_entry {
+                // Enough space - use the midpoint or after_exit
+                after_exit
+            } else {
+                // Not enough space - junction will cross borders, use after_exit
+                after_exit
+            }
+        }
+        (Some(exit_y), None) => {
+            // Source exits subgraph, targets not in subgraphs
+            // Junction should be after source subgraph border
+            (exit_y + 1).max(junction_y)
+        }
+        (None, Some(min_entry)) => {
+            // Source not in subgraph, targets enter subgraphs
+            // Junction should be before target subgraph borders
+            junction_y.min(min_entry.saturating_sub(2)).max(stem_start_y + 1)
+        }
+        (None, None) => {
+            // Neither source nor targets in subgraphs - use default
+            junction_y
+        }
+    };
+
     // Phase 1: Draw source stem (from source center down to junction)
-    for y in stem_start_y..junction_y {
+    for y in stem_start_y..effective_junction_y {
         canvas.set_edge_char(src_center_x, y, style.edge_v, style);
     }
 
@@ -112,19 +194,22 @@ pub fn route_expanded_edge(
         } else {
             style.edge_h
         };
-        canvas.set_edge_char(x, junction_y, c, style);
+        canvas.set_edge_char(x, effective_junction_y, c, style);
     }
 
     // Phase 3 & 4: Draw drops and arrows for each destination
-    // Arrow positioned right above each target box
+    // Arrow position: use subgraph entry Y if this node is an entry point, else target.y - 1
     for target in &visible_targets {
         let dest_x = center_x(target);
-        let target_arrow_y = target.y.saturating_sub(1);
+        let target_arrow_y = subgraph_entry_y
+            .get(&target.id)
+            .copied()
+            .unwrap_or_else(|| target.y.saturating_sub(1));
         // Draw vertical drop from junction to arrow
-        for y in (junction_y + 1)..target_arrow_y {
+        for y in (effective_junction_y + 1)..target_arrow_y {
             canvas.set_edge_char(dest_x, y, style.edge_v, style);
         }
-        // Place arrow right above target box
+        // Place arrow above target (or at subgraph entry point)
         canvas.set(dest_x, target_arrow_y, style.arrow_down);
     }
 }
@@ -341,7 +426,8 @@ mod tests {
         let stem_start_y = src.y + BOX_HEIGHT;
         let junction_y = stem_start_y + EDGE_STEM_HEIGHT;
 
-        route_expanded_edge(&src, &[&t1, &t2], &mut canvas, &chars);
+        let empty_entry = HashMap::new();
+        route_expanded_edge(&src, &[&t1, &t2], &mut canvas, &chars, &empty_entry, &empty_entry);
 
         // Junction row must include the source center so the stem connects
         let stem_x = center_x(&src);
@@ -361,7 +447,8 @@ mod tests {
         let src = make_node("S", 10, 2, 7);
         let target = make_node("T", 10, 12, 7);
 
-        route_expanded_edge(&src, &[&target], &mut canvas, &chars);
+        let empty_entry = HashMap::new();
+        route_expanded_edge(&src, &[&target], &mut canvas, &chars, &empty_entry, &empty_entry);
 
         // Arrow should be right above target box
         let arrow_y = target.y.saturating_sub(1);
@@ -382,7 +469,8 @@ mod tests {
         let src = make_node("S", 5, 2, 7);
         let target = make_node("T", 30, 12, 7);
 
-        route_expanded_edge(&src, &[&target], &mut canvas, &chars);
+        let empty_entry = HashMap::new();
+        route_expanded_edge(&src, &[&target], &mut canvas, &chars, &empty_entry, &empty_entry);
 
         // Arrow should be right above target box
         let arrow_y = target.y.saturating_sub(1);
@@ -405,7 +493,8 @@ mod tests {
         let mut canvas = Canvas::new(80, 40);
         let src = make_node("S", 10, 2, 7);
 
-        route_expanded_edge(&src, &[], &mut canvas, &chars);
+        let empty_entry = HashMap::new();
+        route_expanded_edge(&src, &[], &mut canvas, &chars, &empty_entry, &empty_entry);
 
         // Canvas should still be empty (only spaces)
         assert_eq!(canvas.get(center_x(&src), src.y + BOX_HEIGHT), ' ');

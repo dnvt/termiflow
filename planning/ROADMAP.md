@@ -8,7 +8,10 @@
 - Expanded edge routing with vertical stems and junctions (RFC-001)
 - Two-pass parser with forward references
 - Waterfall layout with cycle detection
-- 64 tests passing
+- 9 node shapes (rectangle, rounded, diamond, circle, stadium, hexagon, database, subroutine, asymmetric)
+- Edge labels (pipe and text syntax)
+- Subgraphs (single-level grouping, enabled by default)
+- 135 tests passing
 
 ---
 
@@ -16,7 +19,7 @@
 
 **Goal:** Maximum feature impact - expand diagram capabilities and visual polish.
 
-### H1. Edge Labels
+### H1. Edge Labels ✅ COMPLETE
 **Priority:** P0 | **Complexity:** Medium | **Impact:** High
 
 Support `-->|label|` syntax for edge annotations.
@@ -34,14 +37,14 @@ graph TD
 - Render: Center label on vertical edge segment
 
 **Acceptance criteria:**
-- [ ] Parse all Mermaid edge label syntaxes
-- [ ] Render labels centered on edge paths
-- [ ] Handle multi-word labels with proper width
-- [ ] Golden tests for labeled edges
+- [x] Parse all Mermaid edge label syntaxes
+- [x] Render labels centered on edge paths
+- [x] Handle multi-word labels with proper width
+- [x] Golden tests for labeled edges
 
 ---
 
-### H2. Node Shapes
+### H2. Node Shapes ✅ COMPLETE
 **Priority:** P0 | **Complexity:** Medium | **Impact:** High
 
 Support common Mermaid node shapes for visual variety.
@@ -61,10 +64,10 @@ Support common Mermaid node shapes for visual variety.
 - Layout: Calculate bounding box per shape type
 
 **Acceptance criteria:**
-- [ ] Parse all shape syntaxes
-- [ ] Render each shape in unicode and ascii modes
-- [ ] Edge connections attach to correct anchor points
-- [ ] Golden tests for each shape
+- [x] Parse all shape syntaxes
+- [x] Render each shape in unicode and ascii modes
+- [x] Edge connections attach to correct anchor points
+- [x] Golden tests for each shape
 
 ---
 
@@ -155,7 +158,7 @@ src/
 
 ---
 
-### H4. Subgraphs
+### H4. Subgraphs ✅ COMPLETE
 **Priority:** P1 | **Complexity:** High | **Impact:** High
 
 Group nodes visually within flowcharts.
@@ -192,16 +195,16 @@ graph TD
 - Render: Outer box with title, inner nodes positioned within
 
 **Challenges:**
-- Edge routing across subgraph boundaries
-- Nested subgraphs (stretch goal)
-- Subgraph title positioning
+- Edge routing across subgraph boundaries ✅ Solved
+- Nested subgraphs (deferred - single-level only)
+- Subgraph title positioning ✅ Solved
 
 **Acceptance criteria:**
-- [ ] Parse subgraph syntax
-- [ ] Render subgraph as containing box
-- [ ] Position nodes within subgraph bounds
-- [ ] Route edges across subgraph boundaries
-- [ ] Golden tests for subgraphs
+- [x] Parse subgraph syntax
+- [x] Render subgraph as containing box
+- [x] Position nodes within subgraph bounds
+- [x] Route edges across subgraph boundaries (edge-aware borders)
+- [x] Golden tests for subgraphs
 
 ---
 
@@ -288,26 +291,25 @@ graph TD
 
 ---
 
-## Hackweek Execution Order
+## Hackweek Progress Summary
 
 ```
-Day 1: Edge Labels (H1)
-       └── Parser → Layout → Render → Tests
+✅ H1: Edge Labels - COMPLETE
+   └── Parser → Layout → Render → Golden tests
 
-Day 2: Node Shapes (H2)
-       └── Parser shapes → Render functions → Tests
+✅ H2: Node Shapes - COMPLETE
+   └── 9 shapes with Unicode/ASCII variants
 
-Day 3-4: Sequence Diagrams (H3)
-         └── Architecture refactor → Parser → Layout → Render → Tests
+⏳ H3: Sequence Diagrams - NOT STARTED
+   └── Major architecture refactor needed
 
-Day 5: Subgraphs (H4) OR LR Polish (H5)
-       └── Based on progress and energy
+✅ H4: Subgraphs - COMPLETE
+   └── Single-level grouping, edge-aware borders, enabled by default
 ```
 
-**Demo targets:**
-- End of Day 2: "Flowcharts with labels and shapes"
-- End of Day 4: "Two diagram types working!"
-- End of Day 5: "Grouped nodes or horizontal layouts"
+**Completed:**
+- Flowcharts with labels, shapes, and subgraphs
+- 135 tests passing (110 unit + 20 golden + 5 integration)
 
 ---
 
@@ -351,5 +353,5 @@ src/
 
 ---
 
-*Last updated: December 9, 2024*
-*Focus: Hackweek Sprint*
+*Last updated: December 10, 2024*
+*Status: H1, H2, H4 complete. H3 (Sequence Diagrams) pending.*
