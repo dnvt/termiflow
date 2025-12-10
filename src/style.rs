@@ -11,17 +11,18 @@ pub const BOX_PADDING: usize = 2;
 pub const ROW_SPACING: usize = 2;
 pub const COL_SPACING: usize = 3;
 
-// Edge routing constants for expanded layout
-pub const EDGE_STEM_HEIGHT: usize = 1; // Vertical stem from source box
-pub const EDGE_JUNCTION_HEIGHT: usize = 1; // Horizontal junction row
-pub const EDGE_DROP_HEIGHT: usize = 1; // Label row (drop for multi-target)
+// Edge routing constants
+pub const STEM_LENGTH_VERTICAL: usize = 1;   // Stem length for TD/BT layouts
+pub const STEM_LENGTH_HORIZONTAL: usize = 3; // Stem length for LR/RL layouts
+pub const EDGE_JUNCTION_HEIGHT: usize = 1;   // Junction row spacing
+pub const EDGE_DROP_HEIGHT: usize = 1;       // Drop spacing for multi-target
 pub const MAX_LABEL_WIDTH: usize = 20;
 
 pub const MAX_CANVAS_WIDTH: usize = 500;
 pub const MAX_CANVAS_HEIGHT: usize = 200;
 
-/// Back-edge gutter (reserved right margin for cycle rendering)
-pub const RIGHT_GUTTER: usize = 4;
+/// Cycle edge gutter size (right margin for TD/BT, bottom for LR/RL)
+pub const CYCLE_GUTTER: usize = 4;
 
 /// Border style variants
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -68,11 +69,11 @@ pub struct StyleChars {
     pub h: char,  // horizontal
     pub v: char,  // vertical
 
-    // Arrows (down/left used for TD/TB, up/right reserved for LR/RL layouts)
+    // Arrows for all four directions
     pub arrow_down: char,
-    pub arrow_up: char,   // Reserved: LR/RL layouts
+    pub arrow_up: char,
     pub arrow_left: char,
-    pub arrow_right: char, // Reserved: LR/RL layouts
+    pub arrow_right: char,
 
     // Edges
     pub edge_h: char,
@@ -83,11 +84,11 @@ pub struct StyleChars {
     pub corner_ul: char, // up-left
     pub cross: char,
 
-    // Junctions (down/up used for TD/TB, right/left reserved for LR/RL layouts)
-    pub junction_down: char, // ┬ (T pointing down)
-    pub junction_up: char,   // ┴ (T pointing up)
-    pub junction_right: char, // ├ Reserved: LR/RL layouts
-    pub junction_left: char, // ┤ Reserved: LR/RL layouts
+    // Junctions (T-shapes for edge branching/merging)
+    pub junction_down: char,  // ┬ - stem above, branches below
+    pub junction_up: char,    // ┴ - stem below, branches above
+    pub junction_right: char, // ├ - stem left, branches right
+    pub junction_left: char,  // ┤ - stem right, branches left
 
     // Back-edges
     pub back_h: char,
@@ -161,6 +162,12 @@ impl CompositeStyle {
                 style.edge = Some(border_style);
                 style.junction = Some(border_style);
                 style.back = Some(border_style);
+            } else if !s.is_empty() {
+                // Invalid style name - warn and use default
+                eprintln!(
+                    "termiflow: warning: Unknown style '{}', using default (unicode)",
+                    s
+                );
             }
             return style;
         }
@@ -187,7 +194,20 @@ impl CompositeStyle {
                     "box_corner" => style.corner = border_style,
                     "box_line" | "box_border" => style.border = border_style,
                     "back_edge" => style.back = border_style,
-                    _ => {} // Ignore unknown components
+                    unknown => {
+                        eprintln!(
+                            "termiflow: warning: Unknown style component '{}', ignoring",
+                            unknown
+                        );
+                    }
+                }
+                // Also warn if the style name within the component is invalid
+                if border_style.is_none() {
+                    eprintln!(
+                        "termiflow: warning: Unknown style name '{}' for component '{}', using default",
+                        style_name.trim(),
+                        component.trim()
+                    );
                 }
             }
         }

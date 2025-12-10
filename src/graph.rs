@@ -1,6 +1,6 @@
 //! Graph data structures - Node, Edge, Graph
-//!
-//! See SPEC §2.3 for full struct definitions
+
+use crate::style::BOX_HEIGHT;
 
 /// Node shape variants from Mermaid syntax
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -55,6 +55,18 @@ impl Node {
             rank: 0,
         }
     }
+
+    /// Visual center x-coordinate
+    #[inline]
+    pub fn center_x(&self) -> usize {
+        self.x + self.width / 2
+    }
+
+    /// Visual center y-coordinate
+    #[inline]
+    pub fn center_y(&self) -> usize {
+        self.y + BOX_HEIGHT / 2
+    }
 }
 
 /// Edge connecting two nodes
@@ -107,6 +119,7 @@ pub enum Direction {
     #[allow(dead_code)]
     TB, // Top to bottom
     LR, // Left to right
+    RL, // Right to left
     BT, // Bottom to top
 }
 

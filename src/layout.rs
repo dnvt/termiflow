@@ -7,12 +7,18 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use anyhow::Result;
 
 use crate::graph::{Direction, Graph};
-use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH, COL_SPACING};
+use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH, COL_SPACING, STEM_LENGTH_HORIZONTAL};
 
-/// Row spacing for single-target edges (compact: stem → label → arrow)
-const ROW_SPACING_SINGLE: usize = 3;
-/// Row spacing for multi-target edges (needs extra row: stem → junction → label → arrow)
-const ROW_SPACING_MULTI: usize = 4;
+/// Row spacing for simple edges without labels (minimal: stem → arrow)
+const ROW_SPACING_MINIMAL: usize = 2;
+/// Row spacing for labeled edges (stem → label → arrow)
+const ROW_SPACING_LABELED: usize = 3;
+/// Row spacing for fan-in (convergent) edges without labels (stems → junction → arrow)
+const ROW_SPACING_FANIN: usize = 3;
+/// Row spacing for fan-out (divergent) edges without labels (stem → junction → drops → arrows)
+const ROW_SPACING_FANOUT: usize = 4;
+/// Row spacing for multi-target edges with labels (stem → junction → label → arrow)
+const ROW_SPACING_MULTI_LABELED: usize = 4;
 
 /// Apply waterfall layout to position all nodes
 pub fn waterfall(mut graph: Graph) -> Result<Graph> {
@@ -123,10 +129,11 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         nodes.sort_by_key(|&idx| graph.nodes[idx].id.clone()); // deterministic within rank
     }
 
-    // Calculate per-rank spacing based on edge complexity
-    // A rank needs ROW_SPACING_MULTI if:
-    // 1. Fan-out: ANY source at that rank has multiple targets, OR
-    // 2. Fan-in: ANY target at the next rank has multiple sources from this rank
+    // Calculate per-rank spacing based on edge complexity and labels
+    // Priority: ROW_SPACING_MULTI > ROW_SPACING_LABELED > ROW_SPACING_MINIMAL
+    // - MULTI: Fan-out (source has multiple targets) or fan-in (target has multiple sources)
+    // - LABELED: Any edge from this rank has a label
+    // - MINIMAL: Simple edges without labels (most compact)
     let rank_spacing: Vec<usize> = (0..=max_rank)
         .map(|r| {
             // Check fan-out: source has multiple targets
@@ -167,10 +174,29 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                 }
             }
 
+            // Check for labeled edges from this rank
+            let has_labels = by_rank[r].iter().any(|&idx| {
+                let source_id = &graph.nodes[idx].id;
+                graph.edges.iter().any(|e| {
+                    !e.is_back_edge && &e.from == source_id && e.label.is_some()
+                })
+            });
+
+            // Priority: labeled multi > unlabeled fanout > unlabeled fanin > labeled > minimal
             if has_fan_out || has_fan_in {
-                ROW_SPACING_MULTI
+                if has_labels {
+                    ROW_SPACING_MULTI_LABELED
+                } else if has_fan_out {
+                    // Divergent needs space for drops: stem → junction → drops → arrows
+                    ROW_SPACING_FANOUT
+                } else {
+                    // Convergent is more compact: stems → junction → arrow
+                    ROW_SPACING_FANIN
+                }
+            } else if has_labels {
+                ROW_SPACING_LABELED
             } else {
-                ROW_SPACING_SINGLE
+                ROW_SPACING_MINIMAL
             }
         })
         .collect();
@@ -199,11 +225,104 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
     let mut placed_centers: HashMap<String, usize> = HashMap::new();
 
     let mut rank_offset_x: Vec<usize> = vec![0; by_rank.len()];
-    if matches!(graph.direction, Direction::LR) {
+    if matches!(graph.direction, Direction::LR | Direction::RL) {
+        // Build a map from node index to rank (by_rank is rank -> [node indices])
+        let mut node_to_rank: HashMap<usize, usize> = HashMap::new();
+        for (rank, node_indices) in by_rank.iter().enumerate() {
+            for &idx in node_indices {
+                node_to_rank.insert(idx, rank);
+            }
+        }
+
+        // Calculate max label width for edges between each pair of adjacent ranks
+        // This ensures enough spacing for inline labels in horizontal layouts
+        let mut max_label_width_per_rank: Vec<usize> = vec![0; by_rank.len()];
+
+        // Track divergent edges (one source to multiple targets at different Y positions)
+        // These need extra spacing for the vertical junction span
+        let mut has_divergent_per_rank: Vec<bool> = vec![false; by_rank.len()];
+        let mut targets_per_source: HashMap<String, Vec<String>> = HashMap::new();
+
+        for edge in &graph.edges {
+            if edge.is_back_edge {
+                continue;
+            }
+
+            // Track targets per source for divergent edge detection
+            targets_per_source
+                .entry(edge.from.clone())
+                .or_default()
+                .push(edge.to.clone());
+
+            if let Some(ref label) = edge.label {
+                // Find ranks of source and target
+                if let (Some(&from_idx), Some(&_to_idx)) =
+                    (index_map.get(&edge.from), index_map.get(&edge.to))
+                {
+                    if let Some(&from_rank) = node_to_rank.get(&from_idx) {
+                        // label + spaces around it + edge chars + arrow
+                        // Format: ─ label ─→  needs: 1 + 1 + label + 1 + 1 + 1 = label + 5
+                        let label_len = label.chars().count().min(12) + 6;
+                        if label_len > max_label_width_per_rank[from_rank] {
+                            max_label_width_per_rank[from_rank] = label_len;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mark ranks that have divergent edges (multiple targets from same source)
+        for (source_id, targets) in &targets_per_source {
+            if targets.len() > 1 {
+                if let Some(&from_idx) = index_map.get(source_id) {
+                    if let Some(&from_rank) = node_to_rank.get(&from_idx) {
+                        has_divergent_per_rank[from_rank] = true;
+                    }
+                }
+            }
+        }
+
+        // Detect convergent edges (multiple sources to same target)
+        // These need extra spacing in the SOURCE rank for the merge junction
+        let mut sources_per_target: HashMap<String, Vec<String>> = HashMap::new();
+        for edge in &graph.edges {
+            if edge.is_back_edge {
+                continue;
+            }
+            sources_per_target
+                .entry(edge.to.clone())
+                .or_default()
+                .push(edge.from.clone());
+        }
+
+        let mut has_convergent_per_rank: Vec<bool> = vec![false; by_rank.len()];
+        for sources in sources_per_target.values() {
+            if sources.len() > 1 {
+                // Mark all SOURCE ranks that feed into this convergent target
+                for source_id in sources {
+                    if let Some(&from_idx) = index_map.get(source_id) {
+                        if let Some(&from_rank) = node_to_rank.get(&from_idx) {
+                            has_convergent_per_rank[from_rank] = true;
+                        }
+                    }
+                }
+            }
+        }
+
         let mut offset = 0usize;
         for (r, w) in rank_widths.iter().enumerate() {
             rank_offset_x[r] = offset;
-            offset += w + COL_SPACING;
+            // Add extra spacing for labels if any edges from this rank have labels
+            let label_spacing = max_label_width_per_rank[r];
+            // Add extra spacing for divergent/convergent edges (junction/merge span needs room)
+            // STEM_LENGTH_HORIZONTAL (3) + junction span (1) + box-edge junction (1) + padding (2) = 7
+            let junction_spacing = if has_divergent_per_rank[r] || has_convergent_per_rank[r] {
+                STEM_LENGTH_HORIZONTAL + 1 + 1 + 2 // junction span + box-edge + padding
+            } else {
+                0
+            };
+            let spacing = COL_SPACING.max(label_spacing).max(junction_spacing);
+            offset += w + spacing;
         }
     }
 
@@ -254,7 +373,7 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                         x
                     }
                 }
-                Direction::LR => rank_x,
+                Direction::LR | Direction::RL => rank_x,
             };
 
             // Update the node
@@ -269,9 +388,9 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
                     cursor_primary = node.x + node.width + COL_SPACING;
                     placed_centers.insert(node.id.clone(), node.x + node.width / 2);
                 }
-                Direction::LR => {
+                Direction::LR | Direction::RL => {
                     node.y = cursor_primary;
-                    cursor_primary += BOX_HEIGHT + ROW_SPACING_MULTI;
+                    cursor_primary += BOX_HEIGHT + 1; // Minimal spacing for horizontal layouts
                 }
             }
 
@@ -295,15 +414,75 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         }
     }
 
-    // Center rows within the diagram (TD/TB/BT only)
-    if matches!(
-        graph.direction,
-        Direction::TD | Direction::TB | Direction::BT
-    ) {
-        center_rows(&mut graph, &by_rank);
+    // Center rows/columns within the diagram based on direction
+    match graph.direction {
+        Direction::TD | Direction::TB | Direction::BT => {
+            center_rows(&mut graph, &by_rank);
+        }
+        Direction::LR | Direction::RL => {
+            center_columns(&mut graph, &by_rank);
+        }
+    }
+
+    // For RL (Right-to-Left), reverse X coordinates
+    if matches!(graph.direction, Direction::RL) {
+        let max_x = graph.nodes.iter().map(|n| n.x + n.width).max().unwrap_or(0);
+        for node in &mut graph.nodes {
+            node.x = max_x.saturating_sub(node.x + node.width);
+        }
     }
 
     Ok(graph)
+}
+
+/// Center columns of nodes vertically for LR layout
+fn center_columns(graph: &mut Graph, by_rank: &[Vec<usize>]) {
+    if graph.nodes.is_empty() {
+        return;
+    }
+
+    // Calculate the vertical span (top_edge, bottom_edge) of each rank/column
+    let rank_spans: Vec<(usize, usize)> = by_rank
+        .iter()
+        .map(|nodes| {
+            if nodes.is_empty() {
+                return (0, 0);
+            }
+            let top = nodes
+                .iter()
+                .map(|&idx| graph.nodes[idx].y)
+                .min()
+                .unwrap_or(0);
+            let bottom = nodes
+                .iter()
+                .map(|&idx| graph.nodes[idx].y + BOX_HEIGHT)
+                .max()
+                .unwrap_or(0);
+            (top, bottom)
+        })
+        .collect();
+
+    // Find the maximum vertical span
+    let max_height = rank_spans
+        .iter()
+        .map(|(_, bottom)| *bottom)
+        .max()
+        .unwrap_or(0);
+
+    // Center each column vertically
+    for (rank, nodes) in by_rank.iter().enumerate() {
+        let (top, bottom) = rank_spans[rank];
+        let span_height = bottom - top;
+        
+        if span_height < max_height {
+            let offset = (max_height - span_height) / 2;
+            
+            // Apply offset to all nodes in this column
+            for &idx in nodes {
+                graph.nodes[idx].y += offset;
+            }
+        }
+    }
 }
 
 /// Center each row of nodes within the diagram width
@@ -511,12 +690,12 @@ mod tests {
     #[test]
     fn test_fixtures_anchor_left() {
         let fixtures = [
-            "tests/fixtures/inputs/chain.md",
-            "tests/fixtures/inputs/database_nodes.md",
-            "tests/fixtures/inputs/forward_ref.md",
-            "tests/fixtures/inputs/simple.md",
-            "tests/fixtures/inputs/with_config.md",
-            "tests/fixtures/inputs/unsupported.md",
+            "tests/fixtures/inputs/flow_chain_td.md",
+            "tests/fixtures/inputs/shape_database_td.md",
+            "tests/fixtures/inputs/parse_forward_td.md",
+            "tests/fixtures/inputs/flow_branch_td.md",
+            "tests/fixtures/inputs/config_style_td.md",
+            "tests/fixtures/inputs/error_subgraph_td.md",
         ];
 
         for path in fixtures {

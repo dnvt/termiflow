@@ -26,6 +26,7 @@
 pub mod config;
 pub mod graph;
 pub mod layout;
+pub mod orientation;
 pub mod parser;
 pub mod render;
 pub mod style;
