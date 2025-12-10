@@ -269,11 +269,11 @@ impl CompositeStyle {
 
     /// Get StyleChars for subgraph borders.
     ///
-    /// Subgraphs default to ASCII style for visual distinction from node boxes.
-    /// This can be overridden with `--style="subgraph:unicode"` etc.
+    /// Subgraphs default to Heavy style for visual distinction from node boxes.
+    /// This can be overridden with `--style="subgraph:ascii"` etc.
     pub fn to_subgraph_chars(&self) -> &'static StyleChars {
-        // Default to ASCII for subgraphs (visual distinction from nodes)
-        self.subgraph.unwrap_or(BaseStyle::Ascii).chars()
+        // Default to Heavy for subgraphs (bold visual distinction from nodes)
+        self.subgraph.unwrap_or(BaseStyle::Heavy).chars()
     }
 }
 
