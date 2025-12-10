@@ -29,7 +29,7 @@ use crate::graph::{Graph, Node, Subgraph};
 use crate::style::{
     display_width, truncate_label, BaseStyle, BOX_HEIGHT, COL_SPACING, EDGE_JUNCTION_HEIGHT,
     STEM_LENGTH_VERTICAL, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, CYCLE_GUTTER, ROW_SPACING,
-    SUBGRAPH_CORNER, SUBGRAPH_H, SUBGRAPH_V,
+    StyleChars,
 };
 
 use cycle::route_cycle_edge;
@@ -116,9 +116,10 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
 
     // Draw subgraph borders FIRST (background layer)
     // Edges and nodes will draw on top of these
+    let subgraph_chars = config.composite_style.to_subgraph_chars();
     for subgraph in &graph.subgraphs {
         if subgraph.bounds.is_valid() {
-            draw_subgraph(&mut canvas, subgraph);
+            draw_subgraph(&mut canvas, subgraph, subgraph_chars);
         }
     }
 
@@ -284,8 +285,6 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
 // ============================================================================
 // Edge Label Drawing
 // ============================================================================
-
-use crate::style::StyleChars;
 
 /// Draw an edge label on the appropriate segment between two nodes.
 /// For TD/BT: labels go on vertical segments
@@ -607,18 +606,19 @@ fn draw_convergent_edge_label(
 
 /// Draw a subgraph border on the canvas.
 ///
-/// Border style (per design decision):
-/// - Corners: + (plus sign)
-/// - Horizontal: - (minus/hyphen)
-/// - Vertical: ╎ (U+254E, box drawings light triple dash vertical)
+/// Border style is determined by the `subgraph` component of CompositeStyle.
+/// Default is ASCII for visual distinction from node boxes:
+/// - Corners: + (or ┌┐└┘ for unicode, ╭╮╰╯ for rounded, etc.)
+/// - Horizontal: - (or ─ for unicode, ━ for heavy, etc.)
+/// - Vertical: | (or │ for unicode, ┃ for heavy, etc.)
 ///
 /// If the subgraph has a title, it's centered on the top border:
 /// ```text
 /// +-- Title --+
-/// ╎           ╎
+/// |           |
 /// +-----------+
 /// ```
-fn draw_subgraph(canvas: &mut Canvas, subgraph: &Subgraph) {
+fn draw_subgraph(canvas: &mut Canvas, subgraph: &Subgraph, chars: &StyleChars) {
     let bounds = &subgraph.bounds;
     let x = bounds.x;
     let y = bounds.y;
@@ -633,28 +633,28 @@ fn draw_subgraph(canvas: &mut Canvas, subgraph: &Subgraph) {
     let right = x + w - 1;
     let bottom = y + h - 1;
 
-    // Draw corners
+    // Draw corners using styled characters
     if x < canvas.width && y < canvas.height {
-        canvas.set(x, y, SUBGRAPH_CORNER);
+        canvas.set(x, y, chars.tl);
     }
     if right < canvas.width && y < canvas.height {
-        canvas.set(right, y, SUBGRAPH_CORNER);
+        canvas.set(right, y, chars.tr);
     }
     if x < canvas.width && bottom < canvas.height {
-        canvas.set(x, bottom, SUBGRAPH_CORNER);
+        canvas.set(x, bottom, chars.bl);
     }
     if right < canvas.width && bottom < canvas.height {
-        canvas.set(right, bottom, SUBGRAPH_CORNER);
+        canvas.set(right, bottom, chars.br);
     }
 
     // Draw top and bottom horizontal lines
     for col in (x + 1)..right {
         if col < canvas.width {
             if y < canvas.height {
-                canvas.set(col, y, SUBGRAPH_H);
+                canvas.set(col, y, chars.h);
             }
             if bottom < canvas.height {
-                canvas.set(col, bottom, SUBGRAPH_H);
+                canvas.set(col, bottom, chars.h);
             }
         }
     }
@@ -663,10 +663,10 @@ fn draw_subgraph(canvas: &mut Canvas, subgraph: &Subgraph) {
     for row in (y + 1)..bottom {
         if row < canvas.height {
             if x < canvas.width {
-                canvas.set(x, row, SUBGRAPH_V);
+                canvas.set(x, row, chars.v);
             }
             if right < canvas.width {
-                canvas.set(right, row, SUBGRAPH_V);
+                canvas.set(right, row, chars.v);
             }
         }
     }
