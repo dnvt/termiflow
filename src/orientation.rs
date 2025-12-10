@@ -1,13 +1,13 @@
 //! Direction-agnostic orientation system for diagram rendering.
 //!
-//! This module provides abstractions for handling different diagram orientations
-//! (TD, LR, BT, RL) without hardcoding directional logic throughout the codebase.
+//! Provides abstractions for all four diagram orientations (TD, LR, BT, RL)
+//! using a unified coordinate system.
 //!
-//! Key concepts:
-//! - Primary axis: The main flow direction (vertical for TD/BT, horizontal for LR/RL)
-//! - Secondary axis: The perpendicular axis for branching
-//! - Start/End: Beginning and end points on the primary axis
-//! - Before/After: Positions on the secondary axis
+//! # Concepts
+//!
+//! - **Primary axis**: Flow direction (vertical for TD/BT, horizontal for LR/RL)
+//! - **Secondary axis**: Branching direction (perpendicular to primary)
+//! - **Advance/Retreat**: Movement along primary axis in flow direction
 
 use crate::graph::Direction;
 use crate::style::StyleChars;
@@ -17,15 +17,6 @@ use crate::style::StyleChars;
 pub enum Axis {
     Horizontal,
     Vertical,
-}
-
-/// Logical position on an axis
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Position {
-    Start,  // Beginning of axis (top for vertical TD, left for horizontal LR)
-    End,    // End of axis (bottom for vertical TD, right for horizontal LR)
-    Before, // Earlier on secondary axis (left for TD, top for LR)
-    After,  // Later on secondary axis (right for TD, bottom for LR)
 }
 
 /// Orientation-aware coordinate system
@@ -170,6 +161,60 @@ impl OrientedCoords {
             (Direction::BT, true) => style.corner_ur,                   // ┐ (left to up)
             (Direction::BT, false) => style.corner_ul,                  // ┌ (right to up)
         }
+    }
+
+    /// Advance position along primary axis in flow direction.
+    pub fn advance(&self, x: usize, y: usize, distance: usize) -> (usize, usize) {
+        let mut new_x = x;
+        let mut new_y = y;
+
+        match self.primary {
+            Axis::Horizontal => {
+                match self.direction {
+                    Direction::RL => new_x = new_x.saturating_sub(distance),
+                    _ => new_x += distance,
+                }
+            }
+            Axis::Vertical => {
+                match self.direction {
+                    Direction::BT => new_y = new_y.saturating_sub(distance),
+                    _ => new_y += distance,
+                }
+            }
+        }
+
+        (new_x, new_y)
+    }
+
+    /// Retreat position along primary axis (opposite of flow direction).
+    pub fn retreat(&self, x: usize, y: usize, distance: usize) -> (usize, usize) {
+        let mut new_x = x;
+        let mut new_y = y;
+
+        match self.primary {
+            Axis::Horizontal => {
+                match self.direction {
+                    Direction::RL => new_x += distance,
+                    _ => new_x = new_x.saturating_sub(distance),
+                }
+            }
+            Axis::Vertical => {
+                match self.direction {
+                    Direction::BT => new_y += distance,
+                    _ => new_y = new_y.saturating_sub(distance),
+                }
+            }
+        }
+
+        (new_x, new_y)
+    }
+
+    /// Return new coordinates with a specific secondary axis value.
+    pub fn with_secondary(&self, x: usize, y: usize, secondary_val: usize) -> (usize, usize) {
+        let mut new_x = x;
+        let mut new_y = y;
+        self.set_secondary(&mut new_x, &mut new_y, secondary_val);
+        (new_x, new_y)
     }
 }
 
