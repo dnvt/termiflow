@@ -439,6 +439,26 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
 
     // Calculate subgraph bounds after all node positioning is complete
     if graph.has_subgraphs() {
+        // First, offset all nodes in subgraphs to make room for borders
+        // Nodes need padding + border + title space around them
+        let offset_x = SUBGRAPH_PADDING + 1; // 1 for border character
+        let offset_y = SUBGRAPH_PADDING + SUBGRAPH_TITLE_HEIGHT + 1; // +1 for border
+
+        // Find which nodes are in subgraphs
+        let nodes_in_subgraphs: HashSet<&str> = graph
+            .subgraphs
+            .iter()
+            .flat_map(|sg| sg.node_ids.iter().map(|s| s.as_str()))
+            .collect();
+
+        // Apply offset to nodes in subgraphs
+        for node in &mut graph.nodes {
+            if nodes_in_subgraphs.contains(node.id.as_str()) {
+                node.x += offset_x;
+                node.y += offset_y;
+            }
+        }
+
         calculate_subgraph_bounds(&mut graph);
     }
 
@@ -772,13 +792,14 @@ mod tests {
 
     #[test]
     fn test_fixtures_anchor_left() {
+        // Test that non-subgraph fixtures anchor leftmost node at x=0
+        // Note: subgraph fixtures have different behavior - nodes are offset for border
         let fixtures = [
             "tests/fixtures/inputs/flow_chain_td.md",
             "tests/fixtures/inputs/shape_database_td.md",
             "tests/fixtures/inputs/parse_forward_td.md",
             "tests/fixtures/inputs/flow_branch_td.md",
             "tests/fixtures/inputs/config_style_td.md",
-            "tests/fixtures/inputs/subgraph_basic_td.md",
         ];
 
         for path in fixtures {

@@ -25,10 +25,11 @@ pub use canvas::Canvas;
 use anyhow::Result;
 
 use crate::config::Config;
-use crate::graph::{Graph, Node};
+use crate::graph::{Graph, Node, Subgraph};
 use crate::style::{
     display_width, truncate_label, BaseStyle, BOX_HEIGHT, COL_SPACING, EDGE_JUNCTION_HEIGHT,
     STEM_LENGTH_VERTICAL, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, CYCLE_GUTTER, ROW_SPACING,
+    SUBGRAPH_CORNER, SUBGRAPH_H, SUBGRAPH_V,
 };
 
 use cycle::route_cycle_edge;
@@ -52,13 +53,21 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     }
 
     // Calculate canvas size from laid-out nodes
-    let max_right = graph.nodes.iter().map(|n| n.x + n.width).max().unwrap_or(0);
-    let max_bottom = graph
+    let mut max_right = graph.nodes.iter().map(|n| n.x + n.width).max().unwrap_or(0);
+    let mut max_bottom = graph
         .nodes
         .iter()
         .map(|n| n.y + BOX_HEIGHT)
         .max()
         .unwrap_or(0);
+
+    // Expand canvas to include subgraph bounds (which include padding)
+    for subgraph in &graph.subgraphs {
+        if subgraph.bounds.is_valid() {
+            max_right = max_right.max(subgraph.bounds.x + subgraph.bounds.width);
+            max_bottom = max_bottom.max(subgraph.bounds.y + subgraph.bounds.height);
+        }
+    }
 
     // Add gutter space for back-edges:
     // - TD/BT: right gutter (add to width)
@@ -104,6 +113,14 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     let chars = config
         .composite_style
         .to_style_chars(BaseStyle::default());
+
+    // Draw subgraph borders FIRST (background layer)
+    // Edges and nodes will draw on top of these
+    for subgraph in &graph.subgraphs {
+        if subgraph.bounds.is_valid() {
+            draw_subgraph(&mut canvas, subgraph);
+        }
+    }
 
     // Get visible nodes
     let visible_nodes: Vec<&Node> = graph
@@ -579,6 +596,97 @@ fn draw_convergent_edge_label(
                     canvas.set(x_pos, label_y, c);
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Subgraph Rendering
+// ============================================================================
+
+/// Draw a subgraph border on the canvas.
+///
+/// Border style (per design decision):
+/// - Corners: + (plus sign)
+/// - Horizontal: - (minus/hyphen)
+/// - Vertical: ╎ (U+254E, box drawings light triple dash vertical)
+///
+/// If the subgraph has a title, it's centered on the top border:
+/// ```text
+/// +-- Title --+
+/// ╎           ╎
+/// +-----------+
+/// ```
+fn draw_subgraph(canvas: &mut Canvas, subgraph: &Subgraph) {
+    let bounds = &subgraph.bounds;
+    let x = bounds.x;
+    let y = bounds.y;
+    let w = bounds.width;
+    let h = bounds.height;
+
+    // Ensure we have valid dimensions
+    if w < 2 || h < 2 {
+        return;
+    }
+
+    let right = x + w - 1;
+    let bottom = y + h - 1;
+
+    // Draw corners
+    if x < canvas.width && y < canvas.height {
+        canvas.set(x, y, SUBGRAPH_CORNER);
+    }
+    if right < canvas.width && y < canvas.height {
+        canvas.set(right, y, SUBGRAPH_CORNER);
+    }
+    if x < canvas.width && bottom < canvas.height {
+        canvas.set(x, bottom, SUBGRAPH_CORNER);
+    }
+    if right < canvas.width && bottom < canvas.height {
+        canvas.set(right, bottom, SUBGRAPH_CORNER);
+    }
+
+    // Draw top and bottom horizontal lines
+    for col in (x + 1)..right {
+        if col < canvas.width {
+            if y < canvas.height {
+                canvas.set(col, y, SUBGRAPH_H);
+            }
+            if bottom < canvas.height {
+                canvas.set(col, bottom, SUBGRAPH_H);
+            }
+        }
+    }
+
+    // Draw left and right vertical lines
+    for row in (y + 1)..bottom {
+        if row < canvas.height {
+            if x < canvas.width {
+                canvas.set(x, row, SUBGRAPH_V);
+            }
+            if right < canvas.width {
+                canvas.set(right, row, SUBGRAPH_V);
+            }
+        }
+    }
+
+    // Draw title on top border if present
+    if let Some(ref title) = subgraph.title {
+        let title_display = format!(" {} ", title);
+        let title_width = display_width(&title_display);
+
+        // Only draw if title fits
+        if title_width + 2 <= w {
+            // Center the title on the top border
+            let title_start = x + (w - title_width) / 2;
+
+            let mut col = title_start;
+            for c in title_display.chars() {
+                if col < canvas.width && y < canvas.height {
+                    canvas.set(col, y, c);
+                }
+                col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
             }
         }
     }

@@ -24,6 +24,17 @@ pub const MAX_CANVAS_HEIGHT: usize = 200;
 /// Cycle edge gutter size (right margin for TD/BT, bottom for LR/RL)
 pub const CYCLE_GUTTER: usize = 4;
 
+// ============================================================================
+// Subgraph Border Characters (fixed style per design decision)
+// ============================================================================
+
+/// Subgraph border corner character (all four corners)
+pub const SUBGRAPH_CORNER: char = '+';
+/// Subgraph border horizontal line
+pub const SUBGRAPH_H: char = '-';
+/// Subgraph border vertical line (triple dash vertical U+254E)
+pub const SUBGRAPH_V: char = '╎';
+
 /// Border style variants
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum BaseStyle {
