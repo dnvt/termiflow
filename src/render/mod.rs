@@ -25,11 +25,11 @@ pub use canvas::Canvas;
 use anyhow::Result;
 
 use crate::config::Config;
-use crate::graph::{Graph, Node, Subgraph};
+use crate::geom::Segment;
+use crate::graph::{Graph, Node};
 use crate::style::{
     display_width, truncate_label, BaseStyle, BOX_HEIGHT, COL_SPACING, EDGE_JUNCTION_HEIGHT,
     STEM_LENGTH_VERTICAL, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, CYCLE_GUTTER, ROW_SPACING,
-    StyleChars,
 };
 
 use cycle::route_cycle_edge;
@@ -53,21 +53,13 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     }
 
     // Calculate canvas size from laid-out nodes
-    let mut max_right = graph.nodes.iter().map(|n| n.x + n.width).max().unwrap_or(0);
-    let mut max_bottom = graph
+    let max_right = graph.nodes.iter().map(|n| n.x + n.width).max().unwrap_or(0);
+    let max_bottom = graph
         .nodes
         .iter()
         .map(|n| n.y + BOX_HEIGHT)
         .max()
         .unwrap_or(0);
-
-    // Expand canvas to include subgraph bounds (which include padding)
-    for subgraph in &graph.subgraphs {
-        if subgraph.bounds.is_valid() {
-            max_right = max_right.max(subgraph.bounds.x + subgraph.bounds.width);
-            max_bottom = max_bottom.max(subgraph.bounds.y + subgraph.bounds.height);
-        }
-    }
 
     // Add gutter space for back-edges:
     // - TD/BT: right gutter (add to width)
@@ -114,13 +106,10 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         .composite_style
         .to_style_chars(BaseStyle::default());
 
-    // Draw subgraph borders FIRST (background layer)
-    // Edges and nodes will draw on top of these
+    // Draw subgraphs (background layer)
     let subgraph_chars = config.composite_style.to_subgraph_chars();
     for subgraph in &graph.subgraphs {
-        if subgraph.bounds.is_valid() {
-            draw_subgraph(&mut canvas, subgraph, subgraph_chars);
-        }
+        shapes::draw_subgraph(&mut canvas, &subgraph.bounds, subgraph.title.as_deref(), subgraph_chars);
     }
 
     // Get visible nodes
@@ -129,6 +118,8 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         .iter()
         .filter(|n| canvas.is_visible(n))
         .collect();
+
+    let use_routes = !graph.edge_routes.is_empty();
 
     // Group forward edges by source node for expanded routing
     let mut edges_by_source: HashMap<&str, Vec<&Node>> = HashMap::new();
@@ -182,45 +173,51 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         .iter()
         .partition(|(_, to, _)| convergent_targets.contains(to.id.as_str()));
     
-    // Process edges: prioritize convergence (multiple sources to one target)
-    let mut processed_edges: HashSet<(&str, &str)> = HashSet::new();
-    
-    // First, handle convergence cases (multiple sources → one target)
-    for (target_id, sources) in &edges_by_target {
-        if sources.len() > 1 {
-            let Some(target) = graph.get_node(target_id) else { continue; };
-            let mut source_refs: Vec<&Node> = sources.clone();
-            source_refs.sort_by_key(|n| (n.y, n.x, n.id.clone()));
-            route_convergent_edges(&source_refs, target, &mut canvas, &chars, graph.direction);
-            for source in sources {
-                processed_edges.insert((&source.id, target_id));
+    if use_routes {
+        draw_precomputed_routes(graph, &mut canvas, &chars);
+    } else {
+        // Process edges: prioritize convergence (multiple sources to one target)
+        let mut processed_edges: HashSet<(&str, &str)> = HashSet::new();
+        
+        // First, handle convergence cases (multiple sources → one target)
+        for (target_id, sources) in &edges_by_target {
+            if sources.len() > 1 {
+                let Some(target) = graph.get_node(target_id) else { continue; };
+                let mut source_refs: Vec<&Node> = sources.clone();
+                source_refs.sort_by_key(|n| (n.y, n.x, n.id.clone()));
+                route_convergent_edges(&source_refs, target, &mut canvas, &chars, graph.direction);
+                for source in sources {
+                    processed_edges.insert((&source.id, target_id));
+                }
             }
         }
-    }
-    
-    // Then, handle remaining divergence cases (one source → multiple targets)
-    let mut source_ids: Vec<&str> = sources_with_edges.into_iter().collect();
-    source_ids.sort();
-    for source_id in source_ids {
-        let Some(from) = graph.get_node(source_id) else { continue; };
-        if let Some(targets) = edges_by_source.get_mut(source_id) {
-            // Filter out already processed edges
-            let unprocessed: Vec<&Node> = targets.iter()
-                .filter(|t| !processed_edges.contains(&(source_id, t.id.as_str())))
-                .copied()
-                .collect();
-            
-            if !unprocessed.is_empty() {
-                let mut target_refs: Vec<&Node> = unprocessed;
-                target_refs.sort_by_key(|n| (n.y, n.x, n.id.clone()));
-                route_divergent_edges(from, &target_refs, &mut canvas, &chars, graph.direction);
+        
+        // Then, handle remaining divergence cases (one source → multiple targets)
+        let mut source_ids: Vec<&str> = sources_with_edges.into_iter().collect();
+        source_ids.sort();
+        for source_id in source_ids {
+            let Some(from) = graph.get_node(source_id) else { continue; };
+            if let Some(targets) = edges_by_source.get_mut(source_id) {
+                // Filter out already processed edges
+                let unprocessed: Vec<&Node> = targets.iter()
+                    .filter(|t| !processed_edges.contains(&(source_id, t.id.as_str())))
+                    .copied()
+                    .collect();
+                
+                if !unprocessed.is_empty() {
+                    let mut target_refs: Vec<&Node> = unprocessed;
+                    target_refs.sort_by_key(|n| (n.y, n.x, n.id.clone()));
+                    route_divergent_edges(from, &target_refs, &mut canvas, &chars, graph.direction);
+                }
             }
         }
     }
 
     // Draw back-edges (cycle edges)
-    for (from, to) in cycle_edges {
-        route_cycle_edge(from, to, &mut canvas, &chars, graph.direction);
+    if !use_routes {
+        for (from, to) in cycle_edges {
+            route_cycle_edge(from, to, &mut canvas, &chars, graph.direction);
+        }
     }
 
     // Draw edge labels on the appropriate segments (vertical for TD/BT, horizontal for LR/RL)
@@ -283,8 +280,187 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
 }
 
 // ============================================================================
+// Precomputed Edge Route Rendering (experimental)
+// ============================================================================
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Dir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+fn dir_from_segment(seg: &Segment) -> Option<Dir> {
+    if seg.from.x == seg.to.x {
+        if seg.to.y > seg.from.y {
+            Some(Dir::Down)
+        } else if seg.to.y < seg.from.y {
+            Some(Dir::Up)
+        } else {
+            None
+        }
+    } else if seg.from.y == seg.to.y {
+        if seg.to.x > seg.from.x {
+            Some(Dir::Right)
+        } else if seg.to.x < seg.from.x {
+            Some(Dir::Left)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn opposite_dir(d: Dir) -> Dir {
+    match d {
+        Dir::Up => Dir::Down,
+        Dir::Down => Dir::Up,
+        Dir::Left => Dir::Right,
+        Dir::Right => Dir::Left,
+    }
+}
+
+fn corner_for_turn(prev: Dir, next: Dir, chars: &StyleChars) -> Option<char> {
+    use Dir::*;
+    let a = opposite_dir(prev);
+    let b = next;
+    match (a, b) {
+        (Left, Down) | (Down, Left) => Some(chars.corner_dr),
+        (Left, Up) | (Up, Left) => Some(chars.corner_ur),
+        (Right, Down) | (Down, Right) => Some(chars.corner_dl),
+        (Right, Up) | (Up, Right) => Some(chars.corner_ul),
+        _ => None,
+    }
+}
+
+fn arrow_for_dir(dir: Dir, chars: &StyleChars) -> char {
+    match dir {
+        Dir::Up => chars.arrow_up,
+        Dir::Down => chars.arrow_down,
+        Dir::Left => chars.arrow_left,
+        Dir::Right => chars.arrow_right,
+    }
+}
+
+fn draw_segment(
+    seg: &Segment,
+    dir: Dir,
+    canvas: &mut Canvas,
+    chars: &StyleChars,
+    skip_start: bool,
+    skip_end: bool,
+) {
+    match dir {
+        Dir::Left | Dir::Right => {
+            let (min, max) = if seg.from.x <= seg.to.x {
+                (seg.from.x, seg.to.x)
+            } else {
+                (seg.to.x, seg.from.x)
+            };
+            
+            // Apply adjustments based on which end is 'start' and 'end'
+            // If moving Right (from=min), skip_start increases min, skip_end decreases max
+            // If moving Left (from=max), skip_start decreases max, skip_end increases min
+            
+            let (draw_start, draw_end) = if seg.from.x == min {
+                // Moving Right
+                (min + if skip_start { 1 } else { 0 }, max.saturating_sub(if skip_end { 1 } else { 0 }))
+            } else {
+                // Moving Left
+                (min + if skip_end { 1 } else { 0 }, max.saturating_sub(if skip_start { 1 } else { 0 }))
+            };
+
+            if draw_start <= draw_end {
+                for x in draw_start..=draw_end {
+                    canvas.set_edge_char(x, seg.from.y, chars.edge_h, chars);
+                }
+            }
+        }
+        Dir::Up | Dir::Down => {
+            let (min, max) = if seg.from.y <= seg.to.y {
+                (seg.from.y, seg.to.y)
+            } else {
+                (seg.to.y, seg.from.y)
+            };
+
+            let (draw_start, draw_end) = if seg.from.y == min {
+                // Moving Down
+                (min + if skip_start { 1 } else { 0 }, max.saturating_sub(if skip_end { 1 } else { 0 }))
+            } else {
+                // Moving Up
+                (min + if skip_end { 1 } else { 0 }, max.saturating_sub(if skip_start { 1 } else { 0 }))
+            };
+
+            if draw_start <= draw_end {
+                for y in draw_start..=draw_end {
+                    canvas.set_edge_char(seg.from.x, y, chars.edge_v, chars);
+                }
+            }
+        }
+    }
+}
+
+fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChars) {
+    let mut edge_ids: Vec<usize> = graph.edge_routes.keys().copied().collect();
+    edge_ids.sort_unstable();
+
+    for edge_idx in edge_ids {
+        let Some(route) = graph.edge_routes.get(&edge_idx) else { continue; };
+        if route.segments.is_empty() {
+            continue;
+        }
+
+        let Some(edge) = graph.edges.get(edge_idx) else { continue; };
+        let (Some(from), Some(to)) = (graph.get_node(&edge.from), graph.get_node(&edge.to)) else { continue; };
+        if !canvas.is_visible(from) || !canvas.is_visible(to) {
+            continue;
+        }
+
+        for i in 0..route.segments.len() {
+            let seg = &route.segments[i];
+            let Some(dir) = dir_from_segment(seg) else { continue; };
+            
+            let mut next_dir = None;
+            if i + 1 < route.segments.len() {
+                next_dir = dir_from_segment(&route.segments[i+1]);
+            }
+            
+            let is_turn = if let Some(nd) = next_dir {
+                nd != dir
+            } else {
+                false
+            };
+            
+            let skip_start = i > 0;
+            let skip_end = is_turn;
+            
+            draw_segment(seg, dir, canvas, chars, skip_start, skip_end);
+            
+            if is_turn {
+                if let Some(nd) = next_dir {
+                    if let Some(corner) = corner_for_turn(dir, nd, chars) {
+                        canvas.set_edge_char(seg.to.x, seg.to.y, corner, chars);
+                    }
+                }
+            }
+        }
+
+        if let Some(last_seg) = route.segments.last() {
+            if let Some(dir) = dir_from_segment(last_seg) {
+                let arrow = arrow_for_dir(dir, chars);
+                canvas.set(last_seg.to.x, last_seg.to.y, arrow);
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Edge Label Drawing
 // ============================================================================
+
+use crate::style::StyleChars;
 
 /// Draw an edge label on the appropriate segment between two nodes.
 /// For TD/BT: labels go on vertical segments
@@ -595,98 +771,6 @@ fn draw_convergent_edge_label(
                     canvas.set(x_pos, label_y, c);
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-            }
-        }
-    }
-}
-
-// ============================================================================
-// Subgraph Rendering
-// ============================================================================
-
-/// Draw a subgraph border on the canvas.
-///
-/// Border style is determined by the `subgraph` component of CompositeStyle.
-/// Default is ASCII for visual distinction from node boxes:
-/// - Corners: + (or ┌┐└┘ for unicode, ╭╮╰╯ for rounded, etc.)
-/// - Horizontal: - (or ─ for unicode, ━ for heavy, etc.)
-/// - Vertical: | (or │ for unicode, ┃ for heavy, etc.)
-///
-/// If the subgraph has a title, it's centered on the top border:
-/// ```text
-/// +-- Title --+
-/// |           |
-/// +-----------+
-/// ```
-fn draw_subgraph(canvas: &mut Canvas, subgraph: &Subgraph, chars: &StyleChars) {
-    let bounds = &subgraph.bounds;
-    let x = bounds.x;
-    let y = bounds.y;
-    let w = bounds.width;
-    let h = bounds.height;
-
-    // Ensure we have valid dimensions
-    if w < 2 || h < 2 {
-        return;
-    }
-
-    let right = x + w - 1;
-    let bottom = y + h - 1;
-
-    // Draw corners using styled characters
-    if x < canvas.width && y < canvas.height {
-        canvas.set(x, y, chars.tl);
-    }
-    if right < canvas.width && y < canvas.height {
-        canvas.set(right, y, chars.tr);
-    }
-    if x < canvas.width && bottom < canvas.height {
-        canvas.set(x, bottom, chars.bl);
-    }
-    if right < canvas.width && bottom < canvas.height {
-        canvas.set(right, bottom, chars.br);
-    }
-
-    // Draw top and bottom horizontal lines
-    for col in (x + 1)..right {
-        if col < canvas.width {
-            if y < canvas.height {
-                canvas.set(col, y, chars.h);
-            }
-            if bottom < canvas.height {
-                canvas.set(col, bottom, chars.h);
-            }
-        }
-    }
-
-    // Draw left and right vertical lines
-    for row in (y + 1)..bottom {
-        if row < canvas.height {
-            if x < canvas.width {
-                canvas.set(x, row, chars.v);
-            }
-            if right < canvas.width {
-                canvas.set(right, row, chars.v);
-            }
-        }
-    }
-
-    // Draw title on top border if present
-    if let Some(ref title) = subgraph.title {
-        let title_display = format!(" {} ", title);
-        let title_width = display_width(&title_display);
-
-        // Only draw if title fits
-        if title_width + 2 <= w {
-            // Center the title on the top border
-            let title_start = x + (w - title_width) / 2;
-
-            let mut col = title_start;
-            for c in title_display.chars() {
-                if col < canvas.width && y < canvas.height {
-                    canvas.set(col, y, c);
-                }
-                col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
             }
         }
     }
