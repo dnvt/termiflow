@@ -1,42 +1,38 @@
 //! Render module - 2D character grid rendering for diagrams.
 //!
 //! This module handles the final rendering phase:
-//! - Box drawing for nodes with labels
-//! - Edge routing (straight, L-shaped, back-edges)
+//! - Box drawing for nodes (9 shapes supported)
+//! - Direction-agnostic edge routing (TD, LR, BT, RL)
 //! - Junction/crossing detection for overlapping paths
 //!
-//! Rendering order: edges first, then boxes (so boxes overwrite edge lines).
+//! Rendering order: edges first, then boxes (boxes overwrite edge lines).
 //!
 //! # Module Structure
 //!
-//! - `canvas` - Core Canvas struct and character classification utilities
-//! - `edge` - Edge routing algorithms (straight, L-shaped, back-edge)
-//!
-//! # Future Expansion
-//!
-//! This module is designed to support multiple diagram types:
-//! - Current: Flowchart rendering (graph TD/LR)
-//! - Future: Sequence diagrams, class diagrams, etc.
+//! - `canvas` - Canvas struct and character classification
+//! - `edge` - Normal edge routing (all directions)
+//! - `cycle` - Cycle/loop edge routing through gutters
+//! - `shapes` - Box drawing for all 9 node shapes
 
 pub mod canvas;
 pub mod edge;
-pub mod edge_unified;
+pub mod cycle;
+pub mod shapes;
 
 // Re-exports
-use canvas::is_vertical;
 pub use canvas::Canvas;
 
 use anyhow::Result;
 
 use crate::config::Config;
-use crate::graph::{Graph, Node, NodeShape};
+use crate::graph::{Graph, Node};
 use crate::style::{
     display_width, truncate_label, BaseStyle, BOX_HEIGHT, COL_SPACING, EDGE_JUNCTION_HEIGHT,
-    EDGE_STEM_HEIGHT, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, RIGHT_GUTTER, ROW_SPACING,
+    STEM_LENGTH_VERTICAL, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, CYCLE_GUTTER, ROW_SPACING,
 };
 
-use edge::route_back_edge;
-use edge_unified::{route_divergent_edges, route_convergent_edges};
+use cycle::route_cycle_edge;
+use edge::{route_divergent_edges, route_convergent_edges};
 use std::collections::{HashMap, HashSet};
 use crate::graph::Direction;
 
@@ -68,8 +64,8 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     // - TD/BT: right gutter (add to width)
     // - LR/RL: bottom gutter (add to height)
     let is_horizontal = matches!(graph.direction, Direction::LR | Direction::RL);
-    let width_gutter = if graph.has_cycles() && !is_horizontal { RIGHT_GUTTER } else { 0 };
-    let height_gutter = if graph.has_cycles() && is_horizontal { RIGHT_GUTTER } else { 0 };
+    let width_gutter = if graph.has_cycles() && !is_horizontal { CYCLE_GUTTER } else { 0 };
+    let height_gutter = if graph.has_cycles() && is_horizontal { CYCLE_GUTTER } else { 0 };
 
     let mut width = max_right + COL_SPACING + width_gutter;
     if width > MAX_CANVAS_WIDTH {
@@ -97,10 +93,10 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         .max(max_bottom.saturating_add(1).min(MAX_CANVAS_HEIGHT))
         .max(1);
 
-    if graph.has_cycles() && !is_horizontal && width <= RIGHT_GUTTER {
+    if graph.has_cycles() && !is_horizontal && width <= CYCLE_GUTTER {
         eprintln!("termiflow: warning: Back-edges skipped (gutter clipped)");
     }
-    if graph.has_cycles() && is_horizontal && height <= RIGHT_GUTTER {
+    if graph.has_cycles() && is_horizontal && height <= CYCLE_GUTTER {
         eprintln!("termiflow: warning: Back-edges skipped (gutter clipped)");
     }
 
@@ -118,7 +114,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
 
     // Group forward edges by source node for expanded routing
     let mut edges_by_source: HashMap<&str, Vec<&Node>> = HashMap::new();
-    let mut back_edges: Vec<(&Node, &Node)> = Vec::new();
+    let mut cycle_edges: Vec<(&Node, &Node)> = Vec::new();
     let mut sources_with_edges: HashSet<&str> = HashSet::new();
     // Track labeled edges for later rendering: (from_node, to_node, label)
     let mut labeled_edges: Vec<(&Node, &Node, &str)> = Vec::new();
@@ -133,7 +129,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         };
 
         if e.is_back_edge {
-            back_edges.push((from, to));
+            cycle_edges.push((from, to));
         } else if canvas.is_visible(from) && canvas.is_visible(to) {
             edges_by_source.entry(&e.from).or_default().push(to);
             sources_with_edges.insert(&e.from);
@@ -205,8 +201,8 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     }
 
     // Draw back-edges (cycle edges)
-    for (from, to) in back_edges {
-        route_back_edge(from, to, &mut canvas, &chars, graph.direction);
+    for (from, to) in cycle_edges {
+        route_cycle_edge(from, to, &mut canvas, &chars, graph.direction);
     }
 
     // Draw edge labels on the appropriate segments (vertical for TD/BT, horizontal for LR/RL)
@@ -225,7 +221,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             &node.label,
             config.max_label_width.min(node.width.saturating_sub(4)),
         );
-        draw_node(
+        shapes::draw_node(
             &mut canvas,
             node.x,
             node.y,
@@ -240,8 +236,8 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     // Draw junction characters AFTER boxes (for LR/RL edge connections)
     // Shows where edges exit source boxes
     if matches!(graph.direction, Direction::LR | Direction::RL) {
-        use edge::center_y;
-        for (&source_id, _targets) in &edges_by_source {
+        use cycle::center_y;
+        for &source_id in edges_by_source.keys() {
             if let Some(from) = graph.get_node(source_id) {
                 if canvas.is_visible(from) {
                     let junction_y = center_y(from);
@@ -269,475 +265,10 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
 }
 
 // ============================================================================
-// Drawing Primitives
+// Edge Label Drawing
 // ============================================================================
 
 use crate::style::StyleChars;
-
-/// Draw a node at position (x, y) with the given label and shape.
-fn draw_node(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    shape: NodeShape,
-    style: &StyleChars,
-    direction: Direction,
-) {
-    match shape {
-        NodeShape::Rectangle => draw_rectangle(canvas, x, y, width, label, style, direction),
-        NodeShape::Rounded => draw_rounded(canvas, x, y, width, label, style, direction),
-        NodeShape::Diamond => draw_diamond(canvas, x, y, width, label, style),
-        NodeShape::Circle => draw_circle(canvas, x, y, width, label, style),
-        NodeShape::Stadium => draw_stadium(canvas, x, y, width, label, style, direction),
-        NodeShape::Hexagon => draw_hexagon(canvas, x, y, width, label, style, direction),
-        NodeShape::Database => draw_database(canvas, x, y, width, label, style, direction),
-        NodeShape::Subroutine => draw_subroutine(canvas, x, y, width, label, style, direction),
-        NodeShape::Asymmetric => draw_asymmetric(canvas, x, y, width, label, style, direction),
-        // Parallelogram and trapezoid fall back to rectangle for now
-        NodeShape::Parallelogram
-        | NodeShape::ParallelogramAlt
-        | NodeShape::Trapezoid
-        | NodeShape::TrapezoidAlt => draw_rectangle(canvas, x, y, width, label, style, direction),
-    }
-}
-
-/// Draw a rectangle box at position (x, y) with the given label.
-fn draw_rectangle(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    style: &StyleChars,
-    direction: Direction,
-) {
-    // Top border - check for edge exits above (BT direction only)
-    canvas.set(x, y, style.tl);
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        // Only check above in BT direction (edges exit upward)
-        let c = if direction == Direction::BT {
-            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) {
-                style.junction_up // T-junction pointing up where edges exit (BT)
-            } else {
-                style.h
-            }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y, c);
-    }
-    canvas.set(x + width - 1, y, style.tr);
-
-    // Middle row with label
-    canvas.set(x, y + 1, style.v);
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
-    canvas.set(x + width - 1, y + 1, style.v);
-
-    // Bottom border - check for edge exits below (TD/TB direction only)
-    canvas.set(x, y + 2, style.bl);
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        // Only check below in TD/TB direction (edges exit downward)
-        let c = if matches!(direction, Direction::TD | Direction::TB) {
-            let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) {
-                style.junction_down // T-junction pointing down where edges exit
-            } else {
-                style.h
-            }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y + 2, c);
-    }
-    canvas.set(x + width - 1, y + 2, style.br);
-}
-
-/// Draw a rounded box (uses round corner characters).
-fn draw_rounded(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    style: &StyleChars,
-    direction: Direction,
-) {
-    // Use round corners: ╭ ╮ ╰ ╯ for unicode, ( ) for ascii
-    let (tl, tr, bl, br) = if style.tl == '┌' {
-        ('╭', '╮', '╰', '╯')
-    } else {
-        ('(', ')', '(', ')')
-    };
-
-    // Top border - check for edge exits above (BT direction only)
-    canvas.set(x, y, tl);
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if direction == Direction::BT {
-            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) {
-                style.junction_up // T-junction pointing up where edges exit (BT)
-            } else {
-                style.h
-            }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y, c);
-    }
-    canvas.set(x + width - 1, y, tr);
-
-    canvas.set(x, y + 1, style.v);
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
-    canvas.set(x + width - 1, y + 1, style.v);
-
-    // Bottom border - check for edge exits below (TD/TB direction only)
-    canvas.set(x, y + 2, bl);
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if matches!(direction, Direction::TD | Direction::TB) {
-            let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) {
-                style.junction_down
-            } else {
-                style.h
-            }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y + 2, c);
-    }
-    canvas.set(x + width - 1, y + 2, br);
-}
-
-/// Draw a diamond/rhombus shape.
-fn draw_diamond(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    style: &StyleChars,
-) {
-    let center = x + width / 2;
-    let is_unicode = style.tl == '┌';
-    let point_char = if is_unicode { '◇' } else { 'v' };
-
-    // Top point
-    canvas.set(center, y, if is_unicode { '◇' } else { '^' });
-
-    // Middle row with label
-    canvas.set(x, y + 1, '<');
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
-    canvas.set(x + width - 1, y + 1, '>');
-
-    // Bottom point - check for edge exits
-    let below = canvas.get(center, y + 3);
-    let bottom_char = if is_vertical(below, style) {
-        style.junction_down
-    } else {
-        point_char
-    };
-    canvas.set(center, y + 2, bottom_char);
-
-    // Fill sides
-    for i in 1..center - x {
-        canvas.set(x + i, y + 2, ' ');
-        canvas.set(center + i, y + 2, ' ');
-    }
-}
-
-/// Draw a circle shape (elliptical approximation).
-fn draw_circle(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    style: &StyleChars,
-) {
-    let is_unicode = style.tl == '┌';
-    let (tl, tr, bl, br, h) = if is_unicode {
-        ('╭', '╮', '╰', '╯', '─')
-    } else {
-        ('/', '\\', '\\', '/', '-')
-    };
-
-    canvas.set(x, y, tl);
-    for i in 1..width - 1 {
-        canvas.set(x + i, y, h);
-    }
-    canvas.set(x + width - 1, y, tr);
-
-    canvas.set(x, y + 1, '(');
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
-    canvas.set(x + width - 1, y + 1, ')');
-
-    canvas.set(x, y + 2, bl);
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let below = canvas.get(pos_x, y + 3);
-        let c = if is_vertical(below, style) {
-            style.junction_down
-        } else {
-            h
-        };
-        canvas.set(pos_x, y + 2, c);
-    }
-    canvas.set(x + width - 1, y + 2, br);
-}
-
-/// Draw a stadium/pill shape.
-fn draw_stadium(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    style: &StyleChars,
-    direction: Direction,
-) {
-    // Top border
-    canvas.set(x, y, style.tl);
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if direction == Direction::BT {
-            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { style.h }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y, c);
-    }
-    canvas.set(x + width - 1, y, style.tr);
-
-    canvas.set(x, y + 1, '(');
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
-    canvas.set(x + width - 1, y + 1, ')');
-
-    // Bottom border
-    canvas.set(x, y + 2, style.bl);
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if matches!(direction, Direction::TD | Direction::TB) {
-            let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { style.h }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y + 2, c);
-    }
-    canvas.set(x + width - 1, y + 2, style.br);
-}
-
-/// Draw a hexagon shape.
-fn draw_hexagon(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    style: &StyleChars,
-    direction: Direction,
-) {
-    // Top border
-    canvas.set(x, y, '/');
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if direction == Direction::BT {
-            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { style.h }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y, c);
-    }
-    canvas.set(x + width - 1, y, '\\');
-
-    canvas.set(x, y + 1, '<');
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
-    canvas.set(x + width - 1, y + 1, '>');
-
-    // Bottom border
-    canvas.set(x, y + 2, '\\');
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if matches!(direction, Direction::TD | Direction::TB) {
-            let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { style.h }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y + 2, c);
-    }
-    canvas.set(x + width - 1, y + 2, '/');
-}
-
-/// Draw a database/cylinder shape.
-fn draw_database(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    style: &StyleChars,
-    direction: Direction,
-) {
-    let is_unicode = style.tl == '┌';
-    let h = if is_unicode { '─' } else { '-' };
-
-    // Top border
-    canvas.set(x, y, '/');
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if direction == Direction::BT {
-            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { h }
-        } else {
-            h
-        };
-        canvas.set(pos_x, y, c);
-    }
-    canvas.set(x + width - 1, y, '\\');
-
-    canvas.set(x, y + 1, style.v);
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
-    canvas.set(x + width - 1, y + 1, style.v);
-
-    // Bottom border
-    canvas.set(x, y + 2, '\\');
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if matches!(direction, Direction::TD | Direction::TB) {
-            let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { h }
-        } else {
-            h
-        };
-        canvas.set(pos_x, y + 2, c);
-    }
-    canvas.set(x + width - 1, y + 2, '/');
-}
-
-/// Draw a subroutine box (double vertical lines on sides).
-fn draw_subroutine(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    style: &StyleChars,
-    direction: Direction,
-) {
-    let dv = if style.tl == '┌' { '║' } else { '|' };
-
-    // Top border
-    canvas.set(x, y, style.tl);
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if direction == Direction::BT {
-            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { style.h }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y, c);
-    }
-    canvas.set(x + width - 1, y, style.tr);
-
-    canvas.set(x, y + 1, dv);
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
-    canvas.set(x + width - 1, y + 1, dv);
-
-    // Bottom border
-    canvas.set(x, y + 2, style.bl);
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if matches!(direction, Direction::TD | Direction::TB) {
-            let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { style.h }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y + 2, c);
-    }
-    canvas.set(x + width - 1, y + 2, style.br);
-}
-
-/// Draw an asymmetric/flag shape.
-fn draw_asymmetric(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    label: &str,
-    style: &StyleChars,
-    direction: Direction,
-) {
-    // Top border
-    canvas.set(x, y, '>');
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if direction == Direction::BT {
-            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { style.h }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y, c);
-    }
-    canvas.set(x + width - 1, y, style.tr);
-
-    canvas.set(x, y + 1, ' ');
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
-    canvas.set(x + width - 1, y + 1, style.v);
-
-    // Bottom border
-    canvas.set(x, y + 2, '>');
-    for i in 1..width - 1 {
-        let pos_x = x + i;
-        let c = if matches!(direction, Direction::TD | Direction::TB) {
-            let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { style.h }
-        } else {
-            style.h
-        };
-        canvas.set(pos_x, y + 2, c);
-    }
-    canvas.set(x + width - 1, y + 2, style.br);
-}
 
 /// Draw an edge label on the appropriate segment between two nodes.
 /// For TD/BT: labels go on vertical segments
@@ -750,7 +281,7 @@ fn draw_edge_label(
     direction: Direction,
     style: &StyleChars,
 ) {
-    use edge::{center_x, center_y};
+    use cycle::{center_x, center_y};
 
     // Truncate label if too long
     let max_label_len = 12; // Keep labels reasonably short
@@ -788,7 +319,7 @@ fn draw_edge_label(
                 stem_start_y + (arrow_y.saturating_sub(stem_start_y)) / 2
             } else {
                 // L-shaped: use junction-based positioning
-                let junction_y = stem_start_y + EDGE_STEM_HEIGHT;
+                let junction_y = stem_start_y + STEM_LENGTH_VERTICAL;
                 junction_y + EDGE_JUNCTION_HEIGHT
             };
 
@@ -817,7 +348,7 @@ fn draw_edge_label(
                 top + (bottom - top) / 2
             } else {
                 // L-shaped: use junction-based positioning
-                stem_start_y.saturating_sub(EDGE_STEM_HEIGHT).saturating_sub(EDGE_JUNCTION_HEIGHT)
+                stem_start_y.saturating_sub(STEM_LENGTH_VERTICAL).saturating_sub(EDGE_JUNCTION_HEIGHT)
             };
 
             let label_start_x = edge_x.saturating_sub(label_width / 2);
@@ -953,8 +484,6 @@ fn draw_edge_label(
         }
     }
 
-    // Suppress unused warning for style parameter (reserved for future use)
-    let _ = style;
 }
 
 /// Draw an edge label for convergent edges (multiple sources to one target).
@@ -966,7 +495,7 @@ fn draw_convergent_edge_label(
     label: &str,
     direction: Direction,
 ) {
-    use edge::{center_x, center_y};
+    use cycle::{center_x, center_y};
 
     // Truncate label if too long
     let max_label_len = 10; // Slightly shorter for convergent labels

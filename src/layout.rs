@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use anyhow::Result;
 
 use crate::graph::{Direction, Graph};
-use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH, COL_SPACING, EDGE_STEM_WIDTH_LR};
+use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH, COL_SPACING, STEM_LENGTH_HORIZONTAL};
 
 /// Row spacing for single-target edges (compact: stem → label → arrow)
 const ROW_SPACING_SINGLE: usize = 3;
@@ -270,7 +270,7 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
         }
 
         let mut has_convergent_per_rank: Vec<bool> = vec![false; by_rank.len()];
-        for (_target_id, sources) in &sources_per_target {
+        for sources in sources_per_target.values() {
             if sources.len() > 1 {
                 // Mark all SOURCE ranks that feed into this convergent target
                 for source_id in sources {
@@ -289,9 +289,9 @@ pub fn waterfall(mut graph: Graph) -> Result<Graph> {
             // Add extra spacing for labels if any edges from this rank have labels
             let label_spacing = max_label_width_per_rank[r];
             // Add extra spacing for divergent/convergent edges (junction/merge span needs room)
-            // EDGE_STEM_WIDTH_LR (3) + junction span (1) + box-edge junction (1) + padding (2) = 7
+            // STEM_LENGTH_HORIZONTAL (3) + junction span (1) + box-edge junction (1) + padding (2) = 7
             let junction_spacing = if has_divergent_per_rank[r] || has_convergent_per_rank[r] {
-                EDGE_STEM_WIDTH_LR + 4
+                STEM_LENGTH_HORIZONTAL + 4
             } else {
                 0
             };

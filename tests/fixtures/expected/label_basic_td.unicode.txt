@@ -9,7 +9,7 @@
      └─────┬─────┘
            │
      ┌─────┴──────┐
- success        error
+  success       error
      ↓            ↓
 ┌────────┐   ┌─────────┐
 │  Done  │   │  Retry  │

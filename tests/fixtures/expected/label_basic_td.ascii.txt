@@ -9,7 +9,7 @@
      +-----+-----+
            |
      +-----+------+
- success        error
+  success       error
      v            v
 +--------+   +---------+
 |  Done  |   |  Retry  |
