@@ -21,9 +21,9 @@ const ROW_SPACING_FANOUT: usize = 4;
 const ROW_SPACING_MULTI_LABELED: usize = 4;
 
 /// Padding inside subgraph border (space between border and contained nodes)
-const SUBGRAPH_PADDING: usize = 1;
-/// Extra space for subgraph title line
-const SUBGRAPH_TITLE_HEIGHT: usize = 1;
+const SUBGRAPH_PADDING: usize = 2;
+/// Extra space for subgraph title line (0 since title is on border row)
+const SUBGRAPH_TITLE_HEIGHT: usize = 0;
 
 /// Apply waterfall layout to position all nodes
 pub fn waterfall(mut graph: Graph) -> Result<Graph> {
@@ -920,33 +920,21 @@ mod tests {
         let mut graph = Graph::new();
         graph.add_node(Node::new("A", "Node"));
 
-        // Subgraph with title
+        // Subgraph with title - title is drawn ON the border, not as separate row
         let mut sg_with_title = Subgraph::new("SG1", Some("My Title".to_string()));
         sg_with_title.add_node("A");
         graph.add_subgraph(sg_with_title);
         graph.associate_node_with_subgraph("A", "SG1");
 
         let result = waterfall(graph).unwrap();
-        let bounds_with_title = result.subgraphs[0].bounds.height;
+        let bounds = &result.subgraphs[0].bounds;
 
-        // Now test without title
-        let mut graph2 = Graph::new();
-        graph2.add_node(Node::new("A", "Node"));
-
-        let mut sg_no_title = Subgraph::new("SG2", None);
-        sg_no_title.add_node("A");
-        graph2.add_subgraph(sg_no_title);
-        graph2.associate_node_with_subgraph("A", "SG2");
-
-        let result2 = waterfall(graph2).unwrap();
-        let bounds_no_title = result2.subgraphs[0].bounds.height;
-
-        // Subgraph with title should be taller
-        assert!(
-            bounds_with_title > bounds_no_title,
-            "subgraph with title ({}) should be taller than without ({})",
-            bounds_with_title,
-            bounds_no_title
+        // Verify bounds are valid and contain the node with padding
+        assert!(bounds.is_valid(), "subgraph with title should have valid bounds");
+        // Height should be: node_height (3) + padding top (2) + padding bottom (2) = 7
+        assert_eq!(
+            bounds.height, 7,
+            "subgraph height should account for node and padding"
         );
     }
 }
