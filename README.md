@@ -188,14 +188,111 @@ cargo run --quiet -- --print --style ascii tests/fixtures/inputs/chain.md > test
 
 User-facing docs live in `docs/`. Planning, specs, and future-phase notes live in `planning/` (including `planning/spec/SPEC.md`).
 
-| Module   | Description                                      |
-| -------- | ------------------------------------------------ |
-| `parser` | Two-pass Mermaid-Lite parser with regex          |
-| `layout` | Waterfall layout algorithm (toposort + BFS)      |
-| `canvas` | 2D char grid rendering with edge routing         |
-| `style`  | 9 border styles with composite styling system    |
-| `config` | Layered configuration loading                    |
-| `tui`    | (planned) Ratatui-based interactive mode         |
+| Module        | Description                                      |
+| ------------- | ------------------------------------------------ |
+| `parser`      | Two-pass Mermaid-Lite parser with regex          |
+| `layout`      | Waterfall layout algorithm (toposort + BFS)      |
+| `render/`     | Render orchestration and drawing                 |
+| ├─ `edge`     | Direction-agnostic edge routing (all 4 dirs)     |
+| ├─ `cycle`    | Cycle edge routing through gutters               |
+| ├─ `shapes`   | Box drawing for 9 node shapes                    |
+| └─ `canvas`   | 2D char grid with overlap resolution             |
+| `orientation` | Direction abstraction (OrientedCoords)           |
+| `style`       | 9 border styles with composite styling system    |
+| `config`      | Layered configuration loading                    |
+| `tui`         | (planned) Ratatui-based interactive mode         |
+
+### Render Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          RENDER PIPELINE                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                              ┌──────────────┐
+                              │   render()   │
+                              │   mod.rs     │
+                              └──────┬───────┘
+                                     │
+        ┌────────────────────────────┼────────────────────────────┐
+        │  PHASE 1: SETUP            ▼                            │
+        │  ┌────────────────────────────────────────────────┐     │
+        │  │  • Calculate canvas dimensions                 │     │
+        │  │  • Add CYCLE_GUTTER if graph has cycles        │     │
+        │  │  • Create Canvas                               │     │
+        │  └────────────────────────────────────────────────┘     │
+        └────────────────────────────┼────────────────────────────┘
+                                     │
+        ┌────────────────────────────┼────────────────────────────┐
+        │  PHASE 2: CLASSIFY         ▼                            │
+        │  ┌────────────────────────────────────────────────┐     │
+        │  │  Partition edges:                              │     │
+        │  │  • edges_by_source  { "A": [B, C] }           │     │
+        │  │  • edges_by_target  { "D": [A, B] }           │     │
+        │  │  • cycle_edges      [(X, Y), ...]             │     │
+        │  └────────────────────────────────────────────────┘     │
+        └────────────────────────────┼────────────────────────────┘
+                                     │
+        ┌────────────────────────────┼────────────────────────────┐
+        │  PHASE 3: ROUTE EDGES      ▼  (draw BEFORE boxes)       │
+        │  ┌────────────────────────────────────────────────┐     │
+        │  │  1. route_convergent_edges()   N → 1           │     │
+        │  │     A ──┐                                      │     │
+        │  │     B ──┼──→ D                                 │     │
+        │  │     C ──┘                                      │     │
+        │  │                                                │     │
+        │  │  2. route_divergent_edges()    1 → N           │     │
+        │  │          ┌──→ B                                │     │
+        │  │     A ───┼──→ C                                │     │
+        │  │          └──→ D                                │     │
+        │  │                                                │     │
+        │  │  3. route_cycle_edge()         via gutter      │     │
+        │  │     ┌───┐       ┌───┐                          │     │
+        │  │     │ A │ ←╌╌╌╌ │ B │                          │     │
+        │  │     └───┘   ╎   └───┘                          │     │
+        │  │             ╰╌╌╌╌╌╌╌╯                          │     │
+        │  └────────────────────────────────────────────────┘     │
+        └────────────────────────────┼────────────────────────────┘
+                                     │
+        ┌────────────────────────────┼────────────────────────────┐
+        │  PHASE 4: DRAW             ▼                            │
+        │  ┌────────────────────────────────────────────────┐     │
+        │  │  1. draw_edge_label()   on edge segments       │     │
+        │  │  2. shapes::draw_node() boxes OVERWRITE edges  │     │
+        │  │                                                │     │
+        │  │     ┌───────┐  (───────)  ◇───────◇  ((───))   │     │
+        │  │     │ rect  │  ( round )  ◇ diamond  (circle)  │     │
+        │  │     └───────┘  (───────)  ◇───────◇  ((───))   │     │
+        │  └────────────────────────────────────────────────┘     │
+        └────────────────────────────┼────────────────────────────┘
+                                     │
+                                     ▼
+                          ┌──────────────────┐
+                          │ canvas.to_string │
+                          │    → stdout      │
+                          └──────────────────┘
+```
+
+### Direction Abstraction
+
+`OrientedCoords` enables a **single algorithm** for all 4 directions:
+
+```
+  TD (Top→Down)      LR (Left→Right)     BT (Bottom→Top)     RL (Right→Left)
+
+      A                  A ───→ B              B                  B ←─── A
+      │                                        │
+      ▼                                        ▼
+      B                                        A
+
+  Primary: Y (↓)      Primary: X (→)      Primary: Y (↑)      Primary: X (←)
+  Secondary: X        Secondary: Y        Secondary: X        Secondary: Y
+```
+
+Key methods:
+- `advance(x, y, dist)` — Move in flow direction
+- `retreat(x, y, dist)` — Move against flow
+- `with_secondary(x, y, val)` — Position on branching axis
 
 ## License
 
