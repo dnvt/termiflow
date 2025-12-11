@@ -21,13 +21,10 @@ fn file_flag_alias_produces_output() {
 #[test]
 fn unsupported_diagram_type_errors() {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("termiflow"));
-    cmd.args([
-        "--print",
-        "tests/fixtures/inputs/error_sequence.md",
-    ])
-    .assert()
-    .failure()
-    .stderr(predicate::str::contains(
-        "diagram type not supported (found: 'sequenceDiagram')",
-    ));
+    cmd.args(["--print", "tests/fixtures/inputs/error_sequence.md"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "diagram type not supported (found: 'sequenceDiagram')",
+        ));
 }

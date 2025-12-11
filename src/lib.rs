@@ -24,10 +24,9 @@
 // ============================================================================
 
 pub mod config;
-pub mod graph;
 pub mod geom;
+pub mod graph;
 pub mod layout;
-pub mod layout_spike;
 pub mod orientation;
 pub mod parser;
 pub mod render;
@@ -39,7 +38,7 @@ pub mod style;
 
 pub use config::{Config, ConfigBuilder};
 pub use graph::{Edge, Graph, Node};
-pub use layout::waterfall;
+pub use layout::coarse_waterfall;
 pub use parser::{parse, ParseConfig, ParseResult};
 pub use render::render as render_canvas;
 pub use style::{BaseStyle, CompositeStyle};
@@ -49,8 +48,6 @@ pub use style::{BaseStyle, CompositeStyle};
 // ============================================================================
 
 use anyhow::Result;
-use layout_spike::{apply_spike_layout, CoarseLayoutConfig};
-
 /// Options for rendering a diagram
 #[derive(Debug, Clone, Default)]
 pub struct RenderOptions {
@@ -60,8 +57,6 @@ pub struct RenderOptions {
     pub max_label_width: usize,
     /// Strict mode - fail on any parse warning (default: false)
     pub strict: bool,
-    /// Use experimental layout/routing spike instead of the stable waterfall.
-    pub experimental_layout: bool,
 }
 
 impl RenderOptions {
@@ -70,7 +65,6 @@ impl RenderOptions {
             style: BaseStyle::default(),
             max_label_width: 20,
             strict: false,
-            experimental_layout: false,
         }
     }
 
@@ -86,11 +80,6 @@ impl RenderOptions {
 
     pub fn strict(mut self) -> Self {
         self.strict = true;
-        self
-    }
-
-    pub fn with_experimental_layout(mut self, enabled: bool) -> Self {
-        self.experimental_layout = enabled;
         self
     }
 }
@@ -121,13 +110,8 @@ pub fn render(input: &str, options: RenderOptions) -> Result<String> {
     // Parse
     let parse_result = parser::parse(input, options.strict)?;
 
-    // Layout (stable waterfall or experimental spike)
-    let graph = if options.experimental_layout {
-        let cfg = CoarseLayoutConfig::default();
-        apply_spike_layout(parse_result.graph, None, cfg)?
-    } else {
-        layout::waterfall(parse_result.graph)?
-    };
+    // Layout (default coarse waterfall)
+    let graph = layout::coarse_waterfall(parse_result.graph)?;
 
     // Build config from options + in-file directives
     let config = Config::builder()

@@ -47,7 +47,16 @@ fixtures/
 
 | Test Name | Description |
 |-----------|-------------|
-| `subgraph_basic_td` | Basic subgraph parsing (visual rendering Phase 5) |
+| `subgraph_basic_td` | Basic subgraph parsing (visual rendering) |
+
+### Experimental Layout Fixtures
+
+These reuse existing inputs but capture the experimental layout/routing spike output.
+
+| Test Name | Description | Formats |
+|-----------|-------------|---------|
+| `subgraph_basic_td` | TD subgraph with gutters | unicode, ascii (experimental) |
+| `flow_simple_lr` | LR three-node flow sanity check | unicode, ascii (experimental) |
 
 ### Error Tests
 
@@ -57,7 +66,7 @@ fixtures/
 
 ## Test Counts
 
-- **25 input files** → **50 golden tests** (25 × 2 formats: unicode + ascii)
+- **25 input files** → **56 golden tests** (25 × 2 formats + 6 experimental variants)
 - **4 directions tested**: TD, LR, BT, RL
 - **Direction-consistent tests**: 4 test families × 4 directions = 16 directional tests
 

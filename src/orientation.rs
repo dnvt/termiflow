@@ -115,10 +115,10 @@ impl OrientedCoords {
     /// where flow splits from primary to secondary axis
     pub fn junction_branch(&self, style: &StyleChars) -> char {
         match self.direction {
-            Direction::TD | Direction::TB => style.junction_down,  // ┬ (branches down)
-            Direction::LR => style.junction_right,                 // ├ (branches right)
-            Direction::RL => style.junction_left,                  // ┤ (branches left)
-            Direction::BT => style.junction_up,                    // ┴ (branches up)
+            Direction::TD | Direction::TB => style.junction_down, // ┬ (branches down)
+            Direction::LR => style.junction_right,                // ├ (branches right)
+            Direction::RL => style.junction_left,                 // ┤ (branches left)
+            Direction::BT => style.junction_up,                   // ┴ (branches up)
         }
     }
 
@@ -126,10 +126,10 @@ impl OrientedCoords {
     /// where flow converges from secondary to primary axis
     pub fn junction_merge(&self, style: &StyleChars) -> char {
         match self.direction {
-            Direction::TD | Direction::TB => style.junction_up,    // ┴ (merges up)
-            Direction::LR => style.junction_left,                  // ┤ (merges left)
-            Direction::RL => style.junction_right,                 // ├ (merges right)
-            Direction::BT => style.junction_down,                  // ┬ (merges down)
+            Direction::TD | Direction::TB => style.junction_up, // ┴ (merges up)
+            Direction::LR => style.junction_left,               // ┤ (merges left)
+            Direction::RL => style.junction_right,              // ├ (merges right)
+            Direction::BT => style.junction_down,               // ┬ (merges down)
         }
     }
 
@@ -137,14 +137,14 @@ impl OrientedCoords {
     /// at the start position
     pub fn corner_start_to_secondary(&self, going_before: bool, style: &StyleChars) -> char {
         match (self.direction, going_before) {
-            (Direction::TD | Direction::TB, true) => style.corner_ul,   // ┌ (down to left)
-            (Direction::TD | Direction::TB, false) => style.corner_ur,  // ┐ (down to right)
-            (Direction::LR, true) => style.corner_dl,                   // └ (right to up)
-            (Direction::LR, false) => style.corner_ul,                  // ┌ (right to down)
-            (Direction::RL, true) => style.corner_dr,                   // ┘ (left to up)
-            (Direction::RL, false) => style.corner_ur,                  // ┐ (left to down)
-            (Direction::BT, true) => style.corner_dl,                   // └ (up to left)
-            (Direction::BT, false) => style.corner_dr,                  // ┘ (up to right)
+            (Direction::TD | Direction::TB, true) => style.corner_ur, // down then left
+            (Direction::TD | Direction::TB, false) => style.corner_ul, // down then right
+            (Direction::LR, true) => style.corner_dl,                 // └ (right to up)
+            (Direction::LR, false) => style.corner_ul,                // ┌ (right to down)
+            (Direction::RL, true) => style.corner_dr,                 // ┘ (left to up)
+            (Direction::RL, false) => style.corner_ur,                // ┐ (left to down)
+            (Direction::BT, true) => style.corner_dr,                 // up then left
+            (Direction::BT, false) => style.corner_dl,                // up then right
         }
     }
 
@@ -152,14 +152,14 @@ impl OrientedCoords {
     /// at the end position
     pub fn corner_secondary_to_end(&self, coming_from_before: bool, style: &StyleChars) -> char {
         match (self.direction, coming_from_before) {
-            (Direction::TD | Direction::TB, true) => style.corner_dr,   // ┘ (left to down)
-            (Direction::TD | Direction::TB, false) => style.corner_dl,  // └ (right to down)
-            (Direction::LR, true) => style.corner_ur,                   // ┐ (up to right)
-            (Direction::LR, false) => style.corner_dr,                  // ┘ (down to right)
-            (Direction::RL, true) => style.corner_ul,                   // ┌ (up to left)
-            (Direction::RL, false) => style.corner_dl,                  // └ (down to left)
-            (Direction::BT, true) => style.corner_ur,                   // ┐ (left to up)
-            (Direction::BT, false) => style.corner_ul,                  // ┌ (right to up)
+            (Direction::TD | Direction::TB, true) => style.corner_dl, // left to down
+            (Direction::TD | Direction::TB, false) => style.corner_dr, // right to down
+            (Direction::LR, true) => style.corner_ur,                 // ┐ (up to right)
+            (Direction::LR, false) => style.corner_dr,                // ┘ (down to right)
+            (Direction::RL, true) => style.corner_ul,                 // ┌ (up to left)
+            (Direction::RL, false) => style.corner_dl,                // └ (down to left)
+            (Direction::BT, true) => style.corner_ul,                 // left to up
+            (Direction::BT, false) => style.corner_ur,                // right to up
         }
     }
 
@@ -169,18 +169,14 @@ impl OrientedCoords {
         let mut new_y = y;
 
         match self.primary {
-            Axis::Horizontal => {
-                match self.direction {
-                    Direction::RL => new_x = new_x.saturating_sub(distance),
-                    _ => new_x += distance,
-                }
-            }
-            Axis::Vertical => {
-                match self.direction {
-                    Direction::BT => new_y = new_y.saturating_sub(distance),
-                    _ => new_y += distance,
-                }
-            }
+            Axis::Horizontal => match self.direction {
+                Direction::RL => new_x = new_x.saturating_sub(distance),
+                _ => new_x += distance,
+            },
+            Axis::Vertical => match self.direction {
+                Direction::BT => new_y = new_y.saturating_sub(distance),
+                _ => new_y += distance,
+            },
         }
 
         (new_x, new_y)
@@ -192,18 +188,14 @@ impl OrientedCoords {
         let mut new_y = y;
 
         match self.primary {
-            Axis::Horizontal => {
-                match self.direction {
-                    Direction::RL => new_x += distance,
-                    _ => new_x = new_x.saturating_sub(distance),
-                }
-            }
-            Axis::Vertical => {
-                match self.direction {
-                    Direction::BT => new_y += distance,
-                    _ => new_y = new_y.saturating_sub(distance),
-                }
-            }
+            Axis::Horizontal => match self.direction {
+                Direction::RL => new_x += distance,
+                _ => new_x = new_x.saturating_sub(distance),
+            },
+            Axis::Vertical => match self.direction {
+                Direction::BT => new_y += distance,
+                _ => new_y = new_y.saturating_sub(distance),
+            },
         }
 
         (new_x, new_y)
@@ -232,7 +224,7 @@ mod tests {
         let coords = OrientedCoords::new(Direction::TD);
         assert_eq!(coords.primary, Axis::Vertical);
         assert_eq!(coords.secondary, Axis::Horizontal);
-        
+
         // Primary coord should return y for TD
         assert_eq!(coords.primary_coord(10, 20), 20);
         // Secondary coord should return x for TD
@@ -244,7 +236,7 @@ mod tests {
         let coords = OrientedCoords::new(Direction::LR);
         assert_eq!(coords.primary, Axis::Horizontal);
         assert_eq!(coords.secondary, Axis::Vertical);
-        
+
         // Primary coord should return x for LR
         assert_eq!(coords.primary_coord(10, 20), 10);
         // Secondary coord should return y for LR

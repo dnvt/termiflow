@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 // Use the termiflow library
-use termiflow::{layout_spike, parse, render_canvas, waterfall, CompositeStyle, Config};
+use termiflow::{layout, parse, render_canvas, CompositeStyle, Config};
 
 /// Interactive TUI graph explorer - jq for diagrams
 #[derive(Parser)]
@@ -49,12 +49,7 @@ pub struct Cli {
     /// Dump layout coordinates (debugging)
     #[arg(long, hide = true)]
     pub debug_layout: bool,
-
-    /// Use the experimental layout/routing spike instead of the stable waterfall
-    #[arg(long, hide = true)]
-    pub experimental_layout: bool,
 }
-
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -107,11 +102,17 @@ fn supports_unicode() -> bool {
 }
 
 fn run_print_mode(cli: &Cli) -> Result<()> {
+    let debug_timing = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
+    let t0 = std::time::Instant::now();
+
     // Read input
     let input = read_input(cli)?;
 
     // Parse the Mermaid content (returns ParseResult with graph + in-file config)
     let parse_result = parse(&input, cli.strict)?;
+    if debug_timing {
+        eprintln!("termiflow: parse {:?}", t0.elapsed());
+    }
 
     // Load configuration (CLI > in-file > config file)
     let mut builder = Config::builder()
@@ -126,15 +127,25 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     let config = builder.build(&parse_result.config);
 
     // Run layout algorithm (may add warnings)
-    let graph = if cli.experimental_layout {
-        layout_spike::apply_spike_layout(
-            parse_result.graph,
-            None,
-            termiflow::layout_spike::CoarseLayoutConfig::default(),
-        )?
-    } else {
-        waterfall(parse_result.graph)?
-    };
+    let t_layout_start = std::time::Instant::now();
+    let graph = layout::coarse_waterfall(parse_result.graph)?;
+    if debug_timing {
+        eprintln!("termiflow: layout {:?}", t_layout_start.elapsed());
+        eprintln!(
+            "termiflow: edge routes {}",
+            graph
+                .edge_routes
+                .values()
+                .filter(|r| !r.segments.is_empty())
+                .count()
+        );
+        for (idx, e) in graph.edges.iter().enumerate() {
+            eprintln!(
+                "edge[{idx}] {} -> {} back_edge={}",
+                e.from, e.to, e.is_back_edge
+            );
+        }
+    }
 
     // Print any warnings to stderr (parser + layout)
     for warning in &graph.warnings {
@@ -156,7 +167,11 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     }
 
     // Render to canvas
+    let t_render_start = std::time::Instant::now();
     let output = render_canvas(&graph, &config)?;
+    if debug_timing {
+        eprintln!("termiflow: render {:?}", t_render_start.elapsed());
+    }
 
     // Print to stdout
     print!("{}", output);

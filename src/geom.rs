@@ -126,7 +126,9 @@ pub struct EdgeRoute {
 
 impl EdgeRoute {
     pub fn new() -> Self {
-        Self { segments: Vec::new() }
+        Self {
+            segments: Vec::new(),
+        }
     }
 
     pub fn push_segment(&mut self, from: Point, to: Point) {

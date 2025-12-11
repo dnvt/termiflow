@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use termiflow::{render, RenderOptions, BaseStyle};
+use termiflow::{render, BaseStyle, RenderOptions};
 
 fn simple_diagram() -> &'static str {
     "graph TD\nA[Start] --> B[Process]\nB --> C[End]"
@@ -64,51 +64,71 @@ fn benchmark_large_branching(c: &mut Criterion) {
 
 fn benchmark_different_orientations(c: &mut Criterion) {
     let mut group = c.benchmark_group("orientations");
-    
+
     let td_input = "graph TD\nA[Start] --> B[Mid] --> C[End]";
     let lr_input = "graph LR\nA[Start] --> B[Mid] --> C[End]";
     let bt_input = "graph BT\nA[Start] --> B[Mid] --> C[End]";
     let rl_input = "graph RL\nA[Start] --> B[Mid] --> C[End]";
-    
+
     group.bench_function("TD", |b| {
         b.iter(|| render(black_box(td_input), RenderOptions::default()))
     });
-    
+
     group.bench_function("LR", |b| {
         b.iter(|| render(black_box(lr_input), RenderOptions::default()))
     });
-    
+
     group.bench_function("BT", |b| {
         b.iter(|| render(black_box(bt_input), RenderOptions::default()))
     });
-    
+
     group.bench_function("RL", |b| {
         b.iter(|| render(black_box(rl_input), RenderOptions::default()))
     });
-    
+
     group.finish();
 }
 
 fn benchmark_different_styles(c: &mut Criterion) {
     let mut group = c.benchmark_group("styles");
     let input = complex_diagram();
-    
+
     group.bench_function("ascii", |b| {
-        b.iter(|| render(black_box(input), RenderOptions::new().with_style(BaseStyle::Ascii)))
+        b.iter(|| {
+            render(
+                black_box(input),
+                RenderOptions::new().with_style(BaseStyle::Ascii),
+            )
+        })
     });
-    
+
     group.bench_function("unicode", |b| {
-        b.iter(|| render(black_box(input), RenderOptions::new().with_style(BaseStyle::Unicode)))
+        b.iter(|| {
+            render(
+                black_box(input),
+                RenderOptions::new().with_style(BaseStyle::Unicode),
+            )
+        })
     });
-    
+
     group.bench_function("rounded", |b| {
-        b.iter(|| render(black_box(input), RenderOptions::new().with_style(BaseStyle::Rounded)))
+        b.iter(|| {
+            render(
+                black_box(input),
+                RenderOptions::new().with_style(BaseStyle::Rounded),
+            )
+        })
     });
-    
+
     group.bench_function("heavy", |b| {
-        b.iter(|| render(black_box(input), RenderOptions::new().with_style(BaseStyle::Heavy)))
+        b.iter(|| {
+            render(
+                black_box(input),
+                RenderOptions::new().with_style(BaseStyle::Heavy),
+            )
+        })
     });
-    
+
     group.finish();
 }
 
