@@ -706,19 +706,20 @@ fn golden_subgraph_basic_td_ascii() {
 
 #[test]
 fn golden_error_sequence_unicode() {
-    let (stdout, _) = run_termiflow(&[
+    let (stdout, stderr) = run_termiflow(&[
         "--print",
         "--style",
         "unicode",
         "tests/fixtures/inputs/error_sequence.md",
     ]);
     let expected = include_str!("fixtures/expected/error_sequence.unicode.txt");
-    assert_eq!(stdout, expected, "Output mismatch for error_sequence.md");
+    assert_eq!(stderr, expected, "Output mismatch for error_sequence.md");
+    assert!(stdout.is_empty(), "error_sequence.md should not write to stdout");
 }
 
 #[test]
 fn golden_error_sequence_ascii() {
-    let (stdout, _) = run_termiflow(&[
+    let (stdout, stderr) = run_termiflow(&[
         "--print",
         "--style",
         "ascii",
@@ -726,7 +727,8 @@ fn golden_error_sequence_ascii() {
     ]);
     let expected = include_str!("fixtures/expected/error_sequence.ascii.txt");
     assert_eq!(
-        stdout, expected,
+        stderr, expected,
         "Output mismatch for error_sequence.md (ASCII)"
     );
+    assert!(stdout.is_empty(), "error_sequence.md should not write to stdout");
 }
