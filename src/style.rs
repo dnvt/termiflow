@@ -12,10 +12,10 @@ pub const ROW_SPACING: usize = 2;
 pub const COL_SPACING: usize = 3;
 
 // Edge routing constants
-pub const STEM_LENGTH_VERTICAL: usize = 1;   // Stem length for TD/BT layouts
+pub const STEM_LENGTH_VERTICAL: usize = 1; // Stem length for TD/BT layouts
 pub const STEM_LENGTH_HORIZONTAL: usize = 3; // Stem length for LR/RL layouts
-pub const EDGE_JUNCTION_HEIGHT: usize = 1;   // Junction row spacing
-pub const EDGE_DROP_HEIGHT: usize = 1;       // Drop spacing for multi-target
+pub const EDGE_JUNCTION_HEIGHT: usize = 1; // Junction row spacing
+pub const EDGE_DROP_HEIGHT: usize = 1; // Drop spacing for multi-target
 pub const MAX_LABEL_WIDTH: usize = 20;
 
 pub const MAX_CANVAS_WIDTH: usize = 500;

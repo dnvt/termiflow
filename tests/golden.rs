@@ -46,7 +46,10 @@ fn golden_flow_simple_td_ascii() {
         "tests/fixtures/inputs/flow_simple_td.md",
     ]);
     let expected = include_str!("fixtures/expected/flow_simple_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for flow_simple_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for flow_simple_td.md (ASCII)"
+    );
 }
 
 #[test]
@@ -70,7 +73,10 @@ fn golden_flow_branch_td_ascii() {
         "tests/fixtures/inputs/flow_branch_td.md",
     ]);
     let expected = include_str!("fixtures/expected/flow_branch_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for flow_branch_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for flow_branch_td.md (ASCII)"
+    );
 }
 
 #[test]
@@ -94,7 +100,10 @@ fn golden_flow_chain_td_ascii() {
         "tests/fixtures/inputs/flow_chain_td.md",
     ]);
     let expected = include_str!("fixtures/expected/flow_chain_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for flow_chain_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for flow_chain_td.md (ASCII)"
+    );
 }
 
 #[test]
@@ -118,7 +127,10 @@ fn golden_flow_simple_lr_ascii() {
         "tests/fixtures/inputs/flow_simple_lr.md",
     ]);
     let expected = include_str!("fixtures/expected/flow_simple_lr.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for flow_simple_lr.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for flow_simple_lr.md (ASCII)"
+    );
 }
 
 #[test]
@@ -142,7 +154,10 @@ fn golden_flow_simple_rl_ascii() {
         "tests/fixtures/inputs/flow_simple_rl.md",
     ]);
     let expected = include_str!("fixtures/expected/flow_simple_rl.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for flow_simple_rl.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for flow_simple_rl.md (ASCII)"
+    );
 }
 
 #[test]
@@ -166,7 +181,10 @@ fn golden_flow_simple_bt_ascii() {
         "tests/fixtures/inputs/flow_simple_bt.md",
     ]);
     let expected = include_str!("fixtures/expected/flow_simple_bt.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for flow_simple_bt.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for flow_simple_bt.md (ASCII)"
+    );
 }
 
 // ============================================================================
@@ -194,7 +212,10 @@ fn golden_edge_branch_td_ascii() {
         "tests/fixtures/inputs/edge_branch_td.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_branch_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_branch_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_branch_td.md (ASCII)"
+    );
 }
 
 #[test]
@@ -218,7 +239,10 @@ fn golden_edge_branch_lr_ascii() {
         "tests/fixtures/inputs/edge_branch_lr.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_branch_lr.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_branch_lr.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_branch_lr.md (ASCII)"
+    );
 }
 
 #[test]
@@ -242,7 +266,10 @@ fn golden_edge_branch_rl_ascii() {
         "tests/fixtures/inputs/edge_branch_rl.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_branch_rl.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_branch_rl.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_branch_rl.md (ASCII)"
+    );
 }
 
 #[test]
@@ -266,7 +293,10 @@ fn golden_edge_branch_bt_ascii() {
         "tests/fixtures/inputs/edge_branch_bt.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_branch_bt.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_branch_bt.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_branch_bt.md (ASCII)"
+    );
 }
 
 #[test]
@@ -290,7 +320,10 @@ fn golden_edge_complex_td_ascii() {
         "tests/fixtures/inputs/edge_complex_td.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_complex_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_complex_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_complex_td.md (ASCII)"
+    );
 }
 
 #[test]
@@ -314,7 +347,10 @@ fn golden_edge_complex_lr_ascii() {
         "tests/fixtures/inputs/edge_complex_lr.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_complex_lr.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_complex_lr.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_complex_lr.md (ASCII)"
+    );
 }
 
 #[test]
@@ -338,7 +374,10 @@ fn golden_edge_complex_rl_ascii() {
         "tests/fixtures/inputs/edge_complex_rl.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_complex_rl.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_complex_rl.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_complex_rl.md (ASCII)"
+    );
 }
 
 #[test]
@@ -362,7 +401,10 @@ fn golden_edge_complex_bt_ascii() {
         "tests/fixtures/inputs/edge_complex_bt.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_complex_bt.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_complex_bt.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_complex_bt.md (ASCII)"
+    );
 }
 
 #[test]
@@ -386,7 +428,10 @@ fn golden_edge_converge_td_ascii() {
         "tests/fixtures/inputs/edge_converge_td.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_converge_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_converge_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_converge_td.md (ASCII)"
+    );
 }
 
 #[test]
@@ -410,7 +455,10 @@ fn golden_edge_converge_lr_ascii() {
         "tests/fixtures/inputs/edge_converge_lr.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_converge_lr.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_converge_lr.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_converge_lr.md (ASCII)"
+    );
 }
 
 #[test]
@@ -434,7 +482,10 @@ fn golden_edge_converge_rl_ascii() {
         "tests/fixtures/inputs/edge_converge_rl.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_converge_rl.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_converge_rl.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_converge_rl.md (ASCII)"
+    );
 }
 
 #[test]
@@ -458,7 +509,10 @@ fn golden_edge_converge_bt_ascii() {
         "tests/fixtures/inputs/edge_converge_bt.md",
     ]);
     let expected = include_str!("fixtures/expected/edge_converge_bt.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for edge_converge_bt.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for edge_converge_bt.md (ASCII)"
+    );
 }
 
 // ============================================================================
@@ -486,7 +540,10 @@ fn golden_label_basic_td_ascii() {
         "tests/fixtures/inputs/label_basic_td.md",
     ]);
     let expected = include_str!("fixtures/expected/label_basic_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for label_basic_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for label_basic_td.md (ASCII)"
+    );
 }
 
 // ============================================================================
@@ -514,7 +571,10 @@ fn golden_shape_all_td_ascii() {
         "tests/fixtures/inputs/shape_all_td.md",
     ]);
     let expected = include_str!("fixtures/expected/shape_all_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for shape_all_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for shape_all_td.md (ASCII)"
+    );
 }
 
 #[test]
@@ -538,7 +598,10 @@ fn golden_shape_database_td_ascii() {
         "tests/fixtures/inputs/shape_database_td.md",
     ]);
     let expected = include_str!("fixtures/expected/shape_database_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for shape_database_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for shape_database_td.md (ASCII)"
+    );
 }
 
 // ============================================================================
@@ -566,7 +629,10 @@ fn golden_parse_forward_td_ascii() {
         "tests/fixtures/inputs/parse_forward_td.md",
     ]);
     let expected = include_str!("fixtures/expected/parse_forward_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for parse_forward_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for parse_forward_td.md (ASCII)"
+    );
 }
 
 // ============================================================================
@@ -594,7 +660,10 @@ fn golden_config_style_td_ascii() {
         "tests/fixtures/inputs/config_style_td.md",
     ]);
     let expected = include_str!("fixtures/expected/config_style_td.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for config_style_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for config_style_td.md (ASCII)"
+    );
 }
 
 // ============================================================================
@@ -625,7 +694,10 @@ fn golden_subgraph_basic_td_ascii() {
         "tests/fixtures/inputs/subgraph_basic_td.md",
     ]);
     let expected = include_str!("fixtures/expected/subgraph_basic_td_ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for subgraph_basic_td.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for subgraph_basic_td.md (ASCII)"
+    );
 }
 
 // ============================================================================
@@ -653,5 +725,8 @@ fn golden_error_sequence_ascii() {
         "tests/fixtures/inputs/error_sequence.md",
     ]);
     let expected = include_str!("fixtures/expected/error_sequence.ascii.txt");
-    assert_eq!(stdout, expected, "Output mismatch for error_sequence.md (ASCII)");
+    assert_eq!(
+        stdout, expected,
+        "Output mismatch for error_sequence.md (ASCII)"
+    );
 }

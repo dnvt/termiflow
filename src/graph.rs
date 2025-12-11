@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::style::BOX_HEIGHT;
 use crate::geom::EdgeRoute;
+use crate::style::BOX_HEIGHT;
 
 /// Node shape variants from Mermaid syntax
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -121,7 +121,12 @@ pub struct Rectangle {
 impl Rectangle {
     /// Create a new rectangle
     pub fn new(x: usize, y: usize, width: usize, height: usize) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// Check if this rectangle contains a point
@@ -198,7 +203,8 @@ pub struct Graph {
     pub subgraphs: Vec<Subgraph>,
     /// Maps node ID to its containing subgraph ID (if any)
     pub node_subgraph: HashMap<String, String>,
-    /// Optional precomputed routes (used by experimental layout/routing spike)
+    /// Optional precomputed routes (kept for legacy/experimental spikes; the
+    /// main pipeline uses the deterministic waterfall layout + live routing)
     pub edge_routes: HashMap<usize, EdgeRoute>,
 }
 
