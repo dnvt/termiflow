@@ -25,11 +25,11 @@ pub use canvas::Canvas;
 use anyhow::Result;
 
 use crate::config::Config;
-use crate::geom::{EdgeRoute, Point, Segment};
+use crate::geom::{EdgeRoute, Segment};
 use crate::graph::{Graph, Node};
 use crate::style::{
     display_width, truncate_label, BaseStyle, BOX_HEIGHT, COL_SPACING, CYCLE_GUTTER,
-    EDGE_JUNCTION_HEIGHT, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, ROW_SPACING, STEM_LENGTH_VERTICAL,
+    MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, ROW_SPACING, STEM_LENGTH_VERTICAL,
 };
 
 use crate::graph::Direction;
@@ -139,7 +139,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         );
     }
     // Carve portal openings in subgraph borders so external edges can pass through
-    carve_subgraph_portals_on_canvas(&mut canvas, graph, graph.direction);
+    let portal_slots = carve_subgraph_portals_on_canvas(&mut canvas, graph, graph.direction);
 
     // Get visible nodes
     let visible_nodes: Vec<&Node> = graph
@@ -236,7 +236,14 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             };
             let mut source_refs: Vec<&Node> = sources.clone();
             source_refs.sort_by_key(|n| (n.y, n.x, n.id.clone()));
-            route_convergent_edges(&source_refs, target, &mut canvas, &chars, graph.direction);
+            route_convergent_edges(
+                &source_refs,
+                target,
+                &mut canvas,
+                &chars,
+                graph.direction,
+                graph,
+            );
             for source in sources {
                 processed_edges.insert((&source.id, target_id));
             }
@@ -304,6 +311,8 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         }
     }
 
+    reinforce_subgraph_portals(&mut canvas, graph, &portal_slots, graph.direction, &chars);
+
     // Draw boxes AFTER edges (boxes overwrite any edges passing through them)
     for node in &visible_nodes {
         let label = truncate_label(
@@ -343,7 +352,10 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
                         chars.junction_left // ┤
                     };
                     if junction_x < canvas.width && junction_y < canvas.height {
-                        canvas.set(junction_x, junction_y, junction_char);
+                        let existing = canvas.get(junction_x, junction_y);
+                        if existing != ' ' || matches!(junction_char, '├' | '┤') {
+                            canvas.set(junction_x, junction_y, junction_char);
+                        }
                     }
                 }
             }
@@ -565,9 +577,9 @@ struct PortalSlots {
     right: HashSet<usize>,
 }
 
-fn carve_subgraph_portals_on_canvas(canvas: &mut Canvas, graph: &Graph, direction: Direction) {
+fn collect_portal_slots(graph: &Graph, direction: Direction) -> HashMap<String, PortalSlots> {
     // Collect portal coordinates per subgraph for edges that cross boundaries.
-    let mut slots: HashMap<&str, PortalSlots> = HashMap::new();
+    let mut slots: HashMap<String, PortalSlots> = HashMap::new();
 
     for edge in &graph.edges {
         if graph.get_node(&edge.from).is_none() || graph.get_node(&edge.to).is_none() {
@@ -585,56 +597,74 @@ fn carve_subgraph_portals_on_canvas(canvas: &mut Canvas, graph: &Graph, directio
         match direction {
             Direction::TD | Direction::TB => {
                 if let Some(id) = to_sg {
-                    if let Some((entry, _)) = subgraph_ports_for(graph, id, direction) {
-                        slots.entry(id).or_default().top.insert(entry.x);
+                    if let Some(node) = graph.get_node(&edge.to) {
+                        slots.entry(id.to_string()).or_default().top.insert(node.center_x());
                     }
                 }
                 if let Some(id) = from_sg {
-                    if let Some((_, exit)) = subgraph_ports_for(graph, id, direction) {
-                        slots.entry(id).or_default().bottom.insert(exit.x);
+                    let exit_x = graph
+                        .get_node(&edge.to)
+                        .map(|n| n.center_x())
+                        .or_else(|| graph.get_node(&edge.from).map(|n| n.center_x()));
+                    if let Some(x) = exit_x {
+                        slots.entry(id.to_string()).or_default().bottom.insert(x);
                     }
                 }
             }
             Direction::BT => {
                 if let Some(id) = to_sg {
-                    if let Some((_, exit)) = subgraph_ports_for(graph, id, direction) {
-                        slots.entry(id).or_default().bottom.insert(exit.x);
+                    if let Some(node) = graph.get_node(&edge.to) {
+                        slots.entry(id.to_string()).or_default().bottom.insert(node.center_x());
                     }
                 }
                 if let Some(id) = from_sg {
-                    if let Some((entry, _)) = subgraph_ports_for(graph, id, direction) {
-                        slots.entry(id).or_default().top.insert(entry.x);
+                    let exit_x = graph
+                        .get_node(&edge.to)
+                        .map(|n| n.center_x())
+                        .or_else(|| graph.get_node(&edge.from).map(|n| n.center_x()));
+                    if let Some(x) = exit_x {
+                        slots.entry(id.to_string()).or_default().top.insert(x);
                     }
                 }
             }
             Direction::LR => {
                 if let Some(id) = to_sg {
-                    if let Some((entry, _)) = subgraph_ports_for(graph, id, direction) {
-                        slots.entry(id).or_default().left.insert(entry.y);
+                    if let Some(node) = graph.get_node(&edge.to) {
+                        slots.entry(id.to_string()).or_default().left.insert(node.center_y());
                     }
                 }
                 if let Some(id) = from_sg {
-                    if let Some((_, exit)) = subgraph_ports_for(graph, id, direction) {
-                        slots.entry(id).or_default().right.insert(exit.y);
+                    if let Some(node) = graph.get_node(&edge.from) {
+                        slots.entry(id.to_string()).or_default().right.insert(node.center_y());
                     }
                 }
             }
             Direction::RL => {
                 if let Some(id) = to_sg {
-                    if let Some((_, exit)) = subgraph_ports_for(graph, id, direction) {
-                        slots.entry(id).or_default().right.insert(exit.y);
+                    if let Some(node) = graph.get_node(&edge.to) {
+                        slots.entry(id.to_string()).or_default().right.insert(node.center_y());
                     }
                 }
                 if let Some(id) = from_sg {
-                    if let Some((entry, _)) = subgraph_ports_for(graph, id, direction) {
-                        slots.entry(id).or_default().left.insert(entry.y);
+                    if let Some(node) = graph.get_node(&edge.from) {
+                        slots.entry(id.to_string()).or_default().left.insert(node.center_y());
                     }
                 }
             }
         }
     }
 
-    for (sg_id, portals) in slots {
+    slots
+}
+
+fn carve_subgraph_portals_on_canvas(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    direction: Direction,
+) -> HashMap<String, PortalSlots> {
+    let slots = collect_portal_slots(graph, direction);
+
+    for (sg_id, portals) in &slots {
         let Some(sg) = graph.get_subgraph(sg_id) else {
             continue;
         };
@@ -665,6 +695,64 @@ fn carve_subgraph_portals_on_canvas(canvas: &mut Canvas, graph: &Graph, directio
             carve_horizontal_slot(canvas, py, &[right_x.saturating_sub(1), right_x]);
         }
     }
+
+    slots
+}
+
+fn reinforce_subgraph_portals(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    slots: &HashMap<String, PortalSlots>,
+    direction: Direction,
+    chars: &StyleChars,
+) {
+    for (sg_id, portals) in slots {
+        let Some(sg) = graph.get_subgraph(sg_id) else {
+            continue;
+        };
+        let bounds = &sg.bounds;
+        if !bounds.is_valid() {
+            continue;
+        }
+
+        let top_y = bounds.y;
+        let bottom_y = bounds.y + bounds.height.saturating_sub(1);
+        let left_x = bounds.x;
+        let right_x = bounds.x + bounds.width.saturating_sub(1);
+
+        match direction {
+            Direction::TD | Direction::TB => {
+                for &x in &portals.bottom {
+                    let px = clamp_horizontal(bounds, x);
+                    if bottom_y < canvas.height && !is_textual(canvas.get(px, bottom_y)) {
+                        canvas.set(px, bottom_y, chars.edge_v);
+                    }
+                }
+            }
+            Direction::BT => {
+                for &x in &portals.top {
+                    let px = clamp_horizontal(bounds, x);
+                    if top_y < canvas.height && !is_textual(canvas.get(px, top_y)) {
+                        canvas.set(px, top_y, chars.edge_v);
+                    }
+                }
+            }
+            Direction::LR | Direction::RL => {
+                for &y in &portals.left {
+                    let py = clamp_vertical(bounds, y);
+                    if left_x < canvas.width && !is_textual(canvas.get(left_x, py)) {
+                        canvas.set(left_x, py, chars.edge_h);
+                    }
+                }
+                for &y in &portals.right {
+                    let py = clamp_vertical(bounds, y);
+                    if right_x < canvas.width && !is_textual(canvas.get(right_x, py)) {
+                        canvas.set(right_x, py, chars.edge_h);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn clamp_horizontal(bounds: &crate::graph::Rectangle, x: usize) -> usize {
@@ -685,43 +773,6 @@ fn clamp_vertical(bounds: &crate::graph::Rectangle, y: usize) -> usize {
     } else {
         y.clamp(min, max)
     }
-}
-
-fn subgraph_ports_for(graph: &Graph, sg_id: &str, direction: Direction) -> Option<(Point, Point)> {
-    let sg = graph.get_subgraph(sg_id)?;
-    Some(subgraph_ports(&sg.bounds, direction, sg.title.as_deref()))
-}
-
-fn subgraph_ports(
-    bounds: &crate::graph::Rectangle,
-    direction: Direction,
-    title: Option<&str>,
-) -> (Point, Point) {
-    let cx = subgraph_port_center(bounds, title);
-    let cy = bounds.y + bounds.height / 2;
-    match direction {
-        Direction::TD | Direction::TB => (
-            Point::new(cx, bounds.y.saturating_add(1)),
-            Point::new(cx, bounds.y + bounds.height.saturating_sub(2)),
-        ),
-        Direction::BT => (
-            Point::new(cx, bounds.y + bounds.height.saturating_sub(2)),
-            Point::new(cx, bounds.y.saturating_add(1)),
-        ),
-        Direction::LR => (
-            Point::new(bounds.x, cy),
-            Point::new(bounds.x + bounds.width.saturating_sub(1), cy),
-        ),
-        Direction::RL => (
-            Point::new(bounds.x + bounds.width.saturating_sub(1), cy),
-            Point::new(bounds.x, cy),
-        ),
-    }
-}
-
-fn subgraph_port_center(bounds: &crate::graph::Rectangle, title: Option<&str>) -> usize {
-    let _ = title;
-    bounds.x + bounds.width / 2
 }
 
 fn carve_vertical_slot(canvas: &mut Canvas, x: usize, candidates: &[usize]) {
@@ -784,14 +835,36 @@ fn draw_edge_label(
 
             // For straight edges (aligned), place label in middle of vertical span
             // For L-shaped edges, place after junction
-            let label_y = if src_center_x == edge_x {
-                // Straight edge: place label in middle of vertical span
-                stem_start_y + (arrow_y.saturating_sub(stem_start_y)) / 2
+            let mut label_y = if src_center_x == edge_x {
+                let span = arrow_y.saturating_sub(stem_start_y);
+                let mid = stem_start_y + span / 2;
+                let lower = stem_start_y.saturating_add(1);
+                let upper = arrow_y.saturating_sub(2);
+                let mut y = stem_start_y.saturating_add(1).max(mid);
+                if lower <= upper {
+                    y = y.max(lower).min(upper);
+                } else {
+                    y = arrow_y.saturating_sub(1);
+                }
+                y
             } else {
-                // L-shaped: use junction-based positioning
+                // L-shaped: place just below the junction
                 let junction_y = stem_start_y + STEM_LENGTH_VERTICAL;
-                junction_y + EDGE_JUNCTION_HEIGHT
+                junction_y.saturating_add(1)
             };
+
+            // Avoid overwriting borders/text (e.g., subgraph labels). If the chosen row
+            // is textual, nudge the label down until we hit a free edge row before the arrow.
+            while label_y > stem_start_y && label_y < arrow_y && label_y < canvas.height {
+                if !is_textual(canvas.get(edge_x, label_y)) {
+                    break;
+                }
+                label_y += 1;
+            }
+            if label_y + 1 < arrow_y {
+                label_y = arrow_y.saturating_sub(1);
+            }
+            label_y = label_y.min(arrow_y.saturating_sub(1));
 
             // Center the label around the edge position
             let label_start_x = edge_x.saturating_sub(label_width / 2);
@@ -823,8 +896,7 @@ fn draw_edge_label(
             } else {
                 // L-shaped: use junction-based positioning
                 stem_start_y
-                    .saturating_sub(STEM_LENGTH_VERTICAL)
-                    .saturating_sub(EDGE_JUNCTION_HEIGHT)
+                    .saturating_sub(STEM_LENGTH_VERTICAL.saturating_add(1))
             };
 
             let label_start_x = edge_x.saturating_sub(label_width / 2);

@@ -139,7 +139,7 @@ impl OrientedCoords {
         match (self.direction, going_before) {
             (Direction::TD | Direction::TB, true) => style.corner_ur, // down then left
             (Direction::TD | Direction::TB, false) => style.corner_ul, // down then right
-            (Direction::LR, true) => style.corner_dl,                 // └ (right to up)
+            (Direction::LR, true) => style.corner_dl,                 // ┌ (right to up)
             (Direction::LR, false) => style.corner_ul,                // ┌ (right to down)
             (Direction::RL, true) => style.corner_dr,                 // ┘ (left to up)
             (Direction::RL, false) => style.corner_ur,                // ┐ (left to down)
@@ -154,7 +154,7 @@ impl OrientedCoords {
         match (self.direction, coming_from_before) {
             (Direction::TD | Direction::TB, true) => style.corner_dl, // left to down
             (Direction::TD | Direction::TB, false) => style.corner_dr, // right to down
-            (Direction::LR, true) => style.corner_ur,                 // ┐ (up to right)
+            (Direction::LR, true) => style.corner_ur,                 // ┘ (up to right)
             (Direction::LR, false) => style.corner_dr,                // ┘ (down to right)
             (Direction::RL, true) => style.corner_ul,                 // ┌ (up to left)
             (Direction::RL, false) => style.corner_dl,                // └ (down to left)
