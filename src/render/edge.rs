@@ -8,6 +8,7 @@ use crate::orientation::{is_before, OrientedCoords};
 use crate::style::{StyleChars, BOX_HEIGHT, STEM_LENGTH_HORIZONTAL, STEM_LENGTH_VERTICAL};
 
 use super::canvas::{is_junction, Canvas};
+use super::is_textual;
 
 /// Route edges from a single source to multiple targets (divergence)
 /// Works for all orientations using the abstraction layer
@@ -17,7 +18,7 @@ pub fn route_divergent_edges(
     canvas: &mut Canvas,
     style: &StyleChars,
     direction: Direction,
-    _graph: &Graph,
+    graph: &Graph,
 ) {
     if to_nodes.is_empty() || !canvas.is_visible(from) {
         return;
@@ -68,7 +69,30 @@ pub fn route_divergent_edges(
             target_positions[0].1,
             target_positions[0].2,
         );
+
         let (arrow_x, arrow_y) = edge_entry_point(target, direction);
+
+        if matches!(direction, Direction::TD | Direction::TB) {
+            let from_sg = graph.get_node_subgraph(&from.id);
+            let to_sg = graph.get_node_subgraph(&target.id);
+            if from_sg != to_sg {
+                if route_cross_subgraph_td(
+                    from,
+                    target,
+                    stem_start_x,
+                    stem_start_y,
+                    arrow_x,
+                    arrow_y,
+                    canvas,
+                    style,
+                    graph,
+                ) {
+                    canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
+                    return;
+                }
+            }
+        }
+
         if debug_timing {
             eprintln!(
                 "  single target centers ({},{}) -> ({},{})",
@@ -90,50 +114,185 @@ pub fn route_divergent_edges(
                 canvas,
                 style,
             );
+            if matches!(direction, Direction::TD | Direction::TB) {
+                if let (Some(from_sg), Some(to_sg)) =
+                    (graph.get_node_subgraph(&from.id), graph.get_node_subgraph(&target.id))
+                {
+                    if from_sg != to_sg {
+                        if let Some(sg) = graph.get_subgraph(to_sg) {
+                            let border_y = sg.bounds.y;
+                            if arrow_x < canvas.width && border_y < canvas.height {
+                                canvas.set_edge_char(arrow_x, border_y, style.junction_down, style);
+                            }
+                        }
+                    }
+                }
+            }
         } else {
             // L-shaped route
-            // 1. Stem from source
-            draw_line_primary(
-                stem_start_x,
-                stem_start_y,
-                junction_x,
-                junction_y,
-                &coords,
-                canvas,
-                style,
-            );
-
-            // 2. Turn at junction
             let going_before = is_before(src_secondary, target_secondary);
-            let corner = coords.corner_start_to_secondary(going_before, style);
-            canvas.set(junction_x, junction_y, corner);
 
-            // 3. Secondary span to target column
-            let (bend_x, bend_y) = coords.with_secondary(junction_x, junction_y, target_secondary);
-            draw_line_secondary(
-                junction_x, junction_y, bend_x, bend_y, &coords, canvas, style,
-            );
+            // Horizontal layouts look cleaner when we turn toward the row first, then
+            // travel horizontally to the target.
+            if matches!(direction, Direction::LR | Direction::RL) {
+                // If the target sits above/below the source, go vertical first so the
+                // corner hugs the target row instead of floating off the junction stem.
+                if target_secondary != src_secondary {
+                    let (bend_x, bend_y) =
+                        coords.with_secondary(stem_start_x, stem_start_y, target_secondary);
 
-            // 4. Turn to target
-            let corner2 = coords.corner_secondary_to_end(going_before, style);
-            canvas.set_edge_char(bend_x, bend_y, corner2, style);
+                    // Vertical segment to target row
+                    draw_line_secondary(
+                        stem_start_x,
+                        stem_start_y,
+                        bend_x,
+                        bend_y,
+                        &coords,
+                        canvas,
+                        style,
+                    );
 
-            // 5. Final segment to arrow
-            let (seg_start_x, seg_start_y) = coords.advance(bend_x, bend_y, 1);
-            draw_line_primary(
-                seg_start_x,
-                seg_start_y,
-                arrow_x,
-                arrow_y,
-                &coords,
-                canvas,
-                style,
-            );
+                    // Turn toward the target column
+                    let corner = match direction {
+                        Direction::LR => style.corner_dl, // up then right
+                        Direction::RL => style.corner_dr, // up then left
+                        _ => unreachable!(),
+                    };
+                    canvas.set_edge_char(bend_x, bend_y, corner, style);
+
+                    // Final horizontal run to the arrow
+                    let (seg_start_x, seg_start_y) = coords.advance(bend_x, bend_y, 1);
+                    draw_line_primary(
+                        seg_start_x,
+                        seg_start_y,
+                        arrow_x,
+                        arrow_y,
+                        &coords,
+                        canvas,
+                        style,
+                    );
+                    canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
+                    return;
+                }
+
+                let (bend_x, bend_y) =
+                    coords.with_secondary(stem_start_x, stem_start_y, target_secondary);
+
+                // Move vertically first
+                draw_line_secondary(
+                    stem_start_x,
+                    stem_start_y,
+                    bend_x,
+                    bend_y,
+                    &coords,
+                    canvas,
+                    style,
+                );
+
+                // Turn toward the target column
+                let corner = coords.corner_secondary_to_end(going_before, style);
+                canvas.set_edge_char(bend_x, bend_y, corner, style);
+
+                // Final horizontal run to the arrow
+                let (seg_start_x, seg_start_y) = coords.advance(bend_x, bend_y, 1);
+                draw_line_primary(
+                    seg_start_x,
+                    seg_start_y,
+                    arrow_x,
+                    arrow_y,
+                    &coords,
+                    canvas,
+                    style,
+                );
+            } else {
+                // 1. Stem from source
+                draw_line_primary(
+                    stem_start_x,
+                    stem_start_y,
+                    junction_x,
+                    junction_y,
+                    &coords,
+                    canvas,
+                    style,
+                );
+
+                // 2. Turn at junction
+                let corner = coords.corner_start_to_secondary(going_before, style);
+                canvas.set(junction_x, junction_y, corner);
+
+                // 3. Secondary span to target column
+                let (bend_x, bend_y) =
+                    coords.with_secondary(junction_x, junction_y, target_secondary);
+                draw_line_secondary(
+                    junction_x, junction_y, bend_x, bend_y, &coords, canvas, style,
+                );
+
+                // 4. Turn to target
+                let corner2 = coords.corner_secondary_to_end(going_before, style);
+                canvas.set_edge_char(bend_x, bend_y, corner2, style);
+
+                // 5. Final segment to arrow
+                let (seg_start_x, seg_start_y) = coords.advance(bend_x, bend_y, 1);
+                draw_line_primary(
+                    seg_start_x,
+                    seg_start_y,
+                    arrow_x,
+                    arrow_y,
+                    &coords,
+                    canvas,
+                    style,
+                );
+            }
         }
 
         // Arrow at target
         canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
+
+        // If the edge exits a subgraph boundary (TD/TB), stamp a junction on the border
+        // so the vertical line visually pierces the container instead of leaving a gap.
+        if matches!(direction, Direction::TD | Direction::TB) {
+            if let Some(from_sg) = graph.get_node_subgraph(&from.id) {
+                if graph.get_node_subgraph(&target.id) != Some(from_sg) {
+                    if let Some(sg) = graph.get_subgraph(from_sg) {
+                        let border_y = sg.bounds.y + sg.bounds.height.saturating_sub(1);
+                        if arrow_x < canvas.width && border_y < canvas.height {
+                            canvas.set_edge_char(arrow_x, border_y, style.junction_down, style);
+                        }
+                    }
+                }
+            }
+        }
         return;
+    }
+
+    // Fan-out into a single subgraph: route to the subgraph interior before splitting
+    // so junctions sit inside the container rather than on its border.
+    if matches!(direction, Direction::TD | Direction::TB) {
+        if let Some(target_sg_id) = target_positions
+            .first()
+            .and_then(|(_, _, n)| graph.get_node_subgraph(&n.id))
+        {
+            let source_sg = graph.get_node_subgraph(&from.id);
+            let all_targets_same_sg = target_positions.iter().all(|(_, _, n)| {
+                graph.get_node_subgraph(&n.id) == Some(target_sg_id)
+            });
+
+            if all_targets_same_sg && source_sg != Some(target_sg_id) {
+                if let Some(sg) = graph.get_subgraph(target_sg_id) {
+                    if sg.bounds.is_valid() {
+                        route_fanout_into_subgraph_td(
+                            from,
+                            &target_positions,
+                            canvas,
+                            style,
+                            sg,
+                            direction,
+                        );
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     // Multiple targets: draw branching structure
@@ -156,43 +315,55 @@ pub fn route_divergent_edges(
     );
     let src_secondary = coords.secondary_coord(src_x, src_y);
 
-    let span_start = first_secondary.min(src_secondary);
-    let span_end = last_secondary.max(src_secondary);
+    let span_start = first_secondary;
+    let span_end = last_secondary;
+
+    // If the source column sits on the edge of the span, nudge the junction inward
+    // so the bar keeps corners at both ends.
+    let mut junction_secondary = src_secondary;
+    if span_end > span_start {
+        if junction_secondary == span_start {
+            junction_secondary = span_start + 1;
+        } else if junction_secondary == span_end {
+            junction_secondary = span_end - 1;
+        }
+    }
 
     // 3. Draw horizontal junction span with corners and junction
+    let (start_corner, end_corner) = match direction {
+        Direction::TD | Direction::TB => (style.corner_dl, style.corner_dr),
+        Direction::BT => (style.corner_dl, style.corner_dr),
+        Direction::LR => (style.corner_dl, style.corner_dr),
+        Direction::RL => (style.corner_dr, style.corner_dl),
+    };
     for pos in span_start..=span_end {
         let (span_x, span_y) = coords.with_secondary(junction_x, junction_y, pos);
 
-        let c = if pos == src_secondary {
+        let c = if pos == junction_secondary {
             // Junction at source position - stem meets vertical span
-            // For LR: stem comes from LEFT, span goes UP/DOWN → ┤ (junction_left)
-            // For RL: stem comes from RIGHT, span goes UP/DOWN → ├ (junction_right)
             match direction {
-                Direction::TD | Direction::TB => style.junction_up, // ┴
-                Direction::LR => style.junction_left,               // ┤
-                Direction::RL => style.junction_right,              // ├
-                Direction::BT => style.junction_down,               // ┬
+                Direction::TD | Direction::TB => style.junction_up,    // ┴
+                Direction::LR => style.junction_right,                // ├
+                Direction::RL => style.junction_left,                 // ┤
+                Direction::BT => style.junction_up,                   // ┴ (stem below, branches above)
             }
         } else if pos == span_start {
             // Corner at top/left end of span
-            match direction {
-                Direction::TD | Direction::TB => style.corner_dl, // ┌ (opens down-right)
-                Direction::LR => style.corner_dl, // ┌ (opens down-right for vertical span)
-                Direction::RL => style.corner_dr, // ┐ (opens down-left for vertical span)
-                Direction::BT => style.corner_ul, // └ (opens up-right)
-            }
+            start_corner
         } else if pos == span_end {
             // Corner at bottom/right end of span
-            match direction {
-                Direction::TD | Direction::TB => style.corner_dr, // ┐ (opens down-left)
-                Direction::LR => style.corner_ul, // └ (opens up-right for vertical span)
-                Direction::RL => style.corner_ur, // ┘ (opens up-left for vertical span)
-                Direction::BT => style.corner_ur, // ┘ (opens up-left)
-            }
+            end_corner
         } else {
             coords.secondary_edge_char(style)
         };
         canvas.set_edge_char(span_x, span_y, c, style);
+    }
+
+    // Connect the source column to the adjusted junction column if we nudged it.
+    if junction_secondary != src_secondary {
+        let (sx, sy) = coords.with_secondary(junction_x, junction_y, src_secondary);
+        let (jx, jy) = coords.with_secondary(junction_x, junction_y, junction_secondary);
+        draw_line_secondary(sx, sy, jx, jy, &coords, canvas, style);
     }
 
     // 4. Draw drops and arrows for each target
@@ -220,6 +391,248 @@ pub fn route_divergent_edges(
         // Arrow
         canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
     }
+
+    // Reinforce clean corners at the ends of the span so drops don’t turn them into tees.
+    let (start_pos_x, start_pos_y) = coords.with_secondary(junction_x, junction_y, span_start);
+    let (end_pos_x, end_pos_y) = coords.with_secondary(junction_x, junction_y, span_end);
+    if span_start != junction_secondary {
+        canvas.set(start_pos_x, start_pos_y, start_corner);
+    }
+    if span_end != junction_secondary {
+        canvas.set(end_pos_x, end_pos_y, end_corner);
+    }
+}
+
+fn route_fanout_into_subgraph_td(
+    from: &Node,
+    targets: &[(usize, usize, &Node)],
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    sg: &crate::graph::Subgraph,
+    direction: Direction,
+) {
+    let coords = OrientedCoords::new(direction);
+    let (stem_start_x, stem_start_y) = edge_exit_point(from, direction);
+
+    let portal_center = sg.bounds.x + sg.bounds.width / 2;
+    let min_target_x = targets.iter().map(|(x, _, _)| *x).min().unwrap_or(portal_center);
+    let max_target_x = targets.iter().map(|(x, _, _)| *x).max().unwrap_or(portal_center);
+    let junction_x = if stem_start_x >= min_target_x && stem_start_x <= max_target_x {
+        stem_start_x
+    } else {
+        portal_center.clamp(min_target_x, max_target_x)
+    };
+
+    let portal_y = sg.bounds.y.saturating_add(1);
+    let min_arrow_y = targets
+        .iter()
+        .map(|(_, _, t)| edge_entry_point(t, direction).1)
+        .min()
+        .unwrap_or(portal_y.saturating_add(2));
+
+    // Leave a dedicated spine row before the split so the center column is visible,
+    // and keep the split above the arrow row.
+    let delta = min_arrow_y.saturating_sub(portal_y);
+    let mut junction_y = portal_y.saturating_add(delta / 2);
+    if junction_y >= min_arrow_y {
+        junction_y = min_arrow_y.saturating_sub(1);
+    }
+
+    // Align horizontally to the subgraph center before dropping in.
+    if stem_start_x != junction_x {
+        let (hx0, hx1) = if stem_start_x < junction_x {
+            (stem_start_x, junction_x)
+        } else {
+            (junction_x, stem_start_x)
+        };
+        for x in hx0..=hx1 {
+            canvas.set_edge_char(x, stem_start_y, style.edge_h, style);
+        }
+        let corner = if junction_x > stem_start_x {
+            style.corner_dr
+        } else {
+            style.corner_dl
+        };
+        canvas.set_edge_char(junction_x, stem_start_y, corner, style);
+    } else {
+        canvas.set_edge_char(
+            junction_x,
+            stem_start_y,
+            coords.primary_edge_char(style),
+            style,
+        );
+    }
+
+    // Vertical spine down into the subgraph (including the portal row)
+    if stem_start_y < junction_y {
+        for y in (stem_start_y + 1)..=junction_y {
+            canvas.set_edge_char(junction_x, y, coords.primary_edge_char(style), style);
+        }
+    }
+
+    let mut sorted_targets = targets.to_vec();
+    sorted_targets.sort_by_key(|(x, y, _)| coords.secondary_coord(*x, *y));
+
+    let first_secondary = coords.secondary_coord(sorted_targets[0].0, sorted_targets[0].1);
+    let last_secondary = coords.secondary_coord(
+        sorted_targets[sorted_targets.len() - 1].0,
+        sorted_targets[sorted_targets.len() - 1].1,
+    );
+    let junction_secondary = coords.secondary_coord(junction_x, junction_y);
+
+    // Draw a visible spine row just above the junction.
+    if junction_y > portal_y {
+        let spine_y = junction_y.saturating_sub(1);
+        canvas.set_edge_char(junction_x, spine_y, coords.primary_edge_char(style), style);
+    }
+
+    let span_start = first_secondary.min(junction_secondary);
+    let span_end = last_secondary.max(junction_secondary);
+
+    for pos in span_start..=span_end {
+        let (span_x, span_y) = coords.with_secondary(junction_x, junction_y, pos);
+        let c = if pos == junction_secondary {
+            match direction {
+                Direction::TD | Direction::TB => style.junction_up,
+                Direction::LR => style.junction_left,
+                Direction::RL => style.junction_right,
+                Direction::BT => style.junction_down,
+            }
+        } else if pos == span_start {
+            match direction {
+                Direction::TD | Direction::TB => style.corner_dl,
+                Direction::LR => style.corner_dl,
+                Direction::RL => style.corner_dr,
+                Direction::BT => style.corner_ul,
+            }
+        } else if pos == span_end {
+            match direction {
+                Direction::TD | Direction::TB => style.corner_dr,
+                Direction::LR => style.corner_ul,
+                Direction::RL => style.corner_ur,
+                Direction::BT => style.corner_ur,
+            }
+        } else {
+            coords.secondary_edge_char(style)
+        };
+        canvas.set_edge_char(span_x, span_y, c, style);
+    }
+
+    for (target_x, target_y, target) in &sorted_targets {
+        let target_secondary = coords.secondary_coord(*target_x, *target_y);
+        let (arrow_x, arrow_y) = edge_entry_point(target, direction);
+        let (drop_x, drop_y) = coords.with_secondary(junction_x, junction_y, target_secondary);
+        let (drop_start_x, drop_start_y) = coords.advance(drop_x, drop_y, 1);
+        if drop_start_x != arrow_x || drop_start_y != arrow_y {
+            draw_line_primary(
+                drop_start_x,
+                drop_start_y,
+                arrow_x,
+                arrow_y,
+                &coords,
+                canvas,
+                style,
+            );
+        }
+
+        canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
+    }
+}
+
+fn route_convergent_from_subgraph_td(
+    sources: &[&Node],
+    target: &Node,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    sg: &crate::graph::Subgraph,
+    direction: Direction,
+) {
+    let coords = OrientedCoords::new(direction);
+    let (target_x, target_y) = get_node_center(target);
+    let (arrow_x, arrow_y) = edge_entry_point(target, direction);
+
+    // Merge just above the bottom border of the subgraph so the exit passes
+    // through the center portal instead of cluttering the border line.
+    let max_exit_y = sources
+        .iter()
+        .map(|n| edge_exit_point(n, direction).1)
+        .max()
+        .unwrap_or(0);
+    let bottom_limit = sg.bounds.y + sg.bounds.height.saturating_sub(1);
+    let mut merge_y = sg.bounds.y + sg.bounds.height.saturating_sub(2);
+    merge_y = merge_y.max(max_exit_y.saturating_add(1));
+    if merge_y >= bottom_limit {
+        merge_y = bottom_limit.saturating_sub(1);
+    }
+    let merge_x = arrow_x;
+
+    let mut source_positions: Vec<(usize, usize, &Node)> = sources
+        .iter()
+        .map(|n| {
+            let (sx, sy) = get_node_center(n);
+            (sx, sy, *n)
+        })
+        .collect();
+    source_positions.sort_by_key(|(x, y, _)| coords.secondary_coord(*x, *y));
+
+    let target_secondary = coords.secondary_coord(target_x, target_y);
+    let (span_start, span_end) = draw_source_lines_to_merge(
+        &source_positions,
+        merge_x,
+        merge_y,
+        &coords,
+        canvas,
+        style,
+        direction,
+    );
+
+    let final_span_start = span_start.min(target_secondary);
+    let final_span_end = span_end.max(target_secondary);
+
+    draw_merge_line(
+        merge_x,
+        merge_y,
+        final_span_start,
+        final_span_end,
+        &coords,
+        canvas,
+        style,
+    );
+
+    // Keep merge-bar ends as corners for BT so the center tee stands out.
+    if matches!(direction, Direction::BT) {
+        let (sx, sy) = coords.with_secondary(merge_x, merge_y, final_span_start);
+        let (ex, ey) = coords.with_secondary(merge_x, merge_y, final_span_end);
+        canvas.set(sx, sy, style.corner_ul);
+        canvas.set(ex, ey, style.corner_ur);
+    }
+
+    let junction_char = match direction {
+        Direction::TD | Direction::TB => style.junction_down,
+        Direction::LR => style.junction_right,
+        Direction::RL => style.junction_left,
+        Direction::BT => style.junction_up,
+    };
+    canvas.set(merge_x, merge_y, junction_char);
+
+    let (start_x, start_y) = coords.advance(merge_x, merge_y, 1);
+    draw_line_primary(
+        start_x,
+        start_y,
+        arrow_x,
+        arrow_y,
+        &coords,
+        canvas,
+        style,
+    );
+
+    // Ensure the exit through the subgraph border stays a clean vertical line.
+    let border_y = sg.bounds.y + sg.bounds.height.saturating_sub(1);
+    if merge_x < canvas.width && border_y < canvas.height {
+        canvas.set(merge_x, border_y, style.edge_v);
+    }
+
+    canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
 }
 
 // Helper: Draw lines from sources to merge point (on primary axis)
@@ -249,37 +662,66 @@ fn draw_source_lines_to_merge(
         // Draw line from source to merge span (direction-aware)
         match direction {
             Direction::TD | Direction::TB => {
-                // Vertical layout: draw vertical line
-                if edge_y < merge_col_y {
-                    for y in edge_y..merge_col_y {
-                        canvas.set_edge_char(src_x, y, style.edge_v, style);
-                    }
+                // Vertical layout: draw vertical line between source edge and merge row
+                let (start, end) = if edge_y <= merge_col_y {
+                    (edge_y, merge_col_y)
+                } else {
+                    (merge_col_y, edge_y)
+                };
+                for y in start..end {
+                    canvas.set_edge_char(src_x, y, style.edge_v, style);
                 }
             }
             Direction::LR => {
-                // LR layout: draw horizontal line from source right edge to merge column
-                if edge_x < merge_col_x {
-                    for x in edge_x..merge_col_x {
-                        canvas.set_edge_char(x, src_y, style.edge_h, style);
-                    }
+                // LR layout: draw horizontal line between source right edge and merge column
+                let (start, end) = if edge_x <= merge_col_x {
+                    (edge_x, merge_col_x)
+                } else {
+                    (merge_col_x, edge_x)
+                };
+                for x in start..end {
+                    canvas.set_edge_char(x, src_y, style.edge_h, style);
                 }
             }
             Direction::RL => {
-                // RL layout: draw horizontal line from source left edge to merge column
-                if merge_col_x < edge_x {
-                    for x in (merge_col_x + 1)..=edge_x {
-                        canvas.set_edge_char(x, src_y, style.edge_h, style);
-                    }
+                // RL layout: draw horizontal line between source left edge and merge column
+                let (start, end) = if merge_col_x <= edge_x {
+                    (merge_col_x + 1, edge_x + 1)
+                } else {
+                    (edge_x + 1, merge_col_x + 1)
+                };
+                for x in start..end {
+                    canvas.set_edge_char(x, src_y, style.edge_h, style);
                 }
             }
             Direction::BT => {
-                // BT layout: draw vertical line upward
-                if merge_col_y < edge_y {
-                    for y in (merge_col_y + 1)..=edge_y {
-                        canvas.set_edge_char(src_x, y, style.edge_v, style);
-                    }
+                // BT layout: draw vertical line between source top edge and merge row
+                let (start, end) = if merge_col_y <= edge_y {
+                    (merge_col_y + 1, edge_y + 1)
+                } else {
+                    (edge_y + 1, merge_col_y + 1)
+                };
+                for y in start..end {
+                    canvas.set_edge_char(src_x, y, style.edge_v, style);
                 }
             }
+        }
+
+        // Mark the exit point on the box border to make the junction explicit.
+        match direction {
+            Direction::LR => {
+                let border_x = edge_x.saturating_sub(1);
+                if border_x < canvas.width && src_y < canvas.height {
+                    canvas.set_edge_char(border_x, src_y, style.junction_right, style);
+                }
+            }
+            Direction::RL => {
+                let border_x = edge_x.saturating_add(1);
+                if border_x < canvas.width && src_y < canvas.height {
+                    canvas.set_edge_char(border_x, src_y, style.junction_left, style);
+                }
+            }
+            _ => {}
         }
 
         // Corner where source line meets merge span
@@ -355,12 +797,14 @@ pub fn route_convergent_edges(
     canvas: &mut Canvas,
     style: &StyleChars,
     direction: Direction,
+    graph: &Graph,
 ) {
     if from_nodes.is_empty() || !canvas.is_visible(to) {
         return;
     }
 
     let coords = OrientedCoords::new(direction);
+    let debug = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
 
     // Filter to visible sources
     let visible_sources: Vec<&Node> = from_nodes
@@ -375,13 +819,101 @@ pub fn route_convergent_edges(
     // Get target position
     let (target_x, target_y) = get_node_center(to);
     let (arrow_x, arrow_y) = edge_entry_point(to, direction);
+    if debug {
+        let ids: Vec<&str> = visible_sources.iter().map(|n| n.id.as_str()).collect();
+        eprintln!(
+            "render: convergent -> {} from {:?} merge_base=({}, {})",
+            to.id, ids, arrow_x, arrow_y
+        );
+    }
 
-    // Calculate merge point (before target on primary axis)
+    // Merge inside the source subgraph before exiting when all parents share one.
+    if matches!(direction, Direction::TD | Direction::TB) {
+        if let Some(source_sg_id) = visible_sources
+            .first()
+            .and_then(|n| graph.get_node_subgraph(&n.id))
+        {
+            let target_sg = graph.get_node_subgraph(&to.id);
+            let all_sources_same = visible_sources.iter().all(|n| {
+                graph.get_node_subgraph(&n.id) == Some(source_sg_id)
+            });
+
+            if all_sources_same && target_sg != Some(source_sg_id) {
+                if let Some(sg) = graph.get_subgraph(source_sg_id) {
+                    if sg.bounds.is_valid() {
+                        route_convergent_from_subgraph_td(
+                            &visible_sources,
+                            to,
+                            canvas,
+                            style,
+                            sg,
+                            direction,
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // Calculate merge point. For vertical layouts, merge just after the sources to
+    // keep junctions near the fan-in; for horizontal layouts, merge near sources but
+    // before the target arrow.
     let merge_distance = match direction {
         Direction::LR | Direction::RL => STEM_LENGTH_HORIZONTAL,
         _ => STEM_LENGTH_VERTICAL,
     };
-    let (merge_x, merge_y) = coords.retreat(arrow_x, arrow_y, merge_distance);
+    let (mut merge_x, mut merge_y) = coords.retreat(arrow_x, arrow_y, merge_distance);
+
+    // Track exits along primary axis.
+    let mut min_exit = usize::MAX;
+    let mut max_exit = 0usize;
+    for src in &visible_sources {
+        let (ex, ey) = edge_exit_point(src, direction);
+        let primary = coords.primary_coord(ex, ey);
+        min_exit = min_exit.min(primary);
+        max_exit = max_exit.max(primary);
+    }
+    let mut merge_primary = coords.primary_coord(merge_x, merge_y);
+    let arrow_primary = coords.primary_coord(arrow_x, arrow_y);
+
+    match direction {
+        Direction::LR => {
+            // Merge just to the right of the furthest source, but before the target arrow.
+            let min_merge = max_exit.saturating_add(2);
+            let max_merge = arrow_primary.saturating_sub(1);
+            if min_merge > max_merge {
+                merge_primary = max_merge;
+            } else {
+                merge_primary = merge_primary.max(min_merge);
+                merge_primary = merge_primary.min(max_merge);
+            }
+        }
+        Direction::RL => {
+            // Merge just to the left of the closest source, but after the target arrow.
+            let max_merge = min_exit.saturating_sub(1);
+            let min_merge = arrow_primary.saturating_add(1);
+            if max_merge < min_merge {
+                merge_primary = max_merge;
+            } else {
+                merge_primary = merge_primary.min(max_merge);
+                merge_primary = merge_primary.max(min_merge);
+            }
+        }
+        Direction::TD | Direction::TB => {
+            // Merge just below the lowest source (leave a full row for stems), but above the target.
+            let min_merge = max_exit.saturating_add(1);
+            let limit = arrow_primary.saturating_sub(1);
+            merge_primary = min_merge.min(limit);
+        }
+        Direction::BT => {
+            // Merge just above the highest source (leave a full row for stems), but below the target.
+            let max_merge = min_exit.saturating_sub(1);
+            let limit = arrow_primary.saturating_add(1);
+            merge_primary = max_merge.max(limit);
+        }
+    }
+    coords.set_primary(&mut merge_x, &mut merge_y, merge_primary);
 
     // Get source positions sorted on secondary axis
     let mut source_positions: Vec<(usize, usize, &Node)> = visible_sources
@@ -425,11 +957,20 @@ pub fn route_convergent_edges(
 
     // Junction at merge point and line to target
     // The junction shows where edges from above/below exit toward the target
+    let merge_secondary = coords.secondary_coord(merge_x, merge_y);
     let junction_char = match direction {
-        Direction::TD | Direction::TB => style.junction_down, // ┬ - edges from left/right, exits down
+        Direction::TD | Direction::TB => {
+            if merge_secondary == final_span_start {
+                style.junction_right // ├ - sources are to the right
+            } else if merge_secondary == final_span_end {
+                style.junction_left // ┤ - sources are to the left
+            } else {
+                style.junction_down // ┬ - sources on both sides
+            }
+        }
         Direction::LR => style.junction_right, // ├ - edges from above/below, exits right
         Direction::RL => style.junction_left,  // ┤ - edges from above/below, exits left
-        Direction::BT => style.junction_up,    // ┴ - edges from left/right, exits up
+        Direction::BT => style.junction_down,  // ┬ - edges from left/right, exits up
     };
     canvas.set_edge_char(merge_x, merge_y, junction_char, style);
     let (final_start_x, final_start_y) = coords.advance(merge_x, merge_y, 1);
@@ -540,6 +1081,18 @@ fn is_secondary_line(c: char, coords: &OrientedCoords, style: &StyleChars) -> bo
     c == expected
 }
 
+fn preferred_portal_x(
+    bounds: &crate::graph::Rectangle,
+    _title: Option<&str>,
+    desired: usize,
+    canvas: &Canvas,
+) -> usize {
+    let min = bounds.x.saturating_add(1);
+    let max = bounds.x + bounds.width.saturating_sub(2);
+    let _ = canvas;
+    desired.clamp(min, max)
+}
+
 #[allow(dead_code)]
 fn route_cross_subgraph_td(
     from: &Node,
@@ -570,52 +1123,77 @@ fn route_cross_subgraph_td(
         return false;
     }
 
-    // Enter near the target center, one row below the title/border.
-    let portal_x = to.center_x();
-    let portal_y = sg.bounds.y.saturating_add(1);
+    // Enter at the subgraph portal (bias toward the target center, away from title text).
+    let mut portal_x = preferred_portal_x(&sg.bounds, sg.title.as_deref(), arrow_x, canvas);
+
+    // Track the current drawing cursor (starts at the source exit).
+    let cursor_x = stem_start_x;
+    let mut cursor_y = stem_start_y;
+
+    // Walk to just below the source subgraph border (if any) to keep turns outside.
+    if let Some(src_id) = from_sg {
+        if let Some(src_sg) = graph.get_subgraph(src_id) {
+            let exit_y = src_sg
+                .bounds
+                .y
+                .saturating_add(src_sg.bounds.height.saturating_sub(1));
+            for y in cursor_y..=exit_y {
+                canvas.set_edge_char(cursor_x, y, style.edge_v, style);
+            }
+            cursor_y = exit_y;
+            portal_x = preferred_portal_x(&sg.bounds, sg.title.as_deref(), arrow_x, canvas);
+        }
+    }
+
+    let portal_y = arrow_y
+        .saturating_sub(1)
+        .max(sg.bounds.y.saturating_add(1))
+        .max(cursor_y.saturating_add(1));
     if debug_timing {
         eprintln!(
-            "  cross-subgraph {:?}->{:?} via portal ({}, {})",
-            from.id, to.id, portal_x, portal_y
+            "  cross-subgraph {:?}->{:?} via portal ({}, {}) from ({}, {})",
+            from.id, to.id, portal_x, portal_y, stem_start_x, stem_start_y
         );
     }
 
-    // 1) Horizontal from source edge to portal column (if needed)
-    if portal_x != stem_start_x {
-        let (hx0, hx1) = if stem_start_x < portal_x {
-            (stem_start_x, portal_x)
+    // Turn horizontally just outside the source border if needed.
+    if portal_x != cursor_x {
+        let start_corner = if portal_x > cursor_x {
+            style.corner_ul
         } else {
-            (portal_x, stem_start_x)
+            style.corner_ur
+        };
+        canvas.set_edge_char(cursor_x, cursor_y, start_corner, style);
+
+        let (hx0, hx1) = if portal_x > cursor_x {
+            (cursor_x + 1, portal_x.saturating_sub(1))
+        } else {
+            (portal_x + 1, cursor_x.saturating_sub(1))
         };
         for x in hx0..=hx1 {
-            canvas.set_edge_char(x, stem_start_y, style.edge_h, style);
+            canvas.set_edge_char(x, cursor_y, style.edge_h, style);
         }
-        let corner = if portal_x > stem_start_x {
+
+        let end_corner = if portal_x > cursor_x {
             style.corner_dr
         } else {
             style.corner_dl
         };
-        canvas.set_edge_char(portal_x, stem_start_y, corner, style);
+        canvas.set_edge_char(portal_x, cursor_y, end_corner, style);
     }
 
-    // 2) Vertical down to portal row (stop before border/title)
-    if portal_y > stem_start_y {
-        for y in (stem_start_y + 1)..=portal_y {
+    if portal_y > cursor_y {
+        let start_y = if portal_x == cursor_x {
+            cursor_y
+        } else {
+            cursor_y.saturating_add(1)
+        };
+        for y in start_y..=portal_y {
             canvas.set_edge_char(portal_x, y, style.edge_v, style);
         }
     }
 
-    // 3) Vertical from portal row to target arrow (same column)
-    let (vy0, vy1) = if portal_y < arrow_y {
-        (portal_y, arrow_y)
-    } else {
-        (arrow_y, portal_y)
-    };
-    for y in vy0..=vy1 {
-        canvas.set_edge_char(portal_x, y, style.edge_v, style);
-    }
-
-    // If portal_x differs from arrow_x, bridge horizontally at arrow row
+    // Bridge to the arrow column if needed.
     if portal_x != arrow_x {
         let corner = if portal_x < arrow_x {
             style.corner_ul
@@ -632,6 +1210,27 @@ fn route_cross_subgraph_td(
         for x in hx0..=hx1 {
             canvas.set_edge_char(x, arrow_y, style.edge_h, style);
         }
+    } else if arrow_y > portal_y {
+        for y in (portal_y + 1)..=arrow_y {
+            canvas.set_edge_char(portal_x, y, style.edge_v, style);
+        }
+    }
+
+    // Reinstate clean verticals on pierced borders to avoid junction artifacts.
+    if let Some(src_sg_id) = from_sg {
+        if let Some(src_sg) = graph.get_subgraph(src_sg_id) {
+            let border_y = src_sg.bounds.y + src_sg.bounds.height.saturating_sub(1);
+            if portal_x < canvas.width && border_y < canvas.height {
+                canvas.set_edge_char(cursor_x, border_y, style.edge_v, style);
+            }
+        }
+    }
+    let tgt_border_y = sg.bounds.y;
+    if portal_x < canvas.width
+        && tgt_border_y < canvas.height
+        && !is_textual(canvas.get(portal_x, tgt_border_y))
+    {
+        canvas.set_edge_char(portal_x, tgt_border_y, style.edge_v, style);
     }
 
     true

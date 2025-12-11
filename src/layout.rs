@@ -191,6 +191,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         input.graph,
         &subgraph_bounds,
     );
+    // No additional carving for fan-outs; deterministic lanes are built during routing.
     mark_subgraph_rings(&mut grid, &subgraph_bounds);
     carve_subgraph_portals(
         &mut grid,
@@ -212,6 +213,12 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     let mut routes: HashMap<usize, EdgeRoute> = HashMap::new();
     let warnings = Vec::new();
     let t_route = std::time::Instant::now();
+    let mut outgoing_counts: HashMap<&str, usize> = HashMap::new();
+    let mut incoming_counts: HashMap<&str, usize> = HashMap::new();
+    for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+        *outgoing_counts.entry(edge.from.as_str()).or_default() += 1;
+        *incoming_counts.entry(edge.to.as_str()).or_default() += 1;
+    }
     for (edge_idx, edge) in input.graph.edges.iter().enumerate() {
         if edge.is_back_edge {
             // Skip routing here; back-edges are handled by the cycle renderer.
@@ -231,6 +238,53 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             .get(&edge.to)
             .cloned()
             .unwrap_or_default();
+
+        let out_degree = outgoing_counts
+            .get(edge.from.as_str())
+            .copied()
+            .unwrap_or(0);
+        let in_degree = incoming_counts
+            .get(edge.to.as_str())
+            .copied()
+            .unwrap_or(0);
+
+        // Convergent edges (multiple sources into one target) render best when the renderer
+        // owns the junction, so skip pre-routing here.
+        if in_degree > 1 {
+            if debug_timing {
+                eprintln!("  skip edge {} due to convergent routing", edge_idx);
+            }
+            continue;
+        }
+
+        // Fan-outs look best when the renderer owns the shared junction.
+        if out_degree > 1 {
+            if debug_timing {
+                eprintln!("  skip edge {} fan-out handled in renderer", edge_idx);
+            }
+            continue;
+        }
+
+        // Labeled fan-out / fan-in edges are better handled in the renderer so labels
+        // can sit on clean junctions instead of fighting precomputed paths.
+        if edge.label.is_some() && (out_degree > 1 || in_degree > 1) {
+            if debug_timing {
+                eprintln!("  skip edge {} labeled fan-out/fan-in", edge_idx);
+            }
+            continue;
+        }
+
+        let crosses_subgraph =
+            input.graph.get_node_subgraph(&edge.from) != input.graph.get_node_subgraph(&edge.to);
+
+        // Leave fan-out / fan-in edges that cross subgraph boundaries to the renderer so
+        // they can share junctions cleanly instead of overlapping pre-routed lanes.
+        if crosses_subgraph && (out_degree > 1 || in_degree > 1) {
+            if debug_timing {
+                eprintln!("  skip edge {} cross-subgraph fan routing", edge_idx);
+            }
+            continue;
+        }
 
         // Compute avoid gutters (all subgraphs except those containing endpoints).
         let avoid_rects = gutters_to_avoid(
@@ -257,8 +311,32 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         grid.clear_point(start);
         grid.clear_point(end);
 
+        // Deterministic fan-out / fan-in lanes for simple non-subgraph cases.
+        if edge.label.is_none() {
+            if let Some(route) = lane_route(
+                start,
+                end,
+                from_rect,
+                to_rect,
+                input.graph.direction,
+                out_degree,
+                in_degree,
+                config.node_padding.max(1),
+            ) {
+                grid.mark_path(&route);
+                if debug_timing {
+                    eprintln!("  lane route stored for edge {}", edge_idx);
+                }
+                routes.insert(edge_idx, route);
+                continue;
+            }
+        }
+
         match route_with_obstacles(start, end, &mut grid, &avoid_rects, &coords) {
             Some(route) => {
+                if debug_timing {
+                    eprintln!("  obstacle route stored for edge {}", edge_idx);
+                }
                 routes.insert(edge_idx, route);
             }
             None => {
@@ -270,6 +348,9 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                     &subgraph_bounds,
                     debug_timing,
                 ) {
+                    if debug_timing {
+                        eprintln!("  subgraph fallback stored for edge {}", edge_idx);
+                    }
                     routes.insert(edge_idx, route);
                 } else {
                     let route = fallback_manhattan_route(start, end, input.graph.direction);
@@ -280,6 +361,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                             edge.to,
                             route.segments.len()
                         );
+                        eprintln!("  fallback stored for edge {}", edge_idx);
                     }
                     routes.insert(edge_idx, route);
                 }
@@ -292,6 +374,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             t_route.elapsed(),
             input.graph.edges.len()
         );
+        eprintln!("termiflow: stored routes {}", routes.len());
     }
 
     Ok(LayoutOutput {
@@ -424,7 +507,7 @@ const SPACING_LABELED: usize = 3;
 /// Row spacing for fan-in (convergent) edges without labels (stems → junction → arrow)
 const SPACING_FANIN: usize = 3;
 /// Row spacing for fan-out (divergent) edges without labels (stem → junction → drops → arrows)
-const SPACING_FANOUT: usize = 4;
+const SPACING_FANOUT: usize = 1;
 /// Row spacing for multi-target edges with labels (stem → junction → label → arrow)
 const SPACING_MULTI_LABELED: usize = 4;
 
@@ -452,6 +535,7 @@ fn compute_primary_gaps(
     let mut gaps = Vec::with_capacity(layers.len());
 
     for (r, layer) in layers.iter().enumerate() {
+        let mut boundary_crosses_subgraph = false;
         // Check fan-out: source (in this layer) has multiple targets
         let mut has_fan_out = false;
         for &idx in layer {
@@ -537,7 +621,6 @@ fn compute_primary_gaps(
         };
 
         if !graph.subgraphs.is_empty() && r + 1 < layers.len() {
-            let mut boundary_crosses_subgraph = false;
             for &src_idx in layer {
                 let src_id = &graph.nodes[src_idx].id;
                 let src_sg = graph.get_node_subgraph(src_id);
@@ -555,16 +638,28 @@ fn compute_primary_gaps(
             }
             if boundary_crosses_subgraph {
                 let extra = if fanout_targets_same_subgraph {
-                    config.subgraph_gutter.max(1)
-                } else {
+                    config.subgraph_gutter.saturating_sub(1)
+                } else if has_fan_out && has_fan_in {
+                    config.subgraph_gutter
+                } else if has_fan_out {
                     config.subgraph_gutter * 2
+                } else if has_fan_in {
+                    config.subgraph_gutter
+                } else {
+                    config.subgraph_gutter
                 };
                 spacing += extra;
+                spacing = spacing.max(SPACING_MINIMAL + 4);
             }
         }
 
+        if boundary_crosses_subgraph && has_labels && !has_fan_out && !has_fan_in {
+            spacing = spacing.saturating_sub(2).max(SPACING_LABELED + 1);
+        }
+
         if fanout_targets_same_subgraph {
-            spacing = spacing.saturating_sub(2).max(SPACING_MINIMAL);
+            // Leave a modest cushion for the junction row while keeping fan-outs compact.
+            spacing = spacing.max(SPACING_FANOUT + 2);
         }
 
         gaps.push(spacing);
@@ -1133,18 +1228,82 @@ fn compute_subgraph_bounds(
 ) -> HashMap<String, SubgraphBounds> {
     let mut bounds = HashMap::new();
     for subgraph in &graph.subgraphs {
-        let mut inner = Rect::default();
+        let mut content = Rect::default();
+        let mut max_exit_y = 0;
         for node_id in &subgraph.node_ids {
             if let Some(r) = node_rects.get(node_id) {
-                inner = if inner.is_empty() { *r } else { inner.union(r) };
+                content = if content.is_empty() { *r } else { content.union(r) };
+                max_exit_y = max_exit_y.max(r.bottom());
             }
         }
-        if inner.is_empty() {
+        if content.is_empty() {
             continue;
         }
-        // Add a small internal padding so edges have breathing room inside the subgraph.
-        let inner = inner.inflate(1);
-        let outer = inner.inflate(gutter);
+
+        let mut has_external_edges = false;
+        let mut has_incoming = false;
+        let mut has_outgoing = false;
+        let mut _incoming_cross_count = 0usize;
+        let mut outgoing_cross_count = 0usize;
+        for e in &graph.edges {
+            let from_in = subgraph.contains_node(&e.from);
+            let to_in = subgraph.contains_node(&e.to);
+            if (from_in || to_in) && from_in != to_in {
+                has_external_edges = true;
+                if from_in {
+                    has_outgoing = true;
+                    outgoing_cross_count += 1;
+                } else {
+                    has_incoming = true;
+                    _incoming_cross_count += 1;
+                }
+            }
+        }
+
+        // When a subgraph only contains internal edges, reduce padding so boxes sit
+        // closer to the border. When edges cross the boundary, bias padding toward
+        // the entry side (top for TD) while keeping the exit side tight.
+        let (inner_pad, top_pad, mut bottom_pad, side_pad) = if !has_external_edges {
+            (0, 2, 1, 2)
+        } else {
+            let inner_pad = if has_incoming { 1 } else { 0 };
+            let top_pad = if has_incoming {
+                gutter.max(2)
+            } else {
+                1
+            };
+            let bottom_pad = if has_outgoing {
+                if has_incoming {
+                    gutter.max(2)
+                } else {
+                    gutter.saturating_sub(1).max(1)
+                }
+            } else {
+                1
+            };
+            let side_pad = gutter;
+            (inner_pad, top_pad, bottom_pad, side_pad)
+        };
+
+        let inner = content.inflate(inner_pad);
+        let min_bottom_pad = if has_external_edges {
+            let clearance = if outgoing_cross_count > 1 { 2 } else { 1 };
+            max_exit_y
+                .saturating_add(clearance)
+                .saturating_sub(inner.y + inner.height)
+        } else {
+            0
+        };
+        bottom_pad = bottom_pad.max(min_bottom_pad);
+        if has_outgoing && outgoing_cross_count > 1 {
+            bottom_pad = bottom_pad.max(gutter.saturating_add(1));
+        }
+        let outer = Rect::new(
+            inner.x.saturating_sub(side_pad),
+            inner.y.saturating_sub(top_pad),
+            inner.width + side_pad * 2,
+            inner.height + top_pad + bottom_pad,
+        );
         bounds.insert(subgraph.id.clone(), SubgraphBounds { outer, inner });
     }
     bounds
@@ -1305,6 +1464,7 @@ fn carve_subgraph_portals(
     gutter: usize,
     graph: &Graph,
 ) {
+    let debug_timing = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
     #[derive(Default)]
     struct PortalSlots {
         top: HashSet<usize>,
@@ -1448,10 +1608,10 @@ fn subgraph_ports(
     match direction {
         Direction::TD | Direction::TB => (
             Point::new(cx, bounds.outer.y.saturating_add(1)),
-            Point::new(cx, bounds.outer.bottom().saturating_sub(2)),
+            Point::new(cx, bounds.outer.bottom().saturating_sub(1)),
         ),
         Direction::BT => (
-            Point::new(cx, bounds.outer.bottom().saturating_sub(2)),
+            Point::new(cx, bounds.outer.bottom().saturating_sub(1)),
             Point::new(cx, bounds.outer.y.saturating_add(1)),
         ),
         Direction::LR => (
@@ -1630,6 +1790,107 @@ fn add_manhattan_segment(route: &mut EdgeRoute, from: Point, to: Point, directio
     };
     route.push_segment(from, mid);
     route.push_segment(mid, to);
+}
+
+fn lane_route(
+    start: Point,
+    end: Point,
+    from_rect: Rect,
+    to_rect: Rect,
+    direction: Direction,
+    out_count: usize,
+    in_count: usize,
+    pad: usize,
+) -> Option<EdgeRoute> {
+    if out_count < 2 && in_count < 2 {
+        return None;
+    }
+
+    let mut route = EdgeRoute::new();
+    match direction {
+        Direction::TD | Direction::TB => {
+            if out_count > 1 {
+                let lane_y = from_rect.bottom().saturating_add(pad);
+                let mid_a = Point::new(start.x, lane_y);
+                let mid_b = Point::new(end.x, lane_y);
+                route.push_segment(start, mid_a);
+                route.push_segment(mid_a, mid_b);
+                route.push_segment(mid_b, end);
+                return Some(route);
+            }
+            if in_count > 1 {
+                let lane_y = to_rect.y.saturating_sub(pad);
+                let mid_a = Point::new(start.x, lane_y);
+                let mid_b = Point::new(end.x, lane_y);
+                route.push_segment(start, mid_a);
+                route.push_segment(mid_a, mid_b);
+                route.push_segment(mid_b, end);
+                return Some(route);
+            }
+        }
+        Direction::BT => {
+            if out_count > 1 {
+                let lane_y = from_rect.y.saturating_sub(pad);
+                let mid_a = Point::new(start.x, lane_y);
+                let mid_b = Point::new(end.x, lane_y);
+                route.push_segment(start, mid_a);
+                route.push_segment(mid_a, mid_b);
+                route.push_segment(mid_b, end);
+                return Some(route);
+            }
+            if in_count > 1 {
+                let lane_y = to_rect.bottom().saturating_add(pad);
+                let mid_a = Point::new(start.x, lane_y);
+                let mid_b = Point::new(end.x, lane_y);
+                route.push_segment(start, mid_a);
+                route.push_segment(mid_a, mid_b);
+                route.push_segment(mid_b, end);
+                return Some(route);
+            }
+        }
+        Direction::LR => {
+            if out_count > 1 {
+                let lane_x = from_rect.right().saturating_add(pad);
+                let mid_a = Point::new(lane_x, start.y);
+                let mid_b = Point::new(lane_x, end.y);
+                route.push_segment(start, mid_a);
+                route.push_segment(mid_a, mid_b);
+                route.push_segment(mid_b, end);
+                return Some(route);
+            }
+            if in_count > 1 {
+                let lane_x = to_rect.x.saturating_sub(pad);
+                let mid_a = Point::new(lane_x, start.y);
+                let mid_b = Point::new(lane_x, end.y);
+                route.push_segment(start, mid_a);
+                route.push_segment(mid_a, mid_b);
+                route.push_segment(mid_b, end);
+                return Some(route);
+            }
+        }
+        Direction::RL => {
+            if out_count > 1 {
+                let lane_x = from_rect.x.saturating_sub(pad);
+                let mid_a = Point::new(lane_x, start.y);
+                let mid_b = Point::new(lane_x, end.y);
+                route.push_segment(start, mid_a);
+                route.push_segment(mid_a, mid_b);
+                route.push_segment(mid_b, end);
+                return Some(route);
+            }
+            if in_count > 1 {
+                let lane_x = to_rect.right().saturating_add(pad);
+                let mid_a = Point::new(lane_x, start.y);
+                let mid_b = Point::new(lane_x, end.y);
+                route.push_segment(start, mid_a);
+                route.push_segment(mid_a, mid_b);
+                route.push_segment(mid_b, end);
+                return Some(route);
+            }
+        }
+    }
+
+    None
 }
 
 fn fallback_subgraph_route(
