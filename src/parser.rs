@@ -262,7 +262,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     // subgraph_id -> (title, node_ids)
     let mut subgraph_data: HashMap<String, (Option<String>, Vec<String>)> = HashMap::new();
     let mut subgraph_order: Vec<String> = Vec::new(); // Preserve declaration order
-    // node_id -> subgraph_id
+                                                      // node_id -> subgraph_id
     let mut node_to_subgraph: HashMap<String, String> = HashMap::new();
 
     for (i, line) in lines.iter().enumerate() {
