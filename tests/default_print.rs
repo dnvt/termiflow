@@ -74,3 +74,23 @@ fn converge_bt_uses_correct_merge_corners() {
         .stdout(predicate::str::contains("┌────────┴────────┐"))
         .stdout(predicate::str::contains("└────────┴────────┘").not());
 }
+
+#[test]
+fn subgraph_fanout_td_title_stays_clean() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .arg("tests/fixtures/inputs/subgraph_fanout_td.md")
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    let title_row = output
+        .lines()
+        .find(|l| l.contains("Handler Group"))
+        .unwrap_or_default();
+    assert!(
+        !title_row.contains('┼'),
+        "expected no edge to pierce the title row, got:\n{}",
+        output
+    );
+}
