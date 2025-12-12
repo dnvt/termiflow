@@ -657,8 +657,12 @@ fn route_fanout_into_subgraph_td(
     // and keep the split above the arrow row.
     let delta = min_arrow_y.saturating_sub(portal_y);
     let mut junction_y = portal_y.saturating_add(delta / 2);
-    if junction_y >= min_arrow_y {
-        junction_y = min_arrow_y.saturating_sub(1);
+    let min_split_y = portal_y.saturating_add(1);
+    let max_split_y = min_arrow_y.saturating_sub(2).max(min_split_y);
+    if junction_y < min_split_y {
+        junction_y = min_split_y;
+    } else if junction_y > max_split_y {
+        junction_y = max_split_y;
     }
 
     // Align horizontally to the subgraph center before dropping in.
@@ -739,6 +743,11 @@ fn route_fanout_into_subgraph_td(
             coords.secondary_edge_char(style)
         };
         canvas.set_edge_char(span_x, span_y, c, style);
+    }
+
+    // Ensure the split junction reads as an upward tee (trunk enters from above).
+    if matches!(direction, Direction::TD | Direction::TB) {
+        canvas.set(junction_x, junction_y, style.junction_up);
     }
 
     for (target_x, target_y, target) in &sorted_targets {
@@ -934,7 +943,8 @@ fn route_convergent_from_subgraph_td(
             }
         }
         if merge_x < canvas.width {
-            canvas.set_edge_char(merge_x, bottom_y, style.edge_v, style);
+            // Portal "hole" through the border (overwrite, don't merge into a junction).
+            canvas.set(merge_x, bottom_y, style.edge_v);
         }
     }
 
@@ -1705,7 +1715,9 @@ fn route_divergent_into_subgraph_td(
     }
     canvas.set(min_x, branch_y, style.corner_dl);
     canvas.set(max_x, branch_y, style.corner_dr);
-    canvas.set(entry_x, branch_y, style.junction_down);
+    // The trunk enters from above; keep the branch row as a "cap" (no down stroke)
+    // so drops start on the next row.
+    canvas.set(entry_x, branch_y, style.junction_up);
 
     // Drop to targets starting immediately after the branch row.
     for (tx, _, target) in target_positions {

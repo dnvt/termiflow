@@ -67,6 +67,8 @@ pub fn compute_envelopes(
         let mut has_outgoing = false;
         let mut outgoing_cross_count = 0usize;
         let mut incoming_cross_count = 0usize;
+        let mut incoming_outside_sources: HashSet<&str> = HashSet::new();
+        let mut has_incoming_from_open_space = false;
         for e in &graph.edges {
             let from_in = subgraph.contains_node(&e.from);
             let to_in = subgraph.contains_node(&e.to);
@@ -77,6 +79,10 @@ pub fn compute_envelopes(
                     outgoing_cross_count += 1;
                 } else {
                     incoming_cross_count += 1;
+                    incoming_outside_sources.insert(e.from.as_str());
+                    if graph.get_node_subgraph(&e.from).is_none() {
+                        has_incoming_from_open_space = true;
+                    }
                 }
             }
         }
@@ -84,7 +90,17 @@ pub fn compute_envelopes(
         // Minimal padding: spacer under the top border (larger when a visible title exists),
         // one at the bottom, minimal inner pad, and side gutters as configured.
         let inner_pad = 0;
-        let side_pad = if has_external_edges { gutter } else { 2 };
+        let mut side_pad = if has_external_edges { gutter } else { 2 };
+
+        // Ensure titled subgraphs are wide enough to display the title.
+        if let Some(t) = subgraph.title.as_ref() {
+            let title_len = format!("[  {}  ]", t).chars().count();
+            let min_outer_width = title_len.saturating_add(2);
+            if content.width + side_pad * 2 < min_outer_width {
+                let needed = min_outer_width.saturating_sub(content.width);
+                side_pad = side_pad.max((needed + 1) / 2);
+            }
+        }
 
         let title_fits = subgraph.title.as_ref().map_or(false, |t| {
             let title_len = format!("[  {}  ]", t).chars().count();
@@ -92,15 +108,21 @@ pub fn compute_envelopes(
         });
 
         let top_pad = if title_fits {
-            if incoming_cross_count > 0 && outgoing_cross_count == 0 {
+            // Title lives on the border row; keep one empty row below it by default.
+            //
+            // Special-case: when a single external source fans out into multiple targets
+            // inside this titled subgraph, we need extra internal rows to draw a trunk,
+            // split bar, drops, and arrowheads without colliding with the title row.
+            let is_fanout_entry = incoming_cross_count > 1 && incoming_outside_sources.len() == 1;
+            if is_fanout_entry {
                 5
-            } else if incoming_cross_count > 0 {
+            } else if has_incoming_from_open_space {
                 3
             } else {
                 2
             }
         } else if has_external_edges {
-            1
+            if incoming_cross_count > 0 { 2 } else { 1 }
         } else {
             0
         };
