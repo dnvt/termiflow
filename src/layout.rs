@@ -415,6 +415,127 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         }
     }
 
+    // BT: ensure clearance above subgraph top borders (for outgoing edges to external
+    // targets above) and between stacked subgraphs (so connectors don't overwrite
+    // titles/corners on adjacent borders).
+    if input.graph.direction == Direction::BT && !subgraph_envelopes.is_empty() {
+        for _ in 0..8 {
+            let mut required_shift_by_rank: HashMap<usize, usize> = HashMap::new();
+
+            let mut subgraph_max_rank: HashMap<&str, usize> = HashMap::new();
+            for sg in &input.graph.subgraphs {
+                let max_rank = sg
+                    .node_ids
+                    .iter()
+                    .filter_map(|id| placement.ranks.get(id))
+                    .copied()
+                    .max();
+                if let Some(r) = max_rank {
+                    subgraph_max_rank.insert(sg.id.as_str(), r);
+                }
+            }
+
+            // Keep at least one connector row between an external target box above and the
+            // subgraph top border it is connected to.
+            for (sg_id, env) in subgraph_envelopes.iter() {
+                let Some(&shift_rank) = subgraph_max_rank.get(sg_id.as_str()) else {
+                    continue;
+                };
+                for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+                    if input.graph.get_node_subgraph(&edge.from) != Some(sg_id.as_str()) {
+                        continue;
+                    }
+                    if input.graph.get_node_subgraph(&edge.to) == Some(sg_id.as_str()) {
+                        continue;
+                    }
+                    // If the destination is inside another subgraph, let that subgraph's
+                    // internal padding/routing handle clearance.
+                    if input.graph.get_node_subgraph(&edge.to).is_some() {
+                        continue;
+                    }
+                    let Some(to_rect) = placement.node_rects.get(&edge.to) else {
+                        continue;
+                    };
+                    // Only when the destination is above this envelope.
+                    if to_rect.bottom() > env.outer.y.saturating_add(1) {
+                        continue;
+                    }
+                    let required_border_y = to_rect.bottom().saturating_add(1);
+                    if env.outer.y >= required_border_y {
+                        continue;
+                    }
+                    let delta = required_border_y - env.outer.y;
+                    required_shift_by_rank
+                        .entry(shift_rank)
+                        .and_modify(|d| *d = (*d).max(delta))
+                        .or_insert(delta);
+                }
+            }
+
+            // Ensure at least one empty row between stacked subgraphs when an edge crosses
+            // from the lower subgraph to the upper one (BT flows upward).
+            for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+                let (Some(from_sg), Some(to_sg)) = (
+                    input.graph.get_node_subgraph(&edge.from),
+                    input.graph.get_node_subgraph(&edge.to),
+                ) else {
+                    continue;
+                };
+                if from_sg == to_sg {
+                    continue;
+                }
+                let (Some(from_env), Some(to_env)) = (
+                    subgraph_envelopes.get(from_sg),
+                    subgraph_envelopes.get(to_sg),
+                ) else {
+                    continue;
+                };
+                // In BT, `to_sg` is visually above `from_sg` (smaller y). Only apply to
+                // non-overlapping, vertically stacked envelopes (not nested).
+                if to_env.outer.bottom() > from_env.outer.y {
+                    continue;
+                }
+                let required_from_top = to_env.outer.bottom().saturating_add(1);
+                if from_env.outer.y >= required_from_top {
+                    continue;
+                }
+                let Some(&shift_rank) = subgraph_max_rank.get(from_sg) else {
+                    continue;
+                };
+                let delta = required_from_top - from_env.outer.y;
+                required_shift_by_rank
+                    .entry(shift_rank)
+                    .and_modify(|d| *d = (*d).max(delta))
+                    .or_insert(delta);
+            }
+
+            let Some((&max_rank, &delta_y)) = required_shift_by_rank.iter().max_by_key(|(r, _)| *r)
+            else {
+                break;
+            };
+
+            shift_nodes_up_to_rank_bt(
+                &mut placement.positions,
+                &mut placement.node_rects,
+                &placement.ranks,
+                max_rank,
+                delta_y,
+            );
+
+            let max_bottom = placement
+                .node_rects
+                .values()
+                .map(|r| r.bottom())
+                .max()
+                .unwrap_or(placement.canvas.bottom());
+            placement.canvas.height = placement.canvas.height.max(max_bottom);
+
+            subgraph_envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
+    }
+
     // 4) Occupancy grid seeded with node padding and subgraph gutters (with carved portals).
     let t_grid = std::time::Instant::now();
     let mut grid = OccupancyGrid::new(

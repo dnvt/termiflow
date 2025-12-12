@@ -208,6 +208,25 @@ pub fn route_divergent_edges(
                     return;
                 }
             }
+        } else if direction == Direction::BT {
+            let from_sg = graph.get_node_subgraph(&from.id);
+            let to_sg = graph.get_node_subgraph(&target.id);
+            if from_sg != to_sg {
+                if route_cross_subgraph_bt(
+                    from,
+                    target,
+                    stem_start_x,
+                    stem_start_y,
+                    arrow_x,
+                    arrow_y,
+                    canvas,
+                    style,
+                    graph,
+                ) {
+                    canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
+                    return;
+                }
+            }
         }
 
         if debug_timing {
@@ -951,6 +970,106 @@ fn route_convergent_from_subgraph_td(
     canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
 }
 
+fn route_convergent_from_subgraph_bt(
+    sources: &[&Node],
+    target: &Node,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    sg: &crate::graph::Subgraph,
+    direction: Direction,
+) {
+    if direction != Direction::BT || sources.is_empty() || !sg.bounds.is_valid() {
+        return;
+    }
+    let coords = OrientedCoords::new(direction);
+    let (arrow_x, arrow_y) = edge_entry_point(target, direction);
+
+    let top_y = sg.bounds.y;
+    let bottom_y = sg.bounds.y + sg.bounds.height.saturating_sub(1);
+    let inside_top = top_y.saturating_add(1);
+
+    // Merge near the top border (inside the subgraph) so we can exit cleanly through
+    // the top portal without piercing the title span.
+    let min_exit_y = sources
+        .iter()
+        .map(|n| edge_exit_point(n, direction).1)
+        .min()
+        .unwrap_or(inside_top.saturating_add(2));
+
+    let mut merge_y = inside_top.saturating_add(1);
+    merge_y = merge_y.min(bottom_y.saturating_sub(1)).max(inside_top);
+    if merge_y > min_exit_y.saturating_sub(1) {
+        merge_y = min_exit_y.saturating_sub(1).max(inside_top);
+    }
+
+    let merge_x = preferred_portal_x(&sg.bounds, sg.title.as_deref(), arrow_x, canvas);
+
+    let mut source_positions: Vec<(usize, usize, &Node)> = sources
+        .iter()
+        .map(|n| {
+            let (sx, sy) = get_node_center(n);
+            (sx, sy, *n)
+        })
+        .collect();
+    source_positions.sort_by_key(|(x, y, _)| coords.secondary_coord(*x, *y));
+
+    let (span_start, span_end) = draw_source_lines_to_merge(
+        &source_positions,
+        merge_x,
+        merge_y,
+        &coords,
+        canvas,
+        style,
+        direction,
+    );
+
+    draw_merge_line(merge_x, merge_y, span_start, span_end, &coords, canvas, style);
+
+    if span_start < span_end {
+        let (sx, sy) = coords.with_secondary(merge_x, merge_y, span_start);
+        let (ex, ey) = coords.with_secondary(merge_x, merge_y, span_end);
+        canvas.set_edge_char(sx, sy, style.corner_ul, style);
+        canvas.set_edge_char(ex, ey, style.corner_ur, style);
+    }
+    canvas.set_edge_char(merge_x, merge_y, style.junction_up, style);
+
+    let (final_start_x, final_start_y) = coords.advance(merge_x, merge_y, 1);
+    draw_line_primary(
+        final_start_x,
+        final_start_y,
+        arrow_x,
+        arrow_y,
+        &coords,
+        canvas,
+        style,
+    );
+
+    // Clean up the top border: keep only the merged exit portal, and restore any
+    // other portal reinforcements that would otherwise clutter the title border.
+    if top_y < canvas.height {
+        let mut border_fill = if sg.bounds.x + 1 < canvas.width {
+            canvas.get(sg.bounds.x + 1, top_y)
+        } else {
+            coords.secondary_edge_char(style)
+        };
+        if border_fill == ' ' || is_textual(border_fill) {
+            border_fill = coords.secondary_edge_char(style);
+        }
+        for (sx, sy, _) in &source_positions {
+            let sec = coords.secondary_coord(*sx, *sy);
+            let (px, py) = coords.with_secondary(merge_x, top_y, sec);
+            if px != merge_x && px < canvas.width && py < canvas.height {
+                canvas.set(px, py, border_fill);
+            }
+        }
+        if merge_x < canvas.width && !is_textual(canvas.get(merge_x, top_y)) {
+            canvas.set(merge_x, top_y, style.edge_v);
+        }
+    }
+
+    canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
+}
+
 // Helper: Draw lines from sources to merge point (on primary axis)
 fn draw_source_lines_to_merge(
     source_positions: &[(usize, usize, &Node)],
@@ -1070,7 +1189,7 @@ fn get_convergence_corner(
             Direction::TD | Direction::TB => style.junction_right, // ├ - emphasize fan-in start
             Direction::LR => style.corner_dr,                 // ┐ - from left, turns down
             Direction::RL => style.corner_dl,                 // ┌ - from right, turns down
-            Direction::BT => style.corner_dl,                 // └ - from below, turns right
+            Direction::BT => style.corner_ul,                 // ┌ - from below, turns right
         }
     } else if src_secondary == span_end {
         // Bottommost/rightmost position on span - edge from source turns up/left
@@ -1078,7 +1197,7 @@ fn get_convergence_corner(
             Direction::TD | Direction::TB => style.corner_dr, // ┘ - cleaner exit toward portal
             Direction::LR => style.corner_ur,                 // ┘ - from left, turns up
             Direction::RL => style.corner_ul,                 // └ - from right, turns up
-            Direction::BT => style.corner_dr,                 // ┘ - from below, turns left
+            Direction::BT => style.corner_ur,                 // ┐ - from below, turns left
         }
     } else {
         // Middle sources get junction
@@ -1158,6 +1277,31 @@ pub fn route_convergent_edges(
                 if let Some(sg) = graph.get_subgraph(source_sg_id) {
                     if sg.bounds.is_valid() {
                         route_convergent_from_subgraph_td(
+                            &visible_sources,
+                            to,
+                            canvas,
+                            style,
+                            sg,
+                            direction,
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+    } else if direction == Direction::BT {
+        if let Some(source_sg_id) = visible_sources
+            .first()
+            .and_then(|n| graph.get_node_subgraph(&n.id))
+        {
+            let target_sg = graph.get_node_subgraph(&to.id);
+            let all_sources_same =
+                visible_sources.iter().all(|n| graph.get_node_subgraph(&n.id) == Some(source_sg_id));
+
+            if all_sources_same && target_sg != Some(source_sg_id) {
+                if let Some(sg) = graph.get_subgraph(source_sg_id) {
+                    if sg.bounds.is_valid() {
+                        route_convergent_from_subgraph_bt(
                             &visible_sources,
                             to,
                             canvas,
@@ -1455,9 +1599,28 @@ fn preferred_portal_x(
 ) -> usize {
     let min = bounds.x.saturating_add(1);
     let max = bounds.x + bounds.width.saturating_sub(2);
-    let _ = title;
     let _ = canvas;
-    desired.clamp(min, max)
+    let mut x = desired.clamp(min, max);
+
+    let Some(t) = title else {
+        return x;
+    };
+    let title_fmt = format!("[  {}  ]", t);
+    let len = title_fmt.chars().count();
+    if len == 0 || len > bounds.width.saturating_sub(2) {
+        return x;
+    }
+    let start = bounds.x + bounds.width.saturating_sub(len) / 2;
+    let end = start + len.saturating_sub(1);
+    if x < start || x > end {
+        return x;
+    }
+    if end + 1 <= max {
+        x = end + 1;
+    } else if start > min {
+        x = start.saturating_sub(1);
+    }
+    x
 }
 
 #[allow(dead_code)]
@@ -1605,6 +1768,165 @@ fn route_cross_subgraph_td(
         && !is_textual(canvas.get(portal_x, tgt_border_y))
     {
         canvas.set_edge_char(portal_x, tgt_border_y, style.edge_v, style);
+    }
+
+    true
+}
+
+fn route_cross_subgraph_bt(
+    from: &Node,
+    to: &Node,
+    stem_start_x: usize,
+    stem_start_y: usize,
+    arrow_x: usize,
+    arrow_y: usize,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+) -> bool {
+    let from_sg = graph.get_node_subgraph(&from.id);
+    let to_sg = graph.get_node_subgraph(&to.id);
+    if from_sg == to_sg {
+        return false;
+    }
+    let Some(src_id) = from_sg else {
+        return false;
+    };
+    let Some(src_sg) = graph.get_subgraph(src_id) else {
+        return false;
+    };
+    if !src_sg.bounds.is_valid() {
+        return false;
+    }
+
+    let coords = OrientedCoords::new(Direction::BT);
+    let border_y = src_sg.bounds.y;
+    let inside_y = border_y.saturating_add(1);
+    let portal_x = preferred_portal_x(
+        &src_sg.bounds,
+        src_sg.title.as_deref(),
+        stem_start_x,
+        canvas,
+    );
+
+    // Walk up from the source exit to the row just inside the subgraph top border.
+    draw_line_primary(
+        stem_start_x,
+        stem_start_y,
+        stem_start_x,
+        inside_y,
+        &coords,
+        canvas,
+        style,
+    );
+
+    // Shift horizontally inside the subgraph to avoid piercing the title span.
+    if portal_x != stem_start_x {
+        let start_corner = if portal_x > stem_start_x {
+            style.corner_ul
+        } else {
+            style.corner_ur
+        };
+        canvas.set_edge_char(stem_start_x, inside_y, start_corner, style);
+
+        let (hx0, hx1) = if portal_x > stem_start_x {
+            (stem_start_x + 1, portal_x.saturating_sub(1))
+        } else {
+            (portal_x + 1, stem_start_x.saturating_sub(1))
+        };
+        for x in hx0..=hx1 {
+            canvas.set_edge_char(x, inside_y, style.edge_h, style);
+        }
+
+        let end_corner = if portal_x > stem_start_x {
+            style.corner_dr
+        } else {
+            style.corner_dl
+        };
+        canvas.set_edge_char(portal_x, inside_y, end_corner, style);
+    }
+
+    // Continue up across the border. Prefer bridging back toward the target column
+    // immediately outside the border so the final approach remains vertical.
+    let border_row_y = inside_y.saturating_sub(1);
+    let outside_y = border_y.saturating_sub(1);
+    draw_line_primary(
+        portal_x,
+        border_row_y,
+        portal_x,
+        outside_y,
+        &coords,
+        canvas,
+        style,
+    );
+
+    if portal_x != arrow_x && border_y > 0 {
+        let start_corner = if arrow_x > portal_x {
+            style.corner_ul
+        } else {
+            style.corner_ur
+        };
+        canvas.set_edge_char(portal_x, outside_y, start_corner, style);
+
+        let (hx0, hx1) = if arrow_x > portal_x {
+            (portal_x + 1, arrow_x.saturating_sub(1))
+        } else {
+            (arrow_x + 1, portal_x.saturating_sub(1))
+        };
+        for x in hx0..=hx1 {
+            canvas.set_edge_char(x, outside_y, style.edge_h, style);
+        }
+
+        let end_corner = if arrow_x > portal_x {
+            style.corner_dr
+        } else {
+            style.corner_dl
+        };
+        canvas.set_edge_char(arrow_x, outside_y, end_corner, style);
+
+        let v_start_y = outside_y.saturating_sub(1);
+        draw_line_primary(
+            arrow_x,
+            v_start_y,
+            arrow_x,
+            arrow_y,
+            &coords,
+            canvas,
+            style,
+        );
+    } else {
+        draw_line_primary(
+            portal_x,
+            outside_y,
+            portal_x,
+            arrow_y,
+            &coords,
+            canvas,
+            style,
+        );
+        if portal_x != arrow_x {
+            // Fallback: if we have no room above the border, bridge on the arrow row.
+            let corner = if portal_x < arrow_x {
+                style.corner_ul
+            } else {
+                style.corner_ur
+            };
+            canvas.set_edge_char(portal_x, arrow_y, corner, style);
+            let (hx0, hx1) = if portal_x < arrow_x {
+                (portal_x + 1, arrow_x)
+            } else {
+                (arrow_x, portal_x.saturating_sub(1))
+            };
+            for x in hx0..=hx1 {
+                canvas.set_edge_char(x, arrow_y, style.edge_h, style);
+            }
+        }
+    }
+
+    // Ensure the top border reads as a clean pierce (not a junction).
+    if portal_x < canvas.width && border_y < canvas.height && !is_textual(canvas.get(portal_x, border_y))
+    {
+        canvas.set(portal_x, border_y, style.edge_v);
     }
 
     true
