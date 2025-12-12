@@ -19,6 +19,7 @@
 - `--max-lines`: max label lines when wrapping is enabled (default 1).
 - `--crop` / `--no-crop`: crop empty margins around output (default on).
 - `--pad N`: add padding (spaces/lines) around output (default 0).
+- `--compact`: use a tighter layout spacing (less whitespace).
 - `--strict`: treat parse warnings as errors.
 
 Composite components: `corner`, `border`, `arrow`, `edge`, `junction`, `back`, `subgraph`.

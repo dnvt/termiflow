@@ -50,6 +50,9 @@ tw --wrap --max-lines 3 diagram.md
 tw --pad 1 diagram.md
 tw --no-crop diagram.md
 
+# Tighter layout spacing
+tw --compact diagram.md
+
 # Strict mode (fail on warnings)
 tw --strict diagram.md
 

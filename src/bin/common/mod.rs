@@ -69,6 +69,10 @@ pub struct Cli {
     #[arg(long, value_name = "N")]
     pub pad: Option<usize>,
 
+    /// Use a tighter layout spacing (less whitespace)
+    #[arg(long)]
+    pub compact: bool,
+
     /// Exit with error on any parse warning
     #[arg(long)]
     pub strict: bool,
@@ -175,7 +179,12 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
 
     // Run layout algorithm (may add warnings)
     let t_layout_start = std::time::Instant::now();
-    let graph = layout::coarse_waterfall(graph)?;
+    let layout_config = if cli.compact {
+        layout::CoarseLayoutConfig::compact()
+    } else {
+        layout::CoarseLayoutConfig::default()
+    };
+    let graph = layout::coarse_waterfall_with_config(graph, layout_config)?;
     if debug_timing {
         eprintln!("termiflow: layout {:?}", t_layout_start.elapsed());
         eprintln!(
