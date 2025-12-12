@@ -56,6 +56,38 @@ fn wrap_flag_renders_multiline_boxes() {
 }
 
 #[test]
+fn wrap_prefers_code_delimiters_over_mid_word_splits() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .args(["--wrap", "--max-lines", "3", "--max-label", "18"])
+        .write_stdin("flowchart TD\nA[route_convergent_edges]\nB[Canvas::set_edge_char]\n")
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        output.contains("route_convergent_") || output.contains("route_convergent"),
+        "expected delimiter-aware wrapping, got:\n{}",
+        output
+    );
+    assert!(
+        !output.contains("route_convergent_edg"),
+        "expected to avoid mid-word splits, got:\n{}",
+        output
+    );
+    assert!(
+        output.contains("Canvas::") && (output.contains("set_edge_char") || output.contains("set_edge_")),
+        "expected delimiter-aware wrapping for `Canvas::set_edge_char`, got:\n{}",
+        output
+    );
+    assert!(
+        !output.contains("set_edge_cha"),
+        "expected to avoid mid-word splits, got:\n{}",
+        output
+    );
+}
+
+#[test]
 fn subgraph_title_stays_clean_for_entry_edge_td() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     cmd.arg("tests/fixtures/inputs/subgraph_single_td.md")
