@@ -2005,7 +2005,7 @@ fn route_divergent_into_subgraph_td(
         return;
     }
     let coords = OrientedCoords::new(direction);
-    // Branch row just below the entry.
+    // Branch row just below the entry (title stays on the border row).
     let mut target_positions: Vec<(usize, usize, &Node)> = targets
         .iter()
         .map(|n| {
@@ -2015,28 +2015,42 @@ fn route_divergent_into_subgraph_td(
         .collect();
     target_positions.sort_by_key(|(x, y, _)| coords.secondary_coord(*x, *y));
 
-    let entry_anchor = target_positions[target_positions.len() / 2].0;
-    let entry_x = preferred_portal_x(
-        &sg.bounds,
-        sg.title.as_deref(),
-        entry_anchor,
-        canvas,
-    );
     // Enter just inside the top border so we can show a spine row before branching.
-    let entry_y = sg.bounds.y.saturating_add(1);
-    let entry_target_y = entry_y;
+    // Do not draw on the border/title row: edges should pass under the title.
+    let border_y = sg.bounds.y;
+    let outside_y = border_y.saturating_sub(1);
+    let entry_y = border_y.saturating_add(1);
+    let min_inner_x = sg.bounds.x.saturating_add(1);
+    let max_inner_x = sg.bounds.x + sg.bounds.width.saturating_sub(2);
 
     // Connect source to the subgraph entry (outside the border).
     let (stem_x, stem_y) = edge_exit_point(source, direction);
+    let entry_x = stem_x.clamp(min_inner_x, max_inner_x);
     canvas.set_edge_char(stem_x, stem_y, coords.primary_edge_char(style), style);
-    if entry_x != stem_x {
+
+    // Walk vertically down to just above the border, then (optionally) shift horizontally.
+    // This avoids drawing through the title row.
+    let turn_y = if stem_y < outside_y { outside_y } else { stem_y };
+    if stem_y + 1 <= outside_y {
+        for y in (stem_y + 1)..=outside_y {
+            canvas.set_edge_char(stem_x, y, coords.primary_edge_char(style), style);
+        }
+    }
+    if entry_x != stem_x && turn_y < canvas.height {
+        let start_corner = if entry_x > stem_x {
+            style.corner_ul
+        } else {
+            style.corner_ur
+        };
+        canvas.set_edge_char(stem_x, turn_y, start_corner, style);
+
         let (hx0, hx1) = if entry_x > stem_x {
             (stem_x.saturating_add(1), entry_x.saturating_sub(1))
         } else {
             (entry_x.saturating_add(1), stem_x.saturating_sub(1))
         };
         for x in hx0..=hx1 {
-            canvas.set_edge_char(x, stem_y, style.edge_h, style);
+            canvas.set_edge_char(x, turn_y, style.edge_h, style);
         }
 
         let end_corner = if entry_x > stem_x {
@@ -2044,15 +2058,8 @@ fn route_divergent_into_subgraph_td(
         } else {
             style.corner_dl
         };
-        canvas.set_edge_char(entry_x, stem_y, end_corner, style);
+        canvas.set_edge_char(entry_x, turn_y, end_corner, style);
     }
-
-    if entry_target_y > stem_y {
-        for y in (stem_y + 1)..=entry_target_y {
-            canvas.set_edge_char(entry_x, y, coords.primary_edge_char(style), style);
-        }
-    }
-    canvas.set(entry_x, entry_target_y, coords.arrow_end(style));
 
     let min_x = target_positions
         .iter()
@@ -2091,6 +2098,15 @@ fn route_divergent_into_subgraph_td(
         branch_y = min_arrow_y.saturating_sub(2);
     }
     branch_y = branch_y.max(spine_y.saturating_add(1));
+
+    // Ensure the trunk stays connected from the spine row to the branch row.
+    if branch_y > spine_y.saturating_add(1) {
+        for y in (spine_y + 1)..branch_y {
+            if entry_x < canvas.width && y < canvas.height {
+                canvas.set_edge_char(entry_x, y, coords.primary_edge_char(style), style);
+            }
+        }
+    }
 
     // Branch row: horizontal bar with a center tee.
     for x in min_x..=max_x {
