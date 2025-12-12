@@ -4,7 +4,7 @@
 //! for detecting line types, junctions, and resolving overlapping characters.
 
 use crate::graph::Node;
-use crate::style::{StyleChars, BOX_HEIGHT};
+use crate::style::StyleChars;
 
 // ============================================================================
 // Character Classification
@@ -240,7 +240,7 @@ impl Canvas {
 
     /// Check if a node is within visible canvas bounds.
     pub fn is_visible(&self, node: &Node) -> bool {
-        node.x + node.width <= self.width && node.y + BOX_HEIGHT <= self.height
+        node.x + node.width <= self.width && node.y + node.height <= self.height
     }
 }
 
@@ -446,11 +446,13 @@ mod tests {
         let visible_node = Node {
             id: "A".into(),
             label: "Test".into(),
+            label_lines: Vec::new(),
             shape: crate::graph::NodeShape::Rectangle,
             click_target: None,
             x: 0,
             y: 0,
             width: 10,
+            height: crate::style::BOX_HEIGHT,
             rank: 0,
         };
         assert!(canvas.is_visible(&visible_node));
@@ -458,11 +460,13 @@ mod tests {
         let clipped_node = Node {
             id: "B".into(),
             label: "Clipped".into(),
+            label_lines: Vec::new(),
             shape: crate::graph::NodeShape::Rectangle,
             click_target: None,
             x: 75,
             y: 0,
             width: 10, // x + width = 85 > 80
+            height: crate::style::BOX_HEIGHT,
             rank: 0,
         };
         assert!(!canvas.is_visible(&clipped_node));

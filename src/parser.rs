@@ -84,6 +84,10 @@ lazy_static! {
 pub struct ParseConfig {
     pub style: Option<String>,
     pub max_label: Option<usize>,
+    /// Enable multiline label wrapping (experimental; default off).
+    pub wrap_labels: Option<bool>,
+    /// Maximum number of label lines when wrapping is enabled.
+    pub max_label_lines: Option<usize>,
 }
 
 /// Parse result containing graph and any in-file configuration
@@ -586,16 +590,9 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
         // Get shape from detected shapes, default to Rectangle for undefined nodes
         let shape = node_shapes.get(id).copied().unwrap_or(NodeShape::Rectangle);
 
-        graph.nodes.push(Node {
-            id: id.clone(),
-            label,
-            shape,
-            click_target: click_targets.get(id).cloned(),
-            x: 0,
-            y: 0,
-            width: 0,
-            rank: 0,
-        });
+        let mut node = Node::with_shape(id.clone(), label, shape);
+        node.click_target = click_targets.get(id).cloned();
+        graph.nodes.push(node);
     }
 
     // Store warnings in graph
@@ -621,7 +618,25 @@ fn parse_config_directive(caps: &regex::Captures, config: &mut ParseConfig) {
                 config.max_label = Some(n);
             }
         }
+        "wrap" | "wrap_labels" => {
+            if let Some(b) = parse_bool(value) {
+                config.wrap_labels = Some(b);
+            }
+        }
+        "max_lines" | "max_label_lines" => {
+            if let Ok(n) = value.parse::<usize>() {
+                config.max_label_lines = Some(n);
+            }
+        }
         _ => {} // Ignore unknown config keys
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -904,6 +919,20 @@ click A "gateway.md""#;
         let input = "graph TD\n%% termiflow: max_label=30\nA[Node]";
         let result = parse(input, false).unwrap();
         assert_eq!(result.config.max_label, Some(30));
+    }
+
+    #[test]
+    fn test_config_wrap_labels() {
+        let input = "graph TD\n%% termiflow: wrap=true\nA[Node]";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.config.wrap_labels, Some(true));
+    }
+
+    #[test]
+    fn test_config_max_label_lines() {
+        let input = "graph TD\n%% termiflow: max_lines=3\nA[Node]";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.config.max_label_lines, Some(3));
     }
 
     // === COMMENTS ===

@@ -27,6 +27,7 @@ pub mod config;
 pub mod geom;
 pub mod graph;
 pub mod layout;
+pub mod measure;
 pub mod orientation;
 pub mod portals;
 pub mod parser;
@@ -111,15 +112,19 @@ pub fn render(input: &str, options: RenderOptions) -> Result<String> {
     // Parse
     let parse_result = parser::parse(input, options.strict)?;
 
-    // Layout (default coarse waterfall)
-    let graph = layout::coarse_waterfall(parse_result.graph)?;
-
     // Build config from options + in-file directives
     let config = Config::builder()
         .max_label_width(options.max_label_width)
         .strict(options.strict)
         .style(CompositeStyle::from_base(options.style))
         .build(&parse_result.config);
+
+    // Measure labels + node height (opt-in via config)
+    let mut graph = parse_result.graph;
+    measure::measure_graph(&mut graph, &config);
+
+    // Layout (default coarse waterfall)
+    let graph = layout::coarse_waterfall(graph)?;
 
     // Render
     render::render(&graph, &config)

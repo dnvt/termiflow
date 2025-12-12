@@ -10,7 +10,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 // Use the termiflow library
-use termiflow::{layout, parse, render_canvas, CompositeStyle, Config};
+use termiflow::{layout, measure, parse, render_canvas, CompositeStyle, Config};
 
 /// Interactive TUI graph explorer - jq for diagrams
 #[derive(Parser)]
@@ -48,6 +48,14 @@ pub struct Cli {
     /// Maximum label width before truncation
     #[arg(long, default_value = "20")]
     pub max_label: usize,
+
+    /// Enable multiline label wrapping (experimental; default off)
+    #[arg(long)]
+    pub wrap: bool,
+
+    /// Maximum number of label lines when wrapping is enabled
+    #[arg(long, value_name = "N")]
+    pub max_lines: Option<usize>,
 
     /// Exit with error on any parse warning
     #[arg(long)]
@@ -125,7 +133,12 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     // Load configuration (CLI > in-file > config file)
     let mut builder = Config::builder()
         .max_label_width(cli.max_label)
+        .wrap_labels(cli.wrap)
         .strict(cli.strict);
+
+    if let Some(n) = cli.max_lines {
+        builder = builder.max_label_lines(n);
+    }
 
     // Only apply style if explicitly provided on CLI
     if let Some(ref style_str) = cli.style {
@@ -134,9 +147,13 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
 
     let config = builder.build(&parse_result.config);
 
+    // Prepare node metrics (wrap/truncation + box height) before layout.
+    let mut graph = parse_result.graph;
+    measure::measure_graph(&mut graph, &config);
+
     // Run layout algorithm (may add warnings)
     let t_layout_start = std::time::Instant::now();
-    let graph = layout::coarse_waterfall(parse_result.graph)?;
+    let graph = layout::coarse_waterfall(graph)?;
     if debug_timing {
         eprintln!("termiflow: layout {:?}", t_layout_start.elapsed());
         eprintln!(
@@ -235,4 +252,3 @@ impl Cli {
         self.file.as_ref().or(self.file_flag.as_ref())
     }
 }
-

@@ -58,7 +58,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     let nodes_bottom = graph
         .nodes
         .iter()
-        .map(|n| n.y + BOX_HEIGHT)
+        .map(|n| n.bottom_y())
         .max()
         .unwrap_or(0);
 
@@ -326,16 +326,23 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
 
     // Draw boxes AFTER edges (boxes overwrite any edges passing through them)
     for node in &visible_nodes {
-        let label = truncate_label(
-            &node.label,
-            config.max_label_width.min(node.width.saturating_sub(4)),
-        );
+        let fallback;
+        let label_lines: &[String] = if node.label_lines.is_empty() {
+            fallback = vec![truncate_label(
+                &node.label,
+                config.max_label_width.min(node.width.saturating_sub(4)),
+            )];
+            &fallback
+        } else {
+            &node.label_lines
+        };
         shapes::draw_node(
             &mut canvas,
             node.x,
             node.y,
             node.width,
-            &label,
+            node.height.max(BOX_HEIGHT),
+            label_lines,
             node.shape,
             &chars,
             graph.direction,
@@ -361,7 +368,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             Direction::RL => (from.x, cycle::center_y(from), chars.junction_left),
             Direction::TD | Direction::TB => (
                 from.center_x(),
-                from.y + BOX_HEIGHT - 1,
+                from.bottom_y().saturating_sub(1),
                 chars.junction_down,
             ),
             Direction::BT => (from.center_x(), from.y, chars.junction_up),
@@ -914,7 +921,7 @@ fn draw_edge_label(
             // Vertical layout: place label on vertical segment
             let src_center_x = center_x(from);
             let edge_x = center_x(to);
-            let stem_start_y = from.y + BOX_HEIGHT;
+            let stem_start_y = from.bottom_y();
             let arrow_y = to.y.saturating_sub(1);
 
             // For straight edges (aligned), place label in middle of vertical span
@@ -978,7 +985,7 @@ fn draw_edge_label(
             let src_center_x = center_x(from);
             let edge_x = center_x(to);
             let stem_start_y = from.y.saturating_sub(1);
-            let arrow_y = to.y + BOX_HEIGHT;
+            let arrow_y = to.bottom_y();
 
             let label_y = if src_center_x == edge_x {
                 // Straight edge: place label in middle of vertical span
@@ -1323,7 +1330,7 @@ fn segment_on_border(seg: &Segment, bounds: &crate::graph::Rectangle) -> bool {
 
 fn overlaps_node(nodes: &[&Node], x: usize, y: usize, width: usize) -> bool {
     for n in nodes {
-        if y >= n.y && y < n.y + BOX_HEIGHT {
+        if y >= n.y && y < n.bottom_y() {
             let nx0 = n.x;
             let nx1 = n.x + n.width;
             if x < nx1 && x + width > nx0 {
@@ -1587,7 +1594,7 @@ fn draw_convergent_edge_label(
         Direction::TD | Direction::TB => {
             // Place label on vertical line from source, before merge point
             let src_x = center_x(from);
-            let stem_start_y = from.y + BOX_HEIGHT;
+            let stem_start_y = from.bottom_y();
             // Place label just below the source box on the vertical stem
             let label_y = stem_start_y + 1;
 
