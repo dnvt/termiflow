@@ -1488,13 +1488,15 @@ fn route_cross_subgraph_td(
     let mut cursor_y = stem_start_y;
 
     // Walk to just below the source subgraph border (if any) to keep turns outside.
+    let mut walked_to_source_border = false;
     if let Some(src_id) = from_sg {
         if let Some(src_sg) = graph.get_subgraph(src_id) {
-            let exit_y = src_sg
+            let src_border_y = src_sg
                 .bounds
                 .y
                 .saturating_add(src_sg.bounds.height.saturating_sub(1));
-            let exit_y = exit_y.min(arrow_y);
+            let exit_y = src_border_y.min(arrow_y);
+            walked_to_source_border = exit_y == src_border_y;
             for y in cursor_y..=exit_y {
                 canvas.set_edge_char(cursor_x, y, style.edge_v, style);
             }
@@ -1576,7 +1578,10 @@ fn route_cross_subgraph_td(
     }
 
     // Reinstate clean verticals on pierced borders to avoid junction artifacts.
-    if let Some(src_sg_id) = from_sg {
+    if walked_to_source_border {
+        let Some(src_sg_id) = from_sg else {
+            return true;
+        };
         if let Some(src_sg) = graph.get_subgraph(src_sg_id) {
             let border_y = src_sg.bounds.y + src_sg.bounds.height.saturating_sub(1);
             if portal_x < canvas.width && border_y < canvas.height {
@@ -1630,7 +1635,7 @@ fn route_divergent_into_subgraph_td(
 
     // Connect source to the subgraph entry (outside the border).
     let (stem_x, stem_y) = edge_exit_point(source, direction);
-    canvas.set_edge_char(stem_x, stem_y, style.junction_down, style);
+    canvas.set_edge_char(stem_x, stem_y, coords.primary_edge_char(style), style);
     if entry_x != stem_x {
         let (hx0, hx1) = if entry_x > stem_x {
             (stem_x.saturating_add(1), entry_x.saturating_sub(1))

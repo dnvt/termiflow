@@ -262,9 +262,9 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     }
 
     // Then, handle remaining divergence cases (one source → multiple targets)
-    let mut source_ids: Vec<&str> = sources_with_edges.into_iter().collect();
-    source_ids.sort();
-    for source_id in source_ids {
+    let mut source_ids: Vec<&str> = sources_with_edges.iter().copied().collect();
+    source_ids.sort_unstable();
+    for &source_id in &source_ids {
         let Some(from) = graph.get_node(source_id) else {
             continue;
         };
@@ -343,8 +343,8 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     }
 
     // Draw junction characters AFTER boxes so ports stay visible (boxes overwrite edges).
-    // Shows where edges exit source boxes for all orientations.
-    for &source_id in edges_by_source.keys() {
+    // Shows where edges exit source boxes for all orientations (including edges with precomputed routes).
+    for &source_id in &source_ids {
         let Some(from) = graph.get_node(source_id) else {
             continue;
         };
@@ -720,6 +720,31 @@ fn reinforce_subgraph_portals(
                     let existing = canvas.get(right_x, py);
                     if right_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing) {
                         canvas.set(right_x, py, chars.edge_h);
+                    }
+                }
+            }
+        }
+
+        // Repair any carved portal holes that ended up unused (e.g. nested subgraphs where
+        // edges don't actually cross the outer border). Only applies to the bottom border
+        // since titles live on the top border.
+        if bottom_y < canvas.height && right_x > left_x.saturating_add(2) {
+            let mut fill: Option<char> = None;
+            for x in (left_x + 1)..right_x {
+                let ch = canvas.get(x, bottom_y);
+                if ch != ' '
+                    && !canvas::is_vertical(ch, chars)
+                    && !canvas::is_arrow(ch)
+                    && !is_textual(ch)
+                {
+                    fill = Some(ch);
+                    break;
+                }
+            }
+            if let Some(fill_ch) = fill {
+                for x in (left_x + 1)..right_x {
+                    if canvas.get(x, bottom_y) == ' ' {
+                        canvas.set(x, bottom_y, fill_ch);
                     }
                 }
             }
