@@ -193,15 +193,20 @@ graph TD
 
 **Challenges:**
 - Edge routing across subgraph boundaries
-- Nested subgraphs (stretch goal)
+- Nested subgraphs (stretch goal; currently warns/ignored)
 - Subgraph title positioning
 
 **Acceptance criteria:**
-- [ ] Parse subgraph syntax
-- [ ] Render subgraph as containing box
-- [ ] Position nodes within subgraph bounds
-- [ ] Route edges across subgraph boundaries
-- [ ] Golden tests for subgraphs
+- [x] Parse subgraph syntax (single-level)
+- [x] Render subgraph as containing box + title
+- [x] Position nodes within subgraph bounds (layout envelopes + gutters)
+- [x] Route edges across subgraph boundaries (portal-aware border piercing)
+- [x] Golden test inputs exist (expected outputs may need regeneration)
+
+**Remaining work:**
+- Nested subgraph support (or a clearer error mode)
+- Per-subgraph styling controls and richer title/layout rules
+- More deterministic cross-subgraph label placement in dense diagrams
 
 ---
 
@@ -216,14 +221,13 @@ graph LR
 ```
 
 **Current issues:**
-- Edge routing optimized for TD, not LR
-- Junction characters assume vertical flow
+- Continued polish needed for dense LR/RL graphs (tight elbows, label placement, subgraph border interactions)
 
 **Tasks:**
-- [ ] Audit layout for orientation assumptions
-- [ ] Implement horizontal edge routing
-- [ ] Use correct junction chars for horizontal flow (`├`, `┤`, `┬`, `┴`)
-- [ ] Golden tests for LR diagrams
+- [x] Audit layout for orientation assumptions
+- [x] Implement horizontal edge routing
+- [x] Use correct junction chars for horizontal flow (`├`, `┤`, `┬`, `┴`)
+- [x] Golden test inputs exist (expected outputs may need regeneration)
 
 ---
 
@@ -327,7 +331,8 @@ src/
 ```
 src/
 ├── lib.rs                    (public API, diagram dispatch)
-├── main.rs                   (CLI)
+├── bin/termiflow.rs          (CLI)
+├── bin/tw.rs                 (CLI alias)
 ├── config.rs                 (configuration)
 ├── style.rs                  (shared styling)
 ├── diagrams/

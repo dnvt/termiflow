@@ -10,11 +10,15 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
-use crate::graph::{Direction, Edge, Graph, Node, NodeShape};
+use crate::graph::{Direction, Edge, Graph, Node, NodeShape, Subgraph};
 
 lazy_static! {
     // SPEC §1.1: Supported syntax patterns
-    static ref RE_DIRECTION: Regex = Regex::new(r"graph\s+(TD|LR|RL|TB|BT)").unwrap();
+    // Accept both Mermaid flowchart headers:
+    // - `graph TD` (legacy)
+    // - `flowchart TD` (common generator output)
+    static ref RE_DIRECTION: Regex =
+        Regex::new(r"^(?:graph|flowchart)\s+(TD|LR|RL|TB|BT)\b").unwrap();
 
     // Node shape regexes - order matters! More specific patterns first
     // Database: ID[(label)]
@@ -53,16 +57,26 @@ lazy_static! {
     static ref RE_CLICK: Regex = Regex::new(r#"click\s+(\w+)\s+["']([^"']+)["']"#).unwrap();
     static ref RE_CONFIG: Regex = Regex::new(r"%%\s*termiflow:\s*(\w+)=([^\s]+)").unwrap();
     static ref RE_COMMENT: Regex = Regex::new(r"^\s*%%").unwrap();
+    // Mermaid keywords that identify non-flowchart diagram types. Flowcharts are handled
+    // via `RE_DIRECTION` above.
     static ref RE_DIAGRAM_TYPE: Regex = Regex::new(
-        r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram-v2|stateDiagram|erDiagram|journey|gantt|pie|requirementDiagram|timeline|mindmap|gitGraph|block|quadrantChart)\b"
-    ).unwrap();
+        r"^(sequenceDiagram|classDiagram|stateDiagram-v2|stateDiagram|erDiagram|journey|gantt|pie|requirementDiagram|timeline|mindmap|gitGraph|block|quadrantChart)\b",
+    )
+    .unwrap();
 
     // SPEC §1.2: Unsupported syntax patterns
     static ref RE_NESTED_BRACKET: Regex = Regex::new(r"\[[^\]]*\[").unwrap();
     static ref RE_PIPE_IN_LABEL: Regex = Regex::new(r"\[[^\]]*\|[^\]]*\]").unwrap();
-    static ref RE_SUBGRAPH: Regex = Regex::new(r"^\s*subgraph\s").unwrap();
     static ref RE_STYLE: Regex = Regex::new(r"^\s*style\s+\w+").unwrap();
     static ref RE_CLASSDEF: Regex = Regex::new(r"^\s*classDef\s").unwrap();
+
+    // Subgraph patterns (single-level supported; nested warns/ignored)
+    // subgraph ID [title] or subgraph ID ["title"]
+    static ref RE_SUBGRAPH_BRACKET: Regex = Regex::new(r"^\s*subgraph\s+(\w+)\s*\[([^\]]*)\]").unwrap();
+    // subgraph title (title becomes sanitized ID)
+    static ref RE_SUBGRAPH_PLAIN: Regex = Regex::new(r"^\s*subgraph\s+(.+)$").unwrap();
+    // end keyword closes subgraph
+    static ref RE_SUBGRAPH_END: Regex = Regex::new(r"^\s*end\s*$").unwrap();
 }
 
 /// Configuration parsed from in-file directives
@@ -92,6 +106,19 @@ fn first_meaningful_line<'a>(lines: &[&'a str]) -> Option<(usize, &'a str)> {
         return Some((i, trimmed));
     }
     None
+}
+
+/// Sanitize a subgraph title into a valid ID
+/// "My Subgraph" -> "my_subgraph"
+fn sanitize_subgraph_id(title: &str) -> String {
+    title
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
 }
 
 /// Collect node definitions matching a specific shape regex.
@@ -156,7 +183,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
         if let Some(caps) = RE_DIAGRAM_TYPE.captures(first_content) {
             let keyword = &caps[1];
             bail!(
-                "termiflow: error: line {}: diagram type not supported (found: '{}') — only flowchart `graph TD/LR/TB/BT` is supported",
+                "termiflow: error: line {}: diagram type not supported (found: '{}') — only flowchart `graph|flowchart TD/LR/TB/BT` is supported",
                 line_num + 1,
                 keyword
             );
@@ -236,6 +263,15 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     let mut node_shapes: HashMap<String, NodeShape> = HashMap::new();
     let mut node_first_ref: HashMap<String, usize> = HashMap::new();
 
+    // Subgraph tracking
+    let mut current_subgraph: Option<String> = None;
+    let mut subgraph_nesting_depth: usize = 0;
+    // subgraph_id -> (title, node_ids)
+    let mut subgraph_data: HashMap<String, (Option<String>, Vec<String>)> = HashMap::new();
+    let mut subgraph_order: Vec<String> = Vec::new(); // Preserve declaration order
+                                                      // node_id -> subgraph_id
+    let mut node_to_subgraph: HashMap<String, String> = HashMap::new();
+
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
 
@@ -245,6 +281,70 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             || RE_COMMENT.is_match(trimmed)
             || RE_DIRECTION.is_match(trimmed)
         {
+            continue;
+        }
+
+        // Handle subgraph start: `subgraph ID [title]` or `subgraph title`
+        if let Some(caps) = RE_SUBGRAPH_BRACKET.captures(trimmed) {
+            let id = caps[1].to_string();
+            let title = caps[2].trim();
+            let title = if title.is_empty() {
+                None
+            } else {
+                Some(title.trim_matches('"').to_string())
+            };
+
+            if current_subgraph.is_some() {
+                // Nested subgraph - warn and track depth for proper `end` matching
+                subgraph_nesting_depth += 1;
+                warnings.push(format!(
+                    "termiflow: warning: line {}: Nested subgraphs not supported, ignoring inner subgraph '{}'",
+                    i + 1, id
+                ));
+                if strict {
+                    bail!("{}", warnings.last().unwrap());
+                }
+            } else {
+                current_subgraph = Some(id.clone());
+                subgraph_data.insert(id.clone(), (title, Vec::new()));
+                subgraph_order.push(id);
+            }
+            continue;
+        }
+
+        if RE_SUBGRAPH_PLAIN.is_match(trimmed) && !RE_SUBGRAPH_BRACKET.is_match(trimmed) {
+            if let Some(caps) = RE_SUBGRAPH_PLAIN.captures(trimmed) {
+                let title = caps[1].trim().to_string();
+                let id = sanitize_subgraph_id(&title);
+
+                if current_subgraph.is_some() {
+                    subgraph_nesting_depth += 1;
+                    warnings.push(format!(
+                        "termiflow: warning: line {}: Nested subgraphs not supported, ignoring inner subgraph '{}'",
+                        i + 1, title
+                    ));
+                    if strict {
+                        bail!("{}", warnings.last().unwrap());
+                    }
+                } else {
+                    current_subgraph = Some(id.clone());
+                    subgraph_data.insert(id.clone(), (Some(title), Vec::new()));
+                    subgraph_order.push(id);
+                }
+                continue;
+            }
+        }
+
+        // Handle subgraph end: `end`
+        if RE_SUBGRAPH_END.is_match(trimmed) {
+            if subgraph_nesting_depth > 0 {
+                // Closing a nested (ignored) subgraph
+                subgraph_nesting_depth -= 1;
+            } else if current_subgraph.is_some() {
+                // Closing the current subgraph
+                current_subgraph = None;
+            }
+            // If no subgraph open, just ignore stray `end`
             continue;
         }
 
@@ -267,6 +367,9 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             }
             continue;
         }
+
+        // Track nodes discovered on this line (for subgraph membership)
+        let nodes_before = ordered_ids.len();
 
         // Collect node definitions with shapes - order matters! More specific first
         // Shape regexes ordered from most specific to least (Rectangle must be last)
@@ -350,7 +453,42 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
 
             break;
         }
+
+        // Associate newly discovered nodes with current subgraph
+        if let Some(ref sg_id) = current_subgraph {
+            for node_id in &ordered_ids[nodes_before..] {
+                // Only associate if not already in a subgraph (first declaration wins)
+                if !node_to_subgraph.contains_key(node_id) {
+                    node_to_subgraph.insert(node_id.clone(), sg_id.clone());
+                    if let Some((_, ref mut nodes)) = subgraph_data.get_mut(sg_id) {
+                        nodes.push(node_id.clone());
+                    }
+                }
+            }
+        }
     }
+
+    // Warn about unclosed subgraph
+    if current_subgraph.is_some() {
+        warnings.push("termiflow: warning: Unclosed subgraph at end of file".to_string());
+        if strict {
+            bail!("{}", warnings.last().unwrap());
+        }
+    }
+
+    // Build Subgraph objects from collected data
+    for sg_id in &subgraph_order {
+        if let Some((title, node_ids)) = subgraph_data.remove(sg_id) {
+            let mut subgraph = Subgraph::new(sg_id.clone(), title);
+            for node_id in node_ids {
+                subgraph.add_node(node_id);
+            }
+            graph.add_subgraph(subgraph);
+        }
+    }
+
+    // Copy node-to-subgraph mapping
+    graph.node_subgraph = node_to_subgraph;
 
     // PASS 2: Build graph with auto-create for missing labels
     let mut click_targets: HashMap<String, String> = HashMap::new();
@@ -508,12 +646,7 @@ fn check_unsupported_syntax(line: &str, line_num: usize) -> Option<String> {
         ));
     }
 
-    if RE_SUBGRAPH.is_match(line) {
-        return Some(format!(
-            "termiflow: warning: line {}: Subgraphs not supported in v1",
-            line_num
-        ));
-    }
+    // Note: Subgraphs are now supported - handled in main parse loop
 
     if RE_STYLE.is_match(line) {
         return Some(format!(
@@ -641,6 +774,12 @@ mod tests {
     fn test_direction_bt() {
         let result = parse("graph BT\nA[Node]", false).unwrap();
         assert!(matches!(result.graph.direction, Direction::BT));
+    }
+
+    #[test]
+    fn test_direction_flowchart_alias() {
+        let result = parse("flowchart LR\nA[Node]", false).unwrap();
+        assert!(matches!(result.graph.direction, Direction::LR));
     }
 
     // === NODE PARSING ===
@@ -807,14 +946,70 @@ click A "gateway.md""#;
     // === UNSUPPORTED SYNTAX DETECTION ===
 
     #[test]
-    fn test_subgraph_unsupported() {
+    fn test_subgraph_basic() {
+        let input = "graph TD\nsubgraph SG1 [My Subgraph]\nA[Node A]\nB[Node B]\nend\nC[Outside]";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 1);
+        let sg = &result.graph.subgraphs[0];
+        assert_eq!(sg.id, "SG1");
+        assert_eq!(sg.title, Some("My Subgraph".to_string()));
+        assert!(sg.contains_node("A"));
+        assert!(sg.contains_node("B"));
+        assert!(!sg.contains_node("C"));
+        // Check node_subgraph mapping
+        assert_eq!(result.graph.get_node_subgraph("A"), Some("SG1"));
+        assert_eq!(result.graph.get_node_subgraph("B"), Some("SG1"));
+        assert_eq!(result.graph.get_node_subgraph("C"), None);
+    }
+
+    #[test]
+    fn test_subgraph_plain_title() {
+        let input = "graph TD\nsubgraph My Title\nA[Node]\nend";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 1);
+        let sg = &result.graph.subgraphs[0];
+        assert_eq!(sg.id, "my_title");
+        assert_eq!(sg.title, Some("My Title".to_string()));
+        assert!(sg.contains_node("A"));
+    }
+
+    #[test]
+    fn test_subgraph_unclosed_warns() {
         let input = "graph TD\nsubgraph X\nA[Node]";
         let result = parse(input, false).unwrap();
         assert!(result
             .graph
             .warnings
             .iter()
-            .any(|w| w.contains("Subgraphs not supported")));
+            .any(|w| w.contains("Unclosed subgraph")));
+    }
+
+    #[test]
+    fn test_subgraph_nested_warns() {
+        let input = "graph TD\nsubgraph Outer\nA[Node]\nsubgraph Inner\nB[Node]\nend\nend";
+        let result = parse(input, false).unwrap();
+        assert!(result
+            .graph
+            .warnings
+            .iter()
+            .any(|w| w.contains("Nested subgraphs not supported")));
+        // Only outer subgraph should exist
+        assert_eq!(result.graph.subgraphs.len(), 1);
+        assert_eq!(result.graph.subgraphs[0].id, "outer");
+        // Both nodes should be in outer subgraph (inner is ignored)
+        assert!(result.graph.subgraphs[0].contains_node("A"));
+        assert!(result.graph.subgraphs[0].contains_node("B"));
+    }
+
+    #[test]
+    fn test_subgraph_multiple() {
+        let input = "graph TD\nsubgraph SG1 [First]\nA[A]\nend\nsubgraph SG2 [Second]\nB[B]\nend";
+        let result = parse(input, false).unwrap();
+        assert_eq!(result.graph.subgraphs.len(), 2);
+        assert_eq!(result.graph.subgraphs[0].id, "SG1");
+        assert_eq!(result.graph.subgraphs[1].id, "SG2");
+        assert!(result.graph.subgraphs[0].contains_node("A"));
+        assert!(result.graph.subgraphs[1].contains_node("B"));
     }
 
     #[test]
