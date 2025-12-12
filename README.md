@@ -46,6 +46,10 @@ tw --style "corner:dots,border:heavy" diagram.md
 # Wrap long labels across multiple lines (experimental)
 tw --wrap --max-lines 3 diagram.md
 
+# Output trimming/padding
+tw --pad 1 diagram.md
+tw --no-crop diagram.md
+
 # Strict mode (fail on warnings)
 tw --strict diagram.md
 
