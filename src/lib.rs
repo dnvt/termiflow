@@ -51,14 +51,24 @@ pub use style::{BaseStyle, CompositeStyle};
 
 use anyhow::Result;
 /// Options for rendering a diagram
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RenderOptions {
     /// Border style (default: Unicode)
     pub style: BaseStyle,
     /// Maximum label width before truncation (default: 20)
     pub max_label_width: usize,
+    /// Enable multiline label wrapping (default: false)
+    pub wrap_labels: bool,
+    /// Maximum number of label lines when wrapping is enabled (default: 1)
+    pub max_label_lines: usize,
     /// Strict mode - fail on any parse warning (default: false)
     pub strict: bool,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RenderOptions {
@@ -66,6 +76,8 @@ impl RenderOptions {
         Self {
             style: BaseStyle::default(),
             max_label_width: 20,
+            wrap_labels: false,
+            max_label_lines: 1,
             strict: false,
         }
     }
@@ -77,6 +89,16 @@ impl RenderOptions {
 
     pub fn with_max_label(mut self, width: usize) -> Self {
         self.max_label_width = width;
+        self
+    }
+
+    pub fn with_wrap_labels(mut self, wrap: bool) -> Self {
+        self.wrap_labels = wrap;
+        self
+    }
+
+    pub fn with_max_label_lines(mut self, lines: usize) -> Self {
+        self.max_label_lines = lines;
         self
     }
 
@@ -115,6 +137,8 @@ pub fn render(input: &str, options: RenderOptions) -> Result<String> {
     // Build config from options + in-file directives
     let config = Config::builder()
         .max_label_width(options.max_label_width)
+        .wrap_labels(options.wrap_labels)
+        .max_label_lines(options.max_label_lines)
         .strict(options.strict)
         .style(CompositeStyle::from_base(options.style))
         .build(&parse_result.config);
