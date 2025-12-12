@@ -11,6 +11,7 @@ Current status: print-to-stdout mode is implemented (jq-style); `--tui` is stubb
 - **Mermaid-Lite parser** - Supports common flowchart syntax (`graph TD`, nodes, edges) with strict/lenient modes
 - **9 border styles** - `ascii`, `unicode`, `double`, `rounded`, `heavy`, `dots`, `plus`, `stars`, `blocks`
 - **Composite styling** - Mix and match style components: `corner:dots,border:heavy`
+- **Multiline labels (experimental)** - `--wrap` with `--max-lines` for taller boxes
 - **Subgraphs** - Single-level `subgraph ... end` containers with titles and portal-aware border piercing
 - **9 node shapes** - Rectangle, rounded, diamond, circle, stadium, hexagon, database, subroutine, asymmetric
 - **Edge labels** - Pipe syntax `A -->|label| B` and text syntax `A -- label --> B`
@@ -41,6 +42,9 @@ some-generator | tw
 
 # Choose a style or composite style
 tw --style "corner:dots,border:heavy" diagram.md
+
+# Wrap long labels across multiple lines (experimental)
+tw --wrap --max-lines 3 diagram.md
 
 # Strict mode (fail on warnings)
 tw --strict diagram.md
