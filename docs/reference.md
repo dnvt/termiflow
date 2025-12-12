@@ -17,6 +17,8 @@
 - `--max-label`: label width budget in columns (default 20). Affects truncation and box sizing.
 - `--wrap`: enable multiline label wrapping (experimental; default off).
 - `--max-lines`: max label lines when wrapping is enabled (default 1).
+- `--crop` / `--no-crop`: crop empty margins around output (default on).
+- `--pad N`: add padding (spaces/lines) around output (default 0).
 - `--strict`: treat parse warnings as errors.
 
 Composite components: `corner`, `border`, `arrow`, `edge`, `junction`, `back`, `subgraph`.
@@ -60,6 +62,8 @@ style = "unicode"
 max_label_width = 25
 wrap = true
 max_lines = 3
+crop = true
+pad = 0
 ```
 
 ## Debug
