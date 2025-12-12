@@ -38,6 +38,84 @@ fn split_long_word(word: &str, max_width: usize) -> Vec<String> {
         return vec![String::new()];
     }
 
+    if display_width(word) <= max_width {
+        return vec![word.to_string()];
+    }
+
+    // Prefer splitting long "code-ish" tokens on common delimiters so wrapping
+    // doesn't produce awkward mid-word breaks (e.g. `route_convergent_edg` / `es`).
+    //
+    // Delimiters are kept with the left chunk (e.g. `route_convergent_` + `edges`,
+    // `Canvas::` + `set_edge_char`) to avoid lines starting with punctuation.
+    let mut parts: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < word.len() {
+        if word[i..].starts_with("::") {
+            let end = i + 2;
+            if end > start {
+                parts.push(word[start..end].to_string());
+            }
+            start = end;
+            i = end;
+            continue;
+        }
+
+        let ch = word[i..].chars().next().unwrap();
+        let len = ch.len_utf8();
+        if matches!(ch, '_' | '-' | '.' | '/') {
+            let end = i + len;
+            if end > start {
+                parts.push(word[start..end].to_string());
+            }
+            start = end;
+            i = end;
+            continue;
+        }
+
+        i += len;
+    }
+    if start < word.len() {
+        parts.push(word[start..].to_string());
+    }
+
+    if parts.len() > 1 {
+        let mut out: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut width = 0usize;
+
+        for part in parts {
+            let part_width = display_width(&part);
+            if part_width > max_width {
+                if !current.is_empty() {
+                    out.push(std::mem::take(&mut current));
+                    width = 0;
+                }
+                // Fall back to hard splitting for an overlong segment.
+                out.extend(split_long_word(&part, max_width));
+                continue;
+            }
+
+            if width + part_width <= max_width {
+                current.push_str(&part);
+                width += part_width;
+            } else {
+                if !current.is_empty() {
+                    out.push(std::mem::take(&mut current));
+                }
+                current.push_str(&part);
+                width = part_width;
+            }
+        }
+
+        if !current.is_empty() {
+            out.push(current);
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+
     let mut out: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut width = 0usize;
