@@ -242,6 +242,47 @@ impl Canvas {
     pub fn is_visible(&self, node: &Node) -> bool {
         node.x + node.width <= self.width && node.y + node.height <= self.height
     }
+
+    /// Convert the canvas to a string, cropping empty margins and optionally padding.
+    ///
+    /// Cropping trims any fully-empty rows/columns (spaces only) around the content.
+    /// Padding adds blank rows and left/right spaces around every line.
+    pub fn to_string_cropped(&self, pad: usize) -> String {
+        if self.width == 0 || self.height == 0 {
+            return String::new();
+        }
+
+        let mut found = false;
+        let mut min_x = self.width;
+        let mut max_x = 0usize;
+        let mut min_y = self.height;
+        let mut max_y = 0usize;
+
+        for (y, row) in self.grid.iter().enumerate() {
+            for (x, c) in row.iter().enumerate() {
+                if *c != ' ' {
+                    found = true;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+
+        if !found {
+            return String::new();
+        }
+
+        let mut lines: Vec<String> = Vec::with_capacity(max_y.saturating_sub(min_y) + 1);
+        for y in min_y..=max_y {
+            let slice = &self.grid[y][min_x..=max_x];
+            let line = slice.iter().collect::<String>().trim_end().to_string();
+            lines.push(line);
+        }
+
+        pad_lines(&lines, pad)
+    }
 }
 
 impl std::fmt::Display for Canvas {
@@ -254,6 +295,31 @@ impl std::fmt::Display for Canvas {
             .join("\n");
         write!(f, "{}", output)
     }
+}
+
+fn pad_lines(lines: &[String], pad: usize) -> String {
+    if pad == 0 {
+        return lines.join("\n");
+    }
+
+    let prefix = " ".repeat(pad);
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + pad * 2);
+
+    for _ in 0..pad {
+        out.push(String::new());
+    }
+    for line in lines {
+        if line.is_empty() {
+            out.push(String::new());
+        } else {
+            out.push(format!("{prefix}{line}"));
+        }
+    }
+    for _ in 0..pad {
+        out.push(String::new());
+    }
+
+    out.join("\n")
 }
 
 #[cfg(test)]

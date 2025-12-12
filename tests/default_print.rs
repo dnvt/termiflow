@@ -21,6 +21,23 @@ fn tw_binary_alias_exists_and_prints() {
 }
 
 #[test]
+fn output_is_cropped_by_default() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .write_stdin("flowchart TD\nA[Start]\n")
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    let first_nonempty = output.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    assert!(
+        !first_nonempty.starts_with(' '),
+        "expected cropped output (no leading margin), got:\n{}",
+        output
+    );
+}
+
+#[test]
 fn wrap_flag_renders_multiline_boxes() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     let assert = cmd

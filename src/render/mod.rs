@@ -403,7 +403,38 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         }
     }
 
-    Ok(canvas.to_string())
+    let output = if config.crop {
+        canvas.to_string_cropped(config.pad)
+    } else {
+        pad_string(&canvas.to_string(), config.pad)
+    };
+
+    Ok(output)
+}
+
+fn pad_string(input: &str, pad: usize) -> String {
+    if pad == 0 {
+        return input.to_string();
+    }
+
+    let prefix = " ".repeat(pad);
+    let mut out: Vec<String> = Vec::new();
+
+    for _ in 0..pad {
+        out.push(String::new());
+    }
+    for line in input.lines() {
+        if line.is_empty() {
+            out.push(String::new());
+        } else {
+            out.push(format!("{prefix}{line}"));
+        }
+    }
+    for _ in 0..pad {
+        out.push(String::new());
+    }
+
+    out.join("\n")
 }
 
 // ============================================================================
@@ -1409,6 +1440,7 @@ mod tests {
 
         let config = Config::builder()
             .style(CompositeStyle::from_base(BaseStyle::Unicode))
+            .crop(false)
             .build(&crate::parser::ParseConfig::default());
 
         let output = render(&graph, &config).expect("render back edge");
@@ -1464,6 +1496,7 @@ mod tests {
 
         let config = Config::builder()
             .style(CompositeStyle::from_base(BaseStyle::Unicode))
+            .crop(false)
             .build(&crate::parser::ParseConfig::default());
 
         let output = render(&graph, &config).expect("render td portal");

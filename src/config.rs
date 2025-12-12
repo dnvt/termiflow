@@ -16,6 +16,10 @@ pub struct Config {
     pub wrap_labels: bool,
     /// Maximum number of label lines when wrapping is enabled.
     pub max_label_lines: usize,
+    /// Crop empty margins around the rendered canvas.
+    pub crop: bool,
+    /// Add padding (in spaces/lines) around output.
+    pub pad: usize,
     pub strict_parsing: bool,
     pub composite_style: CompositeStyle,
 }
@@ -26,6 +30,8 @@ impl Default for Config {
             max_label_width: 20,
             wrap_labels: false,
             max_label_lines: 1,
+            crop: true,
+            pad: 0,
             strict_parsing: false,
             composite_style: CompositeStyle::default(),
         }
@@ -54,6 +60,12 @@ impl Config {
             if let Some(max_label_lines) = file_cfg.max_label_lines {
                 config.max_label_lines = max_label_lines;
             }
+            if let Some(crop) = file_cfg.crop {
+                config.crop = crop;
+            }
+            if let Some(pad) = file_cfg.pad {
+                config.pad = pad;
+            }
             config.composite_style = file_cfg.composite_style;
         }
 
@@ -81,6 +93,8 @@ pub struct ConfigBuilder {
     max_label_width: Option<usize>,
     wrap_labels: Option<bool>,
     max_label_lines: Option<usize>,
+    crop: Option<bool>,
+    pad: Option<usize>,
     strict_parsing: Option<bool>,
     composite_style: Option<CompositeStyle>,
 }
@@ -102,6 +116,16 @@ impl ConfigBuilder {
 
     pub fn max_label_lines(mut self, lines: usize) -> Self {
         self.max_label_lines = Some(lines);
+        self
+    }
+
+    pub fn crop(mut self, crop: bool) -> Self {
+        self.crop = Some(crop);
+        self
+    }
+
+    pub fn pad(mut self, pad: usize) -> Self {
+        self.pad = Some(pad);
         self
     }
 
@@ -128,6 +152,12 @@ impl ConfigBuilder {
         }
         if let Some(lines) = self.max_label_lines {
             config.max_label_lines = lines;
+        }
+        if let Some(crop) = self.crop {
+            config.crop = crop;
+        }
+        if let Some(pad) = self.pad {
+            config.pad = pad;
         }
         if let Some(strict) = self.strict_parsing {
             config.strict_parsing = strict;
@@ -167,10 +197,17 @@ fn load_file_config() -> Option<FileConfig> {
                 .get("max_label_lines")
                 .and_then(|v| v.as_integer())
                 .or_else(|| value.get("max_lines").and_then(|v| v.as_integer()));
+            let crop = value
+                .get("crop")
+                .and_then(|v| v.as_bool())
+                .or_else(|| value.get("trim").and_then(|v| v.as_bool()));
+            let pad = value.get("pad").and_then(|v| v.as_integer());
             Some(FileConfig {
                 max_label_width: max_label_width.map(|n| n as usize),
                 wrap_labels,
                 max_label_lines: max_label_lines.map(|n| n as usize),
+                crop,
+                pad: pad.map(|n| n as usize),
                 composite_style,
             })
         }
@@ -186,6 +223,8 @@ struct FileConfig {
     max_label_width: Option<usize>,
     wrap_labels: Option<bool>,
     max_label_lines: Option<usize>,
+    crop: Option<bool>,
+    pad: Option<usize>,
     composite_style: CompositeStyle,
 }
 
