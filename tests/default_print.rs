@@ -94,3 +94,23 @@ fn subgraph_fanout_td_title_stays_clean() {
         output
     );
 }
+
+#[test]
+fn subgraph_complex_td_title_stays_clean() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .arg("tests/fixtures/inputs/subgraph_complex_td.md")
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    let title_row = output
+        .lines()
+        .find(|l| l.contains("Data Layer"))
+        .unwrap_or_default();
+    assert!(
+        !title_row.contains('┼'),
+        "expected no edge to pierce the title row, got:\n{}",
+        output
+    );
+}
