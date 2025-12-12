@@ -139,9 +139,26 @@ fn apply_max_lines(mut lines: Vec<String>, max_lines: usize, max_width: usize) -
     }
 
     let budget = max_width.saturating_sub(suffix_width);
-    let base = truncate_label(&lines[last_idx], budget);
+    let base = truncate_label_hard(&lines[last_idx], budget);
     lines[last_idx] = format!("{}{}", base, suffix);
     lines
+}
+
+fn truncate_label_hard(label: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut width = 0usize;
+    for c in label.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+        if width + cw > max_width {
+            break;
+        }
+        out.push(c);
+        width += cw;
+    }
+    out
 }
 
 fn single_line_label(label: &str, max_width: usize) -> Vec<String> {
@@ -309,5 +326,21 @@ mod tests {
         let w20 = g2.nodes[0].width;
 
         assert!(w20 > w10);
+    }
+
+    #[test]
+    fn wrap_uses_single_ellipsis_when_truncated_by_max_lines() {
+        let mut g = Graph::new();
+        g.nodes.push(Node::new("A", "one two three four five six seven eight nine"));
+
+        let mut cfg = Config::default();
+        cfg.wrap_labels = true;
+        cfg.max_label_width = 6;
+        cfg.max_label_lines = 2;
+
+        measure_graph(&mut g, &cfg);
+        assert_eq!(g.nodes[0].label_lines.len(), 2);
+        assert!(g.nodes[0].label_lines[1].ends_with("..."));
+        assert!(!g.nodes[0].label_lines[1].ends_with("......"));
     }
 }
