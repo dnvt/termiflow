@@ -16,6 +16,9 @@ Thumbs.db
 # Test outputs
 *.log
 
+# Local render artifacts
+/artifacts/
+
 # AI guidance docs (local only)
 AGENT.md
 CLAUDE.md
