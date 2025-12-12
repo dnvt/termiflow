@@ -502,6 +502,16 @@ fn arrow_for_dir(dir: Dir, chars: &StyleChars) -> char {
     }
 }
 
+fn is_subgraph_title_cell(graph: &Graph, x: usize, y: usize) -> bool {
+    graph.subgraphs.iter().any(|sg| {
+        sg.title.is_some()
+            && sg.bounds.is_valid()
+            && y == sg.bounds.y
+            && x >= sg.bounds.x
+            && x < sg.bounds.x.saturating_add(sg.bounds.width)
+    })
+}
+
 fn draw_segment(
     seg: &Segment,
     dir: Dir,
@@ -509,6 +519,7 @@ fn draw_segment(
     chars: &StyleChars,
     skip_start: bool,
     skip_end: bool,
+    graph: &Graph,
 ) {
     match dir {
         Dir::Left | Dir::Right => {
@@ -538,6 +549,9 @@ fn draw_segment(
 
             if draw_start <= draw_end {
                 for x in draw_start..=draw_end {
+                    if is_subgraph_title_cell(graph, x, seg.from.y) {
+                        continue;
+                    }
                     canvas.set_edge_char(x, seg.from.y, chars.edge_h, chars);
                 }
             }
@@ -565,6 +579,9 @@ fn draw_segment(
 
             if draw_start <= draw_end {
                 for y in draw_start..=draw_end {
+                    if is_subgraph_title_cell(graph, seg.from.x, y) {
+                        continue;
+                    }
                     canvas.set_edge_char(seg.from.x, y, chars.edge_v, chars);
                 }
             }
@@ -621,12 +638,14 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
             let skip_start = i > 0;
             let skip_end = is_turn;
 
-            draw_segment(seg, dir, canvas, &route_chars, skip_start, skip_end);
+            draw_segment(seg, dir, canvas, &route_chars, skip_start, skip_end, graph);
 
             if is_turn {
                 if let Some(nd) = next_dir {
                     if let Some(corner) = corner_for_turn(dir, nd, &route_chars) {
-                        canvas.set_edge_char(seg.to.x, seg.to.y, corner, &route_chars);
+                        if !is_subgraph_title_cell(graph, seg.to.x, seg.to.y) {
+                            canvas.set_edge_char(seg.to.x, seg.to.y, corner, &route_chars);
+                        }
                     }
                 }
             }
@@ -640,7 +659,9 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
                 Direction::RL => Dir::Left,
             };
             let arrow = arrow_for_dir(dir, &route_chars);
-            canvas.set(last_seg.to.x, last_seg.to.y, arrow);
+            if !is_subgraph_title_cell(graph, last_seg.to.x, last_seg.to.y) {
+                canvas.set(last_seg.to.x, last_seg.to.y, arrow);
+            }
         }
     }
 }
@@ -1505,12 +1526,14 @@ mod tests {
             .map(|sg| sg.bounds.y)
             .unwrap_or(0);
         let portal_x = graph.get_node("B").map(|n| n.center_x()).unwrap_or(0);
-        let glyph = char_at(&output, portal_x, portal_y).unwrap_or(' ');
-        // Allow either a cleared slot or a vertical/junction pierce.
-        let is_pierced = matches!(glyph, '│' | '┬' | '┴' | '┼' | ' ');
+        // With titled subgraphs we intentionally avoid drawing on the title row;
+        // the "pierce" should appear just inside the container.
+        let glyph = char_at(&output, portal_x, portal_y.saturating_add(1)).unwrap_or(' ');
+        let is_pierced = matches!(glyph, '│' | '┬' | '┴' | '┼');
         assert!(
             is_pierced,
-            "expected vertical pierce at ({portal_x},{portal_y}), got '{glyph}'\n{output}"
+            "expected vertical pierce just inside at ({portal_x},{}), got '{glyph}'\n{output}",
+            portal_y.saturating_add(1)
         );
     }
 

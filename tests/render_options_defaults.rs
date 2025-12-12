@@ -9,4 +9,5 @@ fn render_options_default_matches_new() {
     assert_eq!(a.strict, b.strict);
     assert_eq!(a.crop, b.crop);
     assert_eq!(a.pad, b.pad);
+    assert_eq!(a.compact, b.compact);
 }

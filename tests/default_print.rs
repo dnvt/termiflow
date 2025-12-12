@@ -38,6 +38,40 @@ fn output_is_cropped_by_default() {
 }
 
 #[test]
+fn compact_flag_produces_tighter_output() {
+    let input = "flowchart TD\nA[Start] --> B[Process] --> C[End]\n";
+
+    let mut normal = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let normal_out = normal
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let mut compact = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let compact_out = compact
+        .arg("--compact")
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let normal_s = String::from_utf8_lossy(&normal_out);
+    let compact_s = String::from_utf8_lossy(&compact_out);
+
+    assert!(
+        compact_s.lines().count() <= normal_s.lines().count(),
+        "expected compact output to be no taller than normal\nnormal:\n{}\ncompact:\n{}",
+        normal_s,
+        compact_s
+    );
+}
+
+#[test]
 fn wrap_flag_renders_multiline_boxes() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     let assert = cmd

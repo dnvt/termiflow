@@ -67,6 +67,8 @@ pub struct RenderOptions {
     pub crop: bool,
     /// Add padding around output (default: 0)
     pub pad: usize,
+    /// Use a tighter layout spacing (default: false)
+    pub compact: bool,
 }
 
 impl Default for RenderOptions {
@@ -85,6 +87,7 @@ impl RenderOptions {
             strict: false,
             crop: true,
             pad: 0,
+            compact: false,
         }
     }
 
@@ -120,6 +123,11 @@ impl RenderOptions {
 
     pub fn with_pad(mut self, pad: usize) -> Self {
         self.pad = pad;
+        self
+    }
+
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
         self
     }
 }
@@ -166,7 +174,12 @@ pub fn render(input: &str, options: RenderOptions) -> Result<String> {
     measure::measure_graph(&mut graph, &config);
 
     // Layout (default coarse waterfall)
-    let graph = layout::coarse_waterfall(graph)?;
+    let layout_config = if options.compact {
+        layout::CoarseLayoutConfig::compact()
+    } else {
+        layout::CoarseLayoutConfig::default()
+    };
+    let graph = layout::coarse_waterfall_with_config(graph, layout_config)?;
 
     // Render
     render::render(&graph, &config)

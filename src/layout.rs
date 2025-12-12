@@ -121,13 +121,32 @@ impl Default for CoarseLayoutConfig {
     }
 }
 
-/// Preferred entry point for the coarse layout engine.
-pub fn coarse_waterfall(graph: Graph) -> Result<Graph> {
-    let mut config = CoarseLayoutConfig::default();
+impl CoarseLayoutConfig {
+    /// Tighter spacing defaults for terminal-friendly diagrams.
+    ///
+    /// This is intentionally conservative (still leaves room for elbows/arrows)
+    /// but reduces the default "big gaps" between ranks/columns.
+    pub fn compact() -> Self {
+        Self {
+            node_padding: 1,
+            subgraph_gutter: 1,
+            min_horizontal_spacing: 2,
+            min_vertical_spacing: 2,
+            enable_portals: true,
+        }
+    }
+}
+
+pub fn coarse_waterfall_with_config(graph: Graph, mut config: CoarseLayoutConfig) -> Result<Graph> {
     if std::env::var("TERMIFLOW_DISABLE_PORTALS").is_ok() {
         config.enable_portals = false;
     }
     apply_coarse_layout(graph, None, config)
+}
+
+/// Preferred entry point for the coarse layout engine.
+pub fn coarse_waterfall(graph: Graph) -> Result<Graph> {
+    coarse_waterfall_with_config(graph, CoarseLayoutConfig::default())
 }
 
 /// Backwards-compatible alias for callers expecting `waterfall`.
@@ -731,7 +750,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         for pair in checkpoints.windows(2) {
             let (seg_start, seg_end) = (pair[0], pair[1]);
             if let Some(route) =
-                route_with_obstacles(seg_start, seg_end, &mut grid, &avoid_rects, &coords)
+                route_with_obstacles_v2(seg_start, seg_end, &mut grid, &avoid_rects, &coords)
             {
                 grid.mark_path(&route);
                 for s in route.segments {
@@ -2562,6 +2581,98 @@ fn route_with_obstacles(
     grid.mark_path(&route);
 
     Some(route)
+}
+
+fn route_with_obstacles_v2(
+    start: Point,
+    end: Point,
+    grid: &mut OccupancyGrid,
+    avoid_rects: &[Rect],
+    coords: &OrientedCoords,
+) -> Option<EdgeRoute> {
+    if let Some(route) = route_with_obstacles(start, end, grid, avoid_rects, coords) {
+        return Some(route);
+    }
+    route_with_detours(start, end, grid, avoid_rects, coords)
+}
+
+fn route_with_detours(
+    start: Point,
+    end: Point,
+    grid: &mut OccupancyGrid,
+    avoid_rects: &[Rect],
+    coords: &OrientedCoords,
+) -> Option<EdgeRoute> {
+    if start == end {
+        return Some(EdgeRoute::new());
+    }
+
+    let in_avoid = |p: Point| -> bool { avoid_rects.iter().any(|r| r.contains(p)) };
+    let in_bounds = |p: Point| -> bool { p.x < grid.width && p.y < grid.height };
+
+    let (start_primary, end_primary) = match coords.primary {
+        Axis::Horizontal => (start.x, end.x),
+        Axis::Vertical => (start.y, end.y),
+    };
+    let (p_min, p_max) = if start_primary <= end_primary {
+        (start_primary, end_primary)
+    } else {
+        (end_primary, start_primary)
+    };
+
+    // Try a small set of primary-axis "dogleg" rows/cols near the midpoint and endpoints.
+    let mid = p_min + (p_max.saturating_sub(p_min) / 2);
+    let mut candidates: Vec<usize> = vec![
+        mid,
+        mid.saturating_add(1),
+        mid.saturating_sub(1),
+        mid.saturating_add(2),
+        mid.saturating_sub(2),
+        p_min.saturating_add(1),
+        p_max.saturating_sub(1),
+    ];
+    candidates.sort_unstable();
+    candidates.dedup();
+
+    for primary in candidates {
+        let (p1, p2) = match coords.primary {
+            Axis::Vertical => (Point::new(start.x, primary), Point::new(end.x, primary)),
+            Axis::Horizontal => (Point::new(primary, start.y), Point::new(primary, end.y)),
+        };
+        if !in_bounds(p1) || !in_bounds(p2) {
+            continue;
+        }
+        if (p1 != start && p1 != end && in_avoid(p1)) || (p2 != start && p2 != end && in_avoid(p2)) {
+            continue;
+        }
+
+        // Use a cloned grid so failed attempts don't "burn in" partial routes.
+        let mut trial = grid.clone();
+        trial.clear_point(p1);
+        trial.clear_point(p2);
+
+        let mut combined = EdgeRoute::new();
+        let legs = [(start, p1), (p1, p2), (p2, end)];
+        let mut ok = true;
+        for (a, b) in legs {
+            if a == b {
+                continue;
+            }
+            let Some(route) = route_with_obstacles(a, b, &mut trial, avoid_rects, coords) else {
+                ok = false;
+                break;
+            };
+            for s in route.segments {
+                combined.push_segment(s.from, s.to);
+            }
+        }
+
+        if ok && !combined.segments.is_empty() {
+            return Some(combined);
+        }
+    }
+
+    None
 }
 
 fn ordered_neighbors(current: Point, goal: Point, coords: &OrientedCoords) -> Vec<Point> {
