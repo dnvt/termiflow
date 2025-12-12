@@ -63,6 +63,10 @@ pub struct RenderOptions {
     pub max_label_lines: usize,
     /// Strict mode - fail on any parse warning (default: false)
     pub strict: bool,
+    /// Crop empty margins around output (default: true)
+    pub crop: bool,
+    /// Add padding around output (default: 0)
+    pub pad: usize,
 }
 
 impl Default for RenderOptions {
@@ -79,6 +83,8 @@ impl RenderOptions {
             wrap_labels: false,
             max_label_lines: 1,
             strict: false,
+            crop: true,
+            pad: 0,
         }
     }
 
@@ -104,6 +110,16 @@ impl RenderOptions {
 
     pub fn strict(mut self) -> Self {
         self.strict = true;
+        self
+    }
+
+    pub fn with_crop(mut self, crop: bool) -> Self {
+        self.crop = crop;
+        self
+    }
+
+    pub fn with_pad(mut self, pad: usize) -> Self {
+        self.pad = pad;
         self
     }
 }
@@ -139,6 +155,8 @@ pub fn render(input: &str, options: RenderOptions) -> Result<String> {
         .max_label_width(options.max_label_width)
         .wrap_labels(options.wrap_labels)
         .max_label_lines(options.max_label_lines)
+        .crop(options.crop)
+        .pad(options.pad)
         .strict(options.strict)
         .style(CompositeStyle::from_base(options.style))
         .build(&parse_result.config);

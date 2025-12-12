@@ -7,5 +7,6 @@ fn render_options_default_matches_new() {
     assert_eq!(a.wrap_labels, b.wrap_labels);
     assert_eq!(a.max_label_lines, b.max_label_lines);
     assert_eq!(a.strict, b.strict);
+    assert_eq!(a.crop, b.crop);
+    assert_eq!(a.pad, b.pad);
 }
-

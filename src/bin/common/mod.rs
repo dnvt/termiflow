@@ -57,6 +57,18 @@ pub struct Cli {
     #[arg(long, value_name = "N")]
     pub max_lines: Option<usize>,
 
+    /// Crop empty margins around output (enabled by default; use --no-crop to disable)
+    #[arg(long)]
+    pub crop: bool,
+
+    /// Disable cropping empty margins around output
+    #[arg(long = "no-crop")]
+    pub no_crop: bool,
+
+    /// Add padding (in spaces/lines) around output
+    #[arg(long, value_name = "N")]
+    pub pad: Option<usize>,
+
     /// Exit with error on any parse warning
     #[arg(long)]
     pub strict: bool,
@@ -138,6 +150,16 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
 
     if let Some(n) = cli.max_lines {
         builder = builder.max_label_lines(n);
+    }
+
+    if cli.no_crop {
+        builder = builder.crop(false);
+    } else if cli.crop {
+        builder = builder.crop(true);
+    }
+
+    if let Some(pad) = cli.pad {
+        builder = builder.pad(pad);
     }
 
     // Only apply style if explicitly provided on CLI
