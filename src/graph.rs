@@ -158,6 +158,8 @@ pub struct Subgraph {
     pub node_ids: HashSet<String>,
     /// Bounding box calculated during layout
     pub bounds: Rectangle,
+    /// Inner bounds (content box; excludes gutters/padding)
+    pub inner_bounds: Rectangle,
     /// Min/max rank of contained nodes (for layout ordering)
     pub rank_range: (usize, usize),
 }
@@ -170,6 +172,7 @@ impl Subgraph {
             title,
             node_ids: HashSet::new(),
             bounds: Rectangle::default(),
+            inner_bounds: Rectangle::default(),
             rank_range: (0, 0),
         }
     }

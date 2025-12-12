@@ -2,11 +2,13 @@
 
 Internal plans, specs, and status live here to keep `/docs` consumer-friendly.
 
-## Status Snapshot (Dec 8, 2024)
-- Phase 1: parser/layout/render/CLI complete; demo-ready.
+## Status Snapshot
+- Parser/layout/render/CLI are demo-ready for `--print`.
 - Cycle detection with gutter rendering and clipping warnings.
+- Direction-agnostic rendering across TD/LR/BT/RL.
+- Subgraphs (single-level) with portal-aware border piercing.
 - Config precedence: CLI > in-file directive > `~/.config/termiflow/config.toml`.
-- Tests: `cargo test` green.
+- Tests: run `cargo test` (and `cargo test --features golden` when fixtures are present).
 
 ## Artifacts
 - `phase2/` — Phase 2 design and implementation notes (per-element styling).

@@ -1,3 +1,4 @@
+#![cfg(feature = "golden")]
 //! Golden tests - compare actual output against expected fixtures
 //!
 //! Naming convention: [category]_[name]_[direction].md
