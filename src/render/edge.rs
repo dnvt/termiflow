@@ -249,6 +249,7 @@ pub fn route_divergent_edges(
                 &coords,
                 canvas,
                 style,
+                Some(graph),
             );
             if matches!(direction, Direction::TD | Direction::TB) {
                 if let (Some(from_sg), Some(to_sg)) =
@@ -258,7 +259,14 @@ pub fn route_divergent_edges(
                         if let Some(sg) = graph.get_subgraph(to_sg) {
                             let border_y = sg.bounds.y;
                             if arrow_x < canvas.width && border_y < canvas.height {
-                                canvas.set_edge_char(arrow_x, border_y, style.junction_down, style);
+                                if !sg.has_title() {
+                                    canvas.set_edge_char(
+                                        arrow_x,
+                                        border_y,
+                                        style.junction_down,
+                                        style,
+                                    );
+                                }
                             }
                         }
                     }
@@ -285,6 +293,7 @@ pub fn route_divergent_edges(
                         &coords,
                         canvas,
                         style,
+                        Some(graph),
                     );
 
                     // Turn onto the vertical spine at the source row.
@@ -311,6 +320,7 @@ pub fn route_divergent_edges(
                         &coords,
                         canvas,
                         style,
+                        Some(graph),
                     );
 
                     // Turn toward the target column.
@@ -335,6 +345,7 @@ pub fn route_divergent_edges(
                         &coords,
                         canvas,
                         style,
+                        Some(graph),
                     );
                     canvas.set(arrow_x, arrow_y, coords.arrow_end(style));
                     return;
@@ -352,6 +363,7 @@ pub fn route_divergent_edges(
                     &coords,
                     canvas,
                     style,
+                    Some(graph),
                 );
 
                 // Turn toward the target column
@@ -368,6 +380,7 @@ pub fn route_divergent_edges(
                     &coords,
                     canvas,
                     style,
+                    Some(graph),
                 );
             } else {
                 // For BT fan-outs, the elbow row can overlap a previously rendered
@@ -431,6 +444,7 @@ pub fn route_divergent_edges(
                     &coords,
                     canvas,
                     style,
+                    Some(graph),
                 );
 
                 // 2. Turn at junction
@@ -441,7 +455,14 @@ pub fn route_divergent_edges(
                 let (bend_x, bend_y) =
                     coords.with_secondary(junction_x, junction_y, target_secondary);
                 draw_line_secondary(
-                    junction_x, junction_y, bend_x, bend_y, &coords, canvas, style,
+                    junction_x,
+                    junction_y,
+                    bend_x,
+                    bend_y,
+                    &coords,
+                    canvas,
+                    style,
+                    Some(graph),
                 );
 
                 // 4. Turn to target
@@ -458,6 +479,7 @@ pub fn route_divergent_edges(
                     &coords,
                     canvas,
                     style,
+                    Some(graph),
                 );
             }
         }
@@ -601,7 +623,7 @@ pub fn route_divergent_edges(
     if junction_secondary != src_secondary {
         let (sx, sy) = coords.with_secondary(junction_x, junction_y, src_secondary);
         let (jx, jy) = coords.with_secondary(junction_x, junction_y, junction_secondary);
-        draw_line_secondary(sx, sy, jx, jy, &coords, canvas, style);
+        draw_line_secondary(sx, sy, jx, jy, &coords, canvas, style, Some(graph));
     }
 
     // 4. Draw drops and arrows for each target
@@ -623,6 +645,7 @@ pub fn route_divergent_edges(
                 &coords,
                 canvas,
                 style,
+                Some(graph),
             );
         }
 
@@ -783,6 +806,7 @@ fn route_fanout_into_subgraph_td(
                 &coords,
                 canvas,
                 style,
+                None,
             );
         }
 
@@ -921,6 +945,7 @@ fn route_convergent_from_subgraph_td(
         &coords,
         canvas,
         style,
+        None,
     );
     cursor_y = arrow_y;
 
@@ -933,6 +958,7 @@ fn route_convergent_from_subgraph_td(
             &coords,
             canvas,
             style,
+            None,
         );
     }
 
@@ -1042,6 +1068,7 @@ fn route_convergent_from_subgraph_bt(
         &coords,
         canvas,
         style,
+        None,
     );
 
     // Clean up the top border: keep only the merged exit portal, and restore any
@@ -1492,6 +1519,7 @@ pub fn route_convergent_edges(
         &coords,
         canvas,
         style,
+        Some(graph),
     );
 
     // Arrow
@@ -1534,6 +1562,7 @@ fn draw_line_primary(
     coords: &OrientedCoords,
     canvas: &mut Canvas,
     style: &StyleChars,
+    graph: Option<&Graph>,
 ) {
     let char = coords.primary_edge_char(style);
 
@@ -1541,12 +1570,22 @@ fn draw_line_primary(
         crate::orientation::Axis::Horizontal => {
             let (start, end) = if x1 < x2 { (x1, x2) } else { (x2, x1) };
             for x in start..=end {
+                if let Some(g) = graph {
+                    if is_subgraph_title_cell(g, x, y1) {
+                        continue;
+                    }
+                }
                 canvas.set_edge_char(x, y1, char, style);
             }
         }
         crate::orientation::Axis::Vertical => {
             let (start, end) = if y1 < y2 { (y1, y2) } else { (y2, y1) };
             for y in start..=end {
+                if let Some(g) = graph {
+                    if is_subgraph_title_cell(g, x1, y) {
+                        continue;
+                    }
+                }
                 canvas.set_edge_char(x1, y, char, style);
             }
         }
@@ -1561,6 +1600,7 @@ fn draw_line_secondary(
     coords: &OrientedCoords,
     canvas: &mut Canvas,
     style: &StyleChars,
+    graph: Option<&Graph>,
 ) {
     let char = coords.secondary_edge_char(style);
 
@@ -1570,6 +1610,11 @@ fn draw_line_secondary(
             for x in start..=end {
                 if x != x1 && x != x2 {
                     // Skip corners
+                    if let Some(g) = graph {
+                        if is_subgraph_title_cell(g, x, y1) {
+                            continue;
+                        }
+                    }
                     canvas.set_edge_char(x, y1, char, style);
                 }
             }
@@ -1579,6 +1624,11 @@ fn draw_line_secondary(
             for y in start..=end {
                 if y != y1 && y != y2 {
                     // Skip corners
+                    if let Some(g) = graph {
+                        if is_subgraph_title_cell(g, x1, y) {
+                            continue;
+                        }
+                    }
                     canvas.set_edge_char(x1, y, char, style);
                 }
             }
@@ -1589,6 +1639,16 @@ fn draw_line_secondary(
 fn is_secondary_line(c: char, coords: &OrientedCoords, style: &StyleChars) -> bool {
     let expected = coords.secondary_edge_char(style);
     c == expected
+}
+
+fn is_subgraph_title_cell(graph: &Graph, x: usize, y: usize) -> bool {
+    graph.subgraphs.iter().any(|sg| {
+        sg.has_title()
+            && sg.bounds.is_valid()
+            && y == sg.bounds.y
+            && x >= sg.bounds.x
+            && x < sg.bounds.x.saturating_add(sg.bounds.width)
+    })
 }
 
 fn preferred_portal_x(
@@ -1732,6 +1792,9 @@ fn route_cross_subgraph_td(
             let exit_y = src_border_y.min(arrow_y);
             walked_to_source_border = exit_y == src_border_y;
             for y in cursor_y..=exit_y {
+                if is_subgraph_title_cell(graph, cursor_x, y) {
+                    continue;
+                }
                 canvas.set_edge_char(cursor_x, y, style.edge_v, style);
             }
             cursor_y = exit_y;
@@ -1766,6 +1829,9 @@ fn route_cross_subgraph_td(
             (portal_x + 1, cursor_x.saturating_sub(1))
         };
         for x in hx0..=hx1 {
+            if is_subgraph_title_cell(graph, x, cursor_y) {
+                continue;
+            }
             canvas.set_edge_char(x, cursor_y, style.edge_h, style);
         }
 
@@ -1784,6 +1850,9 @@ fn route_cross_subgraph_td(
             cursor_y.saturating_add(1)
         };
         for y in start_y..=portal_y {
+            if is_subgraph_title_cell(graph, portal_x, y) {
+                continue;
+            }
             canvas.set_edge_char(portal_x, y, style.edge_v, style);
         }
     }
@@ -1803,10 +1872,16 @@ fn route_cross_subgraph_td(
             (arrow_x, portal_x.saturating_sub(1))
         };
         for x in hx0..=hx1 {
+            if is_subgraph_title_cell(graph, x, arrow_y) {
+                continue;
+            }
             canvas.set_edge_char(x, arrow_y, style.edge_h, style);
         }
     } else if arrow_y > portal_y {
         for y in (portal_y + 1)..=arrow_y {
+            if is_subgraph_title_cell(graph, portal_x, y) {
+                continue;
+            }
             canvas.set_edge_char(portal_x, y, style.edge_v, style);
         }
     }
@@ -1824,7 +1899,10 @@ fn route_cross_subgraph_td(
         }
     }
     let tgt_border_y = sg.bounds.y;
-    if portal_x < canvas.width
+    // Don't reinforce the target's top border when it contains a title: edges should
+    // pass under the title row, leaving the border/text clean.
+    if !sg.has_title()
+        && portal_x < canvas.width
         && tgt_border_y < canvas.height
         && !is_textual(canvas.get(portal_x, tgt_border_y))
     {
@@ -1879,6 +1957,7 @@ fn route_cross_subgraph_bt(
         &coords,
         canvas,
         style,
+        Some(graph),
     );
 
     // Shift horizontally inside the subgraph to avoid piercing the title span.
@@ -1919,6 +1998,7 @@ fn route_cross_subgraph_bt(
         &coords,
         canvas,
         style,
+        Some(graph),
     );
 
     if portal_x != arrow_x && border_y > 0 {
@@ -1954,6 +2034,7 @@ fn route_cross_subgraph_bt(
             &coords,
             canvas,
             style,
+            Some(graph),
         );
     } else {
         draw_line_primary(
@@ -1964,6 +2045,7 @@ fn route_cross_subgraph_bt(
             &coords,
             canvas,
             style,
+            Some(graph),
         );
         if portal_x != arrow_x {
             // Fallback: if we have no room above the border, bridge on the arrow row.
