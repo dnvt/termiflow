@@ -5,7 +5,7 @@
 
 use crate::config::Config;
 use crate::graph::{Graph, NodeShape};
-use crate::style::{box_width, display_width, truncate_label, BOX_HEIGHT, BOX_MIN_WIDTH};
+use crate::style::{box_width, display_width, truncate_label, BOX_HEIGHT, BOX_MIN_WIDTH, BOX_PADDING};
 
 fn supports_multiline(shape: NodeShape) -> bool {
     matches!(
@@ -173,38 +173,48 @@ fn wrapped_label_lines(label: &str, max_width: usize, max_lines: usize) -> Vec<S
     apply_max_lines(out, max_lines, max_width)
 }
 
+fn box_width_for_content_width(content_width: usize) -> usize {
+    (content_width + BOX_PADDING * 2 + 2).max(BOX_MIN_WIDTH)
+}
+
 /// Prepare a parsed graph for layout/render by ensuring node dimensions exist and
 /// precomputing label lines + box height.
 pub fn measure_graph(graph: &mut Graph, config: &Config) {
     for node in graph.nodes.iter_mut() {
-        if node.width == 0 {
-            node.width = box_width(&node.label).max(BOX_MIN_WIDTH);
-        }
+        let default_width = box_width(&node.label).max(BOX_MIN_WIDTH);
+        let width_is_default = node.width == 0 || node.width == default_width;
 
-        // For boxlike nodes, the render path uses `width - 4` as the label area width.
-        // Keep wrapping within that (and within the user-configured limit).
-        let max_line_width = config
-            .max_label_width
-            .min(node.width.saturating_sub(4));
+        // If the node already has an explicit width (e.g., constructed in tests), honor it
+        // as an additional cap for wrapping/truncation.
+        let width_cap = if width_is_default {
+            config.max_label_width
+        } else {
+            config.max_label_width.min(node.width.saturating_sub(4))
+        };
 
         if config.wrap_labels && supports_multiline(node.shape) {
-            node.label_lines =
-                wrapped_label_lines(&node.label, max_line_width, config.max_label_lines);
-
-            // Shrink overly-wide boxes (e.g., labels with `<br>` markers) to the actual visible
-            // content, without ever expanding the existing width (keeps layout stable).
+            node.label_lines = wrapped_label_lines(&node.label, width_cap, config.max_label_lines);
             let visible_width = node
                 .label_lines
                 .iter()
                 .map(|l| display_width(l))
                 .max()
                 .unwrap_or(0);
-            let desired_width = (visible_width + 4).max(BOX_MIN_WIDTH);
-            node.width = node.width.min(desired_width);
+            if width_is_default {
+                node.width = box_width_for_content_width(visible_width);
+            }
 
             node.height = (node.label_lines.len() + 2).max(BOX_HEIGHT);
         } else {
-            node.label_lines = single_line_label(&node.label, max_line_width);
+            node.label_lines = single_line_label(&node.label, width_cap);
+            let visible_width = node
+                .label_lines
+                .first()
+                .map(|l| display_width(l))
+                .unwrap_or(0);
+            if width_is_default {
+                node.width = box_width_for_content_width(visible_width);
+            }
             node.height = BOX_HEIGHT;
         }
     }
@@ -245,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn wrap_shrinks_inflated_width() {
+    fn explicit_width_is_honored() {
         let mut g = Graph::new();
         let mut n = Node::new("A", "line one<br>line two");
         n.width = 60;
@@ -258,7 +268,46 @@ mod tests {
 
         measure_graph(&mut g, &cfg);
         assert!(g.nodes[0].label_lines.len() >= 2);
-        assert!(g.nodes[0].width < 60);
+        assert_eq!(g.nodes[0].width, 60);
         assert!(g.nodes[0].width >= BOX_MIN_WIDTH);
+    }
+
+    #[test]
+    fn wrap_can_shrink_default_width_for_manual_line_breaks() {
+        let mut g = Graph::new();
+        g.nodes.push(Node::new("A", "short line<br>tiny"));
+
+        let mut cfg = Config::default();
+        cfg.wrap_labels = true;
+        cfg.max_label_lines = 10;
+        cfg.max_label_width = 80;
+
+        measure_graph(&mut g, &cfg);
+        assert!(g.nodes[0].label_lines.len() >= 2);
+        // Default width for the raw label is based on its full string; in wrap mode we
+        // size to the widest visible line.
+        assert!(g.nodes[0].width < box_width("short line<br>tiny").max(BOX_MIN_WIDTH));
+        assert!(g.nodes[0].width >= BOX_MIN_WIDTH);
+    }
+
+    #[test]
+    fn max_label_width_controls_box_width() {
+        let mut g = Graph::new();
+        g.nodes.push(Node::new("A", "this is a longer label"));
+
+        let mut cfg = Config::default();
+        cfg.max_label_width = 10;
+
+        measure_graph(&mut g, &cfg);
+        let w10 = g.nodes[0].width;
+
+        let mut g2 = Graph::new();
+        g2.nodes.push(Node::new("A", "this is a longer label"));
+        let mut cfg2 = Config::default();
+        cfg2.max_label_width = 20;
+        measure_graph(&mut g2, &cfg2);
+        let w20 = g2.nodes[0].width;
+
+        assert!(w20 > w10);
     }
 }

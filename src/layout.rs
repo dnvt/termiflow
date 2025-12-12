@@ -52,6 +52,7 @@ fn shift_nodes_from_rank_td(
     }
 }
 
+#[allow(dead_code)]
 fn shift_nodes_up_to_rank_bt(
     positions: &mut HashMap<String, Point>,
     node_rects: &mut HashMap<String, Rect>,

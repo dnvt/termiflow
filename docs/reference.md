@@ -14,7 +14,7 @@
 ## Common Flags
 
 - `--style`, `-s`: base style (`ascii`, `unicode`, `double`, `rounded`, `heavy`, `dots`, `plus`, `stars`, `blocks`) or composite (e.g. `corner:dots,border:heavy`).
-- `--max-label`: truncate labels after N columns (default 20).
+- `--max-label`: label width budget in columns (default 20). Affects truncation and box sizing.
 - `--wrap`: enable multiline label wrapping (experimental; default off).
 - `--max-lines`: max label lines when wrapping is enabled (default 1).
 - `--strict`: treat parse warnings as errors.
