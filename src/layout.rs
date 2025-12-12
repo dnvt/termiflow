@@ -18,6 +18,40 @@ use crate::orientation::{Axis, OrientedCoords};
 use crate::portals::{compute_envelopes, SubgraphEnvelope};
 use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH};
 
+fn rect_fully_inside(outer: Rect, inner: Rect) -> bool {
+    if outer.is_empty() || inner.is_empty() {
+        return false;
+    }
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && inner.right() <= outer.right()
+        && inner.bottom() <= outer.bottom()
+}
+
+fn shift_nodes_from_rank_td(
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    ranks: &HashMap<String, usize>,
+    min_rank: usize,
+    delta_y: usize,
+) {
+    if delta_y == 0 {
+        return;
+    }
+    for (id, p) in positions.iter_mut() {
+        let Some(rank) = ranks.get(id) else {
+            continue;
+        };
+        if *rank < min_rank {
+            continue;
+        }
+        p.y += delta_y;
+        if let Some(r) = node_rects.get_mut(id) {
+            r.y += delta_y;
+        }
+    }
+}
+
 /// Input for the experimental layout engine.
 pub struct LayoutInput<'a> {
     pub graph: &'a Graph,
@@ -171,6 +205,76 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     let mut subgraph_envelopes =
         compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
     adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+
+    // Ensure we have at least one row between a subgraph bottom border and any
+    // external target box below it. Otherwise the renderer's arrow would land on
+    // the border row (missing the arrow at the target entry point).
+    if matches!(input.graph.direction, Direction::TD | Direction::TB) && !subgraph_envelopes.is_empty()
+    {
+        for _ in 0..8 {
+            let mut required_shift_by_rank: HashMap<usize, usize> = HashMap::new();
+
+            for env in subgraph_envelopes.values() {
+                for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+                    let (Some(from_rect), Some(to_rect)) = (
+                        placement.node_rects.get(&edge.from),
+                        placement.node_rects.get(&edge.to),
+                    ) else {
+                        continue;
+                    };
+
+                    // Only when the edge exits this envelope downward.
+                    if !rect_fully_inside(env.outer, *from_rect) {
+                        continue;
+                    }
+                    if rect_fully_inside(env.outer, *to_rect) {
+                        continue;
+                    }
+                    if to_rect.y < env.outer.bottom().saturating_sub(1) {
+                        continue;
+                    }
+
+                    let required_target_y = env.outer.bottom().saturating_add(1);
+                    if to_rect.y >= required_target_y {
+                        continue;
+                    }
+                    let Some(rank) = placement.ranks.get(&edge.to) else {
+                        continue;
+                    };
+                    let delta = required_target_y - to_rect.y;
+                    required_shift_by_rank
+                        .entry(*rank)
+                        .and_modify(|d| *d = (*d).max(delta))
+                        .or_insert(delta);
+                }
+            }
+
+            let Some((&min_rank, &delta_y)) = required_shift_by_rank.iter().min_by_key(|(r, _)| *r)
+            else {
+                break;
+            };
+
+            shift_nodes_from_rank_td(
+                &mut placement.positions,
+                &mut placement.node_rects,
+                &placement.ranks,
+                min_rank,
+                delta_y,
+            );
+
+            let max_bottom = placement
+                .node_rects
+                .values()
+                .map(|r| r.bottom())
+                .max()
+                .unwrap_or(placement.canvas.bottom());
+            placement.canvas.height = placement.canvas.height.max(max_bottom);
+
+            subgraph_envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
+    }
 
     // 4) Occupancy grid seeded with node padding and subgraph gutters (with carved portals).
     let t_grid = std::time::Instant::now();

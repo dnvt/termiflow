@@ -26,7 +26,7 @@ use anyhow::Result;
 
 use crate::config::Config;
 use crate::geom::{EdgeRoute, Segment};
-use crate::graph::{Graph, Node};
+use crate::graph::{Graph, Node, NodeShape};
 use crate::portals::{collect_portal_slots, node_rects_from_graph, PortalSlots};
 use crate::style::{
     display_width, truncate_label, BaseStyle, BOX_HEIGHT, COL_SPACING, CYCLE_GUTTER,
@@ -352,7 +352,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             continue;
         }
 
-        let (junction_x, junction_y, junction_char) = match graph.direction {
+        let (mut junction_x, junction_y, junction_char) = match graph.direction {
             Direction::LR => (
                 from.x + from.width - 1,
                 cycle::center_y(from),
@@ -366,6 +366,30 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             ),
             Direction::BT => (from.center_x(), from.y, chars.junction_up),
         };
+
+        // For non-rectangular shapes, the edge stem may not align with `center_x()` when
+        // widths are even; prefer the actual outgoing stem column if we can detect it.
+        if matches!(graph.direction, Direction::TD | Direction::TB)
+            && from.shape == NodeShape::Database
+        {
+            let below_y = junction_y.saturating_add(1);
+            if below_y < canvas.height {
+                let mut xs: Vec<usize> = Vec::new();
+                for x in (from.x + 1)..(from.x + from.width.saturating_sub(1)) {
+                    let c = canvas.get(x, below_y);
+                    if canvas::is_vertical(c, &chars)
+                        || canvas::is_junction(c, &chars)
+                        || canvas::is_arrow(c)
+                    {
+                        xs.push(x);
+                    }
+                }
+                if !xs.is_empty() {
+                    xs.sort_unstable();
+                    junction_x = xs[xs.len() / 2];
+                }
+            }
+        }
 
         if junction_x < canvas.width && junction_y < canvas.height {
             canvas.set_edge_char(junction_x, junction_y, junction_char, &chars);
@@ -634,6 +658,10 @@ fn reinforce_subgraph_portals(
     direction: Direction,
     chars: &StyleChars,
 ) {
+    fn is_verticalish(c: char, chars: &StyleChars) -> bool {
+        canvas::is_vertical(c, chars) || canvas::is_junction(c, chars) || canvas::is_arrow(c)
+    }
+
     for (sg_id, portals) in slots {
         let Some(sg) = graph.get_subgraph(sg_id) else {
             continue;
@@ -654,33 +682,46 @@ fn reinforce_subgraph_portals(
 
         match direction {
             Direction::TD | Direction::TB => {
-                let top_slots: Vec<usize> = if sg.title.is_some() && portals.top.len() > 1 {
-                    // Keep a single reinforced slot to avoid cluttering the title row.
-                    let mut v: Vec<usize> = portals.top.iter().copied().collect();
-                    v.sort_unstable();
-                    vec![v[v.len() / 2]]
-                } else {
-                    portals.top.iter().copied().collect()
-                };
-                let bottom_slots: Vec<usize> = if portals.bottom.len() > 1 {
-                    let mut v: Vec<usize> = portals.bottom.iter().copied().collect();
-                    v.sort_unstable();
-                    vec![v[v.len() / 2]]
-                } else {
-                    portals.bottom.iter().copied().collect()
-                };
+                let top_slots: Vec<usize> = portals.top.iter().copied().collect();
+                let bottom_slots: Vec<usize> = portals.bottom.iter().copied().collect();
+
                 for x in top_slots {
                     let px = clamp_horizontal(bounds, x);
                     let ty = top_y.saturating_add(1);
+                    let above = if ty > 0 { canvas.get(px, ty - 1) } else { ' ' };
+                    let below = if ty + 1 < canvas.height {
+                        canvas.get(px, ty + 1)
+                    } else {
+                        ' '
+                    };
+                    let used = is_verticalish(above, chars) || is_verticalish(below, chars);
                     let existing = canvas.get(px, ty);
-                    if ty < canvas.height && !is_textual(existing) && !canvas::is_arrow(existing) {
+                    if used
+                        && ty < canvas.height
+                        && !is_textual(existing)
+                        && !canvas::is_arrow(existing)
+                    {
                         canvas.set(px, ty, chars.edge_v);
                     }
                 }
                 for x in bottom_slots {
                     let px = clamp_horizontal(bounds, x);
-                    if bottom_y < canvas.height && !is_textual(canvas.get(px, bottom_y)) {
-                        canvas.set(px, bottom_y, chars.edge_v);
+                    let above = if bottom_y > 0 {
+                        canvas.get(px, bottom_y - 1)
+                    } else {
+                        ' '
+                    };
+                    let below = if bottom_y + 1 < canvas.height {
+                        canvas.get(px, bottom_y + 1)
+                    } else {
+                        ' '
+                    };
+                    let used = is_verticalish(above, chars) || is_verticalish(below, chars);
+                    if used
+                        && bottom_y < canvas.height
+                        && !is_textual(canvas.get(px, bottom_y))
+                    {
+                        canvas.set_edge_char(px, bottom_y, chars.edge_v, chars);
                     }
                 }
             }
@@ -734,6 +775,7 @@ fn reinforce_subgraph_portals(
                 let ch = canvas.get(x, bottom_y);
                 if ch != ' '
                     && !canvas::is_vertical(ch, chars)
+                    && !canvas::is_junction(ch, chars)
                     && !canvas::is_arrow(ch)
                     && !is_textual(ch)
                 {
@@ -743,8 +785,30 @@ fn reinforce_subgraph_portals(
             }
             if let Some(fill_ch) = fill {
                 for x in (left_x + 1)..right_x {
-                    if canvas.get(x, bottom_y) == ' ' {
+                    let ch = canvas.get(x, bottom_y);
+                    if ch == ' ' {
                         canvas.set(x, bottom_y, fill_ch);
+                    }
+                }
+
+                // Also undo any portal reinforcement that picked a slot no edge actually uses.
+                if matches!(direction, Direction::TD | Direction::TB) {
+                    for &x in &portals.bottom {
+                        let px = clamp_horizontal(bounds, x);
+                        let above = if bottom_y > 0 {
+                            canvas.get(px, bottom_y - 1)
+                        } else {
+                            ' '
+                        };
+                        let below = if bottom_y + 1 < canvas.height {
+                            canvas.get(px, bottom_y + 1)
+                        } else {
+                            ' '
+                        };
+                        let used = is_verticalish(above, chars) || is_verticalish(below, chars);
+                        if !used && canvas.get(px, bottom_y) == chars.edge_v {
+                            canvas.set(px, bottom_y, fill_ch);
+                        }
                     }
                 }
             }
