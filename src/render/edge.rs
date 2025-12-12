@@ -1189,7 +1189,7 @@ fn get_convergence_corner(
             Direction::TD | Direction::TB => style.junction_right, // ├ - emphasize fan-in start
             Direction::LR => style.corner_dr,                 // ┐ - from left, turns down
             Direction::RL => style.corner_dl,                 // ┌ - from right, turns down
-            Direction::BT => style.corner_ul,                 // ┌ - from below, turns right
+            Direction::BT => style.corner_dl,                 // ┌ - from below, turns right
         }
     } else if src_secondary == span_end {
         // Bottommost/rightmost position on span - edge from source turns up/left
@@ -1197,7 +1197,7 @@ fn get_convergence_corner(
             Direction::TD | Direction::TB => style.corner_dr, // ┘ - cleaner exit toward portal
             Direction::LR => style.corner_ur,                 // ┘ - from left, turns up
             Direction::RL => style.corner_ul,                 // └ - from right, turns up
-            Direction::BT => style.corner_ur,                 // ┐ - from below, turns left
+            Direction::BT => style.corner_dr,                 // ┐ - from below, turns left
         }
     } else {
         // Middle sources get junction
@@ -1651,6 +1651,67 @@ fn route_cross_subgraph_td(
     };
     if !sg.bounds.is_valid() {
         return false;
+    }
+
+    // Common case: edge enters a subgraph from above in TD/TB. Visually, we want the
+    // stem to pass *under* the title (i.e., avoid drawing on the border/title row),
+    // so the title stays readable and the top border remains clean.
+    let entering_from_above = stem_start_y < sg.bounds.y && arrow_y >= sg.bounds.y.saturating_add(1);
+    if entering_from_above {
+        let min_x = sg.bounds.x.saturating_add(1);
+        let max_x = sg.bounds.x + sg.bounds.width.saturating_sub(2);
+        let portal_x = arrow_x.clamp(min_x, max_x);
+
+        let outside_y = sg.bounds.y.saturating_sub(1);
+        let inside_y = sg.bounds.y.saturating_add(1);
+
+        if stem_start_y <= outside_y {
+            for y in stem_start_y..=outside_y {
+                canvas.set_edge_char(stem_start_x, y, style.edge_v, style);
+            }
+        }
+
+        // If we need to shift columns to enter within the subgraph bounds, do it
+        // immediately above the border.
+        if portal_x != stem_start_x && outside_y < canvas.height {
+            let start_corner = if portal_x > stem_start_x {
+                style.corner_ul
+            } else {
+                style.corner_ur
+            };
+            canvas.set_edge_char(stem_start_x, outside_y, start_corner, style);
+
+            let (hx0, hx1) = if portal_x > stem_start_x {
+                (stem_start_x + 1, portal_x.saturating_sub(1))
+            } else {
+                (portal_x + 1, stem_start_x.saturating_sub(1))
+            };
+            for x in hx0..=hx1 {
+                canvas.set_edge_char(x, outside_y, style.edge_h, style);
+            }
+
+            let end_corner = if portal_x > stem_start_x {
+                style.corner_dr
+            } else {
+                style.corner_dl
+            };
+            canvas.set_edge_char(portal_x, outside_y, end_corner, style);
+        }
+
+        if arrow_y >= inside_y && inside_y < canvas.height {
+            for y in inside_y..=arrow_y {
+                canvas.set_edge_char(portal_x, y, style.edge_v, style);
+            }
+        }
+
+        if debug_timing {
+            eprintln!(
+                "  cross-subgraph enter-under-title {} -> {} at x={} border_y={}",
+                from.id, to.id, portal_x, sg.bounds.y
+            );
+        }
+
+        return true;
     }
 
     // Enter at the subgraph portal (bias toward the target center, away from title text).

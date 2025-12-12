@@ -54,3 +54,23 @@ fn wrap_flag_renders_multiline_boxes() {
         output
     );
 }
+
+#[test]
+fn subgraph_title_stays_clean_for_entry_edge_td() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    cmd.arg("tests/fixtures/inputs/subgraph_single_td.md")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("┏━━[  Container  ]━━┓"))
+        .stdout(predicate::str::contains("┼").not());
+}
+
+#[test]
+fn converge_bt_uses_correct_merge_corners() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    cmd.arg("tests/fixtures/inputs/edge_converge_bt.md")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("┌────────┴────────┐"))
+        .stdout(predicate::str::contains("└────────┴────────┘").not());
+}
