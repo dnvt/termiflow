@@ -3,7 +3,7 @@
 Branch: `feat/layout-routing-spike` (based on `feat/mergin-subgraphs`)
 
 ## Status
-**Implemented.** This layout strategy is available via the `--experimental-layout` CLI flag. It is the recommended engine for complex graphs and supports subgraphs, centering, and all four orientations (TD, LR, BT, RL).
+**Implemented.** This “coarse layout” strategy is now the default engine (used by `layout::coarse_waterfall`) and supports subgraphs, portal-aware crossings, centering, and all four orientations (TD, LR, BT, RL).
 
 ## Why
 - The legacy waterfall layout was deterministic but tightly coupled to edge routing and spacing constants; subgraphs added another axis of complexity it couldn't handle.
@@ -23,10 +23,15 @@ Branch: `feat/layout-routing-spike` (based on `feat/mergin-subgraphs`)
   5) **Flip** coordinates for BT/RL orientations to match flow direction.
   6) **Shift** layout to accommodate subgraph gutters if present.
   7) **Route edges** using Manhattan A* on the occupancy grid with obstacles from inflated rects and subgraph borders.
+     - Note: the renderer intentionally owns fan-in/fan-out junction aesthetics and cross-subgraph portal piercing; the layout may leave those edges unrouted.
 - **Subgraphs**
   - Bounds calculated from member rects + padding + title band.
   - Subgraphs are drawn with heavy borders and titles.
   - "Portals" are carved into the occupancy grid to allow edges to enter/exit nodes and subgraphs.
+
+## Debugging
+
+- `TERMIFLOW_DISABLE_PORTALS=1` disables portal carving (layout + render) for debugging border artifacts.
 
 ## API (direction-agnostic)
 ```rust

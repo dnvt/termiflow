@@ -27,6 +27,7 @@ use anyhow::Result;
 use crate::config::Config;
 use crate::geom::{EdgeRoute, Segment};
 use crate::graph::{Graph, Node};
+use crate::portals::{collect_portal_slots, node_rects_from_graph, PortalSlots};
 use crate::style::{
     display_width, truncate_label, BaseStyle, BOX_HEIGHT, COL_SPACING, CYCLE_GUTTER,
     MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, ROW_SPACING, STEM_LENGTH_VERTICAL,
@@ -138,8 +139,18 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             subgraph_chars,
         );
     }
-    // Carve portal openings in subgraph borders so external edges can pass through
-    let portal_slots = carve_subgraph_portals_on_canvas(&mut canvas, graph, graph.direction);
+    // Carve portal openings in subgraph borders so external edges can pass through.
+    // Portal carving is disabled if the env var TERMIFLOW_DISABLE_PORTALS is set.
+    let portals_enabled = std::env::var("TERMIFLOW_DISABLE_PORTALS").is_err();
+    let node_rects = node_rects_from_graph(graph);
+    let portal_slots = if portals_enabled {
+        collect_portal_slots(graph, &node_rects, graph.direction)
+    } else {
+        HashMap::new()
+    };
+    if portals_enabled {
+        carve_subgraph_portals_on_canvas(&mut canvas, graph, &portal_slots);
+    }
 
     // Get visible nodes
     let visible_nodes: Vec<&Node> = graph
@@ -298,7 +309,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         }
 
         if let Some(route) = graph.edge_routes.get(&edge_idx) {
-            draw_routed_edge_label(&mut canvas, route, label, &chars);
+            draw_routed_edge_label(&mut canvas, route, label, &chars, graph);
             continue;
         }
 
@@ -331,34 +342,33 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         );
     }
 
-    // Draw junction characters AFTER boxes (for LR/RL edge connections)
-    // Shows where edges exit source boxes
-    if matches!(graph.direction, Direction::LR | Direction::RL) {
-        use cycle::center_y;
-        for &source_id in edges_by_source.keys() {
-            if let Some(from) = graph.get_node(source_id) {
-                if canvas.is_visible(from) {
-                    let junction_y = center_y(from);
-                    // For LR: junction on right side of source box
-                    // For RL: junction on left side of source box
-                    let junction_x = if graph.direction == Direction::LR {
-                        from.x + from.width - 1 // Right edge of box
-                    } else {
-                        from.x // Left edge of box
-                    };
-                    let junction_char = if graph.direction == Direction::LR {
-                        chars.junction_right // ├
-                    } else {
-                        chars.junction_left // ┤
-                    };
-                    if junction_x < canvas.width && junction_y < canvas.height {
-                        let existing = canvas.get(junction_x, junction_y);
-                        if existing != ' ' || matches!(junction_char, '├' | '┤') {
-                            canvas.set(junction_x, junction_y, junction_char);
-                        }
-                    }
-                }
-            }
+    // Draw junction characters AFTER boxes so ports stay visible (boxes overwrite edges).
+    // Shows where edges exit source boxes for all orientations.
+    for &source_id in edges_by_source.keys() {
+        let Some(from) = graph.get_node(source_id) else {
+            continue;
+        };
+        if !canvas.is_visible(from) {
+            continue;
+        }
+
+        let (junction_x, junction_y, junction_char) = match graph.direction {
+            Direction::LR => (
+                from.x + from.width - 1,
+                cycle::center_y(from),
+                chars.junction_right,
+            ),
+            Direction::RL => (from.x, cycle::center_y(from), chars.junction_left),
+            Direction::TD | Direction::TB => (
+                from.center_x(),
+                from.y + BOX_HEIGHT - 1,
+                chars.junction_down,
+            ),
+            Direction::BT => (from.center_x(), from.y, chars.junction_up),
+        };
+
+        if junction_x < canvas.width && junction_y < canvas.height {
+            canvas.set_edge_char(junction_x, junction_y, junction_char, &chars);
         }
     }
 
@@ -561,110 +571,24 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
         }
 
         if let Some(last_seg) = route.segments.last() {
-            if let Some(dir) = dir_from_segment(last_seg) {
-                let arrow = arrow_for_dir(dir, &route_chars);
-                canvas.set(last_seg.to.x, last_seg.to.y, arrow);
-            }
+            let dir = match graph.direction {
+                Direction::TD | Direction::TB => Dir::Down,
+                Direction::BT => Dir::Up,
+                Direction::LR => Dir::Right,
+                Direction::RL => Dir::Left,
+            };
+            let arrow = arrow_for_dir(dir, &route_chars);
+            canvas.set(last_seg.to.x, last_seg.to.y, arrow);
         }
     }
-}
-
-#[derive(Default)]
-struct PortalSlots {
-    top: HashSet<usize>,
-    bottom: HashSet<usize>,
-    left: HashSet<usize>,
-    right: HashSet<usize>,
-}
-
-fn collect_portal_slots(graph: &Graph, direction: Direction) -> HashMap<String, PortalSlots> {
-    // Collect portal coordinates per subgraph for edges that cross boundaries.
-    let mut slots: HashMap<String, PortalSlots> = HashMap::new();
-
-    for edge in &graph.edges {
-        if graph.get_node(&edge.from).is_none() || graph.get_node(&edge.to).is_none() {
-            continue;
-        }
-
-        let from_sg = graph.get_node_subgraph(&edge.from);
-        let to_sg = graph.get_node_subgraph(&edge.to);
-
-        // Only care about edges that cross a subgraph boundary.
-        if from_sg == to_sg {
-            continue;
-        }
-
-        match direction {
-            Direction::TD | Direction::TB => {
-                if let Some(id) = to_sg {
-                    if let Some(node) = graph.get_node(&edge.to) {
-                        slots.entry(id.to_string()).or_default().top.insert(node.center_x());
-                    }
-                }
-                if let Some(id) = from_sg {
-                    let exit_x = graph
-                        .get_node(&edge.to)
-                        .map(|n| n.center_x())
-                        .or_else(|| graph.get_node(&edge.from).map(|n| n.center_x()));
-                    if let Some(x) = exit_x {
-                        slots.entry(id.to_string()).or_default().bottom.insert(x);
-                    }
-                }
-            }
-            Direction::BT => {
-                if let Some(id) = to_sg {
-                    if let Some(node) = graph.get_node(&edge.to) {
-                        slots.entry(id.to_string()).or_default().bottom.insert(node.center_x());
-                    }
-                }
-                if let Some(id) = from_sg {
-                    let exit_x = graph
-                        .get_node(&edge.to)
-                        .map(|n| n.center_x())
-                        .or_else(|| graph.get_node(&edge.from).map(|n| n.center_x()));
-                    if let Some(x) = exit_x {
-                        slots.entry(id.to_string()).or_default().top.insert(x);
-                    }
-                }
-            }
-            Direction::LR => {
-                if let Some(id) = to_sg {
-                    if let Some(node) = graph.get_node(&edge.to) {
-                        slots.entry(id.to_string()).or_default().left.insert(node.center_y());
-                    }
-                }
-                if let Some(id) = from_sg {
-                    if let Some(node) = graph.get_node(&edge.from) {
-                        slots.entry(id.to_string()).or_default().right.insert(node.center_y());
-                    }
-                }
-            }
-            Direction::RL => {
-                if let Some(id) = to_sg {
-                    if let Some(node) = graph.get_node(&edge.to) {
-                        slots.entry(id.to_string()).or_default().right.insert(node.center_y());
-                    }
-                }
-                if let Some(id) = from_sg {
-                    if let Some(node) = graph.get_node(&edge.from) {
-                        slots.entry(id.to_string()).or_default().left.insert(node.center_y());
-                    }
-                }
-            }
-        }
-    }
-
-    slots
 }
 
 fn carve_subgraph_portals_on_canvas(
     canvas: &mut Canvas,
     graph: &Graph,
-    direction: Direction,
-) -> HashMap<String, PortalSlots> {
-    let slots = collect_portal_slots(graph, direction);
-
-    for (sg_id, portals) in &slots {
+    slots: &HashMap<String, PortalSlots>,
+) {
+    for (sg_id, portals) in slots {
         let Some(sg) = graph.get_subgraph(sg_id) else {
             continue;
         };
@@ -680,11 +604,16 @@ fn carve_subgraph_portals_on_canvas(
 
         for &x in &portals.top {
             let px = clamp_horizontal(bounds, x);
-            carve_vertical_slot(canvas, px, &[top_y.saturating_add(1), top_y]);
+            let top_candidates = if sg.title.is_some() {
+                vec![top_y.saturating_add(1)]
+            } else {
+                vec![top_y, top_y.saturating_add(1)]
+            };
+            carve_vertical_slot(canvas, px, &top_candidates);
         }
         for &x in &portals.bottom {
             let px = clamp_horizontal(bounds, x);
-            carve_vertical_slot(canvas, px, &[bottom_y.saturating_sub(1), bottom_y]);
+            carve_vertical_slot(canvas, px, &[bottom_y, bottom_y.saturating_sub(1)]);
         }
         for &y in &portals.left {
             let py = clamp_vertical(bounds, y);
@@ -696,7 +625,6 @@ fn carve_subgraph_portals_on_canvas(
         }
     }
 
-    slots
 }
 
 fn reinforce_subgraph_portals(
@@ -714,6 +642,10 @@ fn reinforce_subgraph_portals(
         if !bounds.is_valid() {
             continue;
         }
+        let title_span = sg
+            .title
+            .as_deref()
+            .map(|t| title_span(bounds, t));
 
         let top_y = bounds.y;
         let bottom_y = bounds.y + bounds.height.saturating_sub(1);
@@ -722,7 +654,30 @@ fn reinforce_subgraph_portals(
 
         match direction {
             Direction::TD | Direction::TB => {
-                for &x in &portals.bottom {
+                let top_slots: Vec<usize> = if sg.title.is_some() && portals.top.len() > 1 {
+                    // Keep a single reinforced slot to avoid cluttering the title row.
+                    let mut v: Vec<usize> = portals.top.iter().copied().collect();
+                    v.sort_unstable();
+                    vec![v[v.len() / 2]]
+                } else {
+                    portals.top.iter().copied().collect()
+                };
+                let bottom_slots: Vec<usize> = if portals.bottom.len() > 1 {
+                    let mut v: Vec<usize> = portals.bottom.iter().copied().collect();
+                    v.sort_unstable();
+                    vec![v[v.len() / 2]]
+                } else {
+                    portals.bottom.iter().copied().collect()
+                };
+                for x in top_slots {
+                    let px = clamp_horizontal(bounds, x);
+                    let ty = top_y.saturating_add(1);
+                    let existing = canvas.get(px, ty);
+                    if ty < canvas.height && !is_textual(existing) && !canvas::is_arrow(existing) {
+                        canvas.set(px, ty, chars.edge_v);
+                    }
+                }
+                for x in bottom_slots {
                     let px = clamp_horizontal(bounds, x);
                     if bottom_y < canvas.height && !is_textual(canvas.get(px, bottom_y)) {
                         canvas.set(px, bottom_y, chars.edge_v);
@@ -730,23 +685,40 @@ fn reinforce_subgraph_portals(
                 }
             }
             Direction::BT => {
+                // Title still sits on the top border in BT.
                 for &x in &portals.top {
-                    let px = clamp_horizontal(bounds, x);
-                    if top_y < canvas.height && !is_textual(canvas.get(px, top_y)) {
+                    let mut px = clamp_horizontal(bounds, x);
+                    if let Some((s, e)) = title_span {
+                        px = shift_out_of_span(px, s, e, left_x, right_x);
+                    }
+                    let existing = canvas.get(px, top_y);
+                    if top_y < canvas.height && !is_textual(existing) && !canvas::is_arrow(existing) {
                         canvas.set(px, top_y, chars.edge_v);
+                    }
+                }
+                for &x in &portals.bottom {
+                    let px = clamp_horizontal(bounds, x);
+                    let existing = canvas.get(px, bottom_y);
+                    if bottom_y < canvas.height
+                        && !is_textual(existing)
+                        && !canvas::is_arrow(existing)
+                    {
+                        canvas.set(px, bottom_y, chars.edge_v);
                     }
                 }
             }
             Direction::LR | Direction::RL => {
                 for &y in &portals.left {
                     let py = clamp_vertical(bounds, y);
-                    if left_x < canvas.width && !is_textual(canvas.get(left_x, py)) {
+                    let existing = canvas.get(left_x, py);
+                    if left_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing) {
                         canvas.set(left_x, py, chars.edge_h);
                     }
                 }
                 for &y in &portals.right {
                     let py = clamp_vertical(bounds, y);
-                    if right_x < canvas.width && !is_textual(canvas.get(right_x, py)) {
+                    let existing = canvas.get(right_x, py);
+                    if right_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing) {
                         canvas.set(right_x, py, chars.edge_h);
                     }
                 }
@@ -801,6 +773,27 @@ fn carve_horizontal_slot(canvas: &mut Canvas, y: usize, candidates: &[usize]) {
 
 pub(super) fn is_textual(c: char) -> bool {
     c.is_alphanumeric() || c == '[' || c == ']'
+}
+
+fn title_span(bounds: &crate::graph::Rectangle, title: &str) -> (usize, usize) {
+    let title_fmt = format!("[  {}  ]", title);
+    let len = title_fmt.chars().count();
+    let start = bounds.x + bounds.width.saturating_sub(len) / 2;
+    let end = start + len.saturating_sub(1);
+    (start, end)
+}
+
+fn shift_out_of_span(x: usize, span_start: usize, span_end: usize, min: usize, max: usize) -> usize {
+    if x < span_start || x > span_end {
+        return x;
+    }
+    if span_end + 1 < max {
+        span_end + 1
+    } else if span_start > min {
+        span_start.saturating_sub(1)
+    } else {
+        x
+    }
 }
 
 // ============================================================================
@@ -867,13 +860,24 @@ fn draw_edge_label(
             label_y = label_y.min(arrow_y.saturating_sub(1));
 
             // Center the label around the edge position
-            let label_start_x = edge_x.saturating_sub(label_width / 2);
+            let mut label_start_x = edge_x.saturating_sub(label_width / 2);
+            if overlaps_node(
+                &[from, to],
+                label_start_x,
+                label_y,
+                label_width,
+            ) && label_start_x + label_width + 1 < canvas.width
+            {
+                label_start_x += 1;
+            }
 
             // Draw the label characters
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
+                    if !is_textual(canvas.get(x_pos, label_y)) {
+                        canvas.set(x_pos, label_y, c);
+                    }
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
             }
@@ -902,7 +906,7 @@ fn draw_edge_label(
             let label_start_x = edge_x.saturating_sub(label_width / 2);
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
-                if x_pos < canvas.width && label_y < canvas.height {
+                if x_pos < canvas.width && label_y < canvas.height && !is_textual(canvas.get(x_pos, label_y)) {
                     canvas.set(x_pos, label_y, c);
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
@@ -934,14 +938,14 @@ fn draw_edge_label(
                 // Draw label characters
                 let mut x_pos = label_start_x + 1;
                 for c in display_label.chars() {
-                    if x_pos < canvas.width {
+                    if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
                         canvas.set(x_pos, edge_y, c);
                     }
                     x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
                 }
 
                 // Draw space after label
-                if x_pos < canvas.width {
+                if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
                     canvas.set(x_pos, edge_y, ' ');
                 }
                 x_pos += 1;
@@ -955,8 +959,19 @@ fn draw_edge_label(
             } else {
                 // Not enough room - place label above the edge
                 let label_x = stem_start_x + span_width / 2;
-                let label_start_x = label_x.saturating_sub(label_width / 2);
+                let mut label_start_x = label_x.saturating_sub(label_width / 2);
                 let label_row = edge_y.saturating_sub(1);
+
+                if overlaps_node(&[from, to], label_start_x, label_row, label_width) {
+                    label_start_x = adjust_horizontal_label_slot(
+                        label_start_x,
+                        arrow_x + 1,
+                        stem_start_x.saturating_sub(1),
+                        label_row,
+                        label_width,
+                        &[from, to],
+                    );
+                }
 
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
@@ -997,14 +1012,14 @@ fn draw_edge_label(
                 // Draw label characters
                 let mut x_pos = label_start_x + 1;
                 for c in display_label.chars() {
-                    if x_pos < canvas.width {
+                    if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
                         canvas.set(x_pos, edge_y, c);
                     }
                     x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
                 }
 
                 // Draw space after label
-                if x_pos < canvas.width {
+                if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
                     canvas.set(x_pos, edge_y, ' ');
                 }
                 x_pos += 1;
@@ -1040,6 +1055,7 @@ fn draw_routed_edge_label(
     route: &EdgeRoute,
     label: &str,
     _style: &StyleChars,
+    graph: &Graph,
 ) {
     if route.segments.is_empty() {
         return;
@@ -1048,7 +1064,15 @@ fn draw_routed_edge_label(
     let display_label = format_edge_label(label);
     let label_width = display_width(&display_label);
 
-    // Choose longest segment, prefer horizontal for readability.
+    let nodes: Vec<&Node> = graph.nodes.iter().collect();
+    let border_spans: Vec<crate::graph::Rectangle> = graph
+        .subgraphs
+        .iter()
+        .map(|sg| sg.bounds.clone())
+        .filter(|b| b.is_valid())
+        .collect();
+
+    // Choose longest segment, prefer horizontal for readability, avoid subgraph borders when possible.
     let mut best: Option<(&Segment, usize, bool)> = None; // (segment, length, is_horizontal)
     for seg in &route.segments {
         let is_horizontal = seg.from.y == seg.to.y;
@@ -1057,13 +1081,21 @@ fn draw_routed_edge_label(
         } else {
             seg.from.y.abs_diff(seg.to.y)
         };
+        let on_border = border_spans.iter().any(|b| segment_on_border(seg, b));
 
         match best {
             None => best = Some((seg, length, is_horizontal)),
-            Some((_, best_len, best_horizontal)) => {
-                if (is_horizontal && !best_horizontal)
-                    || (is_horizontal == best_horizontal && length > best_len)
-                {
+            Some((prev_seg, best_len, best_horizontal)) => {
+                let prev_on_border = border_spans.iter().any(|b| segment_on_border(prev_seg, b));
+                let prefer_current = match (prev_on_border, on_border) {
+                    (true, false) => true,
+                    (false, true) => false,
+                    _ => {
+                        (is_horizontal && !best_horizontal)
+                            || (is_horizontal == best_horizontal && length > best_len)
+                    }
+                };
+                if prefer_current {
                     best = Some((seg, length, is_horizontal));
                 }
             }
@@ -1075,7 +1107,17 @@ fn draw_routed_edge_label(
     };
 
     if is_horizontal {
-        let y = seg.from.y;
+        let mut y = seg.from.y;
+        if border_spans
+            .iter()
+            .any(|b| y == b.y || y == b.y + b.height.saturating_sub(1))
+        {
+            if y + 1 < canvas.height {
+                y += 1;
+            } else if y > 0 {
+                y -= 1;
+            }
+        }
         let (min_x, max_x) = if seg.from.x <= seg.to.x {
             (seg.from.x, seg.to.x)
         } else {
@@ -1089,6 +1131,7 @@ fn draw_routed_edge_label(
         if start_x + label_width > canvas.width {
             start_x = canvas.width.saturating_sub(label_width);
         }
+        start_x = adjust_horizontal_label_slot(start_x, min_x, max_x, y, label_width, &nodes);
 
         let mut x_pos = start_x;
         for c in display_label.chars() {
@@ -1104,12 +1147,22 @@ fn draw_routed_edge_label(
         } else {
             (seg.to.y, seg.from.y)
         };
-        let mid_y = min_y + (max_y.saturating_sub(min_y)) / 2;
+        let mut mid_y = min_y + (max_y.saturating_sub(min_y)) / 2;
+        if border_spans
+            .iter()
+            .any(|b| mid_y == b.y || mid_y == b.y + b.height.saturating_sub(1))
+        {
+            if mid_y + 1 <= max_y && mid_y + 1 < canvas.height {
+                mid_y += 1;
+            } else if mid_y > min_y {
+                mid_y -= 1;
+            }
+        }
         let mut start_x = x.saturating_sub(label_width / 2);
         if start_x + label_width > canvas.width {
             start_x = canvas.width.saturating_sub(label_width);
         }
-
+        // Avoid drawing over node interiors if possible.
         let mut x_pos = start_x;
         for c in display_label.chars() {
             if mid_y < canvas.height && x_pos < canvas.width {
@@ -1144,11 +1197,88 @@ fn format_edge_label_with_limit(label: &str, max_len: usize) -> String {
     truncated
 }
 
+fn segment_on_border(seg: &Segment, bounds: &crate::graph::Rectangle) -> bool {
+    if !bounds.is_valid() {
+        return false;
+    }
+    // Horizontal along top/bottom
+    if seg.from.y == seg.to.y {
+        let y = seg.from.y;
+        if y == bounds.y || y == bounds.y + bounds.height.saturating_sub(1) {
+            let (min_x, max_x) = if seg.from.x <= seg.to.x {
+                (seg.from.x, seg.to.x)
+            } else {
+                (seg.to.x, seg.from.x)
+            };
+            let span_left = bounds.x;
+            let span_right = bounds.x + bounds.width.saturating_sub(1);
+            return max_x >= span_left && min_x <= span_right;
+        }
+    } else if seg.from.x == seg.to.x {
+        let x = seg.from.x;
+        if x == bounds.x || x == bounds.x + bounds.width.saturating_sub(1) {
+            let (min_y, max_y) = if seg.from.y <= seg.to.y {
+                (seg.from.y, seg.to.y)
+            } else {
+                (seg.to.y, seg.from.y)
+            };
+            let span_top = bounds.y;
+            let span_bottom = bounds.y + bounds.height.saturating_sub(1);
+            return max_y >= span_top && min_y <= span_bottom;
+        }
+    }
+    false
+}
+
+fn overlaps_node(nodes: &[&Node], x: usize, y: usize, width: usize) -> bool {
+    for n in nodes {
+        if y >= n.y && y < n.y + BOX_HEIGHT {
+            let nx0 = n.x;
+            let nx1 = n.x + n.width;
+            if x < nx1 && x + width > nx0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn adjust_horizontal_label_slot(
+    start_x: usize,
+    min_x: usize,
+    max_x: usize,
+    y: usize,
+    width: usize,
+    nodes: &[&Node],
+) -> usize {
+    let candidate = start_x;
+    if !overlaps_node(nodes, candidate, y, width) {
+        return candidate;
+    }
+
+    // Try small shifts within segment bounds.
+    for delta in 1..=4 {
+        if candidate >= delta
+            && !overlaps_node(nodes, candidate - delta, y, width)
+            && candidate - delta >= min_x
+        {
+            return candidate - delta;
+        }
+        if candidate + width + delta <= max_x
+            && !overlaps_node(nodes, candidate + delta, y, width)
+        {
+            return candidate + delta;
+        }
+    }
+    candidate
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::CompositeStyle;
     use crate::Edge;
+    use crate::graph::Subgraph;
 
     #[test]
     fn precomputed_back_edge_renders_with_back_glyphs() {
@@ -1190,6 +1320,160 @@ mod tests {
             output.contains("⋯") || output.contains("┄") || output.contains('─'),
             "expected back-edge route to render with visible glyphs, got:\n{}",
             output
+        );
+    }
+
+    fn char_at(output: &str, x: usize, y: usize) -> Option<char> {
+        output
+            .lines()
+            .nth(y)
+            .and_then(|line| line.chars().nth(x))
+    }
+
+    #[test]
+    fn cross_subgraph_edge_pierces_border_td() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::TD;
+
+        let mut a = Node::new("A", "A");
+        a.x = 2;
+        a.y = 0;
+        a.width = 6;
+
+        let mut b = Node::new("B", "B");
+        b.x = 6;
+        b.y = 6;
+        b.width = 6;
+
+        graph.nodes.push(a);
+        graph.nodes.push(b);
+        graph.edges.push(Edge::new("A", "B"));
+
+        let mut sg = Subgraph::new("sg", Some("Group".into()));
+        sg.add_node("B");
+        // Outer bounds with room for portals; inner bounds minimal
+        sg.bounds = crate::graph::Rectangle::new(5, 4, 8, 6);
+        sg.inner_bounds = crate::graph::Rectangle::new(5, 5, 8, 4);
+        graph.add_subgraph(sg);
+        graph.associate_node_with_subgraph("B", "sg");
+
+        // Precompute a route that runs along the subgraph border then inside.
+        let mut route = EdgeRoute::new();
+        route.push_segment(crate::geom::Point::new(3, 2), crate::geom::Point::new(9, 2)); // border-ish
+        route.push_segment(crate::geom::Point::new(9, 2), crate::geom::Point::new(9, 6)); // inside drop
+        graph.edge_routes.insert(0, route);
+        graph.edges[0].label = Some("LBL".into());
+
+        let config = Config::builder()
+            .style(CompositeStyle::from_base(BaseStyle::Unicode))
+            .build(&crate::parser::ParseConfig::default());
+
+        let output = render(&graph, &config).expect("render td portal");
+        let portal_y = graph
+            .get_subgraph("sg")
+            .map(|sg| sg.bounds.y)
+            .unwrap_or(0);
+        let portal_x = graph.get_node("B").map(|n| n.center_x()).unwrap_or(0);
+        let glyph = char_at(&output, portal_x, portal_y).unwrap_or(' ');
+        // Allow either a cleared slot or a vertical/junction pierce.
+        let is_pierced = matches!(glyph, '│' | '┬' | '┴' | '┼' | ' ');
+        assert!(
+            is_pierced,
+            "expected vertical pierce at ({portal_x},{portal_y}), got '{glyph}'\n{output}"
+        );
+    }
+
+    #[test]
+    fn cross_subgraph_edge_pierces_border_lr() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::LR;
+
+        let mut a = Node::new("A", "A");
+        a.x = 0;
+        a.y = 2;
+        a.width = 6;
+
+        let mut b = Node::new("B", "B");
+        b.x = 10;
+        b.y = 2;
+        b.width = 6;
+
+        graph.nodes.push(a);
+        graph.nodes.push(b);
+        graph.edges.push(Edge::new("A", "B"));
+
+        let mut sg = Subgraph::new("sg", Some("Group".into()));
+        sg.add_node("B");
+        sg.bounds = crate::graph::Rectangle::new(8, 0, 10, 5);
+        sg.inner_bounds = crate::graph::Rectangle::new(8, 0, 10, 5);
+        graph.add_subgraph(sg);
+        graph.associate_node_with_subgraph("B", "sg");
+
+        let mut route = EdgeRoute::new();
+        route.push_segment(crate::geom::Point::new(5, 3), crate::geom::Point::new(12, 3));
+        route.push_segment(crate::geom::Point::new(12, 3), crate::geom::Point::new(12, 4));
+        graph.edge_routes.insert(0, route);
+        graph.edges[0].label = Some("LBL".into());
+
+        let config = Config::builder()
+            .style(CompositeStyle::from_base(BaseStyle::Unicode))
+            .build(&crate::parser::ParseConfig::default());
+
+        let output = render(&graph, &config).expect("render lr portal");
+        let portal_y = graph
+            .get_subgraph("sg")
+            .map(|sg| sg.bounds.y + 1)
+            .unwrap_or(0);
+        let portal_x = graph.get_subgraph("sg").map(|sg| sg.bounds.x).unwrap_or(0);
+        let glyph = char_at(&output, portal_x, portal_y).unwrap_or(' ');
+        let is_pierced = !glyph.is_alphabetic();
+        assert!(
+            is_pierced,
+            "expected horizontal pierce at ({portal_x},{portal_y}), got '{glyph}'\n{output}"
+        );
+    }
+
+    #[test]
+    fn td_labels_avoid_subgraph_border_text() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::TD;
+        let mut a = Node::new("A", "A");
+        a.x = 0;
+        a.y = 0;
+        a.width = 5;
+        let mut b = Node::new("B", "B");
+        b.x = 0;
+        b.y = 9;
+        b.width = 5;
+        graph.nodes.push(a);
+        graph.nodes.push(b);
+        let mut edge = Edge::new("A", "B");
+        edge.label = Some("LBL".into());
+        graph.edges.push(edge);
+
+        let mut sg = Subgraph::new("sg", Some("Group".into()));
+        sg.add_node("B");
+        sg.bounds = crate::graph::Rectangle::new(0, 8, 9, 8);
+        sg.inner_bounds = crate::graph::Rectangle::new(0, 9, 9, 6);
+        graph.add_subgraph(sg);
+        graph.associate_node_with_subgraph("B", "sg");
+
+        let config = Config::builder()
+            .style(CompositeStyle::from_base(BaseStyle::Unicode))
+            .build(&crate::parser::ParseConfig::default());
+
+        let output = render(&graph, &config).expect("render td label");
+        // Ensure the label landed below the subgraph top border row.
+        let sg = graph.get_subgraph("sg").unwrap();
+        let top = sg.bounds.y;
+        let label_row = output
+            .lines()
+            .enumerate()
+            .find_map(|(i, line)| line.contains("LBL").then_some(i))
+            .unwrap_or(0);
+        assert!(
+            label_row != top,
+            "expected label not to overwrite subgraph top border (row {top}), got label at row {label_row}:\n{output}"
         );
     }
 }

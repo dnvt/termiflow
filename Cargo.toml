@@ -4,6 +4,18 @@ version = "0.1.0"
 edition = "2021"
 description = "Interactive TUI graph explorer - jq for diagrams"
 license = "MIT"
+default-run = "termiflow"
+
+[[bin]]
+name = "termiflow"
+path = "src/bin/termiflow.rs"
+
+[[bin]]
+name = "tw"
+path = "src/bin/tw.rs"
+
+[features]
+golden = []
 
 [dependencies]
 ratatui = "0.29"

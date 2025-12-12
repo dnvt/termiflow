@@ -14,7 +14,11 @@ use crate::graph::{Direction, Edge, Graph, Node, NodeShape, Subgraph};
 
 lazy_static! {
     // SPEC §1.1: Supported syntax patterns
-    static ref RE_DIRECTION: Regex = Regex::new(r"graph\s+(TD|LR|RL|TB|BT)").unwrap();
+    // Accept both Mermaid flowchart headers:
+    // - `graph TD` (legacy)
+    // - `flowchart TD` (common generator output)
+    static ref RE_DIRECTION: Regex =
+        Regex::new(r"^(?:graph|flowchart)\s+(TD|LR|RL|TB|BT)\b").unwrap();
 
     // Node shape regexes - order matters! More specific patterns first
     // Database: ID[(label)]
@@ -53,9 +57,12 @@ lazy_static! {
     static ref RE_CLICK: Regex = Regex::new(r#"click\s+(\w+)\s+["']([^"']+)["']"#).unwrap();
     static ref RE_CONFIG: Regex = Regex::new(r"%%\s*termiflow:\s*(\w+)=([^\s]+)").unwrap();
     static ref RE_COMMENT: Regex = Regex::new(r"^\s*%%").unwrap();
+    // Mermaid keywords that identify non-flowchart diagram types. Flowcharts are handled
+    // via `RE_DIRECTION` above.
     static ref RE_DIAGRAM_TYPE: Regex = Regex::new(
-        r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram-v2|stateDiagram|erDiagram|journey|gantt|pie|requirementDiagram|timeline|mindmap|gitGraph|block|quadrantChart)\b"
-    ).unwrap();
+        r"^(sequenceDiagram|classDiagram|stateDiagram-v2|stateDiagram|erDiagram|journey|gantt|pie|requirementDiagram|timeline|mindmap|gitGraph|block|quadrantChart)\b",
+    )
+    .unwrap();
 
     // SPEC §1.2: Unsupported syntax patterns
     static ref RE_NESTED_BRACKET: Regex = Regex::new(r"\[[^\]]*\[").unwrap();
@@ -63,7 +70,7 @@ lazy_static! {
     static ref RE_STYLE: Regex = Regex::new(r"^\s*style\s+\w+").unwrap();
     static ref RE_CLASSDEF: Regex = Regex::new(r"^\s*classDef\s").unwrap();
 
-    // Subgraph patterns (supported in v2)
+    // Subgraph patterns (single-level supported; nested warns/ignored)
     // subgraph ID [title] or subgraph ID ["title"]
     static ref RE_SUBGRAPH_BRACKET: Regex = Regex::new(r"^\s*subgraph\s+(\w+)\s*\[([^\]]*)\]").unwrap();
     // subgraph title (title becomes sanitized ID)
@@ -176,7 +183,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
         if let Some(caps) = RE_DIAGRAM_TYPE.captures(first_content) {
             let keyword = &caps[1];
             bail!(
-                "termiflow: error: line {}: diagram type not supported (found: '{}') — only flowchart `graph TD/LR/TB/BT` is supported",
+                "termiflow: error: line {}: diagram type not supported (found: '{}') — only flowchart `graph|flowchart TD/LR/TB/BT` is supported",
                 line_num + 1,
                 keyword
             );
@@ -767,6 +774,12 @@ mod tests {
     fn test_direction_bt() {
         let result = parse("graph BT\nA[Node]", false).unwrap();
         assert!(matches!(result.graph.direction, Direction::BT));
+    }
+
+    #[test]
+    fn test_direction_flowchart_alias() {
+        let result = parse("flowchart LR\nA[Node]", false).unwrap();
+        assert!(matches!(result.graph.direction, Direction::LR));
     }
 
     // === NODE PARSING ===

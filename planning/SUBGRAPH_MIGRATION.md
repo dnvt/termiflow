@@ -1,8 +1,21 @@
 # Subgraph Migration Analysis
 
+> Historical note: subgraph support has since been implemented on the direction-agnostic codebase.
+> Use this document as background context only; it no longer reflects current `main`.
+
 ## Executive Summary
 
-The `feat/subgraphs` branch implements single-level subgraph support but is **based on an older codebase** before our direction-agnostic refactoring. It needs to be reimplemented to work with our new `OrientedCoords` abstraction.
+Subgraph support is now implemented end-to-end (parse → layout → render), including:
+- Parsing `subgraph ... end` blocks (single-level; nested warns/ignored).
+- Subgraph bounds + gutters in layout.
+- Portal-aware border piercing for cross-subgraph edges in render.
+
+Current implementation touchpoints:
+- `src/graph.rs` (`Subgraph`, `Rectangle`, `Graph::subgraphs`, `Graph::node_subgraph`)
+- `src/parser.rs` (subgraph parsing + nested warnings)
+- `src/layout.rs` (subgraph envelopes + gutters + portal carving in occupancy grid)
+- `src/portals.rs` (shared envelope/portal helpers)
+- `src/render/mod.rs`, `src/render/edge.rs` (portal carving + cross-subgraph routing)
 
 ## Branch Comparison
 

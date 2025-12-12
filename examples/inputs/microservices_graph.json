@@ -1,0 +1,23 @@
+{
+  "direction": "TD",
+  "nodes": [
+    { "id": "gateway", "label": "Gateway" },
+    { "id": "auth", "label": "Auth" },
+    { "id": "api", "label": "API" },
+    { "id": "db", "label": "Database" },
+    { "id": "cache", "label": "Cache" }
+  ],
+  "subgraphs": [
+    { "id": "edge", "title": "Edge", "nodes": ["gateway"] },
+    { "id": "services", "title": "Services", "nodes": ["auth", "api"] },
+    { "id": "data", "title": "Data", "nodes": ["db", "cache"] }
+  ],
+  "edges": [
+    { "from": "gateway", "to": "auth", "label": "login" },
+    { "from": "gateway", "to": "api", "label": "request" },
+    { "from": "auth", "to": "db" },
+    { "from": "api", "to": "db" },
+    { "from": "api", "to": "cache" }
+  ]
+}
+

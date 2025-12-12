@@ -28,6 +28,7 @@ pub mod geom;
 pub mod graph;
 pub mod layout;
 pub mod orientation;
+pub mod portals;
 pub mod parser;
 pub mod render;
 pub mod style;

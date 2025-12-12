@@ -7,9 +7,12 @@ Golden test fixtures for TermiFlow diagram rendering.
 ```
 fixtures/
 ├── inputs/          # Mermaid-lite input diagrams (.md)
-├── expected/        # Expected output files (.unicode.txt, .ascii.txt)
+├── expected/        # Expected output files (.unicode.txt, .ascii.txt) (generated)
 └── README.md        # This file (source of truth)
 ```
+
+Note: golden tests (`cargo test --features golden`) use `include_str!()` and therefore require the
+`expected/` files to exist at build time. Regenerate them after intentional rendering changes.
 
 ## Naming Convention
 
