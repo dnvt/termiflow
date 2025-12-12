@@ -5,7 +5,7 @@
 
 use crate::graph::{Direction, Graph, Node};
 use crate::orientation::{is_before, OrientedCoords};
-use crate::style::{StyleChars, BOX_HEIGHT, STEM_LENGTH_HORIZONTAL, STEM_LENGTH_VERTICAL};
+use crate::style::{StyleChars, STEM_LENGTH_HORIZONTAL, STEM_LENGTH_VERTICAL};
 
 use super::canvas::{is_junction, Canvas};
 use super::is_textual;
@@ -1368,14 +1368,14 @@ fn edge_entry_point(node: &Node, direction: Direction) -> (usize, usize) {
         Direction::TD | Direction::TB => (node.center_x(), node.y.saturating_sub(1)),
         Direction::LR => (node.x.saturating_sub(1), node.center_y()),
         Direction::RL => (node.x + node.width, node.center_y()),
-        Direction::BT => (node.center_x(), node.y + BOX_HEIGHT),
+        Direction::BT => (node.center_x(), node.bottom_y()),
     }
 }
 
 /// Where an outgoing edge exits a source node (stem start position).
 fn edge_exit_point(node: &Node, direction: Direction) -> (usize, usize) {
     match direction {
-        Direction::TD | Direction::TB => (node.center_x(), node.y + BOX_HEIGHT),
+        Direction::TD | Direction::TB => (node.center_x(), node.bottom_y()),
         Direction::LR => (node.x + node.width, node.center_y()),
         Direction::RL => (node.x.saturating_sub(1), node.center_y()),
         Direction::BT => (node.center_x(), node.y.saturating_sub(1)),

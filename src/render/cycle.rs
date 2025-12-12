@@ -5,7 +5,7 @@
 //! - `center_x`, `center_y`: Calculate visual center coordinates of nodes
 
 use crate::graph::Node;
-use crate::style::{StyleChars, BOX_HEIGHT, CYCLE_GUTTER};
+use crate::style::{StyleChars, CYCLE_GUTTER};
 
 use super::canvas::Canvas;
 
@@ -38,8 +38,8 @@ pub fn route_cycle_edge(
             }
 
             let gutter_x = canvas.width - 2;
-            let from_y = from.y + BOX_HEIGHT / 2;
-            let to_y = to.y + BOX_HEIGHT / 2;
+            let from_y = from.center_y();
+            let to_y = to.center_y();
 
             // Horizontal line from source to gutter
             for x in (from.x + from.width)..gutter_x {
@@ -74,7 +74,7 @@ pub fn route_cycle_edge(
             // Back-edge goes: down from source → horizontal in gutter → up to target
 
             // Calculate a gutter position below the nodes
-            let nodes_bottom = from.y.max(to.y) + BOX_HEIGHT;
+            let nodes_bottom = from.bottom_y().max(to.bottom_y());
             let gutter_y = nodes_bottom + 2; // Add some spacing below nodes
 
             if gutter_y >= canvas.height {
@@ -86,7 +86,7 @@ pub fn route_cycle_edge(
             let to_x = to.x + to.width / 2;
 
             // Vertical line from source box bottom down to gutter
-            for y in (from.y + BOX_HEIGHT)..=gutter_y {
+            for y in from.bottom_y()..=gutter_y {
                 canvas.set_edge_char(from_x, y, style.back_v, style);
             }
 
@@ -101,13 +101,13 @@ pub fn route_cycle_edge(
             }
 
             // Vertical line from gutter up to target box bottom
-            for y in (to.y + BOX_HEIGHT)..=gutter_y {
+            for y in to.bottom_y()..=gutter_y {
                 canvas.set_edge_char(to_x, y, style.back_v, style);
             }
 
             // Arrow pointing into target's bottom (where it enters from the gutter)
             // The back-edge enters from below, so we draw an up-arrow at the target's bottom
-            let target_bottom_y = to.y + BOX_HEIGHT;
+            let target_bottom_y = to.bottom_y();
 
             // Draw corner at target's bottom where vertical meets
             canvas.set_edge_char(to_x, target_bottom_y, style.corner_ul, style);
@@ -147,11 +147,13 @@ mod tests {
         Node {
             id: id.into(),
             label: id.into(),
+            label_lines: Vec::new(),
             shape: crate::graph::NodeShape::Rectangle,
             click_target: None,
             x,
             y,
             width,
+            height: crate::style::BOX_HEIGHT,
             rank: 0,
         }
     }
@@ -178,8 +180,8 @@ mod tests {
         let gutter_x = canvas.width - 2;
 
         // Vertical line should exist in gutter
-        let src_mid_y = src.y + BOX_HEIGHT / 2;
-        let target_mid_y = target.y + BOX_HEIGHT / 2;
+        let src_mid_y = src.center_y();
+        let target_mid_y = target.center_y();
         assert_eq!(canvas.get(gutter_x, src_mid_y), chars.back_v);
         assert_eq!(canvas.get(gutter_x, target_mid_y), chars.back_v);
 

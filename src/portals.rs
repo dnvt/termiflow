@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 
 use crate::geom::Rect;
 use crate::graph::{Direction, Graph};
-use crate::style::BOX_HEIGHT;
 
 /// Portal coordinates along each side of a subgraph border.
 #[derive(Debug, Clone, Default)]
@@ -28,7 +27,7 @@ pub struct SubgraphEnvelope {
     pub portals: PortalSlots,
 }
 
-/// Build node rectangles (using BOX_HEIGHT) from a laid-out graph.
+/// Build node rectangles from a laid-out graph.
 pub fn node_rects_from_graph(graph: &Graph) -> HashMap<String, Rect> {
     graph
         .nodes
@@ -36,7 +35,7 @@ pub fn node_rects_from_graph(graph: &Graph) -> HashMap<String, Rect> {
         .map(|n| {
             (
                 n.id.clone(),
-                Rect::new(n.x, n.y, n.width, BOX_HEIGHT),
+                Rect::new(n.x, n.y, n.width, n.height),
             )
         })
         .collect()
@@ -249,6 +248,40 @@ pub fn collect_portal_slots(
 ) -> HashMap<String, PortalSlots> {
     let mut slots: HashMap<String, PortalSlots> = HashMap::new();
 
+    let shift_x_out_of_title = |sg_id: &str, x: usize| -> usize {
+        let Some(sg) = graph.get_subgraph(sg_id) else {
+            return x;
+        };
+        let Some(title) = sg.title.as_deref() else {
+            return x;
+        };
+        if !sg.bounds.is_valid() {
+            return x;
+        }
+        let title_fmt = format!("[  {}  ]", title);
+        let len = title_fmt.chars().count();
+        if len == 0 || len > sg.bounds.width.saturating_sub(2) {
+            return x;
+        }
+        let start = sg.bounds.x + sg.bounds.width.saturating_sub(len) / 2;
+        let end = start + len.saturating_sub(1);
+        if x < start || x > end {
+            return x;
+        }
+        let min_x = sg.bounds.x.saturating_add(1);
+        let max_x = sg.bounds.x.saturating_add(sg.bounds.width.saturating_sub(2));
+        if max_x < min_x {
+            return x;
+        }
+        if end + 1 <= max_x {
+            end + 1
+        } else if start > min_x {
+            start.saturating_sub(1)
+        } else {
+            x
+        }
+    };
+
     for edge in &graph.edges {
         let Some(from) = graph.get_node(&edge.from) else {
             continue;
@@ -267,11 +300,13 @@ pub fn collect_portal_slots(
         match direction {
             Direction::TD | Direction::TB => {
                 if let Some(id) = to_sg {
+                    let mut x = node_center_x(node_rects, &edge.to, to);
+                    x = shift_x_out_of_title(id, x);
                     slots
                         .entry(id.to_string())
                         .or_default()
                         .top
-                        .insert(node_center_x(node_rects, &edge.to, to));
+                        .insert(x);
                 }
                 if let Some(id) = from_sg {
                     slots
@@ -290,11 +325,13 @@ pub fn collect_portal_slots(
                         .insert(node_center_x(node_rects, &edge.to, to));
                 }
                 if let Some(id) = from_sg {
+                    let mut x = node_center_x(node_rects, &edge.from, from);
+                    x = shift_x_out_of_title(id, x);
                     slots
                         .entry(id.to_string())
                         .or_default()
                         .top
-                        .insert(node_center_x(node_rects, &edge.from, from));
+                        .insert(x);
                 }
             }
             Direction::LR => {

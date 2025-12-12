@@ -29,12 +29,15 @@ pub enum NodeShape {
 pub struct Node {
     pub id: String,
     pub label: String,
+    /// Pre-measured label lines for rendering (optional; empty means "use label").
+    pub label_lines: Vec<String>,
     pub shape: NodeShape, // Node shape from syntax
     #[allow(dead_code)]
     pub click_target: Option<String>, // Drill-down target from `click ID "file.md"`
     pub x: usize,         // Column position (set by layout)
     pub y: usize,         // Row position (set by layout)
     pub width: usize,     // Calculated from label
+    pub height: usize,    // Box height in rows (default = BOX_HEIGHT)
     pub rank: usize,      // Depth in graph (0 = root)
 }
 
@@ -51,10 +54,12 @@ impl Node {
             id: id.into(),
             width: crate::style::box_width(&label),
             label,
+            label_lines: Vec::new(),
             shape,
             click_target: None,
             x: 0,
             y: 0,
+            height: BOX_HEIGHT,
             rank: 0,
         }
     }
@@ -68,7 +73,13 @@ impl Node {
     /// Visual center y-coordinate
     #[inline]
     pub fn center_y(&self) -> usize {
-        self.y + BOX_HEIGHT / 2
+        let h = self.height.max(BOX_HEIGHT);
+        self.y + h / 2
+    }
+
+    #[inline]
+    pub fn bottom_y(&self) -> usize {
+        self.y + self.height.max(BOX_HEIGHT)
     }
 }
 

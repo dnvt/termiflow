@@ -52,6 +52,30 @@ fn shift_nodes_from_rank_td(
     }
 }
 
+fn shift_nodes_up_to_rank_bt(
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    ranks: &HashMap<String, usize>,
+    max_rank: usize,
+    delta_y: usize,
+) {
+    if delta_y == 0 {
+        return;
+    }
+    for (id, p) in positions.iter_mut() {
+        let Some(rank) = ranks.get(id) else {
+            continue;
+        };
+        if *rank > max_rank {
+            continue;
+        }
+        p.y += delta_y;
+        if let Some(r) = node_rects.get_mut(id) {
+            r.y += delta_y;
+        }
+    }
+}
+
 /// Input for the experimental layout engine.
 pub struct LayoutInput<'a> {
     pub graph: &'a Graph,
@@ -164,8 +188,13 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         .unwrap_or(0);
 
     if input.graph.direction == Direction::BT {
-        for p in placement.positions.values_mut() {
-            p.y = max_y.saturating_sub(p.y).saturating_sub(BOX_HEIGHT);
+        for (id, p) in placement.positions.iter_mut() {
+            let h = placement
+                .node_rects
+                .get(id)
+                .map(|r| r.height)
+                .unwrap_or(BOX_HEIGHT);
+            p.y = max_y.saturating_sub(p.y).saturating_sub(h);
         }
         for r in placement.node_rects.values_mut() {
             r.y = max_y.saturating_sub(r.y).saturating_sub(r.height);
@@ -705,7 +734,7 @@ pub fn apply_coarse_layout(
         for node in &graph.nodes {
             eprintln!(
                 "node {} @ ({}, {}) size {}x{}",
-                node.id, node.x, node.y, node.width, BOX_HEIGHT
+                node.id, node.x, node.y, node.width, node.height
             );
         }
     }
@@ -733,7 +762,57 @@ fn adjust_portal_slots_for_title(
     envelopes: &mut HashMap<String, SubgraphEnvelope>,
     graph: &Graph,
 ) {
-    let _ = (envelopes, graph);
+    // Titles are drawn on the top border row of subgraphs. In BT orientation, exiting
+    // portals live on that top border and can otherwise pierce through the title
+    // (including its surrounding spaces). Shift portal slots out of the title span.
+    if !matches!(graph.direction, Direction::BT) {
+        return;
+    }
+
+    for sg in &graph.subgraphs {
+        let Some(title) = sg.title.as_deref() else {
+            continue;
+        };
+        let Some(env) = envelopes.get_mut(&sg.id) else {
+            continue;
+        };
+
+        let title_fmt = format!("[  {}  ]", title);
+        let len = title_fmt.chars().count();
+        if len == 0 || env.outer.width == 0 {
+            continue;
+        }
+
+        let start = env.outer.x + env.outer.width.saturating_sub(len) / 2;
+        let end = start + len.saturating_sub(1);
+        let min_x = env.outer.x.saturating_add(1);
+        let max_x = env.outer.right().saturating_sub(2);
+        if max_x < min_x {
+            continue;
+        }
+
+        let shift_out_of_span = |x: usize| -> usize {
+            if x < start || x > end {
+                return x;
+            }
+            if end + 1 <= max_x {
+                end + 1
+            } else if start > min_x {
+                start.saturating_sub(1)
+            } else {
+                x
+            }
+        };
+
+        if !env.portals.top.is_empty() {
+            let mut shifted = HashSet::new();
+            for &x in &env.portals.top {
+                let cx = x.clamp(min_x, max_x);
+                shifted.insert(shift_out_of_span(cx));
+            }
+            env.portals.top = shifted;
+        }
+    }
 }
 
 /// Backwards-compatible alias for callers using the previous spike API.
@@ -1102,7 +1181,7 @@ fn place_nodes(
                 {
                     match coords.secondary {
                         Axis::Horizontal => prior.x + node.width / 2,
-                        Axis::Vertical => prior.y + BOX_HEIGHT / 2,
+                        Axis::Vertical => prior.y + node.height / 2,
                     }
                 } else {
                     0
@@ -1110,7 +1189,7 @@ fn place_nodes(
             } else if let Some(prior) = prior_positions.as_ref().and_then(|m| m.get(&node.id)) {
                 match coords.secondary {
                     Axis::Horizontal => prior.x + node.width / 2,
-                    Axis::Vertical => prior.y + BOX_HEIGHT / 2,
+                    Axis::Vertical => prior.y + node.height / 2,
                 }
             } else {
                 0
@@ -1132,7 +1211,7 @@ fn place_nodes(
             coords.set_secondary(&mut x, &mut y, secondary_pos);
 
             positions.insert(node.id.clone(), Point::new(x, y));
-            node_rects.insert(node.id.clone(), Rect::new(x, y, node.width, BOX_HEIGHT));
+            node_rects.insert(node.id.clone(), Rect::new(x, y, node.width, node.height));
             ranks.insert(node.id.clone(), layer_idx);
 
             secondary_cursor = secondary_pos + extent_sec + secondary_gap;
@@ -1275,14 +1354,14 @@ fn assign_layers(graph: &Graph) -> Vec<Vec<usize>> {
 
 fn node_extent_primary(node: &crate::graph::Node, coords: &OrientedCoords) -> usize {
     match coords.primary {
-        Axis::Vertical => BOX_HEIGHT,
+        Axis::Vertical => node.height,
         Axis::Horizontal => node.width,
     }
 }
 
 fn node_extent_secondary(node: &crate::graph::Node, coords: &OrientedCoords) -> usize {
     match coords.secondary {
-        Axis::Vertical => BOX_HEIGHT,
+        Axis::Vertical => node.height,
         Axis::Horizontal => node.width,
     }
 }
@@ -1541,7 +1620,7 @@ fn apply_balance_pass(
         let node_id = &graph.nodes[node_idx].id;
         let node_width = match coords.secondary {
             Axis::Horizontal => graph.nodes[node_idx].width,
-            Axis::Vertical => BOX_HEIGHT,
+            Axis::Vertical => graph.nodes[node_idx].height,
         };
 
         let mut sum_centers = 0.0;

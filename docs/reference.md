@@ -15,6 +15,8 @@
 
 - `--style`, `-s`: base style (`ascii`, `unicode`, `double`, `rounded`, `heavy`, `dots`, `plus`, `stars`, `blocks`) or composite (e.g. `corner:dots,border:heavy`).
 - `--max-label`: truncate labels after N columns (default 20).
+- `--wrap`: enable multiline label wrapping (experimental; default off).
+- `--max-lines`: max label lines when wrapping is enabled (default 1).
 - `--strict`: treat parse warnings as errors.
 
 Composite components: `corner`, `border`, `arrow`, `edge`, `junction`, `back`, `subgraph`.
@@ -33,6 +35,7 @@ Supported patterns:
 - Edge labels: `A -->|label| B` and `A -- label --> B`
 - Subgraphs (single-level): `subgraph ... end` (nested subgraphs warn; `--strict` makes warnings fatal)
 - Per-diagram directives: `%% termiflow: style=...`, `%% termiflow: max_label=...`
+- Multiline: `%% termiflow: wrap=true`, `%% termiflow: max_lines=3`
 - Click targets: `click ID "file.md"` (parsed; currently informational)
 
 Not supported (yet):
@@ -62,4 +65,3 @@ max_label_width = 25
 - `TERMIFLOW_DISABLE_PORTALS=1`: disable carving openings in subgraph borders.
 - `TERMIFLOW_DEBUG_TIMING=1`: print coarse timing/routing stats to stderr.
 - `TERMIFLOW_DEBUG_ROUTES=1`: dump precomputed edge route segments to stderr.
-
