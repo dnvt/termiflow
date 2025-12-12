@@ -58,6 +58,8 @@ Example:
 ```toml
 style = "unicode"
 max_label_width = 25
+wrap = true
+max_lines = 3
 ```
 
 ## Debug
