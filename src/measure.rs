@@ -181,13 +181,27 @@ pub fn measure_graph(graph: &mut Graph, config: &Config) {
             node.width = box_width(&node.label).max(BOX_MIN_WIDTH);
         }
 
+        // For boxlike nodes, the render path uses `width - 4` as the label area width.
+        // Keep wrapping within that (and within the user-configured limit).
         let max_line_width = config
             .max_label_width
-            .min(node.width.saturating_sub(4))
-            .max(0);
+            .min(node.width.saturating_sub(4));
 
         if config.wrap_labels && supports_multiline(node.shape) {
-            node.label_lines = wrapped_label_lines(&node.label, max_line_width, config.max_label_lines);
+            node.label_lines =
+                wrapped_label_lines(&node.label, max_line_width, config.max_label_lines);
+
+            // Shrink overly-wide boxes (e.g., labels with `<br>` markers) to the actual visible
+            // content, without ever expanding the existing width (keeps layout stable).
+            let visible_width = node
+                .label_lines
+                .iter()
+                .map(|l| display_width(l))
+                .max()
+                .unwrap_or(0);
+            let desired_width = (visible_width + 4).max(BOX_MIN_WIDTH);
+            node.width = node.width.min(desired_width);
+
             node.height = (node.label_lines.len() + 2).max(BOX_HEIGHT);
         } else {
             node.label_lines = single_line_label(&node.label, max_line_width);
@@ -229,5 +243,22 @@ mod tests {
         assert_eq!(g.nodes[0].height, BOX_HEIGHT);
         assert_eq!(g.nodes[0].label_lines.len(), 1);
     }
-}
 
+    #[test]
+    fn wrap_shrinks_inflated_width() {
+        let mut g = Graph::new();
+        let mut n = Node::new("A", "line one<br>line two");
+        n.width = 60;
+        g.nodes.push(n);
+
+        let mut cfg = Config::default();
+        cfg.wrap_labels = true;
+        cfg.max_label_lines = 10;
+        cfg.max_label_width = 20;
+
+        measure_graph(&mut g, &cfg);
+        assert!(g.nodes[0].label_lines.len() >= 2);
+        assert!(g.nodes[0].width < 60);
+        assert!(g.nodes[0].width >= BOX_MIN_WIDTH);
+    }
+}
