@@ -82,6 +82,9 @@ These reuse existing inputs but capture the experimental layout/routing spike ou
 To regenerate expected outputs after code changes:
 
 ```bash
+# Regenerate golden snapshots (writes `tests/fixtures/expected/`)
+scripts/regenerate_golden.sh
+
 # Manual visual sweep (does not touch `expected/`)
 scripts/render_fixtures.sh --ascii --unicode
 
