@@ -214,6 +214,109 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         for _ in 0..8 {
             let mut required_shift_by_rank: HashMap<usize, usize> = HashMap::new();
 
+            let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
+            for sg in &input.graph.subgraphs {
+                let min_rank = sg
+                    .node_ids
+                    .iter()
+                    .filter_map(|id| placement.ranks.get(id))
+                    .copied()
+                    .min();
+                if let Some(r) = min_rank {
+                    subgraph_min_rank.insert(sg.id.as_str(), r);
+                }
+            }
+
+            let mut incoming_into_subgraph_from: HashMap<(String, String), usize> = HashMap::new();
+            for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+                let Some(to_sg) = input.graph.get_node_subgraph(&edge.to) else {
+                    continue;
+                };
+                if input.graph.get_node_subgraph(&edge.from) == Some(to_sg) {
+                    continue;
+                }
+                *incoming_into_subgraph_from
+                    .entry((edge.from.clone(), to_sg.to_string()))
+                    .or_default() += 1;
+            }
+
+            // Ensure enough clearance above a subgraph top border for incoming edges.
+            for (sg_id, env) in subgraph_envelopes.iter() {
+                let Some(&shift_rank) = subgraph_min_rank.get(sg_id.as_str()) else {
+                    continue;
+                };
+                for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+                    if input.graph.get_node_subgraph(&edge.to) != Some(sg_id.as_str()) {
+                        continue;
+                    }
+                    if input.graph.get_node_subgraph(&edge.from) == Some(sg_id.as_str()) {
+                        continue;
+                    }
+                    // Don't apply this spacing rule for edges whose source already sits inside
+                    // another subgraph (nested compositions). Those are handled by internal
+                    // subgraph padding and routing, and enforcing "outside" clearance here
+                    // can cause runaway vertical expansion.
+                    if input.graph.get_node_subgraph(&edge.from).is_some() {
+                        continue;
+                    }
+                    let Some(from_rect) = placement.node_rects.get(&edge.from) else {
+                        continue;
+                    };
+                    // Single incoming edge: one connector row is enough.
+                    // Fan-out entry (same external source → multiple targets): keep two rows so
+                    // the trunk can be visible before entering the subgraph.
+                    let incoming_count = incoming_into_subgraph_from
+                        .get(&(edge.from.clone(), sg_id.clone()))
+                        .copied()
+                        .unwrap_or(1);
+                    let clearance = if incoming_count > 1 { 2 } else { 1 };
+                    let required_border_y = from_rect.bottom().saturating_add(clearance);
+                    if env.outer.y < required_border_y {
+                        let delta = required_border_y - env.outer.y;
+                        required_shift_by_rank
+                            .entry(shift_rank)
+                            .and_modify(|d| *d = (*d).max(delta))
+                            .or_insert(delta);
+                    }
+                }
+            }
+
+            // Ensure at least one empty row between stacked subgraphs when an edge crosses
+            // from one to the next (so the connector is visible outside both borders).
+            for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+                let (Some(from_sg), Some(to_sg)) = (
+                    input.graph.get_node_subgraph(&edge.from),
+                    input.graph.get_node_subgraph(&edge.to),
+                ) else {
+                    continue;
+                };
+                if from_sg == to_sg {
+                    continue;
+                }
+                let (Some(from_env), Some(to_env)) = (
+                    subgraph_envelopes.get(from_sg),
+                    subgraph_envelopes.get(to_sg),
+                ) else {
+                    continue;
+                };
+                // Only apply to non-overlapping, vertically stacked envelopes (not nested).
+                if from_env.outer.bottom() > to_env.outer.y {
+                    continue;
+                }
+                let required_to_top = from_env.outer.bottom().saturating_add(1);
+                if to_env.outer.y >= required_to_top {
+                    continue;
+                }
+                let Some(&shift_rank) = subgraph_min_rank.get(to_sg) else {
+                    continue;
+                };
+                let delta = required_to_top - to_env.outer.y;
+                required_shift_by_rank
+                    .entry(shift_rank)
+                    .and_modify(|d| *d = (*d).max(delta))
+                    .or_insert(delta);
+            }
+
             for env in subgraph_envelopes.values() {
                 for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
                     let (Some(from_rect), Some(to_rect)) = (
@@ -228,6 +331,12 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                         continue;
                     }
                     if rect_fully_inside(env.outer, *to_rect) {
+                        continue;
+                    }
+                    // If the destination is inside another subgraph, let that subgraph's
+                    // padding handle arrow/label clearance. This rule is specifically for
+                    // edges that exit a subgraph into open (non-subgraph) space.
+                    if input.graph.get_node_subgraph(&edge.to).is_some() {
                         continue;
                     }
                     if to_rect.y < env.outer.bottom().saturating_sub(1) {
@@ -846,9 +955,14 @@ impl LayoutSpacingPolicy {
                     spacing = spacing.max(SPACING_MINIMAL + 2);
                 }
 
-                // Fan-outs into subgraphs need breathing room for spine/branch rows.
+                // Fan-outs into a single subgraph can be tighter because the subgraph
+                // itself reserves internal rows for trunk/split/drop rendering.
                 if has_fan_out {
-                    spacing = spacing.max(SPACING_MINIMAL + 5);
+                    if fanout_targets_same_subgraph {
+                        spacing = spacing.max(SPACING_MINIMAL + 2);
+                    } else {
+                        spacing = spacing.max(SPACING_MINIMAL + 5);
+                    }
                 }
             }
         }

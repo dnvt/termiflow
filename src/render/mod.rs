@@ -721,7 +721,9 @@ fn reinforce_subgraph_portals(
                         && bottom_y < canvas.height
                         && !is_textual(canvas.get(px, bottom_y))
                     {
-                        canvas.set_edge_char(px, bottom_y, chars.edge_v, chars);
+                        // This is a portal "hole" on the border, not a T-junction.
+                        // Overwrite the horizontal border character instead of merging.
+                        canvas.set(px, bottom_y, chars.edge_v);
                     }
                 }
             }
