@@ -2,6 +2,10 @@
 
 Golden test fixtures for TermiFlow diagram rendering.
 
+While iterating on routing/layout, you may intentionally delete or regenerate
+`expected/` outputs. In that mode, prefer manual review by rendering all inputs
+to a timestamped directory via `scripts/render_fixtures.sh`.
+
 ## Structure
 
 ```
@@ -78,6 +82,9 @@ These reuse existing inputs but capture the experimental layout/routing spike ou
 To regenerate expected outputs after code changes:
 
 ```bash
+# Manual visual sweep (does not touch `expected/`)
+scripts/render_fixtures.sh --ascii --unicode
+
 # Single test
 cargo run -- --print tests/fixtures/inputs/flow_simple_td.md > tests/fixtures/expected/flow_simple_td.unicode.txt
 cargo run -- --print --style=ascii tests/fixtures/inputs/flow_simple_td.md > tests/fixtures/expected/flow_simple_td.ascii.txt
