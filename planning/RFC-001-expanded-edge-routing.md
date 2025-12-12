@@ -5,6 +5,10 @@
 **Decision**: 47
 **Implemented**: 2025-12-09
 
+> Note: the implementation is now direction-agnostic and lives in `src/render/edge.rs` as
+> `route_divergent_edges()` and `route_convergent_edges()`. Older references in this RFC to
+> `route_expanded_edge()` reflect an earlier naming/design iteration.
+
 ## Problem Statement
 
 Current edge rendering uses a compact single-row horizontal span between source and destination nodes. This works acceptably for Unicode (box-drawing junction characters are visually distinct), but fails for ASCII where `+` is ambiguous as both corner and junction.

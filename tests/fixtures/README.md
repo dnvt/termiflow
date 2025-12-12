@@ -7,9 +7,12 @@ Golden test fixtures for TermiFlow diagram rendering.
 ```
 fixtures/
 ├── inputs/          # Mermaid-lite input diagrams (.md)
-├── expected/        # Expected output files (.unicode.txt, .ascii.txt)
+├── expected/        # Expected output files (.unicode.txt, .ascii.txt) (generated)
 └── README.md        # This file (source of truth)
 ```
+
+Note: golden tests (`cargo test --features golden`) use `include_str!()` and therefore require the
+`expected/` files to exist at build time. Regenerate them after intentional rendering changes.
 
 ## Naming Convention
 
@@ -17,7 +20,7 @@ fixtures/
 [category]_[name]_[direction].md
 ```
 
-- **Categories**: `flow`, `edge`, `label`, `shape`, `parse`, `config`, `error`
+- **Categories**: `flow`, `edge`, `label`, `shape`, `parse`, `config`, `subgraph`, `error`
 - **Direction**: `td` (top-down), `lr` (left-right), `bt` (bottom-top), `rl` (right-left)
 
 ## Test Inventory
@@ -43,16 +46,30 @@ fixtures/
 | `shape_all_td` | All 9 node shapes |
 | `shape_database_td` | Database cylinder shape |
 
+### Subgraph Tests
+
+| Test Name | Description |
+|-----------|-------------|
+| `subgraph_basic_td` | Basic subgraph parsing (visual rendering) |
+
+### Experimental Layout Fixtures
+
+These reuse existing inputs but capture the experimental layout/routing spike output.
+
+| Test Name | Description | Formats |
+|-----------|-------------|---------|
+| `subgraph_basic_td` | TD subgraph with gutters | unicode, ascii (experimental) |
+| `flow_simple_lr` | LR three-node flow sanity check | unicode, ascii (experimental) |
+
 ### Error Tests
 
 | Test Name | Description |
 |-----------|-------------|
 | `error_sequence` | Unsupported diagram type |
-| `error_subgraph_td` | Subgraph syntax (not supported) |
 
 ## Test Counts
 
-- **25 input files** → **50 golden tests** (25 × 2 formats: unicode + ascii)
+- **25 input files** → **56 golden tests** (25 × 2 formats + 6 experimental variants)
 - **4 directions tested**: TD, LR, BT, RL
 - **Direction-consistent tests**: 4 test families × 4 directions = 16 directional tests
 

@@ -24,9 +24,11 @@
 // ============================================================================
 
 pub mod config;
+pub mod geom;
 pub mod graph;
 pub mod layout;
 pub mod orientation;
+pub mod portals;
 pub mod parser;
 pub mod render;
 pub mod style;
@@ -37,7 +39,7 @@ pub mod style;
 
 pub use config::{Config, ConfigBuilder};
 pub use graph::{Edge, Graph, Node};
-pub use layout::waterfall;
+pub use layout::coarse_waterfall;
 pub use parser::{parse, ParseConfig, ParseResult};
 pub use render::render as render_canvas;
 pub use style::{BaseStyle, CompositeStyle};
@@ -47,7 +49,6 @@ pub use style::{BaseStyle, CompositeStyle};
 // ============================================================================
 
 use anyhow::Result;
-
 /// Options for rendering a diagram
 #[derive(Debug, Clone, Default)]
 pub struct RenderOptions {
@@ -110,8 +111,8 @@ pub fn render(input: &str, options: RenderOptions) -> Result<String> {
     // Parse
     let parse_result = parser::parse(input, options.strict)?;
 
-    // Layout
-    let graph = layout::waterfall(parse_result.graph)?;
+    // Layout (default coarse waterfall)
+    let graph = layout::coarse_waterfall(parse_result.graph)?;
 
     // Build config from options + in-file directives
     let config = Config::builder()

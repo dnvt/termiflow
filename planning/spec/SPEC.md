@@ -14,11 +14,13 @@
 
 ```mermaid
 graph TD    # or TB, LR, BT
-    A[Rectangle Node]
-    B[(Database Node)]
-    A --> B    # Edge
-    A --> C --> D    # Edge chain
-    click A "file.md"    # Click target
+    %% termiflow: style=corner:dots,border:heavy
+    subgraph SG1 [Core]
+        A[Rectangle Node] -->|label| B[(Database Node)]
+        A -- text label --> C{Decision}
+    end
+    C --> D((Circle))
+    click A "file.md"    # Click target (parsed; not acted on by CLI yet)
 ```
 
 ### 1.2 Two-Pass Parsing Algorithm
@@ -41,18 +43,22 @@ graph TD    # or TB, LR, BT
 |---------|---------|-------|
 | Direction | Graph direction | `graph\s+(TD\|LR\|TB\|BT)` |
 | Node | Rectangle node | `([a-zA-Z0-9_]+)\[([^\[\]]*)\]` |
-| Database | Database node | `([a-zA-Z0-9_]+)\[\(([^\)]*)\)\]` |
-| Edge | Edge/chain | `([a-zA-Z0-9_]+)(?:\[[^\]]*\])?\s*--+>\s*([a-zA-Z0-9_]+)` |
+| Database | Database node | `([a-zA-Z0-9_]+)\[\(([^\)]*)\)\]` (conceptually `ID[(label)]`) |
+| Edge | Edge/chain | `([a-zA-Z0-9_]+)(?:shape)?\s*--+>\s*([a-zA-Z0-9_]+)` |
+| Edge label (pipe) | `A -->|label| B` | `([a-zA-Z0-9_]+)(?:shape)?\s*--+>\s*\|([^|]+)\|\s*([a-zA-Z0-9_]+)` |
+| Edge label (text) | `A -- label --> B` | `([a-zA-Z0-9_]+)(?:shape)?\s*--\s+([^-]+?)\s+--+>\s*([a-zA-Z0-9_]+)` |
 | Click | Click target | `click\s+(\w+)\s+["']([^"']+)["']` |
-| Config | In-file directive | `%%\s*termiflow:\s*(\w+)=(\w+)` |
+| Config | In-file directive | `%%\s*termiflow:\s*(\w+)=([^\s]+)` |
+| Subgraph (bracket) | `subgraph ID [Title]` | `^\s*subgraph\s+(\w+)\s*\[([^\]]*)\]` |
+| Subgraph (plain) | `subgraph Title` | `^\s*subgraph\s+(.+)$` |
+| Subgraph end | `end` | `^\s*end\s*$` |
 
 ### 1.4 Unsupported Syntax (Generates Warnings)
 
-- Subgraphs: `subgraph X`
-- Edge labels: `A -->|text| B`
-- Non-rectangular nodes: `A{diamond}`, `A((circle))`
+- Nested subgraphs (single-level only): `subgraph ... subgraph ... end end`
 - Mermaid styling: `style A fill:#f00`
 - Class definitions: `classDef`
+- Mermaid class usage: `:::`
 
 ### 1.5 Error Handling
 
@@ -74,30 +80,30 @@ B[Label]   # Definition comes later
 
 ## 2. Layout Algorithm
 
-### 2.1 Waterfall Layout
+### 2.1 Coarse Layout (Default Engine)
 
 **Algorithm Steps:**
-1. Build adjacency from edges
-2. Detect cycles using DFS
-3. Mark back-edges
-4. Topological sort (Kahn's algorithm)
-5. Assign ranks (depths)
-6. Position nodes by rank
-7. Apply direction-specific transforms
+1. Build adjacency from edges and detect cycles (mark `is_back_edge`).
+2. Assign layers (lenient Kahn) and optimize intra-layer ordering to reduce crossings.
+3. Place nodes on a coarse grid using direction-agnostic coordinates (primary/secondary axes).
+4. Flip coordinates for BT/RL to match flow direction.
+5. Compute subgraph inner/outer envelopes (with title band + gutters).
+6. Build an occupancy grid from inflated node rects and subgraph border “rings”.
+7. Carve portals into nodes/subgraph borders (optional) to allow clean entry/exit points.
+8. Route a subset of forward edges using Manhattan/A* obstacle avoidance.
+   - The renderer owns fan-in/fan-out junction aesthetics and cross-subgraph portal piercing, so layout routing may be intentionally partial.
 
 ### 2.2 Node Positioning
 
 #### Vertical Layouts (TD/TB/BT)
-- Nodes placed horizontally within ranks
-- Child nodes centered under parents when possible
-- Minimum spacing: `COL_SPACING` (3 chars)
+- Nodes are layered on the primary axis; siblings are placed along the secondary axis.
+- Layer-to-layer spacing is increased when needed for labels, fan-in/fan-out, and subgraph boundaries.
 
 #### Horizontal Layout (LR)
-- Nodes placed vertically within ranks  
-- Rank columns separated by node width + spacing
+- Same algorithm as TD, but with a different primary axis (direction-agnostic).
 
 #### Bottom-to-Top (BT)
-- Y-coordinates flipped after layout
+- Coordinates are flipped after placement to preserve the same core logic.
 
 ### 2.3 Cycle Handling
 
@@ -114,34 +120,33 @@ B[Label]   # Definition comes later
 | BOX_MIN_WIDTH | 5 | Minimum node width |
 | ROW_SPACING | 2 | Vertical gap between ranks |
 | COL_SPACING | 3 | Horizontal gap between nodes |
-| RIGHT_GUTTER | 4 | Reserved for back-edges |
+| CYCLE_GUTTER | 4 | Reserved for back-edges |
+| subgraph_gutter | 2 | Default layout gutter around subgraphs |
 
 ## 3. Canvas Rendering
 
 ### 3.1 Rendering Pipeline
 
-1. Calculate canvas dimensions from layout
-2. Create 2D character grid
-3. Draw nodes (boxes with labels)
-4. Route edges (with junction detection)
-5. Place arrows (vertical segments only)
-6. Convert grid to string
+1. Calculate canvas dimensions from laid-out nodes (and cycle gutter if needed).
+2. Create a 2D character grid.
+3. Draw subgraph borders/titles (background layer).
+4. Optionally carve portal openings in subgraph borders (`TERMIFLOW_DISABLE_PORTALS` disables).
+5. Draw edges:
+   - Precomputed routes (from layout) when present.
+   - Convergent edges (N→1).
+   - Divergent edges (1→N), including cross-subgraph edges with portal-aware border piercing.
+   - Back-edges via the cycle gutter router.
+6. Draw labels on routed segments.
+7. Draw node boxes + labels.
+8. Reinforce portal piercings (so crossings read clearly) and convert grid to string.
 
 ### 3.2 Edge Routing
 
-**Algorithm:**
-```
-1. Start from source node bottom center
-2. Draw vertical segment down
-3. At mid_y, turn horizontal toward target
-4. Draw vertical segment to target top
-5. Place arrow if vertical segment exists
-```
-
-**Mid-Y Calculation:**
-- Base: midpoint between source and target
-- Offset by edge index for parallel edges
-- Clamped to ensure vertical segments
+Edge routing is direction-agnostic via `OrientedCoords`:
+- **Divergent edges (1→N)**: stem → junction span → drops → arrows
+- **Convergent edges (N→1)**: stems → shared junction → arrow
+- **Cross-subgraph edges**: portal-aware border piercing to avoid corrupting container borders/titles
+- **Back-edges**: routed through a dedicated gutter to avoid cluttering the main diagram
 
 ### 3.3 Character Selection Rules
 
@@ -151,16 +156,15 @@ B[Label]   # Definition comes later
 - Up-right: `┘` (target from left)
 - Up-left: `└` (target from right)
 
-#### Junctions (Partially Implemented)
+#### Junctions
 - T-down: `┬` (split downward)
 - T-up: `┴` (merge upward)
 - T-right: `├` (branch right)
 - T-left: `┤` (branch left)
 
 #### Arrows
-- **Rule**: Only on vertical segments
-- Never on horizontal lines
-- Must have vertical line above
+- Arrows are placed at the end of the routed edge, aligned to the diagram direction.
+- Arrows are treated as endpoints and are not overwritten during overlap resolution.
 
 ### 3.4 Canvas Limits
 
@@ -215,11 +219,15 @@ graph TD
 
 | Style | Box | Edge | Arrow |
 |-------|-----|------|-------|
-| ASCII | `+-|` | `-|` | `v^<>` |
-| Unicode | `┌┐└┘─│` | `─│` | `▼▲◀▶` |
-| Double | `╔╗╚╝═║` | `═║` | `▼▲◀▶` |
-| Rounded | `╭╮╰╯─│` | `─│` | `▼▲◀▶` |
-| Heavy | `┏┓┗┛━┃` | `━┃` | `▼▲◀▶` |
+| ascii | `+-|` | `-|` | `v^<>` |
+| unicode | `┌┐└┘─│` | `─│` | `↓↑←→` |
+| double | `╔╗╚╝═║` | `═║` | `▼▲◀▶` |
+| rounded | `╭╮╰╯─│` | `─│` | `↓↑←→` |
+| heavy | `┏┓┗┛━┃` | `━┃` | `▼▲◀▶` |
+| dots | `....` | `:` | `v^<>` |
+| plus | `++++` | `+` | `v^<>` |
+| stars | `****` | `*` | `v^<>` |
+| blocks | `████` | `█` | `v^<>` |
 
 ### 5.2 Style Character Set
 
@@ -244,6 +252,16 @@ Each style defines:
 - Applied when label > max_label_width
 - Ellipsis: "..." (3 chars)
 - Preserves grapheme clusters
+
+### 5.4 Composite Styling
+
+Composite styles mix components in a single `--style` string:
+
+```
+corner:dots,border:heavy,arrow:unicode,subgraph:ascii
+```
+
+Supported components: `corner`, `border`, `arrow`, `edge`, `junction`, `back`, `subgraph`.
 
 ## 6. Error Handling
 
@@ -272,30 +290,27 @@ termiflow: warning: line {N}: {message}
 
 | Feature | Flag | Output |
 |---------|------|--------|
-| Layout Debug | `--debug-layout` | (Not implemented) |
+| Layout Debug | `--debug-layout` | Node coordinates + edge metadata to stderr |
 
 ## Implementation Status
 
 ### Complete ✅
 - Two-pass parser with forward references
-- Topological layout with cycle detection  
-- Multi-style rendering (5 styles)
-- Edge routing with arrows
+- Coarse layout + hybrid routing (layout + renderer-owned fan-in/fan-out)
+- Multi-style rendering (9 styles) + composite styles
+- Edge routing across TD/LR/BT/RL
 - Configuration system (3-tier)
 - Strict/lenient modes
 - Label truncation
 - Back-edge detection
+- Subgraphs (single-level) with portal-aware crossings
 
 ### Partial ⚠️
-- Junction characters (defined, not fully used)
-- Back-edge rendering (works but could be improved)
-- Config file loading (implemented, needs testing)
+- Click targets (parsed; not acted on by CLI/TUI)
 
 ### Not Implemented ❌
 - TUI mode (ratatui integration)
-- Click targets (parsed, not used)
-- Debug-layout flag
-- Node shapes beyond rectangles
+- Mermaid styling/classes (`style`, `classDef`, `:::`)
 
 ## Performance Characteristics
 

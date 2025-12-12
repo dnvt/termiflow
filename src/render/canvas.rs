@@ -26,7 +26,7 @@ pub fn is_arrow(c: char) -> bool {
         c,
         'v' | '^' | '<' | '>'           // ASCII
         | '↓' | '↑' | '←' | '→'         // Unicode thin arrows
-        | '▼' | '▲' | '◀' | '▶'         // Unicode filled arrows
+        | '▼' | '▲' | '◀' | '▶' // Unicode filled arrows
     )
 }
 
@@ -477,7 +477,7 @@ mod tests {
         let output = format!("{}", canvas);
         let lines: Vec<&str> = output.lines().collect();
 
-        assert_eq!(lines[0], "A");  // Trimmed from "A         "
+        assert_eq!(lines[0], "A"); // Trimmed from "A         "
         assert_eq!(lines[1], "  B"); // Trimmed from "  B       "
     }
 

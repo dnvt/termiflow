@@ -7,6 +7,59 @@ use crate::style::StyleChars;
 
 use super::canvas::{is_vertical, Canvas};
 
+/// Draw a subgraph bounding box with optional title.
+pub fn draw_subgraph(
+    canvas: &mut Canvas,
+    rect: &crate::graph::Rectangle,
+    title: Option<&str>,
+    style: &StyleChars,
+) {
+    if !rect.is_valid() {
+        return;
+    }
+
+    let x = rect.x;
+    let y = rect.y;
+    let width = rect.width;
+    let height = rect.height;
+
+    // Use standard corners but maybe lighter or same style
+    // For now, reuse standard style chars
+    canvas.set(x, y, style.tl);
+    for i in 1..width - 1 {
+        canvas.set(x + i, y, style.h);
+    }
+    canvas.set(x + width - 1, y, style.tr);
+
+    // Sides
+    for j in 1..height - 1 {
+        canvas.set(x, y + j, style.v);
+        canvas.set(x + width - 1, y + j, style.v);
+    }
+
+    // Bottom
+    canvas.set(x, y + height - 1, style.bl);
+    for i in 1..width - 1 {
+        canvas.set(x + i, y + height - 1, style.h);
+    }
+    canvas.set(x + width - 1, y + height - 1, style.br);
+
+    // Draw title if present
+    if let Some(t) = title {
+        // Format: [  Title  ] centered on top edge
+        let title_fmt = format!("[  {}  ]", t);
+        if title_fmt.len() <= width.saturating_sub(2) {
+            let start_x = x + (width - title_fmt.len()) / 2;
+            let title_y = y; // keep title on the border row for clarity
+            for (i, c) in title_fmt.chars().enumerate() {
+                if start_x + i < canvas.width {
+                    canvas.set(start_x + i, title_y, c);
+                }
+            }
+        }
+    }
+}
+
 /// Draw a node at position (x, y) with the given label and shape.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_node(
@@ -244,7 +297,11 @@ fn draw_stadium(
         let pos_x = x + i;
         let c = if direction == Direction::BT {
             let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { style.h }
+            if is_vertical(above, style) {
+                style.junction_up
+            } else {
+                style.h
+            }
         } else {
             style.h
         };
@@ -264,7 +321,11 @@ fn draw_stadium(
         let pos_x = x + i;
         let c = if matches!(direction, Direction::TD | Direction::TB) {
             let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { style.h }
+            if is_vertical(below, style) {
+                style.junction_down
+            } else {
+                style.h
+            }
         } else {
             style.h
         };
@@ -288,7 +349,11 @@ fn draw_hexagon(
         let pos_x = x + i;
         let c = if direction == Direction::BT {
             let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { style.h }
+            if is_vertical(above, style) {
+                style.junction_up
+            } else {
+                style.h
+            }
         } else {
             style.h
         };
@@ -308,7 +373,11 @@ fn draw_hexagon(
         let pos_x = x + i;
         let c = if matches!(direction, Direction::TD | Direction::TB) {
             let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { style.h }
+            if is_vertical(below, style) {
+                style.junction_down
+            } else {
+                style.h
+            }
         } else {
             style.h
         };
@@ -335,7 +404,11 @@ fn draw_database(
         let pos_x = x + i;
         let c = if direction == Direction::BT {
             let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { h }
+            if is_vertical(above, style) {
+                style.junction_up
+            } else {
+                h
+            }
         } else {
             h
         };
@@ -355,7 +428,11 @@ fn draw_database(
         let pos_x = x + i;
         let c = if matches!(direction, Direction::TD | Direction::TB) {
             let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { h }
+            if is_vertical(below, style) {
+                style.junction_down
+            } else {
+                h
+            }
         } else {
             h
         };
@@ -381,7 +458,11 @@ fn draw_subroutine(
         let pos_x = x + i;
         let c = if direction == Direction::BT {
             let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { style.h }
+            if is_vertical(above, style) {
+                style.junction_up
+            } else {
+                style.h
+            }
         } else {
             style.h
         };
@@ -401,7 +482,11 @@ fn draw_subroutine(
         let pos_x = x + i;
         let c = if matches!(direction, Direction::TD | Direction::TB) {
             let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { style.h }
+            if is_vertical(below, style) {
+                style.junction_down
+            } else {
+                style.h
+            }
         } else {
             style.h
         };
@@ -425,7 +510,11 @@ fn draw_asymmetric(
         let pos_x = x + i;
         let c = if direction == Direction::BT {
             let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) { style.junction_up } else { style.h }
+            if is_vertical(above, style) {
+                style.junction_up
+            } else {
+                style.h
+            }
         } else {
             style.h
         };
@@ -445,7 +534,11 @@ fn draw_asymmetric(
         let pos_x = x + i;
         let c = if matches!(direction, Direction::TD | Direction::TB) {
             let below = canvas.get(pos_x, y + 3);
-            if is_vertical(below, style) { style.junction_down } else { style.h }
+            if is_vertical(below, style) {
+                style.junction_down
+            } else {
+                style.h
+            }
         } else {
             style.h
         };
