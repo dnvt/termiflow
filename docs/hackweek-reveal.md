@@ -7,6 +7,12 @@ Goal: turn Mermaid flowcharts into readable terminal diagrams, with a jq-like pi
 - Installed: `tw --help`
 - From repo: `alias tw='cargo run --quiet --bin tw --'`
 
+Recommended flags for demos/screenshots:
+
+```bash
+alias twd='tw --wrap --max-lines 3 --pad 1 --compact'
+```
+
 ---
 
 ## 0) Why
@@ -39,6 +45,12 @@ GitHub/VS Code plugins/web renderers are great, but they’re not always availab
 
 ```bash
 cat tests/fixtures/inputs/flow_simple_td.md | tw
+```
+
+Bonus: make it presentation-friendly (wrap + pad + compact):
+
+```bash
+cat tests/fixtures/inputs/flow_simple_td.md | twd
 ```
 
 ## 5) Shapes: more expressive than boxes
@@ -91,7 +103,21 @@ cat tests/fixtures/inputs/subgraph_complex_td.md | tw
 Fully local demo (JSON graph → Mermaid → render):
 
 ```bash
-python3 examples/graph_to_mermaid.py examples/inputs/microservices_graph.json | tw
+python3 examples/graph_to_mermaid.py examples/inputs/microservices_graph.json | twd
+```
+
+Even better: skip Mermaid entirely (JSON graph → render):
+
+```bash
+cat examples/inputs/microservices_graph.json | tw --from-json | twd
+```
+
+Local “real codebase” pipeline (Cargo workspace → render):
+
+```bash
+cargo metadata --format-version 1 \
+  | python3 examples/cargo_metadata_to_graph.py \
+  | tw --from-json | twd
 ```
 
 More pipelines (Terraform / Docker Compose / npm): `docs/pipelines.md`
@@ -107,4 +133,3 @@ More pipelines (Terraform / Docker Compose / npm): `docs/pipelines.md`
 - Parse: Mermaid-lite → graph model (nodes/edges/subgraphs)
 - Layout: coarse layered placement + obstacle-aware routing
 - Render: draw boxes/edges/labels onto a char canvas (handles overlaps/junctions)
-

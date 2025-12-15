@@ -107,6 +107,10 @@ pub struct CoarseLayoutConfig {
     pub min_vertical_spacing: usize,
     /// Allow carving through subgraph borders (portals).
     pub enable_portals: bool,
+    /// Use tighter rank spacing heuristics.
+    pub compact: bool,
+    /// Precompute routes even for fan-in/out edges (otherwise renderer owns junctions).
+    pub route_branches: bool,
 }
 
 impl Default for CoarseLayoutConfig {
@@ -117,6 +121,8 @@ impl Default for CoarseLayoutConfig {
             min_horizontal_spacing: 4,
             min_vertical_spacing: 4,
             enable_portals: true,
+            compact: false,
+            route_branches: false,
         }
     }
 }
@@ -133,6 +139,8 @@ impl CoarseLayoutConfig {
             min_horizontal_spacing: 2,
             min_vertical_spacing: 2,
             enable_portals: true,
+            compact: true,
+            route_branches: true,
         }
     }
 }
@@ -291,9 +299,6 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
 
             // Ensure enough clearance above a subgraph top border for incoming edges.
             for (sg_id, env) in subgraph_envelopes.iter() {
-                let Some(&shift_rank) = subgraph_min_rank.get(sg_id.as_str()) else {
-                    continue;
-                };
                 for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
                     if input.graph.get_node_subgraph(&edge.to) != Some(sg_id.as_str()) {
                         continue;
@@ -306,6 +311,19 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                     // subgraph padding and routing, and enforcing "outside" clearance here
                     // can cause runaway vertical expansion.
                     if input.graph.get_node_subgraph(&edge.from).is_some() {
+                        continue;
+                    }
+                    let (Some(&from_rank), Some(&to_rank)) = (
+                        placement.ranks.get(&edge.from),
+                        placement.ranks.get(&edge.to),
+                    ) else {
+                        continue;
+                    };
+                    // Only enforce this spacing rule when the layer assignment already places the
+                    // target strictly after the source. If both are in the same layer (or the
+                    // target is earlier due to cycles/disconnected components), shifting by rank
+                    // would move source + target together and can cause runaway expansion.
+                    if to_rank == 0 || to_rank <= from_rank {
                         continue;
                     }
                     let Some(from_rect) = placement.node_rects.get(&edge.from) else {
@@ -323,7 +341,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                     if env.outer.y < required_border_y {
                         let delta = required_border_y - env.outer.y;
                         required_shift_by_rank
-                            .entry(shift_rank)
+                            .entry(to_rank)
                             .and_modify(|d| *d = (*d).max(delta))
                             .or_insert(delta);
                     }
@@ -359,6 +377,9 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 let Some(&shift_rank) = subgraph_min_rank.get(to_sg) else {
                     continue;
                 };
+                if shift_rank == 0 {
+                    continue;
+                }
                 let delta = required_to_top - to_env.outer.y;
                 required_shift_by_rank
                     .entry(shift_rank)
@@ -399,6 +420,9 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                     let Some(rank) = placement.ranks.get(&edge.to) else {
                         continue;
                     };
+                    if *rank == 0 {
+                        continue;
+                    }
                     let delta = required_target_y - to_rect.y;
                     required_shift_by_rank
                         .entry(*rank)
@@ -602,9 +626,130 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         *outgoing_counts.entry(edge.from.as_str()).or_default() += 1;
         *incoming_counts.entry(edge.to.as_str()).or_default() += 1;
     }
+
+    let mut edges_by_source: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut edges_by_target: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (idx, edge) in input.graph.edges.iter().enumerate() {
+        if edge.is_back_edge {
+            continue;
+        }
+        edges_by_source.entry(edge.from.as_str()).or_default().push(idx);
+        edges_by_target.entry(edge.to.as_str()).or_default().push(idx);
+    }
+
+    let mut pre_routed: HashSet<usize> = HashSet::new();
+
+    if config.route_branches {
+        // Fan-in groups first (multiple sources -> single target) so merges stay stable.
+        for (target_id, edge_idxs) in &edges_by_target {
+            if edge_idxs.len() <= 1 {
+                continue;
+            }
+            // Only pre-route when all sources live in the same subgraph context; otherwise
+            // let the renderer handle cross-subgraph merges more gracefully.
+            let mut source_sg: Option<&str> = None;
+            let mut ok = true;
+            for &edge_idx in edge_idxs {
+                let edge = &input.graph.edges[edge_idx];
+                let sg = input.graph.get_node_subgraph(&edge.from);
+                match source_sg {
+                    None => source_sg = sg,
+                    Some(prev) => {
+                        if sg != Some(prev) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+
+            if let Some((to_rect, _to_sg)) = placement
+                .node_rects
+                .get(*target_id)
+                .cloned()
+                .map(|r| (r, input.graph.get_node_subgraph(target_id)))
+            {
+                let group_edges: Vec<usize> = edge_idxs
+                    .iter()
+                    .copied()
+                    .filter(|idx| !pre_routed.contains(idx))
+                    .collect();
+                if group_edges.len() > 1 {
+                    route_fanin_group(
+                        input.graph,
+                        &placement.node_rects,
+                        &subgraph_envelopes,
+                        &mut grid,
+                        &coords,
+                        input.graph.direction,
+                        &group_edges,
+                        to_rect,
+                        &mut routes,
+                        &mut pre_routed,
+                    );
+                }
+            }
+        }
+
+        // Fan-out groups next (single source -> multiple targets).
+        for (source_id, edge_idxs) in &edges_by_source {
+            if edge_idxs.len() <= 1 {
+                continue;
+            }
+            let group_edges: Vec<usize> = edge_idxs
+                .iter()
+                .copied()
+                .filter(|idx| !pre_routed.contains(idx))
+                .collect();
+            if group_edges.len() <= 1 {
+                continue;
+            }
+
+            // Only pre-route when all targets share a subgraph context (including None).
+            let mut target_sg: Option<&str> = None;
+            let mut ok = true;
+            for &edge_idx in &group_edges {
+                let edge = &input.graph.edges[edge_idx];
+                let sg = input.graph.get_node_subgraph(&edge.to);
+                match target_sg {
+                    None => target_sg = sg,
+                    Some(prev) => {
+                        if sg != Some(prev) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+
+            if let Some(from_rect) = placement.node_rects.get(*source_id).cloned() {
+                route_fanout_group(
+                    input.graph,
+                    &placement.node_rects,
+                    &subgraph_envelopes,
+                    &mut grid,
+                    &coords,
+                    input.graph.direction,
+                    &group_edges,
+                    from_rect,
+                    &mut routes,
+                    &mut pre_routed,
+                );
+            }
+        }
+    }
     for (edge_idx, edge) in input.graph.edges.iter().enumerate() {
         if edge.is_back_edge {
             // Skip routing here; back-edges are handled by the cycle renderer.
+            continue;
+        }
+        if pre_routed.contains(&edge_idx) {
             continue;
         }
 
@@ -631,21 +776,23 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             .copied()
             .unwrap_or(0);
 
-        // Convergent edges (multiple sources into one target) render best when the renderer
-        // owns the junction, so skip pre-routing here.
-        if in_degree > 1 {
-            if debug_timing {
-                eprintln!("  skip edge {} due to convergent routing", edge_idx);
+        if !config.route_branches {
+            // Convergent edges (multiple sources into one target) render best when the renderer
+            // owns the junction, so skip pre-routing here.
+            if in_degree > 1 {
+                if debug_timing {
+                    eprintln!("  skip edge {} due to convergent routing", edge_idx);
+                }
+                continue;
             }
-            continue;
-        }
 
-        // Fan-outs look best when the renderer owns the shared junction.
-        if out_degree > 1 {
-            if debug_timing {
-                eprintln!("  skip edge {} fan-out handled in renderer", edge_idx);
+            // Fan-outs look best when the renderer owns the shared junction.
+            if out_degree > 1 {
+                if debug_timing {
+                    eprintln!("  skip edge {} fan-out handled in renderer", edge_idx);
+                }
+                continue;
             }
-            continue;
         }
 
         // Labeled fan-out / fan-in edges are better handled in the renderer so labels
@@ -1003,15 +1150,23 @@ struct LayoutSpacingPolicy {
     node_padding: usize,
     min_horizontal: usize,
     min_vertical: usize,
+    compact: bool,
 }
 
 impl LayoutSpacingPolicy {
-    fn new(gutter: usize, node_padding: usize, min_horizontal: usize, min_vertical: usize) -> Self {
+    fn new(
+        gutter: usize,
+        node_padding: usize,
+        min_horizontal: usize,
+        min_vertical: usize,
+        compact: bool,
+    ) -> Self {
         Self {
             gutter,
             node_padding,
             min_horizontal,
             min_vertical,
+            compact,
         }
     }
 
@@ -1093,18 +1248,25 @@ impl LayoutSpacingPolicy {
         };
 
         // Base spacing by flow shape
+        let compact_bias = if self.compact { 1 } else { 0 };
+        let minimal = SPACING_MINIMAL.saturating_sub(compact_bias).max(1);
+        let labeled = SPACING_LABELED.saturating_sub(compact_bias).max(2);
+        let fanin = SPACING_FANIN.saturating_sub(compact_bias).max(2);
+        let fanout = SPACING_FANOUT; // already minimal
+        let multi_labeled = SPACING_MULTI_LABELED.saturating_sub(compact_bias).max(3);
+
         let mut spacing = if has_fan_out || has_fan_in {
             if has_labels {
-                SPACING_MULTI_LABELED
+                multi_labeled
             } else if has_fan_out {
-                SPACING_FANOUT
+                fanout
             } else {
-                SPACING_FANIN
+                fanin
             }
         } else if has_labels {
-            SPACING_LABELED
+            labeled
         } else {
-            SPACING_MINIMAL
+            minimal
         };
 
         // When a boundary simultaneously contains fan-out and fan-in (diamond-ish shapes),
@@ -1155,9 +1317,9 @@ impl LayoutSpacingPolicy {
                     if !has_fan_out && !has_fan_in && !has_labels {
                         // Leave a visible connector row plus an arrow head before the next node.
                         spacing = if crossing_into_titled_subgraph {
-                            SPACING_MINIMAL + 2
+                            minimal + 2
                     } else {
-                        SPACING_MINIMAL + 1
+                        minimal + 1
                     };
                 } else {
                     let extra = if fanout_targets_same_subgraph {
@@ -1172,34 +1334,34 @@ impl LayoutSpacingPolicy {
                         self.gutter
                     };
                     spacing += extra;
-                    spacing = spacing.max(SPACING_MINIMAL + 2);
+                    spacing = spacing.max(minimal + 2);
                 }
 
                 // Fan-outs into a single subgraph can be tighter because the subgraph
                 // itself reserves internal rows for trunk/split/drop rendering.
                 if has_fan_out {
                     if fanout_targets_same_subgraph {
-                        spacing = spacing.max(SPACING_MINIMAL + 2);
+                        spacing = spacing.max(minimal + 2);
                     } else {
-                        spacing = spacing.max(SPACING_MINIMAL + 5);
+                        spacing = spacing.max(minimal + 5);
                     }
                 }
             }
         }
 
         if boundary_crosses_subgraph && has_labels && !has_fan_out && !has_fan_in {
-            spacing = spacing.saturating_sub(2).max(SPACING_LABELED + 1);
+            spacing = spacing.saturating_sub(2).max(labeled + 1);
         }
 
         if fanout_targets_same_subgraph {
             // Leave a modest cushion for the junction row while keeping fan-outs compact.
-            spacing = spacing.max(SPACING_FANOUT + 2);
+            spacing = spacing.max(fanout + 2);
         }
 
         // Horizontal layouts need a bit more primary gap for fan-outs to give
         // elbows/dashes room before hitting the targets.
         if matches!(graph.direction, Direction::LR | Direction::RL) && has_fan_out {
-            spacing = spacing.max(SPACING_FANOUT + 4);
+            spacing = spacing.max(fanout + if self.compact { 3 } else { 4 });
         }
 
         spacing
@@ -1218,6 +1380,7 @@ fn compute_primary_gaps(
         config.node_padding,
         config.min_horizontal_spacing,
         config.min_vertical_spacing,
+        config.compact,
     );
     for r in 0..layers.len() {
         gaps.push(policy.spacing_for_layer(graph, layers, r));
@@ -2716,6 +2879,209 @@ fn ordered_neighbors(current: Point, goal: Point, coords: &OrientedCoords) -> Ve
         }
     }
     neighbors
+}
+
+fn median_usize(vals: &mut [usize], fallback: usize) -> usize {
+    if vals.is_empty() {
+        return fallback;
+    }
+    vals.sort_unstable();
+    vals[vals.len() / 2]
+}
+
+fn find_free_near_secondary(
+    base: Point,
+    desired_secondary: usize,
+    grid: &OccupancyGrid,
+    avoid_rects: &[Rect],
+    coords: &OrientedCoords,
+    search_radius: usize,
+) -> Option<Point> {
+    let base_primary = coords.primary_coord(base.x, base.y);
+    let mut best: Option<Point> = None;
+    for d in 0..=search_radius {
+        for &delta in &[d as isize, -(d as isize)] {
+            let sec = if delta >= 0 {
+                desired_secondary.saturating_add(delta as usize)
+            } else {
+                desired_secondary.saturating_sub(delta.unsigned_abs() as usize)
+            };
+            let (mut x, mut y) = coords.with_secondary(base.x, base.y, sec);
+            coords.set_primary(&mut x, &mut y, base_primary);
+            let p = Point::new(x, y);
+            if p.x >= grid.width || p.y >= grid.height {
+                continue;
+            }
+            if grid.cost_at(p) == WEIGHT_OBSTACLE {
+                continue;
+            }
+            if avoid_rects.iter().any(|r| r.contains(p)) {
+                continue;
+            }
+            best = Some(p);
+            break;
+        }
+        if best.is_some() {
+            break;
+        }
+    }
+    best
+}
+
+fn route_fanin_group(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    subgraph_envelopes: &HashMap<String, SubgraphEnvelope>,
+    grid: &mut OccupancyGrid,
+    coords: &OrientedCoords,
+    direction: Direction,
+    edge_idxs: &[usize],
+    to_rect: Rect,
+    routes: &mut HashMap<usize, EdgeRoute>,
+    pre_routed: &mut HashSet<usize>,
+) {
+    if edge_idxs.len() <= 1 {
+        return;
+    }
+
+    let end = edge_entry_point(to_rect, direction);
+    grid.clear_point(end);
+
+    let mut avoid_union: Vec<Rect> = Vec::new();
+    let mut starts: Vec<(usize, Point, Vec<Rect>)> = Vec::new();
+    let mut secs: Vec<usize> = Vec::new();
+
+    for &edge_idx in edge_idxs {
+        let edge = &graph.edges[edge_idx];
+        let from_rect = node_rects.get(&edge.from).cloned().unwrap_or_default();
+        let start = edge_exit_point(from_rect, direction);
+        grid.clear_point(start);
+        secs.push(coords.secondary_coord(start.x, start.y));
+        let avoid = gutters_to_avoid(graph, subgraph_envelopes, edge_idx, &edge.from, &edge.to);
+        avoid_union.extend(avoid.iter().copied());
+        starts.push((edge_idx, start, avoid));
+    }
+
+    let mut secs_copy = secs.clone();
+    let desired_sec = median_usize(&mut secs_copy, coords.secondary_coord(end.x, end.y));
+    let (jx, jy) = coords.retreat(end.x, end.y, 2);
+    let base = Point::new(jx, jy);
+    let junction = match find_free_near_secondary(base, desired_sec, grid, &avoid_union, coords, 6) {
+        Some(p) => p,
+        None => return,
+    };
+    grid.clear_point(junction);
+
+    // Trunk from junction -> end (shared).
+    let trunk = if let Some(route) = route_with_obstacles_v2(junction, end, grid, &avoid_union, coords)
+    {
+        route
+    } else {
+        fallback_manhattan_route(junction, end, direction)
+    };
+
+    for (edge_idx, start, avoid) in starts {
+        if pre_routed.contains(&edge_idx) {
+            continue;
+        }
+
+        let mut combined = EdgeRoute::new();
+        if let Some(route) = route_with_obstacles_v2(start, junction, grid, &avoid, coords) {
+            for s in route.segments {
+                combined.push_segment(s.from, s.to);
+            }
+        } else {
+            let route = fallback_manhattan_route(start, junction, direction);
+            for s in route.segments {
+                combined.push_segment(s.from, s.to);
+            }
+        }
+
+        for s in &trunk.segments {
+            combined.push_segment(s.from, s.to);
+        }
+
+        routes.insert(edge_idx, combined);
+        pre_routed.insert(edge_idx);
+    }
+}
+
+fn route_fanout_group(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    subgraph_envelopes: &HashMap<String, SubgraphEnvelope>,
+    grid: &mut OccupancyGrid,
+    coords: &OrientedCoords,
+    direction: Direction,
+    edge_idxs: &[usize],
+    from_rect: Rect,
+    routes: &mut HashMap<usize, EdgeRoute>,
+    pre_routed: &mut HashSet<usize>,
+) {
+    if edge_idxs.len() <= 1 {
+        return;
+    }
+
+    let start = edge_exit_point(from_rect, direction);
+    grid.clear_point(start);
+
+    let mut avoid_union: Vec<Rect> = Vec::new();
+    let mut targets: Vec<(usize, Point, Vec<Rect>)> = Vec::new();
+    let mut secs: Vec<usize> = Vec::new();
+
+    for &edge_idx in edge_idxs {
+        let edge = &graph.edges[edge_idx];
+        let to_rect = node_rects.get(&edge.to).cloned().unwrap_or_default();
+        let end = edge_entry_point(to_rect, direction);
+        grid.clear_point(end);
+        secs.push(coords.secondary_coord(end.x, end.y));
+        let avoid = gutters_to_avoid(graph, subgraph_envelopes, edge_idx, &edge.from, &edge.to);
+        avoid_union.extend(avoid.iter().copied());
+        targets.push((edge_idx, end, avoid));
+    }
+
+    let mut secs_copy = secs.clone();
+    let desired_sec = median_usize(&mut secs_copy, coords.secondary_coord(start.x, start.y));
+    let (jx, jy) = coords.advance(start.x, start.y, 2);
+    let base = Point::new(jx, jy);
+    let junction = match find_free_near_secondary(base, desired_sec, grid, &avoid_union, coords, 6) {
+        Some(p) => p,
+        None => return,
+    };
+    grid.clear_point(junction);
+
+    // Trunk from start -> junction (shared).
+    let trunk = if let Some(route) = route_with_obstacles_v2(start, junction, grid, &avoid_union, coords)
+    {
+        route
+    } else {
+        fallback_manhattan_route(start, junction, direction)
+    };
+
+    for (edge_idx, end, avoid) in targets {
+        if pre_routed.contains(&edge_idx) {
+            continue;
+        }
+
+        let mut combined = EdgeRoute::new();
+        for s in &trunk.segments {
+            combined.push_segment(s.from, s.to);
+        }
+
+        if let Some(route) = route_with_obstacles_v2(junction, end, grid, &avoid, coords) {
+            for s in route.segments {
+                combined.push_segment(s.from, s.to);
+            }
+        } else {
+            let route = fallback_manhattan_route(junction, end, direction);
+            for s in route.segments {
+                combined.push_segment(s.from, s.to);
+            }
+        }
+
+        routes.insert(edge_idx, combined);
+        pre_routed.insert(edge_idx);
+    }
 }
 
 fn compress_path(points: &[Point]) -> EdgeRoute {

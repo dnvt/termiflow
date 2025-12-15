@@ -40,6 +40,9 @@ tw diagram.md
 # Pipe a generated Mermaid flowchart into TermiFlow
 some-generator | tw
 
+# Render TermiFlow JSON graph schema directly
+cat graph.json | tw --from-json
+
 # Choose a style or composite style
 tw --style "corner:dots,border:heavy" diagram.md
 
@@ -52,6 +55,9 @@ tw --no-crop diagram.md
 
 # Tighter layout spacing
 tw --compact diagram.md
+
+# Precompute routes for fan-in/out edges
+tw --route-all diagram.md
 
 # Strict mode (fail on warnings)
 tw --strict diagram.md

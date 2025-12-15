@@ -73,6 +73,14 @@ pub struct Cli {
     #[arg(long)]
     pub compact: bool,
 
+    /// Precompute routes for fan-in/out edges (renderer normally owns junctions)
+    #[arg(long)]
+    pub route_all: bool,
+
+    /// Treat input as TermiFlow JSON graph schema instead of Mermaid
+    #[arg(long = "from-json")]
+    pub from_json: bool,
+
     /// Exit with error on any parse warning
     #[arg(long)]
     pub strict: bool,
@@ -140,8 +148,13 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     // Read input
     let input = read_input(cli)?;
 
-    // Parse the Mermaid content (returns ParseResult with graph + in-file config)
-    let parse_result = parse(&input, cli.strict)?;
+    // Parse input (Mermaid or JSON graph).
+    let parse_result = if cli.from_json {
+        let (graph, config) = termiflow::parse_json_graph(&input)?;
+        termiflow::ParseResult { graph, config }
+    } else {
+        parse(&input, cli.strict)?
+    };
     if debug_timing {
         eprintln!("termiflow: parse {:?}", t0.elapsed());
     }
@@ -179,11 +192,14 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
 
     // Run layout algorithm (may add warnings)
     let t_layout_start = std::time::Instant::now();
-    let layout_config = if cli.compact {
+    let mut layout_config = if cli.compact {
         layout::CoarseLayoutConfig::compact()
     } else {
         layout::CoarseLayoutConfig::default()
     };
+    if cli.route_all {
+        layout_config.route_branches = true;
+    }
     let graph = layout::coarse_waterfall_with_config(graph, layout_config)?;
     if debug_timing {
         eprintln!("termiflow: layout {:?}", t_layout_start.elapsed());

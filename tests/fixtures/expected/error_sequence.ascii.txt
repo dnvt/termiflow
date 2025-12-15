@@ -14,9 +14,9 @@ Stack backtrace:
    5: termiflow::parser::parse
              at ./src/parser.rs:189:13
    6: termiflow::common::run_print_mode
-             at ./src/bin/common/mod.rs:144:24
+             at ./src/bin/common/mod.rs:156:9
    7: termiflow::common::run
-             at ./src/bin/common/mod.rs:106:16
+             at ./src/bin/common/mod.rs:114:16
    8: termiflow::main
              at ./src/bin/termiflow.rs:4:5
    9: core::ops::function::FnOnce::call_once

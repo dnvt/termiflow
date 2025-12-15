@@ -10,6 +10,7 @@
 - Default: print-to-stdout (jq-style). Reads a file (if provided) or stdin.
 - `--tui`: interactive mode (not yet implemented; exits with a message).
 - `--print [FILE]`: explicit print mode (optional file argument; `-` means stdin).
+- `--from-json`: parse input as TermiFlow JSON graph schema (instead of Mermaid).
 
 ## Common Flags
 
@@ -20,6 +21,7 @@
 - `--crop` / `--no-crop`: crop empty margins around output (default on).
 - `--pad N`: add padding (spaces/lines) around output (default 0).
 - `--compact`: use a tighter layout spacing (less whitespace).
+- `--route-all`: precompute routes for fan-in/out edges (renderer normally owns junctions).
 - `--strict`: treat parse warnings as errors.
 
 Composite components: `corner`, `border`, `arrow`, `edge`, `junction`, `back`, `subgraph`.

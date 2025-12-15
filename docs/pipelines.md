@@ -20,6 +20,14 @@ python3 examples/graph_to_mermaid.py examples/inputs/microservices_graph.json \
   | tw --wrap --max-lines 3
 ```
 
+## Demo: JSON Graph → TermiFlow (No Mermaid)
+
+If your source already emits TermiFlow's JSON graph schema, you can render directly:
+
+```bash
+cat examples/inputs/microservices_graph.json | tw --from-json --wrap --max-lines 3
+```
+
 ## Cargo Workspace → Mermaid → TermiFlow
 
 Fully local (requires Rust + Cargo).

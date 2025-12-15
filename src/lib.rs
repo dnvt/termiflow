@@ -28,6 +28,7 @@ pub mod geom;
 pub mod graph;
 pub mod layout;
 pub mod measure;
+pub mod json_input;
 pub mod orientation;
 pub mod portals;
 pub mod parser;
@@ -42,6 +43,7 @@ pub use config::{Config, ConfigBuilder};
 pub use graph::{Edge, Graph, Node};
 pub use layout::coarse_waterfall;
 pub use parser::{parse, ParseConfig, ParseResult};
+pub use json_input::parse_json_graph;
 pub use render::render as render_canvas;
 pub use style::{BaseStyle, CompositeStyle};
 
@@ -182,6 +184,32 @@ pub fn render(input: &str, options: RenderOptions) -> Result<String> {
     let graph = layout::coarse_waterfall_with_config(graph, layout_config)?;
 
     // Render
+    render::render(&graph, &config)
+}
+
+/// Render a TermiFlow JSON graph (see `parse_json_graph`) to ASCII/Unicode art.
+pub fn render_json(input: &str, options: RenderOptions) -> Result<String> {
+    let (mut graph, parse_config) = json_input::parse_json_graph(input)?;
+
+    let config = Config::builder()
+        .max_label_width(options.max_label_width)
+        .wrap_labels(options.wrap_labels)
+        .max_label_lines(options.max_label_lines)
+        .crop(options.crop)
+        .pad(options.pad)
+        .strict(options.strict)
+        .style(CompositeStyle::from_base(options.style))
+        .build(&parse_config);
+
+    measure::measure_graph(&mut graph, &config);
+
+    let layout_config = if options.compact {
+        layout::CoarseLayoutConfig::compact()
+    } else {
+        layout::CoarseLayoutConfig::default()
+    };
+    let graph = layout::coarse_waterfall_with_config(graph, layout_config)?;
+
     render::render(&graph, &config)
 }
 
