@@ -1107,16 +1107,18 @@ fn draw_source_lines_to_merge(
     style: &StyleChars,
     direction: Direction,
 ) -> (usize, usize) {
+    // Pre-compute span bounds BEFORE drawing so corner characters are correct
     let mut span_start = usize::MAX;
     let mut span_end = 0;
+    for &(src_x, src_y, _) in source_positions {
+        let src_secondary = coords.secondary_coord(src_x, src_y);
+        span_start = span_start.min(src_secondary);
+        span_end = span_end.max(src_secondary);
+    }
 
     for &(src_x, src_y, source) in source_positions {
         let (edge_x, edge_y) = edge_exit_point(source, direction);
         let src_secondary = coords.secondary_coord(src_x, src_y);
-
-        // Update span bounds
-        span_start = span_start.min(src_secondary);
-        span_end = span_end.max(src_secondary);
 
         // Line from source to just before merge point (along primary axis)
         let (merge_col_x, merge_col_y) = coords.with_secondary(merge_x, merge_y, src_secondary);
@@ -1211,17 +1213,17 @@ fn get_convergence_corner(
     coords: &OrientedCoords,
 ) -> char {
     if src_secondary == span_start {
-        // Topmost/leftmost position on span - edge from source turns down/right
+        // Topmost/leftmost position on span - edge from source turns right
         match direction {
-            Direction::TD | Direction::TB => style.junction_right, // ├ - emphasize fan-in start
+            Direction::TD | Direction::TB => style.corner_ul, // └ - from above, turns right
             Direction::LR => style.corner_dr,                 // ┐ - from left, turns down
             Direction::RL => style.corner_dl,                 // ┌ - from right, turns down
             Direction::BT => style.corner_dl,                 // ┌ - from below, turns right
         }
     } else if src_secondary == span_end {
-        // Bottommost/rightmost position on span - edge from source turns up/left
+        // Bottommost/rightmost position on span - edge from source turns left
         match direction {
-            Direction::TD | Direction::TB => style.corner_dr, // ┘ - cleaner exit toward portal
+            Direction::TD | Direction::TB => style.corner_ur, // ┘ - from above, turns left
             Direction::LR => style.corner_ur,                 // ┘ - from left, turns up
             Direction::RL => style.corner_ul,                 // └ - from right, turns up
             Direction::BT => style.corner_dr,                 // ┐ - from below, turns left
@@ -1462,8 +1464,27 @@ pub fn route_convergent_edges(
     if matches!(direction, Direction::TD | Direction::TB) && final_span_start < final_span_end {
         let (sx, sy) = coords.with_secondary(merge_x, merge_y, final_span_start);
         let (ex, ey) = coords.with_secondary(merge_x, merge_y, final_span_end);
-        canvas.set_edge_char(sx, sy, style.corner_ul, style);
-        canvas.set_edge_char(ex, ey, style.corner_ur, style);
+        // Choose corner/junction based on whether span edge has source, target, or both
+        let start_char = if final_span_start == target_secondary {
+            if final_span_start == actual_span_start {
+                style.junction_right // ├ - both source and target
+            } else {
+                style.corner_dl // ┌ - target only
+            }
+        } else {
+            style.corner_ul // └ - source only
+        };
+        let end_char = if final_span_end == target_secondary {
+            if final_span_end == actual_span_end {
+                style.junction_left // ┤ - both source and target
+            } else {
+                style.corner_dr // ┐ - target only
+            }
+        } else {
+            style.corner_ur // ┘ - source only
+        };
+        canvas.set_edge_char(sx, sy, start_char, style);
+        canvas.set_edge_char(ex, ey, end_char, style);
     }
 
     let junction_char = match direction {
@@ -1507,8 +1528,38 @@ pub fn route_convergent_edges(
     if matches!(direction, Direction::TD | Direction::TB) && final_span_start < final_span_end {
         let (sx, sy) = coords.with_secondary(merge_x, merge_y_draw, final_span_start);
         let (ex, ey) = coords.with_secondary(merge_x, merge_y_draw, final_span_end);
-        canvas.set(sx, sy, style.corner_ul);
-        canvas.set(ex, ey, style.corner_ur);
+        // Choose corner/junction based on whether span edge has source, target, or both
+        // - Source only: connects up (from source) and horizontal (to merge bar)
+        // - Target only: connects down (to target) and horizontal (to merge bar)
+        // - Both: connects up, down, and horizontal (junction)
+        let start_char = if final_span_start == target_secondary {
+            // Target is at span start
+            if final_span_start == actual_span_start {
+                // Also a source here - need junction (up+down+right)
+                style.junction_right // ├
+            } else {
+                // Target only - corner (down+right)
+                style.corner_dl // ┌
+            }
+        } else {
+            // Source only at span start
+            style.corner_ul // └ - up and right
+        };
+        let end_char = if final_span_end == target_secondary {
+            // Target is at span end
+            if final_span_end == actual_span_end {
+                // Also a source here - need junction (up+down+left)
+                style.junction_left // ┤
+            } else {
+                // Target only - corner (down+left)
+                style.corner_dr // ┐
+            }
+        } else {
+            // Source only at span end
+            style.corner_ur // ┘ - up and left
+        };
+        canvas.set(sx, sy, start_char);
+        canvas.set(ex, ey, end_char);
     }
     let (final_start_x, final_start_y) = coords.advance(merge_x, merge_y_draw, 1);
     draw_line_primary(
@@ -1545,7 +1596,7 @@ fn edge_entry_point(node: &Node, direction: Direction) -> (usize, usize) {
 }
 
 /// Where an outgoing edge exits a source node (stem start position).
-fn edge_exit_point(node: &Node, direction: Direction) -> (usize, usize) {
+pub fn edge_exit_point(node: &Node, direction: Direction) -> (usize, usize) {
     match direction {
         Direction::TD | Direction::TB => (node.center_x(), node.bottom_y()),
         Direction::LR => (node.x + node.width, node.center_y()),

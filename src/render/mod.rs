@@ -403,6 +403,22 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         }
     }
 
+    // Debug: print canvas content for convergent edge A7/A8 -> P4
+    if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
+        eprintln!("  Input 7/8 -> Process 4 area (y=2-6, x=100-130):");
+        for y in 2..=6 {
+            let row: String = (100..=130)
+                .map(|x| canvas.get(x, y))
+                .collect();
+            eprintln!("  y={}: [{}]", y, row);
+        }
+        // Mark positions: A7 center=108, A8 center=125, P4 center=101
+        let markers: String = (100..=130)
+            .map(|x| if x == 108 || x == 125 || x == 101 { '^' } else { ' ' })
+            .collect();
+        eprintln!("  pos: [{}] (^=101,108,125)", markers);
+    }
+
     let output = if config.crop {
         canvas.to_string_cropped(config.pad)
     } else {
@@ -484,11 +500,16 @@ fn corner_for_turn(prev: Dir, next: Dir, chars: &StyleChars) -> Option<char> {
     use Dir::*;
     let a = opposite_dir(prev);
     let b = next;
+    // Corner character needed based on the two arms (where we came from, where we're going):
+    // ┘ (corner_ur) = UP + LEFT arms
+    // └ (corner_ul) = UP + RIGHT arms
+    // ┐ (corner_dr) = DOWN + LEFT arms
+    // ┌ (corner_dl) = DOWN + RIGHT arms
     match (a, b) {
-        (Up, Left) | (Left, Up) => Some(chars.corner_ul),
-        (Up, Right) | (Right, Up) => Some(chars.corner_ur),
-        (Down, Left) | (Left, Down) => Some(chars.corner_dl),
-        (Down, Right) | (Right, Down) => Some(chars.corner_dr),
+        (Up, Left) | (Left, Up) => Some(chars.corner_ur),     // ┘
+        (Up, Right) | (Right, Up) => Some(chars.corner_ul),   // └
+        (Down, Left) | (Left, Down) => Some(chars.corner_dr), // ┐
+        (Down, Right) | (Right, Down) => Some(chars.corner_dl), // ┌
         _ => None,
     }
 }
@@ -618,6 +639,94 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
             route_chars.edge_v = chars.back_v;
         }
 
+        // Track if we need to draw a corner for perpendicular first segment
+        let mut needs_start_corner: Option<(usize, usize, char)> = None;
+
+        // Draw stem from source node exit to route start if the route starts
+        // with a perpendicular segment (horizontal in TD/BT, vertical in LR/RL).
+        // This handles cases where the route detours before dropping to target.
+        if let Some(first_seg) = route.segments.first() {
+            let first_dir = dir_from_segment(first_seg);
+            let route_start = first_seg.from;
+            let src_center_x = from.center_x();
+            let src_center_y = from.center_y();
+
+            match graph.direction {
+                Direction::TD | Direction::TB => {
+                    // In TD/BT, first segment should be vertical (Down/Up)
+                    // If it's horizontal (Left/Right), we need a connecting stem and corner
+                    if matches!(first_dir, Some(Dir::Left) | Some(Dir::Right)) {
+                        // Box border is at y = from.y + from.height - 1
+                        // We need to draw from box border down to route start to create junction
+                        let box_border_y = from.y + from.height - 1;
+                        if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
+                            eprintln!(
+                                "  TD horizontal-first: src_center_x={} box_border_y={} route_start.y={}",
+                                src_center_x, box_border_y, route_start.y
+                            );
+                        }
+                        // Draw vertical stem from box border to the route start row (exclusive)
+                        // This will create a junction on the box border via resolve_overlap
+                        for y in box_border_y..route_start.y {
+                            if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
+                                eprintln!("    drawing stem at ({}, {})", src_center_x, y);
+                            }
+                            canvas.set_edge_char(src_center_x, y, route_chars.edge_v, &route_chars);
+                        }
+                        // Queue corner to be drawn AFTER segments (so it overwrites)
+                        // At the source center, we need a corner character that connects:
+                        // - UP (to the box border junction above)
+                        // - LEFT/RIGHT (horizontal segment to turn point)
+                        // Use corner characters ┘ (up/left) or └ (up/right) - no down arm needed
+                        let corner = if first_dir == Some(Dir::Left) {
+                            route_chars.corner_ur // ┘ - connects up, left
+                        } else {
+                            route_chars.corner_ul // └ - connects up, right
+                        };
+                        if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
+                            eprintln!(
+                                "    needs_start_corner=({}, {}, '{}')",
+                                src_center_x, route_start.y, corner
+                            );
+                        }
+                        needs_start_corner = Some((src_center_x, route_start.y, corner));
+                    }
+                }
+                Direction::BT => {
+                    if matches!(first_dir, Some(Dir::Left) | Some(Dir::Right)) {
+                        // Box top border is at y = from.y (for BT, edges exit from top)
+                        // Draw vertical stem from route start up to box border (inclusive)
+                        let box_border_y = from.y;
+                        for y in (route_start.y + 1)..=box_border_y {
+                            canvas.set_edge_char(src_center_x, y, route_chars.edge_v, &route_chars);
+                        }
+                        let corner = if first_dir == Some(Dir::Left) {
+                            route_chars.corner_ur // ┘ - going left from here
+                        } else {
+                            route_chars.corner_ul // └ - going right from here
+                        };
+                        needs_start_corner = Some((src_center_x, route_start.y, corner));
+                    }
+                }
+                Direction::LR => {
+                    if matches!(first_dir, Some(Dir::Up) | Some(Dir::Down)) {
+                        let exit_x = from.x + from.width;
+                        for x in exit_x..route_start.x {
+                            canvas.set_edge_char(x, src_center_y, route_chars.edge_h, &route_chars);
+                        }
+                    }
+                }
+                Direction::RL => {
+                    if matches!(first_dir, Some(Dir::Up) | Some(Dir::Down)) {
+                        let exit_x = from.x.saturating_sub(1);
+                        for x in (route_start.x + 1)..=exit_x {
+                            canvas.set_edge_char(x, src_center_y, route_chars.edge_h, &route_chars);
+                        }
+                    }
+                }
+            }
+        }
+
         for i in 0..route.segments.len() {
             let seg = &route.segments[i];
             let Some(dir) = dir_from_segment(seg) else {
@@ -662,6 +771,11 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
             if !is_subgraph_title_cell(graph, last_seg.to.x, last_seg.to.y) {
                 canvas.set(last_seg.to.x, last_seg.to.y, arrow);
             }
+        }
+
+        // Draw start corner AFTER segments so it overwrites the horizontal line
+        if let Some((x, y, corner)) = needs_start_corner {
+            canvas.set(x, y, corner);
         }
     }
 }

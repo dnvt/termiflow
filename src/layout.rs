@@ -12,6 +12,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 use anyhow::Result;
 
+use crate::crossing::CrossingMinimizer;
 use crate::geom::{EdgeRoute, Point, Rect};
 use crate::graph::{Direction, Graph};
 use crate::orientation::{Axis, OrientedCoords};
@@ -164,13 +165,15 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     let t_layers = std::time::Instant::now();
     let mut layers = assign_layers(input.graph);
 
-    // 1.5) Optimize layer order to minimize crossings
-    optimize_layer_order(input.graph, &mut layers);
+    // 1.5) Optimize layer order to minimize crossings (adaptive algorithm with convergence)
+    let minimizer = CrossingMinimizer::new();
+    let final_crossings = minimizer.minimize(input.graph, &mut layers);
     if debug_timing {
         eprintln!(
-            "termiflow: layers {:?} ({} layers)",
+            "termiflow: layers {:?} ({} layers, {} crossings)",
             t_layers.elapsed(),
-            layers.len()
+            layers.len(),
+            final_crossings
         );
     }
 
@@ -889,6 +892,9 @@ pub fn apply_coarse_layout(
     if debug_timing {
         for (idx, route) in &graph.edge_routes {
             eprintln!("termiflow: route {} segments {}", idx, route.segments.len());
+            for (i, seg) in route.segments.iter().enumerate() {
+                eprintln!("  seg[{}]: ({}, {}) -> ({}, {})", i, seg.from.x, seg.from.y, seg.to.x, seg.to.y);
+            }
         }
     }
 
@@ -1576,9 +1582,14 @@ fn mark_back_edges(graph: &mut Graph) -> bool {
 }
 
 // -----------------------------------------------------------------------------
-// Crossing Minimization (Barycenter)
+// Crossing Minimization (Legacy Barycenter)
+// NOTE: This implementation is superseded by crate::crossing::CrossingMinimizer
+// which provides adaptive convergence detection and median heuristic support.
+// Keeping for reference and potential fallback scenarios.
 // -----------------------------------------------------------------------------
 
+#[allow(dead_code)]
+#[deprecated(since = "0.2.0", note = "Use crate::crossing::CrossingMinimizer instead")]
 fn optimize_layer_order(graph: &Graph, layers: &mut Vec<Vec<usize>>) {
     // Run a few passes of barycenter minimization
     for _ in 0..4 {
@@ -1593,6 +1604,7 @@ fn optimize_layer_order(graph: &Graph, layers: &mut Vec<Vec<usize>>) {
     }
 }
 
+#[allow(dead_code)]
 fn sort_layer(graph: &Graph, layers: &mut [Vec<usize>], target_idx: usize, ref_idx: usize) {
     let ref_layer = layers[ref_idx].clone();
     let target_layer = &mut layers[target_idx];
@@ -1660,6 +1672,7 @@ fn sort_layer(graph: &Graph, layers: &mut [Vec<usize>], target_idx: usize, ref_i
     *target_layer = clusters.into_iter().flat_map(|c| c.nodes).collect();
 }
 
+#[allow(dead_code)]
 fn calculate_barycenters(
     graph: &Graph,
     target_layer: &[usize],

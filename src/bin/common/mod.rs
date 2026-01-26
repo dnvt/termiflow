@@ -70,8 +70,17 @@ pub struct Cli {
     pub pad: Option<usize>,
 
     /// Use a tighter layout spacing (less whitespace)
+    /// DEPRECATED: Use --spacing=compact instead
     #[arg(long)]
     pub compact: bool,
+
+    /// Spacing preset: compact, default, or spacious
+    #[arg(long, value_name = "MODE")]
+    pub spacing: Option<String>,
+
+    /// Scaling mode: auto (adapts to diagram complexity) or fixed
+    #[arg(long, value_name = "MODE", default_value = "fixed")]
+    pub scaling: String,
 
     /// Exit with error on any parse warning
     #[arg(long)]
@@ -179,11 +188,27 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
 
     // Run layout algorithm (may add warnings)
     let t_layout_start = std::time::Instant::now();
-    let layout_config = if cli.compact {
+
+    // Determine layout configuration from --spacing or legacy --compact flag
+    let layout_config = if let Some(ref spacing_str) = cli.spacing {
+        match spacing_str.to_lowercase().as_str() {
+            "compact" | "tight" => layout::CoarseLayoutConfig::compact(),
+            "spacious" | "wide" => {
+                // Create a more spacious layout config
+                let mut config = layout::CoarseLayoutConfig::default();
+                config.min_vertical_spacing = 6;
+                config.min_horizontal_spacing = 6;
+                config.node_padding = 2;
+                config
+            }
+            _ => layout::CoarseLayoutConfig::default(),
+        }
+    } else if cli.compact {
         layout::CoarseLayoutConfig::compact()
     } else {
         layout::CoarseLayoutConfig::default()
     };
+
     let graph = layout::coarse_waterfall_with_config(graph, layout_config)?;
     if debug_timing {
         eprintln!("termiflow: layout {:?}", t_layout_start.elapsed());

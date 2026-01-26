@@ -24,6 +24,7 @@
 // ============================================================================
 
 pub mod config;
+pub mod crossing;
 pub mod geom;
 pub mod graph;
 pub mod layout;
@@ -32,6 +33,8 @@ pub mod orientation;
 pub mod portals;
 pub mod parser;
 pub mod render;
+pub mod scaling;
+pub mod spacing;
 pub mod style;
 
 // ============================================================================
@@ -39,10 +42,13 @@ pub mod style;
 // ============================================================================
 
 pub use config::{Config, ConfigBuilder};
+pub use crossing::{CrossingConfig, CrossingMinimizer, Heuristic};
 pub use graph::{Edge, Graph, Node};
 pub use layout::coarse_waterfall;
 pub use parser::{parse, ParseConfig, ParseResult};
 pub use render::render as render_canvas;
+pub use scaling::{CanvasBudget, DiagramMetrics, ScalingMode};
+pub use spacing::{SpacingConfig, SpacingMode};
 pub use style::{BaseStyle, CompositeStyle};
 
 // ============================================================================

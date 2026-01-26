@@ -5,7 +5,7 @@
 use crate::graph::{Direction, NodeShape};
 use crate::style::StyleChars;
 
-use super::canvas::{is_vertical, Canvas};
+use super::canvas::{is_junction, is_vertical, Canvas};
 
 /// Draw a subgraph bounding box with optional title.
 pub fn draw_subgraph(
@@ -126,7 +126,12 @@ fn draw_boxlike(
         let pos_x = x + i;
         let c = if direction == Direction::BT {
             let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            if is_vertical(above, style) {
+            // Check for vertical lines, junctions, or corners with downward component
+            let has_down_arm = is_vertical(above, style)
+                || is_junction(above, style)
+                || above == style.corner_dr  // ┐ - down/left corner
+                || above == style.corner_dl; // ┌ - down/right corner
+            if has_down_arm {
                 style.junction_up
             } else {
                 top_h
@@ -169,7 +174,12 @@ fn draw_boxlike(
         let pos_x = x + i;
         let c = if matches!(direction, Direction::TD | Direction::TB) {
             let below = canvas.get(pos_x, bottom_y + 1);
-            if is_vertical(below, style) {
+            // Check for vertical lines, junctions, or corners with upward component
+            let has_up_arm = is_vertical(below, style)
+                || is_junction(below, style)
+                || below == style.corner_ur  // ┘ - up/left corner
+                || below == style.corner_ul; // └ - up/right corner
+            if has_up_arm {
                 style.junction_down
             } else {
                 bottom_h
@@ -272,7 +282,7 @@ fn draw_diamond(
     canvas.set(x + width - 1, y + 1, '>');
 
     let below = canvas.get(center, y + 3);
-    let bottom_char = if is_vertical(below, style) {
+    let bottom_char = if is_vertical(below, style) || is_junction(below, style) {
         style.junction_down
     } else {
         point_char
@@ -318,7 +328,7 @@ fn draw_circle(
     for i in 1..width - 1 {
         let pos_x = x + i;
         let below = canvas.get(pos_x, y + 3);
-        let c = if is_vertical(below, style) {
+        let c = if is_vertical(below, style) || is_junction(below, style) {
             style.junction_down
         } else {
             h
