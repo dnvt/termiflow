@@ -157,7 +157,31 @@ pub fn compute_envelopes(
                 if target_rect.y <= inner_bottom_inclusive {
                     continue;
                 }
-                min_target_y = Some(min_target_y.map_or(target_rect.y, |v| v.min(target_rect.y)));
+                // If the target is inside another subgraph, we need clearance for
+                // that subgraph's top border (title row + border), not just the node.
+                let effective_y = if let Some(target_sg_id) = graph.get_node_subgraph(&e.to) {
+                    // Find the target subgraph and compute its topmost node Y
+                    if let Some(target_sg) = graph.get_subgraph(target_sg_id) {
+                        // Compute the minimum Y of all nodes in the target subgraph
+                        let min_node_y = target_sg
+                            .node_ids
+                            .iter()
+                            .filter_map(|id| node_rects.get(id))
+                            .map(|r| r.y)
+                            .min()
+                            .unwrap_or(target_rect.y);
+                        // Estimate top border position: nodes have padding above them for
+                        // title (2-3 rows) and border (1 row)
+                        let has_title = target_sg.title.is_some();
+                        let title_clearance = if has_title { 3 } else { 1 };
+                        min_node_y.saturating_sub(title_clearance)
+                    } else {
+                        target_rect.y
+                    }
+                } else {
+                    target_rect.y
+                };
+                min_target_y = Some(min_target_y.map_or(effective_y, |v| v.min(effective_y)));
             }
             if let Some(target_y) = min_target_y {
                 let allowed_border_y = target_y.saturating_sub(2);
@@ -188,6 +212,10 @@ pub fn compute_envelopes(
     //
     // This preserves separate stacked subgraphs (no overlap), while allowing
     // "visually nested" compositions to render as nested envelopes.
+    //
+    // IMPORTANT: Only expand if the child's content is INSIDE the parent's content
+    // (true nesting). If the child's inner region is below/above the parent's inner
+    // region (stacked), don't expand - let the layout constraint loop handle spacing.
     if matches!(graph.direction, Direction::TD | Direction::TB | Direction::BT) {
         let intersects = |a: Rect, b: Rect| -> bool {
             a.x < b.right() && a.right() > b.x && a.y < b.bottom() && a.bottom() > b.y
@@ -212,6 +240,23 @@ pub fn compute_envelopes(
                 continue;
             };
             if !intersects(parent.outer, child.outer) {
+                continue;
+            }
+            // Check if child is truly nested (inner content starts within parent's inner)
+            // vs stacked (child's inner is entirely below/above parent's inner).
+            let is_stacked = match graph.direction {
+                Direction::TD | Direction::TB => {
+                    // In TD/TB, stacked means child's inner starts at or below parent's inner bottom
+                    child.inner.y >= parent.inner.bottom()
+                }
+                Direction::BT => {
+                    // In BT, stacked means child's inner bottom is at or above parent's inner top
+                    child.inner.bottom() <= parent.inner.y
+                }
+                _ => false,
+            };
+            if is_stacked {
+                // Don't expand for stacked subgraphs - let layout constraint loop handle spacing
                 continue;
             }
             let mut new_outer = parent.outer.union(&child.outer);

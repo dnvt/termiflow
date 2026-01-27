@@ -351,8 +351,11 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 ) else {
                     continue;
                 };
-                // Only apply to non-overlapping, vertically stacked envelopes (not nested).
-                if from_env.outer.bottom() > to_env.outer.y {
+                // Only skip if subgraphs are truly nested (one fully inside the other).
+                // Overlapping-but-not-nested subgraphs need spacing applied.
+                let is_nested = rect_fully_inside(from_env.outer, to_env.outer)
+                    || rect_fully_inside(to_env.outer, from_env.outer);
+                if is_nested {
                     continue;
                 }
                 let required_to_top = from_env.outer.bottom().saturating_add(1);
@@ -512,9 +515,11 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 ) else {
                     continue;
                 };
-                // In BT, `to_sg` is visually above `from_sg` (smaller y). Only apply to
-                // non-overlapping, vertically stacked envelopes (not nested).
-                if to_env.outer.bottom() > from_env.outer.y {
+                // In BT, `to_sg` is visually above `from_sg` (smaller y). Only skip if
+                // subgraphs are truly nested (one fully inside the other).
+                let is_nested = rect_fully_inside(from_env.outer, to_env.outer)
+                    || rect_fully_inside(to_env.outer, from_env.outer);
+                if is_nested {
                     continue;
                 }
                 let required_from_top = to_env.outer.bottom().saturating_add(1);
@@ -555,6 +560,32 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             subgraph_envelopes =
                 compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
             adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
+    }
+
+    // Warn about overlapping (but not nested) subgraphs that couldn't be resolved.
+    if debug_timing && subgraph_envelopes.len() > 1 {
+        let sg_ids: Vec<&String> = subgraph_envelopes.keys().collect();
+        for i in 0..sg_ids.len() {
+            for j in (i + 1)..sg_ids.len() {
+                let env1 = &subgraph_envelopes[sg_ids[i]];
+                let env2 = &subgraph_envelopes[sg_ids[j]];
+                // Check if they intersect
+                let intersects = env1.outer.x < env2.outer.right()
+                    && env1.outer.right() > env2.outer.x
+                    && env1.outer.y < env2.outer.bottom()
+                    && env1.outer.bottom() > env2.outer.y;
+                if intersects {
+                    let nested = rect_fully_inside(env1.outer, env2.outer)
+                        || rect_fully_inside(env2.outer, env1.outer);
+                    if !nested {
+                        eprintln!(
+                            "termiflow: warning: subgraphs {} and {} overlap",
+                            sg_ids[i], sg_ids[j]
+                        );
+                    }
+                }
+            }
         }
     }
 

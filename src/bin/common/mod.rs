@@ -161,9 +161,9 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
         .wrap_labels(cli.wrap)
         .strict(cli.strict);
 
-    if let Some(n) = cli.max_lines {
-        builder = builder.max_label_lines(n);
-    }
+    // Default max_lines to 3 when --wrap is enabled but no explicit --max-lines given
+    let max_lines = cli.max_lines.unwrap_or(if cli.wrap { 3 } else { 1 });
+    builder = builder.max_label_lines(max_lines);
 
     if cli.no_crop {
         builder = builder.crop(false);
