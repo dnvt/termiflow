@@ -316,16 +316,16 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         }
 
         if let Some(route) = graph.edge_routes.get(&edge_idx) {
-            draw_routed_edge_label(&mut canvas, route, label, &chars, graph);
+            draw_routed_edge_label(&mut canvas, route, label, &chars, graph, config);
             continue;
         }
 
         // Fall back to heuristic placement for edges without precomputed routes
         let is_convergent = convergent_targets.contains(to.id.as_str());
         if is_convergent {
-            draw_convergent_edge_label(&mut canvas, from, to, label, graph.direction);
+            draw_convergent_edge_label(&mut canvas, from, to, label, graph.direction, config);
         } else {
-            draw_edge_label(&mut canvas, from, to, label, graph.direction, &chars);
+            draw_edge_label(&mut canvas, from, to, label, graph.direction, &chars, config);
         }
     }
 
@@ -1352,10 +1352,11 @@ fn draw_edge_label(
     label: &str,
     direction: Direction,
     style: &StyleChars,
+    config: &Config,
 ) {
     use cycle::{center_x, center_y};
 
-    let display_label = format_edge_label(label);
+    let display_label = format_edge_label_with_limit(label, config.max_edge_label_width);
     let label_width = display_width(&display_label);
 
     match direction {
@@ -1596,12 +1597,13 @@ fn draw_routed_edge_label(
     label: &str,
     _style: &StyleChars,
     graph: &Graph,
+    config: &Config,
 ) {
     if route.segments.is_empty() {
         return;
     }
 
-    let display_label = format_edge_label(label);
+    let display_label = format_edge_label_with_limit(label, config.max_edge_label_width);
     let label_width = display_width(&display_label);
 
     let nodes: Vec<&Node> = graph.nodes.iter().collect();
@@ -1713,11 +1715,7 @@ fn draw_routed_edge_label(
     }
 }
 
-/// Truncate and format edge label consistently across routing modes.
-fn format_edge_label(label: &str) -> String {
-    format_edge_label_with_limit(label, 12)
-}
-
+/// Truncate and format edge label to the specified maximum width.
 fn format_edge_label_with_limit(label: &str, max_len: usize) -> String {
     if display_width(label) <= max_len {
         return label.to_string();
@@ -2030,10 +2028,13 @@ fn draw_convergent_edge_label(
     _to: &Node,
     label: &str,
     direction: Direction,
+    config: &Config,
 ) {
     use cycle::{center_x, center_y};
 
-    let display_label = format_edge_label_with_limit(label, 10); // Slightly shorter for convergent labels
+    // Use slightly shorter limit for convergent labels to avoid crowding at merge points
+    let convergent_limit = config.max_edge_label_width.saturating_sub(2).max(8);
+    let display_label = format_edge_label_with_limit(label, convergent_limit);
     let label_width = display_width(&display_label);
 
     match direction {

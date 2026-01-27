@@ -49,6 +49,10 @@ pub struct Cli {
     #[arg(long, default_value = "20")]
     pub max_label: usize,
 
+    /// Maximum edge label width before truncation
+    #[arg(long, default_value = "20")]
+    pub max_edge_label: usize,
+
     /// Enable multiline label wrapping (experimental; default off)
     #[arg(long)]
     pub wrap: bool,
@@ -158,6 +162,7 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     // Load configuration (CLI > in-file > config file)
     let mut builder = Config::builder()
         .max_label_width(cli.max_label)
+        .max_edge_label_width(cli.max_edge_label)
         .wrap_labels(cli.wrap)
         .strict(cli.strict);
 

@@ -84,6 +84,8 @@ lazy_static! {
 pub struct ParseConfig {
     pub style: Option<String>,
     pub max_label: Option<usize>,
+    /// Maximum edge label width before truncation.
+    pub max_edge_label: Option<usize>,
     /// Enable multiline label wrapping (experimental; default off).
     pub wrap_labels: Option<bool>,
     /// Maximum number of label lines when wrapping is enabled.
@@ -616,6 +618,11 @@ fn parse_config_directive(caps: &regex::Captures, config: &mut ParseConfig) {
         "max_label" | "maxlabel" => {
             if let Ok(n) = value.parse::<usize>() {
                 config.max_label = Some(n);
+            }
+        }
+        "max_edge_label" | "maxedgelabel" => {
+            if let Ok(n) = value.parse::<usize>() {
+                config.max_edge_label = Some(n);
             }
         }
         "wrap" | "wrap_labels" => {

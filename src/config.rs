@@ -12,6 +12,8 @@ use crate::style::CompositeStyle;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub max_label_width: usize,
+    /// Maximum edge label width before truncation.
+    pub max_edge_label_width: usize,
     /// Enable multiline label wrapping (experimental; default off).
     pub wrap_labels: bool,
     /// Maximum number of label lines when wrapping is enabled.
@@ -28,6 +30,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             max_label_width: 20,
+            max_edge_label_width: 20,
             wrap_labels: false,
             max_label_lines: 1,
             crop: true,
@@ -54,6 +57,9 @@ impl Config {
             if let Some(max_label) = file_cfg.max_label_width {
                 config.max_label_width = max_label;
             }
+            if let Some(max_edge_label) = file_cfg.max_edge_label_width {
+                config.max_edge_label_width = max_edge_label;
+            }
             if let Some(wrap_labels) = file_cfg.wrap_labels {
                 config.wrap_labels = wrap_labels;
             }
@@ -73,6 +79,9 @@ impl Config {
         if let Some(max_label) = parse_config.max_label {
             config.max_label_width = max_label;
         }
+        if let Some(max_edge_label) = parse_config.max_edge_label {
+            config.max_edge_label_width = max_edge_label;
+        }
         if let Some(wrap_labels) = parse_config.wrap_labels {
             config.wrap_labels = wrap_labels;
         }
@@ -91,6 +100,7 @@ impl Config {
 #[derive(Debug, Clone, Default)]
 pub struct ConfigBuilder {
     max_label_width: Option<usize>,
+    max_edge_label_width: Option<usize>,
     wrap_labels: Option<bool>,
     max_label_lines: Option<usize>,
     crop: Option<bool>,
@@ -106,6 +116,11 @@ impl ConfigBuilder {
 
     pub fn max_label_width(mut self, width: usize) -> Self {
         self.max_label_width = Some(width);
+        self
+    }
+
+    pub fn max_edge_label_width(mut self, width: usize) -> Self {
+        self.max_edge_label_width = Some(width);
         self
     }
 
@@ -146,6 +161,9 @@ impl ConfigBuilder {
         // CLI overrides (highest priority)
         if let Some(width) = self.max_label_width {
             config.max_label_width = width;
+        }
+        if let Some(width) = self.max_edge_label_width {
+            config.max_edge_label_width = width;
         }
         if let Some(wrap) = self.wrap_labels {
             config.wrap_labels = wrap;
@@ -189,6 +207,10 @@ fn load_file_config() -> Option<FileConfig> {
             };
 
             let max_label_width = value.get("max_label_width").and_then(|v| v.as_integer());
+            let max_edge_label_width = value
+                .get("max_edge_label_width")
+                .and_then(|v| v.as_integer())
+                .or_else(|| value.get("max_edge_label").and_then(|v| v.as_integer()));
             let wrap_labels = value
                 .get("wrap")
                 .and_then(|v| v.as_bool())
@@ -204,6 +226,7 @@ fn load_file_config() -> Option<FileConfig> {
             let pad = value.get("pad").and_then(|v| v.as_integer());
             Some(FileConfig {
                 max_label_width: max_label_width.map(|n| n as usize),
+                max_edge_label_width: max_edge_label_width.map(|n| n as usize),
                 wrap_labels,
                 max_label_lines: max_label_lines.map(|n| n as usize),
                 crop,
@@ -221,6 +244,7 @@ fn load_file_config() -> Option<FileConfig> {
 #[derive(Debug)]
 struct FileConfig {
     max_label_width: Option<usize>,
+    max_edge_label_width: Option<usize>,
     wrap_labels: Option<bool>,
     max_label_lines: Option<usize>,
     crop: Option<bool>,
