@@ -1,6 +1,6 @@
 graph LR
-subgraph SG1 [Pipeline]
-A[Input]
-B[Output]
+subgraph SG [My Group]
+A[Node A]
+B[Node B]
 A --> B
 end

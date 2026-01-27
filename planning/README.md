@@ -1,19 +1,48 @@
-# TermiFlow Planning & Status
+# TermiFlow Planning & Documentation
 
 Internal plans, specs, and status live here to keep `/docs` consumer-friendly.
 
-## Status Snapshot
-- Parser/layout/render/CLI are demo-ready for `--print`.
-- Cycle detection with gutter rendering and clipping warnings.
-- Direction-agnostic rendering across TD/LR/BT/RL.
-- Subgraphs (single-level) with portal-aware border piercing.
-- Config precedence: CLI > in-file directive > `~/.config/termiflow/config.toml`.
-- Tests: run `cargo test` (and `cargo test --features golden` when fixtures are present).
+## Active Documents
 
-## Artifacts
-- `phase2/` — Phase 2 design and implementation notes (per-element styling).
-- `spec/SPEC.md` — Full technical specification (implementation contract).
+| Document | Purpose |
+|----------|---------|
+| **[PLAN.md](PLAN.md)** | Current development plan and work queue |
+| [AUDIT-mermaid-parity.md](AUDIT-mermaid-parity.md) | Comprehensive Mermaid vs Termiflow feature gaps |
+| [AUDIT-termiflow-limits.md](AUDIT-termiflow-limits.md) | Internal limits reference (canvas, labels, routing) |
+| [RFC-001-expanded-edge-routing.md](RFC-001-expanded-edge-routing.md) | Edge routing algorithm (implemented) |
+| [spec/SPEC.md](spec/SPEC.md) | Technical specification |
 
-## How to Use This Folder
-- Add new plans or RFCs here (not under `/docs`).
-- Keep summaries concise; link back to root `README.md` for user-facing info.
+## Future Work (Deferred)
+
+| Document | Purpose |
+|----------|---------|
+| [phase2/](phase2/) | Per-element styling spec (Mermaid `classDef`, `:::` support) |
+
+## Archive
+
+Historical documents kept for reference:
+
+| Document | Status |
+|----------|--------|
+| [archive/ROADMAP.md](archive/ROADMAP.md) | Superseded by PLAN.md |
+| [archive/FUTURE_WORK.md](archive/FUTURE_WORK.md) | Merged into PLAN.md backlog |
+| [archive/LAYOUT_ROUTING_SPIKE.md](archive/LAYOUT_ROUTING_SPIKE.md) | Implemented |
+| [archive/ROUTING_REVIEW.md](archive/ROUTING_REVIEW.md) | Completed |
+| [archive/SUBGRAPH_MIGRATION.md](archive/SUBGRAPH_MIGRATION.md) | Implemented |
+
+## Quick Start
+
+```bash
+# Run tests
+cargo test
+
+# Regenerate golden fixtures
+cargo test --features golden -- --ignored
+
+# Render all fixtures for manual review
+./scripts/render_fixtures.sh --ascii --unicode
+```
+
+---
+
+*Last updated: 2026-01-27*

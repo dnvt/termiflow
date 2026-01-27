@@ -15,8 +15,8 @@ fixtures/
 └── README.md        # This file (source of truth)
 ```
 
-Note: golden tests (`cargo test --features golden`) use `include_str!()` and therefore require the
-`expected/` files to exist at build time. Regenerate them after intentional rendering changes.
+Note: golden tests (`cargo test --features golden`) load expected files from disk at runtime.
+Regenerate them after intentional rendering changes.
 
 ## Naming Convention
 
@@ -29,53 +29,14 @@ Note: golden tests (`cargo test --features golden`) use `include_str!()` and the
 
 ## Test Inventory
 
-### Direction-Consistent Tests (Same structure across all 4 directions)
-
-| Test Name | Description | Directions |
-|-----------|-------------|------------|
-| `flow_simple` | Linear 3-node flow (Start → Process → End) | TD, LR, BT, RL |
-| `edge_complex` | 5-node graph with divergent and convergent edges | TD, LR, BT, RL |
-| `edge_branch` | API Gateway → Services → DB/Cache with multiple branches | TD, LR, BT, RL |
-| `edge_converge` | 2 sources merging to 1 target | TD, LR, BT, RL |
-
-### TD-Only Tests (Special features)
-
-| Test Name | Description |
-|-----------|-------------|
-| `config_style_td` | Composite style configuration |
-| `flow_branch_td` | Basic branching |
-| `flow_chain_td` | Linear chain |
-| `label_basic_td` | Edge labels (pipe and text syntax) |
-| `parse_forward_td` | Forward reference parsing |
-| `shape_all_td` | All 9 node shapes |
-| `shape_database_td` | Database cylinder shape |
-
-### Subgraph Tests
-
-| Test Name | Description |
-|-----------|-------------|
-| `subgraph_basic_td` | Basic subgraph parsing (visual rendering) |
-
-### Experimental Layout Fixtures
-
-These reuse existing inputs but capture the experimental layout/routing spike output.
-
-| Test Name | Description | Formats |
-|-----------|-------------|---------|
-| `subgraph_basic_td` | TD subgraph with gutters | unicode, ascii (experimental) |
-| `flow_simple_lr` | LR three-node flow sanity check | unicode, ascii (experimental) |
-
-### Error Tests
-
-| Test Name | Description |
-|-----------|-------------|
-| `error_sequence` | Unsupported diagram type |
+- All non-error fixtures exist in **all four directions** (TD, LR, BT, RL).
+- Error fixtures omit the direction suffix and are validated against stderr output.
 
 ## Test Counts
 
-- **25 input files** → **56 golden tests** (25 × 2 formats + 6 experimental variants)
+- **101 input files** (100 directional + 1 error)
+- **202 expected outputs** (ascii + unicode per input)
 - **4 directions tested**: TD, LR, BT, RL
-- **Direction-consistent tests**: 4 test families × 4 directions = 16 directional tests
 
 ## Regenerating Expected Outputs
 

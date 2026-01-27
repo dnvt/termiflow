@@ -137,6 +137,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             &subgraph.bounds,
             subgraph.title.as_deref(),
             subgraph_chars,
+            graph.direction,
         );
     }
     // Carve portal openings in subgraph borders so external edges can pass through.
@@ -149,7 +150,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         HashMap::new()
     };
     if portals_enabled {
-        carve_subgraph_portals_on_canvas(&mut canvas, graph, &portal_slots);
+        carve_subgraph_portals_on_canvas(&mut canvas, graph, &portal_slots, graph.direction);
     }
 
     // Get visible nodes
@@ -239,8 +240,14 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     // Process remaining edges: prioritize convergence (multiple sources → one target)
     let mut processed_edges: HashSet<(&str, &str)> = HashSet::new();
 
-    // First, handle convergence cases (multiple sources → one target)
-    for (target_id, sources) in &edges_by_target {
+    // First, handle convergence cases (multiple sources → one target).
+    // Use a stable ordering on target IDs to keep routing deterministic.
+    let mut convergent_target_ids: Vec<&str> = edges_by_target.keys().copied().collect();
+    convergent_target_ids.sort_unstable();
+    for target_id in convergent_target_ids {
+        let Some(sources) = edges_by_target.get(target_id) else {
+            continue;
+        };
         if sources.len() > 1 {
             let Some(target) = graph.get_node(target_id) else {
                 continue;
@@ -322,7 +329,14 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         }
     }
 
-    reinforce_subgraph_portals(&mut canvas, graph, &portal_slots, graph.direction, &chars);
+    reinforce_subgraph_portals(
+        &mut canvas,
+        graph,
+        &portal_slots,
+        graph.direction,
+        &chars,
+        subgraph_chars,
+    );
 
     // Draw boxes AFTER edges (boxes overwrite any edges passing through them)
     for node in &visible_nodes {
@@ -398,8 +412,88 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             }
         }
 
+        if graph.direction == Direction::BT {
+            let above_y = from.y.saturating_sub(1);
+            if above_y < canvas.height && from.x + 2 <= from.x + from.width.saturating_sub(1) {
+                let mut xs: Vec<usize> = Vec::new();
+                for x in (from.x + 1)..(from.x + from.width.saturating_sub(1)) {
+                    let c = canvas.get(x, above_y);
+                    if canvas::is_vertical(c, &chars)
+                        || canvas::is_junction(c, &chars)
+                        || canvas::is_arrow(c)
+                    {
+                        xs.push(x);
+                    }
+                }
+                if !xs.is_empty() {
+                    let center_x = from.center_x();
+                    xs.sort_unstable_by_key(|pos| {
+                        let dist = if *pos > center_x {
+                            *pos - center_x
+                        } else {
+                            center_x - *pos
+                        };
+                        (dist, *pos)
+                    });
+                    junction_x = xs[0];
+                }
+            }
+        }
+
         if junction_x < canvas.width && junction_y < canvas.height {
             canvas.set_edge_char(junction_x, junction_y, junction_char, &chars);
+        }
+    }
+
+    // Redraw subgraph titles last so portals/edges cannot corrupt the text.
+    for subgraph in &graph.subgraphs {
+        draw_subgraph_title(
+            &mut canvas,
+            &subgraph.bounds,
+            subgraph.title.as_deref(),
+            graph.direction,
+        );
+    }
+
+    // ASCII-only cleanup: avoid adjacent '+' on BT horizontal runs when only one stem exists.
+    if graph.direction == Direction::BT && chars.tl == '+' && chars.h == '-' && chars.v == '|' {
+        let is_verticalish = |c: char| -> bool {
+            c == chars.edge_v || c == chars.arrow_up || c == chars.arrow_down
+        };
+        if canvas.width > 1 {
+            for y in 0..canvas.height {
+                let mut x = 0usize;
+                while x + 1 < canvas.width {
+                    let c0 = canvas.get(x, y);
+                    let c1 = canvas.get(x + 1, y);
+                    if c0 == '+' && c1 == '+' {
+                        let above0 = if y > 0 { canvas.get(x, y - 1) } else { ' ' };
+                        let below0 = if y + 1 < canvas.height {
+                            canvas.get(x, y + 1)
+                        } else {
+                            ' '
+                        };
+                        let above1 = if y > 0 { canvas.get(x + 1, y - 1) } else { ' ' };
+                        let below1 = if y + 1 < canvas.height {
+                            canvas.get(x + 1, y + 1)
+                        } else {
+                            ' '
+                        };
+                        let has_vert0 = is_verticalish(above0) || is_verticalish(below0);
+                        let has_vert1 = is_verticalish(above1) || is_verticalish(below1);
+                        if has_vert0 != has_vert1 {
+                            if !has_vert0 {
+                                canvas.set(x, y, chars.edge_h);
+                            } else {
+                                canvas.set(x + 1, y, chars.edge_h);
+                            }
+                            x = x.saturating_add(1);
+                            continue;
+                        }
+                    }
+                    x += 1;
+                }
+            }
         }
     }
 
@@ -525,9 +619,15 @@ fn arrow_for_dir(dir: Dir, chars: &StyleChars) -> char {
 
 fn is_subgraph_title_cell(graph: &Graph, x: usize, y: usize) -> bool {
     graph.subgraphs.iter().any(|sg| {
-        sg.title.is_some()
-            && sg.bounds.is_valid()
-            && y == sg.bounds.y
+        if sg.title.is_none() || !sg.bounds.is_valid() {
+            return false;
+        }
+        let title_y = if graph.direction == Direction::BT && sg.bounds.height > 2 {
+            sg.bounds.y.saturating_add(1)
+        } else {
+            sg.bounds.y
+        };
+        y == title_y
             && x >= sg.bounds.x
             && x < sg.bounds.x.saturating_add(sg.bounds.width)
     })
@@ -784,6 +884,7 @@ fn carve_subgraph_portals_on_canvas(
     canvas: &mut Canvas,
     graph: &Graph,
     slots: &HashMap<String, PortalSlots>,
+    direction: Direction,
 ) {
     for (sg_id, portals) in slots {
         let Some(sg) = graph.get_subgraph(sg_id) else {
@@ -801,7 +902,9 @@ fn carve_subgraph_portals_on_canvas(
 
         for &x in &portals.top {
             let px = clamp_horizontal(bounds, x);
-            let top_candidates = if sg.title.is_some() {
+            let top_candidates = if matches!(direction, Direction::BT) {
+                vec![top_y]
+            } else if sg.title.is_some() {
                 vec![top_y.saturating_add(1)]
             } else {
                 vec![top_y, top_y.saturating_add(1)]
@@ -830,9 +933,13 @@ fn reinforce_subgraph_portals(
     slots: &HashMap<String, PortalSlots>,
     direction: Direction,
     chars: &StyleChars,
+    subgraph_chars: &StyleChars,
 ) {
     fn is_verticalish(c: char, chars: &StyleChars) -> bool {
         canvas::is_vertical(c, chars) || canvas::is_junction(c, chars) || canvas::is_arrow(c)
+    }
+    fn is_horizontalish(c: char, chars: &StyleChars) -> bool {
+        canvas::is_horizontal(c, chars) || canvas::is_junction(c, chars) || canvas::is_arrow(c)
     }
 
     for (sg_id, portals) in slots {
@@ -901,25 +1008,124 @@ fn reinforce_subgraph_portals(
                 }
             }
             Direction::BT => {
-                // Title still sits on the top border in BT.
+                // Titles sit inside for BT, but portals still pierce the top border.
+                let inner_min_x = left_x.saturating_add(1);
+                let inner_max_x = right_x.saturating_sub(1).max(inner_min_x);
+                let is_in_title_text = |x: usize| -> bool {
+                    let Some((s, e)) = title_span else {
+                        return false;
+                    };
+                    x >= s && x <= e
+                };
+                let nudge_from_corners = |mut x: usize| -> usize {
+                    if inner_max_x <= inner_min_x {
+                        return x;
+                    }
+                    if x == inner_min_x {
+                        let candidate = inner_min_x.saturating_add(1);
+                        if !is_in_title_text(candidate) && candidate <= inner_max_x {
+                            x = candidate;
+                        }
+                    } else if x == inner_max_x {
+                        let candidate = inner_max_x.saturating_sub(1);
+                        if !is_in_title_text(candidate) && candidate >= inner_min_x {
+                            x = candidate;
+                        }
+                    }
+                    x
+                };
                 for &x in &portals.top {
                     let mut px = clamp_horizontal(bounds, x);
                     if let Some((s, e)) = title_span {
-                        px = shift_out_of_span(px, s, e, left_x, right_x);
+                        px = shift_out_of_span(px, s, e, inner_min_x, inner_max_x);
                     }
+                    px = nudge_from_corners(px);
                     let existing = canvas.get(px, top_y);
                     if top_y < canvas.height && !is_textual(existing) && !canvas::is_arrow(existing) {
-                        canvas.set(px, top_y, chars.edge_v);
+                        let above = if top_y > 0 { canvas.get(px, top_y - 1) } else { ' ' };
+                        let below = if top_y + 1 < canvas.height {
+                            canvas.get(px, top_y + 1)
+                        } else {
+                            ' '
+                        };
+                        let has_above = is_verticalish(above, chars);
+                        let mut has_below = is_verticalish(below, chars);
+                        if sg.title.is_some() && bounds.height > 2 {
+                            // Title rows are cleared/redrawn later; treat them as empty for joins.
+                            has_below = false;
+                        }
+                        let used = has_above || has_below;
+                        if used {
+                            let left = if px > 0 { canvas.get(px - 1, top_y) } else { ' ' };
+                            let right = if px + 1 < canvas.width {
+                                canvas.get(px + 1, top_y)
+                            } else {
+                                ' '
+                            };
+                            let has_horizontal =
+                                is_horizontalish(left, chars) || is_horizontalish(right, chars);
+                            let glyph = if has_horizontal {
+                                if has_above && has_below {
+                                    subgraph_chars.cross
+                                } else if has_above {
+                                    subgraph_chars.junction_down
+                                } else {
+                                    subgraph_chars.junction_up
+                                }
+                            } else {
+                                subgraph_chars.v
+                            };
+                            canvas.set(px, top_y, glyph);
+                        } else {
+                            canvas.set(px, top_y, subgraph_chars.h);
+                        }
                     }
                 }
                 for &x in &portals.bottom {
-                    let px = clamp_horizontal(bounds, x);
+                    let mut px = clamp_horizontal(bounds, x);
+                    px = nudge_from_corners(px);
                     let existing = canvas.get(px, bottom_y);
                     if bottom_y < canvas.height
                         && !is_textual(existing)
                         && !canvas::is_arrow(existing)
                     {
-                        canvas.set(px, bottom_y, chars.edge_v);
+                        let above = if bottom_y > 0 {
+                            canvas.get(px, bottom_y - 1)
+                        } else {
+                            ' '
+                        };
+                        let below = if bottom_y + 1 < canvas.height {
+                            canvas.get(px, bottom_y + 1)
+                        } else {
+                            ' '
+                        };
+                        let has_above = is_verticalish(above, chars);
+                        let has_below = is_verticalish(below, chars);
+                        let used = has_above || has_below;
+                        if used {
+                            let left = if px > 0 { canvas.get(px - 1, bottom_y) } else { ' ' };
+                            let right = if px + 1 < canvas.width {
+                                canvas.get(px + 1, bottom_y)
+                            } else {
+                                ' '
+                            };
+                            let has_horizontal =
+                                is_horizontalish(left, chars) || is_horizontalish(right, chars);
+                            let glyph = if has_horizontal {
+                                if has_above && has_below {
+                                    subgraph_chars.cross
+                                } else if has_below {
+                                    subgraph_chars.junction_up
+                                } else {
+                                    subgraph_chars.junction_down
+                                }
+                            } else {
+                                subgraph_chars.v
+                            };
+                            canvas.set(px, bottom_y, glyph);
+                        } else {
+                            canvas.set(px, bottom_y, subgraph_chars.h);
+                        }
                     }
                 }
             }
@@ -928,14 +1134,38 @@ fn reinforce_subgraph_portals(
                     let py = clamp_vertical(bounds, y);
                     let existing = canvas.get(left_x, py);
                     if left_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing) {
-                        canvas.set(left_x, py, chars.edge_h);
+                        let left = if left_x > 0 { canvas.get(left_x - 1, py) } else { ' ' };
+                        let right = if left_x + 1 < canvas.width {
+                            canvas.get(left_x + 1, py)
+                        } else {
+                            ' '
+                        };
+                        let has_horizontal = is_horizontalish(left, chars) || is_horizontalish(right, chars);
+                        let glyph = if has_horizontal {
+                            subgraph_chars.cross
+                        } else {
+                            subgraph_chars.v
+                        };
+                        canvas.set(left_x, py, glyph);
                     }
                 }
                 for &y in &portals.right {
                     let py = clamp_vertical(bounds, y);
                     let existing = canvas.get(right_x, py);
                     if right_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing) {
-                        canvas.set(right_x, py, chars.edge_h);
+                        let left = if right_x > 0 { canvas.get(right_x - 1, py) } else { ' ' };
+                        let right = if right_x + 1 < canvas.width {
+                            canvas.get(right_x + 1, py)
+                        } else {
+                            ' '
+                        };
+                        let has_horizontal = is_horizontalish(left, chars) || is_horizontalish(right, chars);
+                        let glyph = if has_horizontal {
+                            subgraph_chars.cross
+                        } else {
+                            subgraph_chars.v
+                        };
+                        canvas.set(right_x, py, glyph);
                     }
                 }
             }
@@ -1048,15 +1278,61 @@ fn title_span(bounds: &crate::graph::Rectangle, title: &str) -> (usize, usize) {
 }
 
 fn shift_out_of_span(x: usize, span_start: usize, span_end: usize, min: usize, max: usize) -> usize {
-    if x < span_start || x > span_end {
+    let protected_start = span_start.saturating_sub(2);
+    let protected_end = span_end.saturating_add(2).min(max);
+    if x < protected_start || x > protected_end {
         return x;
     }
-    if span_end + 1 < max {
-        span_end + 1
-    } else if span_start > min {
-        span_start.saturating_sub(1)
+    if protected_end + 1 <= max {
+        protected_end + 1
+    } else if protected_start > min {
+        protected_start.saturating_sub(1)
     } else {
         x
+    }
+}
+
+fn draw_subgraph_title(
+    canvas: &mut Canvas,
+    rect: &crate::graph::Rectangle,
+    title: Option<&str>,
+    direction: Direction,
+) {
+    let Some(t) = title else {
+        return;
+    };
+    if !rect.is_valid() {
+        return;
+    }
+    let title_fmt = format!("[  {}  ]", t);
+    if title_fmt.len() > rect.width.saturating_sub(2) {
+        return;
+    }
+    let start_x = rect.x + (rect.width - title_fmt.len()) / 2;
+    let title_y = if matches!(direction, Direction::BT) && rect.height > 2 {
+        rect.y.saturating_add(1)
+    } else {
+        rect.y
+    };
+    if title_y >= canvas.height {
+        return;
+    }
+    if matches!(direction, Direction::BT) && rect.height > 2 {
+        let row = title_y;
+        let start = rect.x.saturating_add(1);
+        let end = rect.x.saturating_add(rect.width.saturating_sub(1));
+        if start < end {
+            for x in start..end {
+                if x < canvas.width {
+                    canvas.set(x, row, ' ');
+                }
+            }
+        }
+    }
+    for (i, c) in title_fmt.chars().enumerate() {
+        if start_x + i < canvas.width {
+            canvas.set(start_x + i, title_y, c);
+        }
     }
 }
 

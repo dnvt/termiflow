@@ -26,13 +26,6 @@ fi
 for f in tests/fixtures/inputs/*.md; do
   base="$(basename "${f%.md}")"
 
-  # Special-case: this fixture has legacy expected filenames in `tests/golden.rs`.
-  if [[ "${base}" == "subgraph_basic_td" ]]; then
-    "${bin}" --print --style unicode "${f}" > "tests/fixtures/expected/${base}_unicode.txt" 2> /dev/null || true
-    "${bin}" --print --style ascii "${f}" > "tests/fixtures/expected/${base}_ascii.txt" 2> /dev/null || true
-    continue
-  fi
-
   if [[ "${base}" == "error_sequence" ]]; then
     "${bin}" --print --style unicode "${f}" 1> /dev/null 2> "tests/fixtures/expected/${base}.unicode.txt" || true
     "${bin}" --print --style ascii "${f}" 1> /dev/null 2> "tests/fixtures/expected/${base}.ascii.txt" || true
@@ -44,4 +37,3 @@ for f in tests/fixtures/inputs/*.md; do
 done
 
 echo "Regenerated: tests/fixtures/expected" >&2
-

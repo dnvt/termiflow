@@ -114,6 +114,11 @@ pub fn resolve_overlap(existing: char, new: char, s: &StyleChars) -> char {
         return existing;
     }
 
+    // Identical characters - no change needed
+    if existing == new {
+        return existing;
+    }
+
     // Corner + line = junction (existing corner)
     if is_corner(existing, s) {
         if is_vertical(new, s) {

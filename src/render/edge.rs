@@ -7,7 +7,7 @@ use crate::graph::{Direction, Graph, Node};
 use crate::orientation::{is_before, OrientedCoords};
 use crate::style::{StyleChars, STEM_LENGTH_HORIZONTAL, STEM_LENGTH_VERTICAL};
 
-use super::canvas::{is_junction, Canvas};
+use super::canvas::Canvas;
 use super::is_textual;
 
 /// Route edges from a single source to multiple targets (divergence)
@@ -657,10 +657,10 @@ pub fn route_divergent_edges(
     let (start_pos_x, start_pos_y) = coords.with_secondary(junction_x, junction_y, span_start);
     let (end_pos_x, end_pos_y) = coords.with_secondary(junction_x, junction_y, span_end);
     if span_start != junction_secondary {
-        canvas.set(start_pos_x, start_pos_y, start_corner);
+        canvas.set_edge_char(start_pos_x, start_pos_y, start_corner, style);
     }
     if span_end != junction_secondary {
-        canvas.set(end_pos_x, end_pos_y, end_corner);
+        canvas.set_edge_char(end_pos_x, end_pos_y, end_corner, style);
     }
 }
 
@@ -904,8 +904,8 @@ fn route_convergent_from_subgraph_td(
         Direction::BT => {
             let (sx, sy) = coords.with_secondary(merge_x, merge_y, final_span_start);
             let (ex, ey) = coords.with_secondary(merge_x, merge_y, final_span_end);
-            canvas.set(sx, sy, style.corner_ul);
-            canvas.set(ex, ey, style.corner_ur);
+            canvas.set_edge_char(sx, sy, style.corner_ul, style);
+            canvas.set_edge_char(ex, ey, style.corner_ur, style);
         }
         Direction::TD | Direction::TB => {
             let merge_secondary = coords.secondary_coord(merge_x, merge_y);
@@ -920,7 +920,7 @@ fn route_convergent_from_subgraph_td(
                 } else {
                     coords.secondary_edge_char(style)
                 };
-                canvas.set(sx, sy, ch);
+                canvas.set_edge_char(sx, sy, ch, style);
             }
         }
         _ => {}
@@ -1028,7 +1028,8 @@ fn route_convergent_from_subgraph_bt(
         merge_y = min_exit_y.saturating_sub(1).max(inside_top);
     }
 
-    let merge_x = preferred_portal_x(&sg.bounds, sg.title.as_deref(), arrow_x, canvas);
+    let merge_x =
+        preferred_portal_x(&sg.bounds, sg.title.as_deref(), arrow_x, canvas, direction);
 
     let mut source_positions: Vec<(usize, usize, &Node)> = sources
         .iter()
@@ -1245,12 +1246,14 @@ fn draw_merge_line(
     style: &StyleChars,
 ) {
     for pos in span_start..=span_end {
-        let (span_x, span_y) = coords.with_secondary(merge_x, merge_y, pos);
-        let c = canvas.get(span_x, span_y);
-
-        if c == ' ' || (is_secondary_line(c, coords, style) && !is_junction(c, style)) {
-            canvas.set_edge_char(span_x, span_y, coords.secondary_edge_char(style), style);
+        // Skip end positions - corners will be drawn there by the caller.
+        // The middle positions use set_edge_char to allow overlap resolution
+        // when multiple groups share the same merge row.
+        if pos == span_start || pos == span_end {
+            continue;
         }
+        let (span_x, span_y) = coords.with_secondary(merge_x, merge_y, pos);
+        canvas.set_edge_char(span_x, span_y, coords.secondary_edge_char(style), style);
     }
 }
 
@@ -1450,17 +1453,9 @@ pub fn route_convergent_edges(
     let final_span_start = actual_span_start.min(target_secondary);
     let final_span_end = actual_span_end.max(target_secondary);
 
-    // Draw horizontal merge line
-    draw_merge_line(
-        merge_x,
-        merge_y,
-        final_span_start,
-        final_span_end,
-        &coords,
-        canvas,
-        style,
-    );
-
+    // Draw corners FIRST, before the merge line.
+    // Use set_edge_char so corners properly resolve with OTHER groups' lines.
+    // Vertical stems stop before the merge row, so no overlap with same-group stems.
     if matches!(direction, Direction::TD | Direction::TB) && final_span_start < final_span_end {
         let (sx, sy) = coords.with_secondary(merge_x, merge_y, final_span_start);
         let (ex, ey) = coords.with_secondary(merge_x, merge_y, final_span_end);
@@ -1487,6 +1482,17 @@ pub fn route_convergent_edges(
         canvas.set_edge_char(ex, ey, end_char, style);
     }
 
+    // Draw horizontal merge line (skips non-empty cells like corners)
+    draw_merge_line(
+        merge_x,
+        merge_y,
+        final_span_start,
+        final_span_end,
+        &coords,
+        canvas,
+        style,
+    );
+
     let junction_char = match direction {
         Direction::TD | Direction::TB => style.junction_down,
         Direction::LR => style.junction_right, // ├ - edges from above/below, exits right
@@ -1512,6 +1518,14 @@ pub fn route_convergent_edges(
             canvas.set_edge_char(merge_x, merge_y_draw, junction_char, style);
         } else {
             for pos in final_span_start..=final_span_end {
+                // Skip source endpoint positions - corners will be drawn there.
+                // This prevents corners from being resolved to junctions when
+                // they overlap with horizontal lines from the SAME group.
+                // They'll still correctly resolve to junctions when overlapping
+                // with lines from OTHER convergent groups (e.g., crossing_grid).
+                if pos == actual_span_start || pos == actual_span_end {
+                    continue;
+                }
                 let (x, y) = coords.with_secondary(merge_x, merge_y, pos);
                 let ch = if pos == coords.secondary_coord(merge_x, merge_y) {
                     junction_char
@@ -1558,8 +1572,8 @@ pub fn route_convergent_edges(
             // Source only at span end
             style.corner_ur // ┘ - up and left
         };
-        canvas.set(sx, sy, start_char);
-        canvas.set(ex, ey, end_char);
+        canvas.set_edge_char(sx, sy, start_char, style);
+        canvas.set_edge_char(ex, ey, end_char, style);
     }
     let (final_start_x, final_start_y) = coords.advance(merge_x, merge_y_draw, 1);
     draw_line_primary(
@@ -1687,16 +1701,17 @@ fn draw_line_secondary(
     }
 }
 
-fn is_secondary_line(c: char, coords: &OrientedCoords, style: &StyleChars) -> bool {
-    let expected = coords.secondary_edge_char(style);
-    c == expected
-}
-
 fn is_subgraph_title_cell(graph: &Graph, x: usize, y: usize) -> bool {
     graph.subgraphs.iter().any(|sg| {
-        sg.has_title()
-            && sg.bounds.is_valid()
-            && y == sg.bounds.y
+        if !sg.has_title() || !sg.bounds.is_valid() {
+            return false;
+        }
+        let title_y = if graph.direction == Direction::BT && sg.bounds.height > 2 {
+            sg.bounds.y.saturating_add(1)
+        } else {
+            sg.bounds.y
+        };
+        y == title_y
             && x >= sg.bounds.x
             && x < sg.bounds.x.saturating_add(sg.bounds.width)
     })
@@ -1707,29 +1722,48 @@ fn preferred_portal_x(
     title: Option<&str>,
     desired: usize,
     canvas: &Canvas,
+    direction: Direction,
 ) -> usize {
     let min = bounds.x.saturating_add(1);
     let max = bounds.x + bounds.width.saturating_sub(2);
     let _ = canvas;
     let mut x = desired.clamp(min, max);
 
-    let Some(t) = title else {
-        return x;
-    };
-    let title_fmt = format!("[  {}  ]", t);
-    let len = title_fmt.chars().count();
-    if len == 0 || len > bounds.width.saturating_sub(2) {
-        return x;
+    let mut title_span: Option<(usize, usize)> = None;
+    if let Some(t) = title {
+        let title_fmt = format!("[  {}  ]", t);
+        let len = title_fmt.chars().count();
+        if len > 0 && len <= bounds.width.saturating_sub(2) {
+            let start = bounds.x + bounds.width.saturating_sub(len) / 2;
+            let end = start + len.saturating_sub(1);
+            title_span = Some((start, end));
+            let protected_start = start.saturating_sub(2);
+            let protected_end = end.saturating_add(2).min(max);
+            if x >= protected_start && x <= protected_end {
+                if protected_end + 1 <= max {
+                    x = protected_end + 1;
+                } else if protected_start > min {
+                    x = protected_start.saturating_sub(1);
+                }
+            }
+        }
     }
-    let start = bounds.x + bounds.width.saturating_sub(len) / 2;
-    let end = start + len.saturating_sub(1);
-    if x < start || x > end {
-        return x;
-    }
-    if end + 1 <= max {
-        x = end + 1;
-    } else if start > min {
-        x = start.saturating_sub(1);
+
+    if direction == Direction::BT {
+        if let Some((s, e)) = title_span {
+            let in_title_text = |pos: usize| pos >= s && pos <= e;
+            if x == min {
+                let candidate = min.saturating_add(1);
+                if candidate <= max && !in_title_text(candidate) {
+                    x = candidate;
+                }
+            } else if x == max {
+                let candidate = max.saturating_sub(1);
+                if candidate >= min && !in_title_text(candidate) {
+                    x = candidate;
+                }
+            }
+        }
     }
     x
 }
@@ -1826,7 +1860,8 @@ fn route_cross_subgraph_td(
     }
 
     // Enter at the subgraph portal (bias toward the target center, away from title text).
-    let mut portal_x = preferred_portal_x(&sg.bounds, sg.title.as_deref(), arrow_x, canvas);
+    let mut portal_x =
+        preferred_portal_x(&sg.bounds, sg.title.as_deref(), arrow_x, canvas, graph.direction);
 
     // Track the current drawing cursor (starts at the source exit).
     let cursor_x = stem_start_x;
@@ -1849,7 +1884,13 @@ fn route_cross_subgraph_td(
                 canvas.set_edge_char(cursor_x, y, style.edge_v, style);
             }
             cursor_y = exit_y;
-            portal_x = preferred_portal_x(&sg.bounds, sg.title.as_deref(), arrow_x, canvas);
+            portal_x = preferred_portal_x(
+                &sg.bounds,
+                sg.title.as_deref(),
+                arrow_x,
+                canvas,
+                graph.direction,
+            );
         }
     }
 
@@ -1997,6 +2038,7 @@ fn route_cross_subgraph_bt(
         src_sg.title.as_deref(),
         stem_start_x,
         canvas,
+        Direction::BT,
     );
 
     // Walk up from the source exit to the row just inside the subgraph top border.

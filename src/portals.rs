@@ -91,10 +91,11 @@ pub fn compute_envelopes(
         let inner_pad = 0;
         let mut side_pad = if has_external_edges { gutter } else { 2 };
 
-        // Ensure titled subgraphs are wide enough to display the title.
+        // Ensure titled subgraphs are wide enough to display the title with portal clearance.
+        let title_buffer = if has_external_edges { 2 } else { 1 };
         if let Some(t) = subgraph.title.as_ref() {
             let title_len = format!("[  {}  ]", t).chars().count();
-            let min_outer_width = title_len.saturating_add(2);
+            let min_outer_width = title_len.saturating_add(2 + title_buffer * 2);
             if content.width + side_pad * 2 < min_outer_width {
                 let needed = min_outer_width.saturating_sub(content.width);
                 side_pad = side_pad.max((needed + 1) / 2);
@@ -103,7 +104,8 @@ pub fn compute_envelopes(
 
         let title_fits = subgraph.title.as_ref().map_or(false, |t| {
             let title_len = format!("[  {}  ]", t).chars().count();
-            title_len <= (content.width + side_pad * 2).saturating_sub(2)
+            let available = (content.width + side_pad * 2).saturating_sub(2);
+            title_len.saturating_add(title_buffer * 2) <= available
         });
 
         let top_pad = if title_fits {
@@ -308,23 +310,62 @@ pub fn collect_portal_slots(
         if len == 0 || len > sg.bounds.width.saturating_sub(2) {
             return x;
         }
-        let start = sg.bounds.x + sg.bounds.width.saturating_sub(len) / 2;
-        let end = start + len.saturating_sub(1);
-        if x < start || x > end {
-            return x;
-        }
         let min_x = sg.bounds.x.saturating_add(1);
         let max_x = sg.bounds.x.saturating_add(sg.bounds.width.saturating_sub(2));
         if max_x < min_x {
             return x;
         }
-        if end + 1 <= max_x {
-            end + 1
-        } else if start > min_x {
-            start.saturating_sub(1)
+        let start = sg.bounds.x + sg.bounds.width.saturating_sub(len) / 2;
+        let end = start + len.saturating_sub(1);
+        let protected_start = start.saturating_sub(2);
+        let protected_end = end.saturating_add(2).min(max_x);
+        if x < protected_start || x > protected_end {
+            return x;
+        }
+        if protected_end + 1 <= max_x {
+            protected_end + 1
+        } else if protected_start > min_x {
+            protected_start.saturating_sub(1)
         } else {
             x
         }
+    };
+
+    let bt_nudge_from_corners = |sg_id: &str, x: usize| -> usize {
+        let Some(sg) = graph.get_subgraph(sg_id) else {
+            return x;
+        };
+        let Some(title) = sg.title.as_deref() else {
+            return x;
+        };
+        if !sg.bounds.is_valid() {
+            return x;
+        }
+        let min = sg.bounds.x.saturating_add(1);
+        let max = sg.bounds.x.saturating_add(sg.bounds.width.saturating_sub(2));
+        if max <= min {
+            return x;
+        }
+        let title_fmt = format!("[  {}  ]", title);
+        let len = title_fmt.chars().count();
+        if len == 0 || len > sg.bounds.width.saturating_sub(2) {
+            return x;
+        }
+        let start = sg.bounds.x + sg.bounds.width.saturating_sub(len) / 2;
+        let end = start + len.saturating_sub(1);
+        let in_title_text = |pos: usize| pos >= start && pos <= end;
+        if x == min {
+            let candidate = min.saturating_add(1);
+            if candidate <= max && !in_title_text(candidate) {
+                return candidate;
+            }
+        } else if x == max {
+            let candidate = max.saturating_sub(1);
+            if candidate >= min && !in_title_text(candidate) {
+                return candidate;
+            }
+        }
+        x
     };
 
     for edge in &graph.edges {
@@ -363,15 +404,18 @@ pub fn collect_portal_slots(
             }
             Direction::BT => {
                 if let Some(id) = to_sg {
+                    let mut x = node_center_x(node_rects, &edge.to, to);
+                    x = bt_nudge_from_corners(id, x);
                     slots
                         .entry(id.to_string())
                         .or_default()
                         .bottom
-                        .insert(node_center_x(node_rects, &edge.to, to));
+                        .insert(x);
                 }
                 if let Some(id) = from_sg {
                     let mut x = node_center_x(node_rects, &edge.from, from);
                     x = shift_x_out_of_title(id, x);
+                    x = bt_nudge_from_corners(id, x);
                     slots
                         .entry(id.to_string())
                         .or_default()

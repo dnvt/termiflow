@@ -53,6 +53,29 @@ fn shift_nodes_from_rank_td(
     }
 }
 
+fn shift_nodes_in_subgraph(
+    graph: &Graph,
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    subgraph_id: &str,
+    delta_x: usize,
+) {
+    if delta_x == 0 {
+        return;
+    }
+    let Some(sg) = graph.get_subgraph(subgraph_id) else {
+        return;
+    };
+    for node_id in &sg.node_ids {
+        if let Some(p) = positions.get_mut(node_id) {
+            p.x += delta_x;
+        }
+        if let Some(r) = node_rects.get_mut(node_id) {
+            r.x += delta_x;
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn shift_nodes_up_to_rank_bt(
     positions: &mut HashMap<String, Point>,
@@ -193,6 +216,88 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             placement.canvas.width,
             placement.canvas.height
         );
+    }
+
+    // 2.25) Resolve horizontal subgraph overlaps for LR/RL before flipping coordinates.
+    if matches!(input.graph.direction, Direction::LR | Direction::RL)
+        && !input.graph.subgraphs.is_empty()
+    {
+        for _ in 0..8 {
+            let mut required_shift_by_id: HashMap<String, usize> = HashMap::new();
+
+            let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
+            for sg in &input.graph.subgraphs {
+                let min_rank = sg
+                    .node_ids
+                    .iter()
+                    .filter_map(|id| placement.ranks.get(id))
+                    .copied()
+                    .min();
+                if let Some(r) = min_rank {
+                    subgraph_min_rank.insert(sg.id.as_str(), r);
+                }
+            }
+
+            let envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+
+            let sg_ids: Vec<&String> = envelopes.keys().collect();
+            for i in 0..sg_ids.len() {
+                for j in (i + 1)..sg_ids.len() {
+                    let env1 = &envelopes[sg_ids[i]];
+                    let env2 = &envelopes[sg_ids[j]];
+                    let intersects = env1.outer.x < env2.outer.right()
+                        && env1.outer.right() > env2.outer.x
+                        && env1.outer.y < env2.outer.bottom()
+                        && env1.outer.bottom() > env2.outer.y;
+                    if !intersects {
+                        continue;
+                    }
+                    let nested = rect_fully_inside(env1.outer, env2.outer)
+                        || rect_fully_inside(env2.outer, env1.outer);
+                    if nested {
+                        continue;
+                    }
+
+                    let r1 = subgraph_min_rank.get(sg_ids[i].as_str()).copied();
+                    let r2 = subgraph_min_rank.get(sg_ids[j].as_str()).copied();
+                    let (Some(rank1), Some(rank2)) = (r1, r2) else {
+                        continue;
+                    };
+                    // Shift the later-ranked subgraph to the right until it clears the earlier one.
+                    let (late_id, early_env, late_env) = if rank1 <= rank2 {
+                        (sg_ids[j].as_str(), env1, env2)
+                    } else {
+                        (sg_ids[i].as_str(), env2, env1)
+                    };
+
+                    let required_left = early_env.outer.right().saturating_add(1);
+                    if late_env.outer.x < required_left {
+                        let delta = required_left - late_env.outer.x;
+                        required_shift_by_id
+                            .entry(late_id.to_string())
+                            .and_modify(|d| *d = (*d).max(delta))
+                            .or_insert(delta);
+                    }
+                }
+            }
+
+            let Some((late_id, delta_x)) = required_shift_by_id
+                .iter()
+                .max_by_key(|(_, delta)| *delta)
+                .map(|(id, delta)| (id.clone(), *delta))
+            else {
+                break;
+            };
+
+            shift_nodes_in_subgraph(
+                input.graph,
+                &mut placement.positions,
+                &mut placement.node_rects,
+                &late_id,
+                delta_x,
+            );
+        }
     }
 
     // 2.5) Flip coordinates for BT/RL to match flow direction
@@ -970,13 +1075,15 @@ fn adjust_portal_slots_for_title(
         }
 
         let shift_out_of_span = |x: usize| -> usize {
-            if x < start || x > end {
+            let protected_start = start.saturating_sub(2);
+            let protected_end = end.saturating_add(2).min(max_x);
+            if x < protected_start || x > protected_end {
                 return x;
             }
-            if end + 1 <= max_x {
-                end + 1
-            } else if start > min_x {
-                start.saturating_sub(1)
+            if protected_end + 1 <= max_x {
+                protected_end + 1
+            } else if protected_start > min_x {
+                protected_start.saturating_sub(1)
             } else {
                 x
             }

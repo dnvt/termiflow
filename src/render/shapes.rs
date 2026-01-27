@@ -5,7 +5,7 @@
 use crate::graph::{Direction, NodeShape};
 use crate::style::StyleChars;
 
-use super::canvas::{is_junction, is_vertical, Canvas};
+use super::canvas::{is_arrow, is_junction, is_vertical, Canvas};
 
 /// Draw a subgraph bounding box with optional title.
 pub fn draw_subgraph(
@@ -13,6 +13,7 @@ pub fn draw_subgraph(
     rect: &crate::graph::Rectangle,
     title: Option<&str>,
     style: &StyleChars,
+    direction: Direction,
 ) {
     if !rect.is_valid() {
         return;
@@ -49,13 +50,17 @@ pub fn draw_subgraph(
         // Format: [  Title  ] centered on top edge
         let title_fmt = format!("[  {}  ]", t);
         if title_fmt.len() <= width.saturating_sub(2) {
-            let start_x = x + (width - title_fmt.len()) / 2;
-            let title_y = y; // keep title on the border row for clarity
-            for (i, c) in title_fmt.chars().enumerate() {
-                if start_x + i < canvas.width {
-                    canvas.set(start_x + i, title_y, c);
-                }
+        let start_x = x + (width - title_fmt.len()) / 2;
+        let title_y = if matches!(direction, Direction::BT) && y + 1 < y + height - 1 {
+            y + 1
+        } else {
+            y
+        };
+        for (i, c) in title_fmt.chars().enumerate() {
+            if start_x + i < canvas.width {
+                canvas.set(start_x + i, title_y, c);
             }
+        }
         }
     }
 }
@@ -121,17 +126,52 @@ fn draw_boxlike(
     let bottom_y = y + height - 1;
 
     // Top border - check for edge exits above (BT direction only)
+    let mut bt_preferred_down_arm: Option<usize> = None;
+    if direction == Direction::BT {
+        let center_x = x + width / 2;
+        let mut candidates: Vec<usize> = Vec::new();
+        for i in 1..width.saturating_sub(1) {
+            let pos_x = x + i;
+            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
+            let above2 = if y > 1 { canvas.get(pos_x, y - 2) } else { ' ' };
+            let above_is_vertical = is_vertical(above, style) || is_arrow(above);
+            let above_is_corner_down = above == style.corner_dr || above == style.corner_dl;
+            let above_is_junction = is_junction(above, style);
+            let above2_is_vertical =
+                is_vertical(above2, style) || is_arrow(above2) || is_junction(above2, style);
+            let has_down_arm =
+                above_is_vertical || ((above_is_corner_down || above_is_junction) && above2_is_vertical);
+            if has_down_arm {
+                candidates.push(pos_x);
+            }
+        }
+        if let Some(best) = candidates.into_iter().min_by_key(|pos| {
+            let dist = if *pos > center_x {
+                *pos - center_x
+            } else {
+                center_x - *pos
+            };
+            (dist, *pos)
+        }) {
+            bt_preferred_down_arm = Some(best);
+        }
+    }
+
     canvas.set(x, y, top_left);
     for i in 1..width.saturating_sub(1) {
         let pos_x = x + i;
         let c = if direction == Direction::BT {
             let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            // Check for vertical lines, junctions, or corners with downward component
-            let has_down_arm = is_vertical(above, style)
-                || is_junction(above, style)
-                || above == style.corner_dr  // ┐ - down/left corner
-                || above == style.corner_dl; // ┌ - down/right corner
-            if has_down_arm {
+            let above2 = if y > 1 { canvas.get(pos_x, y - 2) } else { ' ' };
+            // Only treat junctions/corners as a down arm if a vertical continues above them.
+            let above_is_vertical = is_vertical(above, style) || is_arrow(above);
+            let above_is_corner_down = above == style.corner_dr || above == style.corner_dl;
+            let above_is_junction = is_junction(above, style);
+            let above2_is_vertical =
+                is_vertical(above2, style) || is_arrow(above2) || is_junction(above2, style);
+            let has_down_arm =
+                above_is_vertical || ((above_is_corner_down || above_is_junction) && above2_is_vertical);
+            if has_down_arm && bt_preferred_down_arm == Some(pos_x) {
                 style.junction_up
             } else {
                 top_h
