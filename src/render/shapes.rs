@@ -49,18 +49,19 @@ pub fn draw_subgraph(
     if let Some(t) = title {
         // Format: [  Title  ] centered on top edge
         let title_fmt = format!("[  {}  ]", t);
-        if title_fmt.len() <= width.saturating_sub(2) {
-        let start_x = x + (width - title_fmt.len()) / 2;
-        let title_y = if matches!(direction, Direction::BT) && y + 1 < y + height - 1 {
-            y + 1
-        } else {
-            y
-        };
-        for (i, c) in title_fmt.chars().enumerate() {
-            if start_x + i < canvas.width {
-                canvas.set(start_x + i, title_y, c);
+        let title_len = title_fmt.chars().count();
+        if title_len <= width.saturating_sub(2) {
+            let start_x = x + (width - title_len) / 2;
+            let title_y = if matches!(direction, Direction::BT) && y + 1 < y + height - 1 {
+                y + 1
+            } else {
+                y
+            };
+            for (i, c) in title_fmt.chars().enumerate() {
+                if start_x + i < canvas.width {
+                    canvas.set(start_x + i, title_y, c);
+                }
             }
-        }
         }
     }
 }

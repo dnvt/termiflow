@@ -458,7 +458,10 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     // ASCII-only cleanup: avoid adjacent '+' on BT horizontal runs when only one stem exists.
     if graph.direction == Direction::BT && chars.tl == '+' && chars.h == '-' && chars.v == '|' {
         let is_verticalish = |c: char| -> bool {
-            c == chars.edge_v || c == chars.arrow_up || c == chars.arrow_down
+            canvas::is_vertical(c, &chars)
+                || canvas::is_junction(c, &chars)
+                || c == chars.arrow_up
+                || c == chars.arrow_down
         };
         if canvas.width > 1 {
             for y in 0..canvas.height {
@@ -935,11 +938,17 @@ fn reinforce_subgraph_portals(
     chars: &StyleChars,
     subgraph_chars: &StyleChars,
 ) {
-    fn is_verticalish(c: char, chars: &StyleChars) -> bool {
-        canvas::is_vertical(c, chars) || canvas::is_junction(c, chars) || canvas::is_arrow(c)
+    fn is_verticalish(c: char, chars: &StyleChars, subgraph_chars: &StyleChars) -> bool {
+        canvas::is_vertical(c, chars)
+            || canvas::is_junction(c, chars)
+            || canvas::is_junction(c, subgraph_chars)
+            || canvas::is_arrow(c)
     }
-    fn is_horizontalish(c: char, chars: &StyleChars) -> bool {
-        canvas::is_horizontal(c, chars) || canvas::is_junction(c, chars) || canvas::is_arrow(c)
+    fn is_horizontalish(c: char, chars: &StyleChars, subgraph_chars: &StyleChars) -> bool {
+        canvas::is_horizontal(c, chars)
+            || canvas::is_junction(c, chars)
+            || canvas::is_junction(c, subgraph_chars)
+            || canvas::is_arrow(c)
     }
 
     for (sg_id, portals) in slots {
@@ -974,7 +983,8 @@ fn reinforce_subgraph_portals(
                     } else {
                         ' '
                     };
-                    let used = is_verticalish(above, chars) || is_verticalish(below, chars);
+                    let used = is_verticalish(above, chars, subgraph_chars)
+                        || is_verticalish(below, chars, subgraph_chars);
                     let existing = canvas.get(px, ty);
                     if used
                         && ty < canvas.height
@@ -996,7 +1006,8 @@ fn reinforce_subgraph_portals(
                     } else {
                         ' '
                     };
-                    let used = is_verticalish(above, chars) || is_verticalish(below, chars);
+                    let used = is_verticalish(above, chars, subgraph_chars)
+                        || is_verticalish(below, chars, subgraph_chars);
                     if used
                         && bottom_y < canvas.height
                         && !is_textual(canvas.get(px, bottom_y))
@@ -1048,11 +1059,15 @@ fn reinforce_subgraph_portals(
                         } else {
                             ' '
                         };
-                        let has_above = is_verticalish(above, chars);
-                        let mut has_below = is_verticalish(below, chars);
+                        let has_above = is_verticalish(above, chars, subgraph_chars);
+                        let mut has_below = is_verticalish(below, chars, subgraph_chars);
                         if sg.title.is_some() && bounds.height > 2 {
-                            // Title rows are cleared/redrawn later; treat them as empty for joins.
-                            has_below = false;
+                            // Ignore the title row when the portal lands under the title text.
+                            if let Some((s, e)) = title_span {
+                                if px >= s && px <= e {
+                                    has_below = false;
+                                }
+                            }
                         }
                         let used = has_above || has_below;
                         if used {
@@ -1062,8 +1077,8 @@ fn reinforce_subgraph_portals(
                             } else {
                                 ' '
                             };
-                            let has_horizontal =
-                                is_horizontalish(left, chars) || is_horizontalish(right, chars);
+                            let has_horizontal = is_horizontalish(left, chars, subgraph_chars)
+                                || is_horizontalish(right, chars, subgraph_chars);
                             let glyph = if has_horizontal {
                                 if has_above && has_below {
                                     subgraph_chars.cross
@@ -1099,8 +1114,8 @@ fn reinforce_subgraph_portals(
                         } else {
                             ' '
                         };
-                        let has_above = is_verticalish(above, chars);
-                        let has_below = is_verticalish(below, chars);
+                        let has_above = is_verticalish(above, chars, subgraph_chars);
+                        let has_below = is_verticalish(below, chars, subgraph_chars);
                         let used = has_above || has_below;
                         if used {
                             let left = if px > 0 { canvas.get(px - 1, bottom_y) } else { ' ' };
@@ -1109,8 +1124,8 @@ fn reinforce_subgraph_portals(
                             } else {
                                 ' '
                             };
-                            let has_horizontal =
-                                is_horizontalish(left, chars) || is_horizontalish(right, chars);
+                            let has_horizontal = is_horizontalish(left, chars, subgraph_chars)
+                                || is_horizontalish(right, chars, subgraph_chars);
                             let glyph = if has_horizontal {
                                 if has_above && has_below {
                                     subgraph_chars.cross
@@ -1140,11 +1155,13 @@ fn reinforce_subgraph_portals(
                         } else {
                             ' '
                         };
-                        let has_horizontal = is_horizontalish(left, chars) || is_horizontalish(right, chars);
-                        let glyph = if has_horizontal {
-                            subgraph_chars.cross
-                        } else {
-                            subgraph_chars.v
+                        let has_left = is_horizontalish(left, chars, subgraph_chars);
+                        let has_right = is_horizontalish(right, chars, subgraph_chars);
+                        let glyph = match (has_left, has_right) {
+                            (true, true) => subgraph_chars.cross,
+                            (true, false) => subgraph_chars.junction_left,
+                            (false, true) => subgraph_chars.junction_right,
+                            (false, false) => subgraph_chars.v,
                         };
                         canvas.set(left_x, py, glyph);
                     }
@@ -1159,11 +1176,13 @@ fn reinforce_subgraph_portals(
                         } else {
                             ' '
                         };
-                        let has_horizontal = is_horizontalish(left, chars) || is_horizontalish(right, chars);
-                        let glyph = if has_horizontal {
-                            subgraph_chars.cross
-                        } else {
-                            subgraph_chars.v
+                        let has_left = is_horizontalish(left, chars, subgraph_chars);
+                        let has_right = is_horizontalish(right, chars, subgraph_chars);
+                        let glyph = match (has_left, has_right) {
+                            (true, true) => subgraph_chars.cross,
+                            (true, false) => subgraph_chars.junction_left,
+                            (false, true) => subgraph_chars.junction_right,
+                            (false, false) => subgraph_chars.v,
                         };
                         canvas.set(right_x, py, glyph);
                     }
@@ -1210,7 +1229,8 @@ fn reinforce_subgraph_portals(
                         } else {
                             ' '
                         };
-                        let used = is_verticalish(above, chars) || is_verticalish(below, chars);
+                        let used = is_verticalish(above, chars, subgraph_chars)
+                            || is_verticalish(below, chars, subgraph_chars);
                         if !used && canvas.get(px, bottom_y) == chars.edge_v {
                             canvas.set(px, bottom_y, fill_ch);
                         }
@@ -1305,10 +1325,11 @@ fn draw_subgraph_title(
         return;
     }
     let title_fmt = format!("[  {}  ]", t);
-    if title_fmt.len() > rect.width.saturating_sub(2) {
+    let title_len = title_fmt.chars().count();
+    if title_len > rect.width.saturating_sub(2) {
         return;
     }
-    let start_x = rect.x + (rect.width - title_fmt.len()) / 2;
+    let start_x = rect.x + (rect.width - title_len) / 2;
     let title_y = if matches!(direction, Direction::BT) && rect.height > 2 {
         rect.y.saturating_add(1)
     } else {
@@ -1316,18 +1337,6 @@ fn draw_subgraph_title(
     };
     if title_y >= canvas.height {
         return;
-    }
-    if matches!(direction, Direction::BT) && rect.height > 2 {
-        let row = title_y;
-        let start = rect.x.saturating_add(1);
-        let end = rect.x.saturating_add(rect.width.saturating_sub(1));
-        if start < end {
-            for x in start..end {
-                if x < canvas.width {
-                    canvas.set(x, row, ' ');
-                }
-            }
-        }
     }
     for (i, c) in title_fmt.chars().enumerate() {
         if start_x + i < canvas.width {
