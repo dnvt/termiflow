@@ -608,7 +608,6 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
             &edge_label_placements,
         );
     }
-
     if stabilize_junction_cells(&mut canvas, &chars) {
         refresh_provenance(
             &mut canvas,
@@ -619,7 +618,6 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
             &edge_label_placements,
         );
     }
-
     if stabilize_degree_mismatches(&mut canvas, &chars) {
         refresh_provenance(
             &mut canvas,
@@ -630,7 +628,6 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
             &edge_label_placements,
         );
     }
-
     if stabilize_arrow_shafts(&mut canvas, &chars) {
         refresh_provenance(
             &mut canvas,
@@ -641,7 +638,6 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
             &edge_label_placements,
         );
     }
-
     if optimize_render && stabilize_routing_topology(&mut canvas, &chars) {
         refresh_provenance(
             &mut canvas,
@@ -789,11 +785,7 @@ fn annotate_subgraph_region(
         let title_len = title_fmt.chars().count();
         if title_len <= bounds.width.saturating_sub(2) {
             let start_x = bounds.x + (bounds.width - title_len) / 2;
-            let title_y = if matches!(direction, Direction::BT) && bounds.y + 1 < y1 {
-                bounds.y + 1
-            } else {
-                bounds.y
-            };
+            let title_y = subgraph_title_y(bounds, direction);
             for (i, _) in title_fmt.chars().enumerate() {
                 let x = start_x + i;
                 if x < canvas.width {
@@ -921,11 +913,7 @@ fn is_subgraph_title_cell(graph: &Graph, x: usize, y: usize) -> bool {
         if sg.title.is_none() || !sg.bounds.is_valid() {
             return false;
         }
-        let title_y = if graph.direction == Direction::BT && sg.bounds.height > 2 {
-            sg.bounds.y.saturating_add(1)
-        } else {
-            sg.bounds.y
-        };
+        let title_y = subgraph_title_y(&sg.bounds, graph.direction);
         y == title_y && x >= sg.bounds.x && x < sg.bounds.x.saturating_add(sg.bounds.width)
     })
 }
@@ -1333,7 +1321,13 @@ fn carve_subgraph_portals_on_canvas(
     slots: &HashMap<String, PortalSlots>,
     direction: Direction,
 ) {
-    for (sg_id, portals) in slots {
+    let mut sg_ids: Vec<&str> = slots.keys().map(|id| id.as_str()).collect();
+    sg_ids.sort_unstable();
+
+    for sg_id in sg_ids {
+        let Some(portals) = slots.get(sg_id) else {
+            continue;
+        };
         let Some(sg) = graph.get_subgraph(sg_id) else {
             continue;
         };
@@ -1347,7 +1341,7 @@ fn carve_subgraph_portals_on_canvas(
         let left_x = bounds.x;
         let right_x = bounds.x + bounds.width.saturating_sub(1);
 
-        for &x in &portals.top {
+        for x in sorted_slot_positions(&portals.top) {
             let px = clamp_horizontal(bounds, x);
             let top_candidates = if matches!(direction, Direction::BT) {
                 vec![top_y]
@@ -1358,15 +1352,15 @@ fn carve_subgraph_portals_on_canvas(
             };
             carve_vertical_slot(canvas, px, &top_candidates);
         }
-        for &x in &portals.bottom {
+        for x in sorted_slot_positions(&portals.bottom) {
             let px = clamp_horizontal(bounds, x);
             carve_vertical_slot(canvas, px, &[bottom_y, bottom_y.saturating_sub(1)]);
         }
-        for &y in &portals.left {
+        for y in sorted_slot_positions(&portals.left) {
             let py = clamp_vertical(bounds, y);
             carve_horizontal_slot(canvas, py, &[left_x.saturating_add(1), left_x]);
         }
-        for &y in &portals.right {
+        for y in sorted_slot_positions(&portals.right) {
             let py = clamp_vertical(bounds, y);
             carve_horizontal_slot(canvas, py, &[right_x.saturating_sub(1), right_x]);
         }
@@ -1394,7 +1388,13 @@ fn reinforce_subgraph_portals(
             || canvas::is_arrow(c)
     }
 
-    for (sg_id, portals) in slots {
+    let mut sg_ids: Vec<&str> = slots.keys().map(|id| id.as_str()).collect();
+    sg_ids.sort_unstable();
+
+    for sg_id in sg_ids {
+        let Some(portals) = slots.get(sg_id) else {
+            continue;
+        };
         let Some(sg) = graph.get_subgraph(sg_id) else {
             continue;
         };
@@ -1456,7 +1456,9 @@ fn reinforce_subgraph_portals(
                 }
             }
             Direction::BT => {
-                // Titles sit inside for BT, but portals still pierce the top border.
+                // BT titles now live on the bottom border row. Keep portal holes on the
+                // physical borders, but nudge them out of corners/title spans so routing
+                // enters cleanly without punching through border text.
                 let inner_min_x = left_x.saturating_add(1);
                 let inner_max_x = right_x.saturating_sub(1).max(inner_min_x);
                 let is_in_title_text = |x: usize| -> bool {
@@ -1482,11 +1484,8 @@ fn reinforce_subgraph_portals(
                     }
                     x
                 };
-                for &x in &portals.top {
+                for x in sorted_slot_positions(&portals.top) {
                     let mut px = clamp_horizontal(bounds, x);
-                    if let Some((s, e)) = title_span {
-                        px = shift_out_of_span(px, s, e, inner_min_x, inner_max_x);
-                    }
                     px = nudge_from_corners(px);
                     let existing = canvas.get(px, top_y);
                     if top_y < canvas.height && !is_textual(existing) && !canvas::is_arrow(existing)
@@ -1503,16 +1502,6 @@ fn reinforce_subgraph_portals(
                         };
                         let has_above = is_verticalish(above, chars, subgraph_chars);
                         let has_below = is_verticalish(below, chars, subgraph_chars);
-                        if sg.title.is_some() && bounds.height > 2 {
-                            // Skip portal reinforcement entirely for positions under title text.
-                            // Previously we just set has_below=false, but that still placed chars
-                            // when has_above=true, corrupting the title.
-                            if let Some((s, e)) = title_span {
-                                if px >= s && px <= e {
-                                    continue;
-                                }
-                            }
-                        }
                         let used = has_above || has_below;
                         if used {
                             // For BT top border, always use a clean vertical portal hole.
@@ -1524,7 +1513,7 @@ fn reinforce_subgraph_portals(
                         }
                     }
                 }
-                for &x in &portals.bottom {
+                for x in sorted_slot_positions(&portals.bottom) {
                     let mut px = clamp_horizontal(bounds, x);
                     px = nudge_from_corners(px);
                     let existing = canvas.get(px, bottom_y);
@@ -1661,7 +1650,7 @@ fn reinforce_subgraph_portals(
 
                 // Also undo any portal reinforcement that picked a slot no edge actually uses.
                 if matches!(direction, Direction::TD | Direction::TB) {
-                    for &x in &portals.bottom {
+                    for x in sorted_slot_positions(&portals.bottom) {
                         let px = clamp_horizontal(bounds, x);
                         let above = if bottom_y > 0 {
                             canvas.get(px, bottom_y - 1)
@@ -1683,6 +1672,12 @@ fn reinforce_subgraph_portals(
             }
         }
     }
+}
+
+fn sorted_slot_positions(slots: &HashSet<usize>) -> Vec<usize> {
+    let mut ordered: Vec<usize> = slots.iter().copied().collect();
+    ordered.sort_unstable();
+    ordered
 }
 
 fn clamp_horizontal(bounds: &crate::graph::Rectangle, x: usize) -> usize {
@@ -1733,33 +1728,20 @@ pub(super) fn is_textual(c: char) -> bool {
     c.is_alphanumeric() || c == '[' || c == ']'
 }
 
+pub(super) fn subgraph_title_y(bounds: &crate::graph::Rectangle, direction: Direction) -> usize {
+    if matches!(direction, Direction::BT) {
+        bounds.y + bounds.height.saturating_sub(1)
+    } else {
+        bounds.y
+    }
+}
+
 fn title_span(bounds: &crate::graph::Rectangle, title: &str) -> (usize, usize) {
     let title_fmt = format!("[  {}  ]", title);
     let len = title_fmt.chars().count();
     let start = bounds.x + bounds.width.saturating_sub(len) / 2;
     let end = start + len.saturating_sub(1);
     (start, end)
-}
-
-fn shift_out_of_span(
-    x: usize,
-    span_start: usize,
-    span_end: usize,
-    min: usize,
-    max: usize,
-) -> usize {
-    let protected_start = span_start.saturating_sub(2);
-    let protected_end = span_end.saturating_add(2).min(max);
-    if x < protected_start || x > protected_end {
-        return x;
-    }
-    if protected_end < max {
-        protected_end + 1
-    } else if protected_start > min {
-        protected_start.saturating_sub(1)
-    } else {
-        x
-    }
 }
 
 fn draw_subgraph_title(
@@ -1780,11 +1762,7 @@ fn draw_subgraph_title(
         return;
     }
     let start_x = rect.x + (rect.width - title_len) / 2;
-    let title_y = if matches!(direction, Direction::BT) && rect.height > 2 {
-        rect.y.saturating_add(1)
-    } else {
-        rect.y
-    };
+    let title_y = subgraph_title_y(rect, direction);
     if title_y >= canvas.height {
         return;
     }
@@ -1804,7 +1782,8 @@ fn cleanup_bt_title_rows(canvas: &mut Canvas, graph: &Graph, chars: &crate::styl
             continue;
         }
 
-        let title_y = subgraph.bounds.y.saturating_add(1);
+        let title_y = subgraph_title_y(&subgraph.bounds, Direction::BT);
+        let bottom_y = subgraph.bounds.y + subgraph.bounds.height.saturating_sub(1);
         if title_y >= canvas.height {
             continue;
         }
@@ -1827,7 +1806,13 @@ fn cleanup_bt_title_rows(canvas: &mut Canvas, graph: &Graph, chars: &crate::styl
             let has_vertical_below = title_y + 1 < canvas.height
                 && topology::char_connects_up(canvas.get(x, title_y + 1));
 
-            if has_vertical_above && has_vertical_below {
+            if title_y == bottom_y {
+                if has_vertical_above || has_vertical_below {
+                    canvas.set(x, title_y, chars.edge_v);
+                } else {
+                    canvas.set(x, title_y, chars.edge_h);
+                }
+            } else if has_vertical_above && has_vertical_below {
                 canvas.set(x, title_y, chars.edge_v);
             } else {
                 canvas.set(x, title_y, ' ');
@@ -2589,12 +2574,7 @@ fn is_reserved_subgraph_label_row(graph: &Graph, y: usize) -> bool {
             return true;
         }
 
-        sg.title.is_some()
-            && y == if graph.direction == Direction::BT && sg.bounds.height > 2 {
-                sg.bounds.y.saturating_add(1)
-            } else {
-                sg.bounds.y
-            }
+        sg.title.is_some() && y == subgraph_title_y(&sg.bounds, graph.direction)
     })
 }
 

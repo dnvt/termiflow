@@ -4,12 +4,12 @@
 
 ## Active Blockers
 
-- `cargo fmt --check` currently fails on a pre-existing formatting diff in
-  `src/crossing.rs`. This did not come from the pulse setup changes, but it
-  blocks a fully clean `/maestro:run` verification report until the source file
-  is formatted or the underlying change is adjusted.
+None.
 
 ## Dependencies
 
-- Phase 4 (Remove Auto-Scaling) is listed as prerequisite for Phase 5 (TUI Mode) in PLAN.md.
-  However, TUI skeleton files exist — check if the dependency still holds.
+- Open-Source Hardening Sprint requires a stable worktree before cutting a public
+  release branch. The large pre-existing Phase 5/6 batch (TUI + render feedback engine
+  + ~300 fixture files) is still uncommitted — needs to be committed or stashed first.
+- DEC-003 establishes public repo before crates.io. No GitHub repo settings or CI
+  secrets are available yet.

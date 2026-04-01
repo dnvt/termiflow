@@ -1,33 +1,44 @@
 # Current Task
 
 **Updated:** 2026-04-01
-**Status:** Pre-1.0 quality pass complete — ready for rendering defect sprint
+**Status:** Stage 3 doc/truth alignment complete — Stage 4 OSS hardening is next
 
 ## Active Work
 
-Session work committed. Next focus is **P1: Fix BT subgraph border corruption**.
-
-Confirmed bug: junction characters (`┴`, `┼`) bleed into subgraph title rows in
-BT direction. Visible in `subgraph_fanin_bt` and `subgraph_fanout_bt` fixtures.
-Phase 6 critic detects it (`SubgraphTitleCorrupted`). Repair logic needs to
-prevent it at write time.
+- `planning/PRE_OSS_COORDINATION.md` remains the canonical pre-OSS pipeline.
+- `planning/DOC_TRUTH_ALIGNMENT.md` is now complete: `README.md`,
+  `docs/reference.md`, CLI help, and the roadmap/planning surface agree on the
+  current beta wedge and caveats.
+- `--watch` is explicitly framed as the safer live-preview mode in normal
+  scrollback, while `--tui` remains documented as a partial alternate-screen
+  mode whose input/scroll behavior depends on the terminal emulator.
+- The flaky BT unicode collision-cleanup regression in
+  `tests/render_options_api.rs` was stabilized by removing unordered portal
+  iteration from the render cleanup path and by adding a repeated-run
+  regression check.
+- Repo verification is currently clean: `cargo fmt --check`, `cargo test`, and
+  `cargo clippy` all pass.
 
 ## Why Now
 
-Highest-severity open defect. Unblocks sibling-collision work. Critic already
-detects it — need to extend repair to prevent it.
+Stage 4 OSS hardening depends on a truthful public story and a green baseline.
+Both are now in place, so the next useful work is package/repo hardening rather
+than more Stage 3 cleanup.
 
 ## Immediate Next Action
 
-1. Reproduce locally: `echo '...' | cargo run --bin tw -- --audit`
-2. Read `src/render/shapes.rs` BT border logic + `src/render/repair.rs` title repair
-3. Trace where junction chars enter title row
-4. Extend repair or prevent at source
+1. Return to `planning/PRE_OSS_COORDINATION.md` and pick the next highest-value
+   Stage 4 slice.
+2. Move directly into `planning/OPEN_SOURCE_HARDENING.md`.
+3. Keep the public docs aligned with the now-landed beta framing while package
+   and repo metadata work proceeds.
 
 ## Key Linked Files
 
-- `src/render/shapes.rs` — BT top-border rendering (draw_boxlike)
-- `src/render/repair.rs` — restore_subgraph_title
-- `src/render/critic.rs` — SubgraphTitleCorrupted finding
-- `tests/fixtures/inputs/subgraph_fanin_bt.md` — reproducer
-- `planning/RENDERING_ISSUES_AUDIT.md` — Category 1.1
+- `planning/PRE_OSS_COORDINATION.md` — canonical pre-OSS pipeline
+- `planning/DOC_TRUTH_ALIGNMENT.md` — completed Stage 3 execution slice
+- `planning/OPEN_SOURCE_HARDENING.md` — next likely execution lane
+- `README.md` — public product story and beta caveats
+- `docs/reference.md` — supported syntax and portability notes
+- `tests/render_options_api.rs` — repeated-run regression coverage for the BT
+  unicode collision cleanup path

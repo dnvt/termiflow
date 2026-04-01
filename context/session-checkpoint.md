@@ -2,28 +2,71 @@
 
 **Date:** 2026-04-01
 **Branch:** main
-**Last commit:** `1b2a735 feat(maestro): add Maestro workflow layer`
 
 ## Where We Are
 
-Three major activities completed this session:
+Stage 3 doc/truth alignment is now landed across the public docs, CLI help, and
+planning surface. `README.md`, `docs/reference.md`, `src/bin/common/mod.rs`,
+`planning/PLAN.md`, and `planning/PRE_OSS_COORDINATION.md` now agree on the
+current TermiFlow beta wedge: `--watch` is the safer live-preview mode,
+`--tui` is partial, Mermaid support stays flowchart-focused, and the main
+syntax/Unicode/emulator caveats are explicit.
 
-1. **Scaffold bootstrap** — MEMORY.md, context/, decisions/, analysis/, inbox/ created
-2. **Quality pass** — 22 clippy warnings fixed; ratatui→0.30, toml→1 bumped; 59 lock updates
-3. **Deep review** — 3-agent codebase + strategy + coverage audit completed
+Verification is green on the current branch:
+- `cargo clippy` passes
+- `cargo fmt --check` passes
+- `cargo test` passes
 
-## Code Health (as of 2026-04-01)
+The worktree is still heavily dirty from the larger pre-existing Phase 5/6
+batch, so this checkpoint reflects the current branch state rather than a clean
+release-candidate boundary.
 
-- 299 tests passing, 0 failures
-- 0 clippy warnings
-- 0 unwrap violations in production code
-- One-way pipeline architecture intact
-- Phase 6 (critic/repair/provenance) 60% shipped, well-tested
+### Completed this session
 
-## Open Issues (from deep review)
+1. **Public docs aligned with current product truth**
+   - `README.md` now frames TermiFlow as a focused terminal-native Mermaid
+     flowchart renderer and local preview tool rather than as broad Mermaid
+     parity.
+   - `docs/reference.md` now documents the real supported edge kinds, grouped
+     edges, current syntax gaps, and Unicode/emulator caveats.
 
-### Rendering Defects (unresolved)
-- BT subgraph border corruption — High severity (subgraph_fanin_bt, subgraph_fanout_bt)
+2. **CLI help aligned with the same beta framing**
+   - `src/bin/common/mod.rs` now describes `--watch` as the safer live-preview
+     mode in normal scrollback and `--tui` as a partial alternate-screen mode.
+   - Added a CLI-help test so the new wording stays covered.
+
+3. **Planning docs and session metadata refreshed**
+   - `planning/PRE_OSS_COORDINATION.md` no longer points Stage 3 at the wrong
+     child plan or stale test counts.
+   - `planning/PLAN.md` no longer understates node-shape support or treats
+     dotted/thick edges as deferred work.
+   - `planning/BT_SUBGRAPH_TITLE_POSITION.md` is marked as a completed
+     historical task record and `planning/DOC_TRUTH_ALIGNMENT.md` is now marked
+     complete.
+   - `context/current-task.md` and `context/blockers.md` now point to Stage 4
+     readiness instead of the temporary render-test blocker.
+
+4. **Verification blocker fixed during closeout**
+   - The flaky
+     `tests/render_options_api.rs::default_render_fixes_obvious_degree_mismatch_cases`
+     failure was traced to unordered portal iteration in the BT render cleanup
+     path.
+   - `src/render/mod.rs` now processes portal groups and slot positions in a
+     deterministic order.
+   - `tests/render_options_api.rs` now repeats the unicode BT collision case 64
+     times in one test process to guard against the old flake.
+
+## Code Health
+
+- `cargo clippy`: pass
+- `cargo fmt --check`: pass
+- `cargo test`: pass
+- No new production `unwrap` / `expect` / `panic!` paths were added in this
+  doc-alignment run
+
+## Open Issues
+
+### Rendering Defects
 - Sibling subgraph collision — Medium-High severity
 - LR subgraph left border missing — Medium severity
 
@@ -32,19 +75,18 @@ Three major activities completed this session:
 - `src/render/edge.rs` — 0 unit tests
 - `src/render/shapes.rs` — 0 unit tests
 
-### Plan Staleness
-- PLAN.md describes phases 3–5 as "ready" but they're all shipped
-- Phase 6 described as "proposed" but 60% is in production with test coverage
+### Planning / Launch Work
+- OSS hardening: package boundary, metadata, license, CI, and public beta docs
 
 ## Priority Queue
 
-1. Fix BT subgraph border corruption
-2. Add unit tests: graph.rs, edge.rs, shapes.rs (~30–45 tests)
-3. Update planning/PLAN.md to reflect reality
-4. Implement open links (---) — quick win
-5. Document --audit, --optimize-render CLI flags
+1. Begin Stage 4 OSS hardening (`planning/OPEN_SOURCE_HARDENING.md`)
+2. Add blind-spot unit tests in `src/graph.rs`, `src/render/edge.rs`, and
+   `src/render/shapes.rs`
+3. Classify remaining sibling-subgraph / LR-border issues as beta limitations
+   or launch blockers
 
 ## Next Session Prompt
 
-Start with `/maestro:commit` to checkpoint the quality pass, then tackle
-priority 1: fix BT subgraph border corruption.
+Resume with `planning/OPEN_SOURCE_HARDENING.md`. The public story and test
+baseline are green again, so the next useful work is package/repo hardening.
