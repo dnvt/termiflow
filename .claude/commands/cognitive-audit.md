@@ -1,0 +1,1 @@
+/Users/fdenavaut/Developer/Work/Frame/plugins/community/react/commands/cognitive-audit.md

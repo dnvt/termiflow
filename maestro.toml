@@ -1,0 +1,52 @@
+# Maestro Configuration — TermiFlow
+# Rust CLI project: terminal Mermaid diagram renderer
+
+[activation]
+packs = ["coding"]
+
+[project]
+name = "TermiFlow"
+description = "Terminal Mermaid renderer — ASCII/Unicode diagram CLI (jq for diagrams)"
+repo_org = "Frame"
+repo_name = "termiflow"
+primary_branch = "main"
+language = "rust"
+
+[structure]
+crates_dir = "src"
+progress_dir = "planning"
+context_dir = "context"
+analysis_dir = "analysis"
+config_dir = "docs"
+architecture_doc = "CLAUDE.md"
+philosophy_doc = ""
+rules_doc = ""
+
+[verification]
+check = "git status --short"
+lint = "cargo clippy"
+test = "cargo test"
+format_check = "cargo fmt --check"
+quick_check = "cargo build && cargo clippy"
+full_test = "cargo fmt --check && cargo clippy && cargo test"
+
+[security]
+policy = "No unsafe blocks without explicit justification and review. No unwrap/expect/panic in non-test code."
+
+[research]
+pulse_config = "context/pulse-config.md"
+pulse_output = "analysis/research-pulse"
+intake_dir = "analysis/ingest"
+intake_index = "analysis/ingest/INDEX.md"
+roadmap = "planning/PLAN.md"
+
+[planning]
+plans_dir = "planning"
+roadmap = "planning/PLAN.md"
+
+[refinement]
+output_dir = "analysis/simmer"
+default_iterations = 3
+
+[agents]
+code_reviewer = ""

@@ -22,3 +22,7 @@ Thumbs.db
 # AI guidance docs (local only)
 AGENT.md
 CLAUDE.md
+
+# Maestro — local-only (reapply after machine setup or generate.sh run)
+.claude/settings.json
+context/.compact-signal

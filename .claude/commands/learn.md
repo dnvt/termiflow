@@ -1,0 +1,1 @@
+/Users/fdenavaut/Developer/Work/Frame/plugins/community/core/commands/learn.md

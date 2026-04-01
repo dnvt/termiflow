@@ -1,0 +1,1 @@
+/Users/fdenavaut/Developer/Work/Frame/plugins/frame/frameio/commands/frameio-analyze.md
