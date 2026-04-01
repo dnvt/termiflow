@@ -15,32 +15,54 @@
 //! - `shapes` - Box drawing for all 9 node shapes
 
 pub mod canvas;
+pub mod critic;
 pub mod cycle;
 pub mod edge;
+pub mod provenance;
+pub mod repair;
+pub mod semantic;
 pub mod shapes;
+pub mod topology;
 
 // Re-exports
 pub use canvas::Canvas;
 
 use anyhow::Result;
+use critic::{analyze, emit_debug_report};
 
 use crate::config::Config;
 use crate::geom::{EdgeRoute, Segment};
-use crate::graph::{Graph, Node, NodeShape};
+use crate::graph::{EdgeKind, Graph, Node, NodeShape};
 use crate::portals::{collect_portal_slots, node_rects_from_graph, PortalSlots};
-use crate::style::{
-    display_width, truncate_label, BaseStyle, BOX_HEIGHT, COL_SPACING, CYCLE_GUTTER,
-    MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, ROW_SPACING, STEM_LENGTH_VERTICAL,
-};
+use crate::style::{display_width, truncate_label, BaseStyle, BOX_HEIGHT};
 
 use crate::graph::Direction;
 use cycle::route_cycle_edge;
 use edge::{route_convergent_edges, route_divergent_edges};
+use provenance::{edge_owner_id, refresh_provenance, EdgeLabelPlacement};
+use repair::{
+    optimize_canvas, stabilize_arrow_shafts, stabilize_degree_mismatches, stabilize_junction_cells,
+    stabilize_routing_topology, stabilize_straight_segments,
+};
+use semantic::{CellOwnerKind, SemanticFrame};
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
 // Main Render Function
 // ============================================================================
+
+/// Detailed render output including semantic and critic information.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderOutcome {
+    pub output: String,
+    pub semantic_frame: SemanticFrame,
+    pub critic_report: critic::CriticReport,
+    pub warnings: Vec<String>,
+    pub optimized: bool,
+    pub repair_passes: usize,
+    pub layout_attempts: usize,
+    pub layout_repairs_applied: usize,
+}
 
 /// Render a graph to a string.
 ///
@@ -49,18 +71,37 @@ use std::collections::{HashMap, HashSet};
 /// 2. Draws all edges (sorted for optimal junction creation)
 /// 3. Draws all boxes (overwriting any edge lines that pass through)
 pub fn render(graph: &Graph, config: &Config) -> Result<String> {
+    Ok(render_with_feedback(graph, config)?.output)
+}
+
+/// Render a graph and return semantic/critic details for the final frame.
+pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutcome> {
     if graph.nodes.is_empty() {
-        return Ok(String::new());
+        return Ok(RenderOutcome {
+            output: String::new(),
+            semantic_frame: SemanticFrame::default(),
+            critic_report: critic::CriticReport {
+                score: 0,
+                findings: Vec::new(),
+                notes: vec![
+                    "nodes=0".to_string(),
+                    "edges=0".to_string(),
+                    "subgraphs=0".to_string(),
+                    "frame=0x0".to_string(),
+                    "non_space_cells=0".to_string(),
+                ],
+            },
+            warnings: Vec::new(),
+            optimized: false,
+            repair_passes: 0,
+            layout_attempts: 0,
+            layout_repairs_applied: 0,
+        });
     }
 
     // Calculate canvas size from laid-out nodes and subgraphs
     let nodes_right = graph.nodes.iter().map(|n| n.x + n.width).max().unwrap_or(0);
-    let nodes_bottom = graph
-        .nodes
-        .iter()
-        .map(|n| n.bottom_y())
-        .max()
-        .unwrap_or(0);
+    let nodes_bottom = graph.nodes.iter().map(|n| n.bottom_y()).max().unwrap_or(0);
 
     let sg_right = graph
         .subgraphs
@@ -82,49 +123,32 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     // - TD/BT: right gutter (add to width)
     // - LR/RL: bottom gutter (add to height)
     let is_horizontal = matches!(graph.direction, Direction::LR | Direction::RL);
+    let cycle_gutter = config.spacing.cycle_gutter;
     let width_gutter = if graph.has_cycles() && !is_horizontal {
-        CYCLE_GUTTER
+        cycle_gutter
     } else {
         0
     };
     let height_gutter = if graph.has_cycles() && is_horizontal {
-        CYCLE_GUTTER
+        cycle_gutter
     } else {
         0
     };
 
-    let mut width = max_right + COL_SPACING + width_gutter;
-    if width > MAX_CANVAS_WIDTH {
-        width = MAX_CANVAS_WIDTH;
-        eprintln!(
-            "termiflow: warning: Graph too wide ({} chars), clipping to {}",
-            max_right + COL_SPACING + width_gutter,
-            MAX_CANVAS_WIDTH
-        );
-    }
+    let col_spacing = config.spacing.col_spacing;
+    let row_spacing = config.spacing.row_spacing;
+    let max_canvas_width = config.spacing.max_canvas_width;
+    let max_canvas_height = config.spacing.max_canvas_height;
+
+    let mut width = (max_right + col_spacing + width_gutter).min(max_canvas_width);
     width = width
-        .max(max_right.saturating_add(1).min(MAX_CANVAS_WIDTH))
+        .max(max_right.saturating_add(1).min(max_canvas_width))
         .max(1);
 
-    let mut height = max_bottom + ROW_SPACING + height_gutter;
-    if height > MAX_CANVAS_HEIGHT {
-        height = MAX_CANVAS_HEIGHT;
-        eprintln!(
-            "termiflow: warning: Graph too tall ({} rows), clipping to {}",
-            max_bottom + ROW_SPACING + height_gutter,
-            MAX_CANVAS_HEIGHT
-        );
-    }
+    let mut height = (max_bottom + row_spacing + height_gutter).min(max_canvas_height);
     height = height
-        .max(max_bottom.saturating_add(1).min(MAX_CANVAS_HEIGHT))
+        .max(max_bottom.saturating_add(1).min(max_canvas_height))
         .max(1);
-
-    if graph.has_cycles() && !is_horizontal && width <= CYCLE_GUTTER {
-        eprintln!("termiflow: warning: Back-edges skipped (gutter clipped)");
-    }
-    if graph.has_cycles() && is_horizontal && height <= CYCLE_GUTTER {
-        eprintln!("termiflow: warning: Back-edges skipped (gutter clipped)");
-    }
 
     let mut canvas = Canvas::new(width, height);
     let chars = config.composite_style.to_style_chars(BaseStyle::default());
@@ -139,6 +163,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             subgraph_chars,
             graph.direction,
         );
+        annotate_subgraph_region(&mut canvas, subgraph, graph.direction);
     }
     // Carve portal openings in subgraph borders so external edges can pass through.
     // Portal carving is disabled if the env var TERMIFLOW_DISABLE_PORTALS is set.
@@ -171,7 +196,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
 
     // Group forward edges by source node for expanded routing
     let mut edges_by_source: HashMap<&str, Vec<&Node>> = HashMap::new();
-    let mut cycle_edges: Vec<(&Node, &Node)> = Vec::new();
+    let mut cycle_edges: Vec<(String, &Node, &Node)> = Vec::new();
     let mut sources_with_edges: HashSet<&str> = HashSet::new();
 
     // First pass: group edges by source (skip edges that already have routed paths)
@@ -184,7 +209,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         };
 
         if e.is_back_edge {
-            cycle_edges.push((from, to));
+            cycle_edges.push((edge_owner_id(_idx, e), from, to));
             continue;
         }
 
@@ -259,6 +284,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
                 target,
                 &mut canvas,
                 &chars,
+                &config.spacing,
                 graph.direction,
                 graph,
             );
@@ -291,6 +317,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
                     &target_refs,
                     &mut canvas,
                     &chars,
+                    &config.spacing,
                     graph.direction,
                     graph,
                 );
@@ -299,11 +326,20 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     }
 
     // Draw back-edges (cycle edges) that were not pre-routed.
-    for (from, to) in cycle_edges {
-        route_cycle_edge(from, to, &mut canvas, &chars, graph.direction);
+    for (owner_id, from, to) in cycle_edges {
+        route_cycle_edge(
+            from,
+            to,
+            &mut canvas,
+            &chars,
+            &config.spacing,
+            graph.direction,
+            Some(owner_id.as_str()),
+        );
     }
 
     // Draw edge labels (route-aware for precomputed paths, heuristic for fallback paths)
+    let mut edge_label_placements = Vec::new();
     for (edge_idx, edge) in graph.edges.iter().enumerate() {
         let Some(label) = edge.label.as_deref() else {
             continue;
@@ -316,16 +352,49 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         }
 
         if let Some(route) = graph.edge_routes.get(&edge_idx) {
-            draw_routed_edge_label(&mut canvas, route, label, &chars, graph, config);
+            if let Some(placement) = draw_routed_edge_label(
+                &mut canvas,
+                route,
+                label,
+                &chars,
+                graph,
+                config,
+                edge_idx,
+                edge,
+            ) {
+                edge_label_placements.push(placement);
+            }
             continue;
         }
 
         // Fall back to heuristic placement for edges without precomputed routes
         let is_convergent = convergent_targets.contains(to.id.as_str());
         if is_convergent {
-            draw_convergent_edge_label(&mut canvas, from, to, label, graph.direction, config);
-        } else {
-            draw_edge_label(&mut canvas, from, to, label, graph.direction, &chars, config);
+            if let Some(placement) = draw_convergent_edge_label(
+                &mut canvas,
+                from,
+                to,
+                label,
+                graph.direction,
+                config,
+                edge_idx,
+                edge,
+            ) {
+                edge_label_placements.push(placement);
+            }
+        } else if let Some(placement) = draw_edge_label(
+            &mut canvas,
+            from,
+            to,
+            label,
+            graph.direction,
+            &chars,
+            config,
+            edge_idx,
+            edge,
+            graph,
+        ) {
+            edge_label_placements.push(placement);
         }
     }
 
@@ -361,6 +430,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             &chars,
             graph.direction,
         );
+        annotate_node_region(&mut canvas, node, &chars);
     }
 
     // Draw junction characters AFTER boxes so ports stay visible (boxes overwrite edges).
@@ -427,14 +497,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
                 }
                 if !xs.is_empty() {
                     let center_x = from.center_x();
-                    xs.sort_unstable_by_key(|pos| {
-                        let dist = if *pos > center_x {
-                            *pos - center_x
-                        } else {
-                            center_x - *pos
-                        };
-                        (dist, *pos)
-                    });
+                    xs.sort_unstable_by_key(|pos| ((*pos).abs_diff(center_x), *pos));
                     junction_x = xs[0];
                 }
             }
@@ -453,6 +516,9 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
             subgraph.title.as_deref(),
             graph.direction,
         );
+    }
+    if graph.direction == Direction::BT {
+        cleanup_bt_title_rows(&mut canvas, graph, &chars);
     }
 
     // ASCII-only cleanup: avoid adjacent '+' on BT horizontal runs when only one stem exists.
@@ -504,16 +570,123 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
     if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
         eprintln!("  Input 7/8 -> Process 4 area (y=2-6, x=100-130):");
         for y in 2..=6 {
-            let row: String = (100..=130)
-                .map(|x| canvas.get(x, y))
-                .collect();
+            let row: String = (100..=130).map(|x| canvas.get(x, y)).collect();
             eprintln!("  y={}: [{}]", y, row);
         }
         // Mark positions: A7 center=108, A8 center=125, P4 center=101
         let markers: String = (100..=130)
-            .map(|x| if x == 108 || x == 125 || x == 101 { '^' } else { ' ' })
+            .map(|x| {
+                if x == 108 || x == 125 || x == 101 {
+                    '^'
+                } else {
+                    ' '
+                }
+            })
             .collect();
         eprintln!("  pos: [{}] (^=101,108,125)", markers);
+    }
+
+    let optimize_render =
+        config.optimize_render || std::env::var("TERMIFLOW_OPTIMIZE_RENDER").is_ok();
+
+    refresh_provenance(
+        &mut canvas,
+        graph,
+        &chars,
+        &portal_slots,
+        graph.direction,
+        &edge_label_placements,
+    );
+
+    if stabilize_straight_segments(&mut canvas, &chars) {
+        refresh_provenance(
+            &mut canvas,
+            graph,
+            &chars,
+            &portal_slots,
+            graph.direction,
+            &edge_label_placements,
+        );
+    }
+
+    if stabilize_junction_cells(&mut canvas, &chars) {
+        refresh_provenance(
+            &mut canvas,
+            graph,
+            &chars,
+            &portal_slots,
+            graph.direction,
+            &edge_label_placements,
+        );
+    }
+
+    if stabilize_degree_mismatches(&mut canvas, &chars) {
+        refresh_provenance(
+            &mut canvas,
+            graph,
+            &chars,
+            &portal_slots,
+            graph.direction,
+            &edge_label_placements,
+        );
+    }
+
+    if stabilize_arrow_shafts(&mut canvas, &chars) {
+        refresh_provenance(
+            &mut canvas,
+            graph,
+            &chars,
+            &portal_slots,
+            graph.direction,
+            &edge_label_placements,
+        );
+    }
+
+    if optimize_render && stabilize_routing_topology(&mut canvas, &chars) {
+        refresh_provenance(
+            &mut canvas,
+            graph,
+            &chars,
+            &portal_slots,
+            graph.direction,
+            &edge_label_placements,
+        );
+    }
+
+    let debug_critic = config.debug_critic || std::env::var("TERMIFLOW_DEBUG_CRITIC").is_ok();
+    let repair_passes = std::env::var("TERMIFLOW_RENDER_REPAIR_PASSES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|value| value.max(1))
+        .unwrap_or(config.render_repair_passes);
+
+    let mut applied_repair_passes = 0;
+    if optimize_render {
+        let _ = optimize_canvas(
+            graph,
+            &mut canvas,
+            graph.direction,
+            &chars,
+            subgraph_chars,
+            &portal_slots,
+            &edge_label_placements,
+            repair_passes,
+        );
+        applied_repair_passes = repair_passes;
+    }
+
+    refresh_provenance(
+        &mut canvas,
+        graph,
+        &chars,
+        &portal_slots,
+        graph.direction,
+        &edge_label_placements,
+    );
+    let semantic_frame = SemanticFrame::from_canvas(&canvas);
+    let critic_report = analyze(graph, &semantic_frame, graph.direction, &chars);
+    if debug_critic {
+        emit_debug_report(&critic_report);
     }
 
     let output = if config.crop {
@@ -522,7 +695,16 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
         pad_string(&canvas.to_string(), config.pad)
     };
 
-    Ok(output)
+    Ok(RenderOutcome {
+        output,
+        semantic_frame,
+        critic_report,
+        warnings: graph.warnings.clone(),
+        optimized: optimize_render,
+        repair_passes: applied_repair_passes,
+        layout_attempts: 1,
+        layout_repairs_applied: 0,
+    })
 }
 
 fn pad_string(input: &str, pad: usize) -> String {
@@ -550,6 +732,112 @@ fn pad_string(input: &str, pad: usize) -> String {
     out.join("\n")
 }
 
+fn annotate_subgraph_region(
+    canvas: &mut Canvas,
+    subgraph: &crate::graph::Subgraph,
+    direction: Direction,
+) {
+    let bounds = &subgraph.bounds;
+    if !bounds.is_valid() {
+        return;
+    }
+
+    let x0 = bounds.x;
+    let x1 = bounds.x + bounds.width.saturating_sub(1);
+    let y0 = bounds.y;
+    let y1 = bounds.y + bounds.height.saturating_sub(1);
+
+    for x in x0..=x1 {
+        canvas.set_meta_only(
+            x,
+            y0,
+            semantic::CellOwnerKind::SubgraphBorder,
+            Some(&subgraph.id),
+            semantic::CellRole::Border,
+            1,
+        );
+        canvas.set_meta_only(
+            x,
+            y1,
+            semantic::CellOwnerKind::SubgraphBorder,
+            Some(&subgraph.id),
+            semantic::CellRole::Border,
+            1,
+        );
+    }
+    for y in y0..=y1 {
+        canvas.set_meta_only(
+            x0,
+            y,
+            semantic::CellOwnerKind::SubgraphBorder,
+            Some(&subgraph.id),
+            semantic::CellRole::Border,
+            1,
+        );
+        canvas.set_meta_only(
+            x1,
+            y,
+            semantic::CellOwnerKind::SubgraphBorder,
+            Some(&subgraph.id),
+            semantic::CellRole::Border,
+            1,
+        );
+    }
+
+    if let Some(title) = subgraph.title.as_deref() {
+        let title_fmt = format!("[  {}  ]", title);
+        let title_len = title_fmt.chars().count();
+        if title_len <= bounds.width.saturating_sub(2) {
+            let start_x = bounds.x + (bounds.width - title_len) / 2;
+            let title_y = if matches!(direction, Direction::BT) && bounds.y + 1 < y1 {
+                bounds.y + 1
+            } else {
+                bounds.y
+            };
+            for (i, _) in title_fmt.chars().enumerate() {
+                let x = start_x + i;
+                if x < canvas.width {
+                    canvas.set_meta_only(
+                        x,
+                        title_y,
+                        semantic::CellOwnerKind::SubgraphTitle,
+                        Some(&subgraph.id),
+                        semantic::CellRole::Text,
+                        2,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn annotate_node_region(canvas: &mut Canvas, node: &Node, chars: &crate::style::StyleChars) {
+    for y in node.y..node.y + node.height.max(BOX_HEIGHT) {
+        for x in node.x..node.x + node.width {
+            if x >= canvas.width || y >= canvas.height {
+                continue;
+            }
+            let ch = canvas.get(x, y);
+            let (owner_kind, role) = if ch == ' ' {
+                (semantic::CellOwnerKind::NodeFill, semantic::CellRole::Fill)
+            } else if crate::render::canvas::is_horizontal(ch, chars)
+                || crate::render::canvas::is_vertical(ch, chars)
+                || crate::render::canvas::is_junction(ch, chars)
+                || crate::render::canvas::is_corner(ch, chars)
+                || matches!(ch, '(' | ')' | '<' | '>' | '/' | '\\')
+            {
+                (
+                    semantic::CellOwnerKind::NodeBorder,
+                    semantic::CellRole::Border,
+                )
+            } else {
+                (semantic::CellOwnerKind::NodeLabel, semantic::CellRole::Text)
+            };
+            canvas.set_meta_only(x, y, owner_kind, Some(&node.id), role, 3);
+        }
+    }
+}
+
 // ============================================================================
 // Precomputed Edge Route Rendering (experimental)
 // ============================================================================
@@ -560,6 +848,14 @@ enum Dir {
     Down,
     Left,
     Right,
+}
+
+const PRECOMPUTED_ROUTE_Z_INDEX: u8 = 5;
+
+#[derive(Copy, Clone)]
+struct PrecomputedRouteOwner<'a> {
+    kind: CellOwnerKind,
+    id: &'a str,
 }
 
 fn dir_from_segment(seg: &Segment) -> Option<Dir> {
@@ -603,8 +899,8 @@ fn corner_for_turn(prev: Dir, next: Dir, chars: &StyleChars) -> Option<char> {
     // ┐ (corner_dr) = DOWN + LEFT arms
     // ┌ (corner_dl) = DOWN + RIGHT arms
     match (a, b) {
-        (Up, Left) | (Left, Up) => Some(chars.corner_ur),     // ┘
-        (Up, Right) | (Right, Up) => Some(chars.corner_ul),   // └
+        (Up, Left) | (Left, Up) => Some(chars.corner_ur), // ┘
+        (Up, Right) | (Right, Up) => Some(chars.corner_ul), // └
         (Down, Left) | (Left, Down) => Some(chars.corner_dr), // ┐
         (Down, Right) | (Right, Down) => Some(chars.corner_dl), // ┌
         _ => None,
@@ -630,12 +926,11 @@ fn is_subgraph_title_cell(graph: &Graph, x: usize, y: usize) -> bool {
         } else {
             sg.bounds.y
         };
-        y == title_y
-            && x >= sg.bounds.x
-            && x < sg.bounds.x.saturating_add(sg.bounds.width)
+        y == title_y && x >= sg.bounds.x && x < sg.bounds.x.saturating_add(sg.bounds.width)
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_segment(
     seg: &Segment,
     dir: Dir,
@@ -644,6 +939,7 @@ fn draw_segment(
     skip_start: bool,
     skip_end: bool,
     graph: &Graph,
+    owner: PrecomputedRouteOwner<'_>,
 ) {
     match dir {
         Dir::Left | Dir::Right => {
@@ -676,7 +972,14 @@ fn draw_segment(
                     if is_subgraph_title_cell(graph, x, seg.from.y) {
                         continue;
                     }
-                    canvas.set_edge_char(x, seg.from.y, chars.edge_h, chars);
+                    set_precomputed_route_edge_char(
+                        canvas,
+                        x,
+                        seg.from.y,
+                        chars.edge_h,
+                        chars,
+                        owner,
+                    );
                 }
             }
         }
@@ -706,7 +1009,14 @@ fn draw_segment(
                     if is_subgraph_title_cell(graph, seg.from.x, y) {
                         continue;
                     }
-                    canvas.set_edge_char(seg.from.x, y, chars.edge_v, chars);
+                    set_precomputed_route_edge_char(
+                        canvas,
+                        seg.from.x,
+                        y,
+                        chars.edge_v,
+                        chars,
+                        owner,
+                    );
                 }
             }
         }
@@ -728,6 +1038,15 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
         let Some(edge) = graph.edges.get(edge_idx) else {
             continue;
         };
+        let owner_id = edge_owner_id(edge_idx, edge);
+        let owner = PrecomputedRouteOwner {
+            kind: if edge.is_back_edge {
+                CellOwnerKind::CycleEdge
+            } else {
+                CellOwnerKind::EdgeSegment
+            },
+            id: owner_id.as_str(),
+        };
         let (Some(from), Some(to)) = (graph.get_node(&edge.from), graph.get_node(&edge.to)) else {
             continue;
         };
@@ -735,8 +1054,25 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
             continue;
         }
 
-        // Back-edges should render with cycle styling even when pre-routed.
+        // Apply edge-kind-specific shaft characters.
         let mut route_chars = *chars;
+        match edge.kind {
+            EdgeKind::Arrow
+            | EdgeKind::Open
+            | EdgeKind::Bidirectional
+            | EdgeKind::CircleEnd
+            | EdgeKind::CrossEnd => {} // use default edge chars
+            EdgeKind::Thick => {
+                // Heavy/bold shaft chars
+                route_chars.edge_h = '━';
+                route_chars.edge_v = '┃';
+            }
+            EdgeKind::Dotted => {
+                route_chars.edge_h = chars.dotted_h;
+                route_chars.edge_v = chars.dotted_v;
+            }
+        }
+        // Back-edges always override with cycle styling.
         if edge.is_back_edge {
             route_chars.edge_h = chars.back_h;
             route_chars.edge_v = chars.back_v;
@@ -774,7 +1110,14 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
                             if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
                                 eprintln!("    drawing stem at ({}, {})", src_center_x, y);
                             }
-                            canvas.set_edge_char(src_center_x, y, route_chars.edge_v, &route_chars);
+                            set_precomputed_route_edge_char(
+                                canvas,
+                                src_center_x,
+                                y,
+                                route_chars.edge_v,
+                                &route_chars,
+                                owner,
+                            );
                         }
                         // Queue corner to be drawn AFTER segments (so it overwrites)
                         // At the source center, we need a corner character that connects:
@@ -801,7 +1144,14 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
                         // Draw vertical stem from route start up to box border (inclusive)
                         let box_border_y = from.y;
                         for y in (route_start.y + 1)..=box_border_y {
-                            canvas.set_edge_char(src_center_x, y, route_chars.edge_v, &route_chars);
+                            set_precomputed_route_edge_char(
+                                canvas,
+                                src_center_x,
+                                y,
+                                route_chars.edge_v,
+                                &route_chars,
+                                owner,
+                            );
                         }
                         let corner = if first_dir == Some(Dir::Left) {
                             route_chars.corner_ur // ┘ - going left from here
@@ -815,7 +1165,14 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
                     if matches!(first_dir, Some(Dir::Up) | Some(Dir::Down)) {
                         let exit_x = from.x + from.width;
                         for x in exit_x..route_start.x {
-                            canvas.set_edge_char(x, src_center_y, route_chars.edge_h, &route_chars);
+                            set_precomputed_route_edge_char(
+                                canvas,
+                                x,
+                                src_center_y,
+                                route_chars.edge_h,
+                                &route_chars,
+                                owner,
+                            );
                         }
                     }
                 }
@@ -823,7 +1180,14 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
                     if matches!(first_dir, Some(Dir::Up) | Some(Dir::Down)) {
                         let exit_x = from.x.saturating_sub(1);
                         for x in (route_start.x + 1)..=exit_x {
-                            canvas.set_edge_char(x, src_center_y, route_chars.edge_h, &route_chars);
+                            set_precomputed_route_edge_char(
+                                canvas,
+                                x,
+                                src_center_y,
+                                route_chars.edge_h,
+                                &route_chars,
+                                owner,
+                            );
                         }
                     }
                 }
@@ -850,13 +1214,29 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
             let skip_start = i > 0;
             let skip_end = is_turn;
 
-            draw_segment(seg, dir, canvas, &route_chars, skip_start, skip_end, graph);
+            draw_segment(
+                seg,
+                dir,
+                canvas,
+                &route_chars,
+                skip_start,
+                skip_end,
+                graph,
+                owner,
+            );
 
             if is_turn {
                 if let Some(nd) = next_dir {
                     if let Some(corner) = corner_for_turn(dir, nd, &route_chars) {
                         if !is_subgraph_title_cell(graph, seg.to.x, seg.to.y) {
-                            canvas.set_edge_char(seg.to.x, seg.to.y, corner, &route_chars);
+                            set_precomputed_route_edge_char(
+                                canvas,
+                                seg.to.x,
+                                seg.to.y,
+                                corner,
+                                &route_chars,
+                                owner,
+                            );
                         }
                     }
                 }
@@ -864,23 +1244,87 @@ fn draw_precomputed_routes(graph: &Graph, canvas: &mut Canvas, chars: &StyleChar
         }
 
         if let Some(last_seg) = route.segments.last() {
-            let dir = match graph.direction {
+            let dir = dir_from_segment(last_seg).unwrap_or(match graph.direction {
                 Direction::TD | Direction::TB => Dir::Down,
                 Direction::BT => Dir::Up,
                 Direction::LR => Dir::Right,
                 Direction::RL => Dir::Left,
-            };
-            let arrow = arrow_for_dir(dir, &route_chars);
+            });
+            // Determine the terminal cell character based on edge kind.
             if !is_subgraph_title_cell(graph, last_seg.to.x, last_seg.to.y) {
-                canvas.set(last_seg.to.x, last_seg.to.y, arrow);
+                let tip = if edge.kind == EdgeKind::Open {
+                    // Open links: draw shaft char (no end marker)
+                    match dir {
+                        Dir::Left | Dir::Right => route_chars.edge_h,
+                        Dir::Up | Dir::Down => route_chars.edge_v,
+                    }
+                } else if edge.kind == EdgeKind::CircleEnd {
+                    chars.circle_end // non-directional circle marker
+                } else if edge.kind == EdgeKind::CrossEnd {
+                    chars.cross_end // non-directional cross marker
+                } else {
+                    arrow_for_dir(dir, &route_chars)
+                };
+                set_precomputed_route_char(canvas, last_seg.to.x, last_seg.to.y, tip, owner);
+            }
+        }
+
+        // For bidirectional edges, draw a reverse arrowhead at the route start.
+        if edge.kind == EdgeKind::Bidirectional {
+            if let Some(first_seg) = route.segments.first() {
+                if let Some(fwd) = dir_from_segment(first_seg) {
+                    let rev = match fwd {
+                        Dir::Up => Dir::Down,
+                        Dir::Down => Dir::Up,
+                        Dir::Left => Dir::Right,
+                        Dir::Right => Dir::Left,
+                    };
+                    let rev_arrow = arrow_for_dir(rev, &route_chars);
+                    set_precomputed_route_char(
+                        canvas,
+                        first_seg.from.x,
+                        first_seg.from.y,
+                        rev_arrow,
+                        owner,
+                    );
+                }
             }
         }
 
         // Draw start corner AFTER segments so it overwrites the horizontal line
         if let Some((x, y, corner)) = needs_start_corner {
-            canvas.set(x, y, corner);
+            set_precomputed_route_char(canvas, x, y, corner, owner);
         }
     }
+}
+
+fn set_precomputed_route_char(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    ch: char,
+    owner: PrecomputedRouteOwner<'_>,
+) {
+    canvas.set_owned(x, y, ch, owner.kind, owner.id, PRECOMPUTED_ROUTE_Z_INDEX);
+}
+
+fn set_precomputed_route_edge_char(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    ch: char,
+    chars: &StyleChars,
+    owner: PrecomputedRouteOwner<'_>,
+) {
+    canvas.set_edge_char_owned(
+        x,
+        y,
+        ch,
+        chars,
+        owner.kind,
+        owner.id,
+        PRECOMPUTED_ROUTE_Z_INDEX,
+    );
 }
 
 fn carve_subgraph_portals_on_canvas(
@@ -927,7 +1371,6 @@ fn carve_subgraph_portals_on_canvas(
             carve_horizontal_slot(canvas, py, &[right_x.saturating_sub(1), right_x]);
         }
     }
-
 }
 
 fn reinforce_subgraph_portals(
@@ -959,10 +1402,7 @@ fn reinforce_subgraph_portals(
         if !bounds.is_valid() {
             continue;
         }
-        let title_span = sg
-            .title
-            .as_deref()
-            .map(|t| title_span(bounds, t));
+        let title_span = sg.title.as_deref().map(|t| title_span(bounds, t));
 
         let top_y = bounds.y;
         let bottom_y = bounds.y + bounds.height.saturating_sub(1);
@@ -1008,10 +1448,7 @@ fn reinforce_subgraph_portals(
                     };
                     let used = is_verticalish(above, chars, subgraph_chars)
                         || is_verticalish(below, chars, subgraph_chars);
-                    if used
-                        && bottom_y < canvas.height
-                        && !is_textual(canvas.get(px, bottom_y))
-                    {
+                    if used && bottom_y < canvas.height && !is_textual(canvas.get(px, bottom_y)) {
                         // This is a portal "hole" on the border, not a T-junction.
                         // Overwrite the horizontal border character instead of merging.
                         canvas.set(px, bottom_y, chars.edge_v);
@@ -1052,45 +1489,36 @@ fn reinforce_subgraph_portals(
                     }
                     px = nudge_from_corners(px);
                     let existing = canvas.get(px, top_y);
-                    if top_y < canvas.height && !is_textual(existing) && !canvas::is_arrow(existing) {
-                        let above = if top_y > 0 { canvas.get(px, top_y - 1) } else { ' ' };
+                    if top_y < canvas.height && !is_textual(existing) && !canvas::is_arrow(existing)
+                    {
+                        let above = if top_y > 0 {
+                            canvas.get(px, top_y - 1)
+                        } else {
+                            ' '
+                        };
                         let below = if top_y + 1 < canvas.height {
                             canvas.get(px, top_y + 1)
                         } else {
                             ' '
                         };
                         let has_above = is_verticalish(above, chars, subgraph_chars);
-                        let mut has_below = is_verticalish(below, chars, subgraph_chars);
+                        let has_below = is_verticalish(below, chars, subgraph_chars);
                         if sg.title.is_some() && bounds.height > 2 {
-                            // Ignore the title row when the portal lands under the title text.
+                            // Skip portal reinforcement entirely for positions under title text.
+                            // Previously we just set has_below=false, but that still placed chars
+                            // when has_above=true, corrupting the title.
                             if let Some((s, e)) = title_span {
                                 if px >= s && px <= e {
-                                    has_below = false;
+                                    continue;
                                 }
                             }
                         }
                         let used = has_above || has_below;
                         if used {
-                            let left = if px > 0 { canvas.get(px - 1, top_y) } else { ' ' };
-                            let right = if px + 1 < canvas.width {
-                                canvas.get(px + 1, top_y)
-                            } else {
-                                ' '
-                            };
-                            let has_horizontal = is_horizontalish(left, chars, subgraph_chars)
-                                || is_horizontalish(right, chars, subgraph_chars);
-                            let glyph = if has_horizontal {
-                                if has_above && has_below {
-                                    subgraph_chars.cross
-                                } else if has_above {
-                                    subgraph_chars.junction_down
-                                } else {
-                                    subgraph_chars.junction_up
-                                }
-                            } else {
-                                subgraph_chars.v
-                            };
-                            canvas.set(px, top_y, glyph);
+                            // For BT top border, always use a clean vertical portal hole.
+                            // Do NOT place junction characters on the border - they corrupt
+                            // the visual appearance. Junctions belong inside the subgraph.
+                            canvas.set(px, top_y, chars.edge_v);
                         } else {
                             canvas.set(px, top_y, subgraph_chars.h);
                         }
@@ -1118,7 +1546,11 @@ fn reinforce_subgraph_portals(
                         let has_below = is_verticalish(below, chars, subgraph_chars);
                         let used = has_above || has_below;
                         if used {
-                            let left = if px > 0 { canvas.get(px - 1, bottom_y) } else { ' ' };
+                            let left = if px > 0 {
+                                canvas.get(px - 1, bottom_y)
+                            } else {
+                                ' '
+                            };
                             let right = if px + 1 < canvas.width {
                                 canvas.get(px + 1, bottom_y)
                             } else {
@@ -1148,8 +1580,13 @@ fn reinforce_subgraph_portals(
                 for &y in &portals.left {
                     let py = clamp_vertical(bounds, y);
                     let existing = canvas.get(left_x, py);
-                    if left_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing) {
-                        let left = if left_x > 0 { canvas.get(left_x - 1, py) } else { ' ' };
+                    if left_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing)
+                    {
+                        let left = if left_x > 0 {
+                            canvas.get(left_x - 1, py)
+                        } else {
+                            ' '
+                        };
                         let right = if left_x + 1 < canvas.width {
                             canvas.get(left_x + 1, py)
                         } else {
@@ -1169,8 +1606,15 @@ fn reinforce_subgraph_portals(
                 for &y in &portals.right {
                     let py = clamp_vertical(bounds, y);
                     let existing = canvas.get(right_x, py);
-                    if right_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing) {
-                        let left = if right_x > 0 { canvas.get(right_x - 1, py) } else { ' ' };
+                    if right_x < canvas.width
+                        && !is_textual(existing)
+                        && !canvas::is_arrow(existing)
+                    {
+                        let left = if right_x > 0 {
+                            canvas.get(right_x - 1, py)
+                        } else {
+                            ' '
+                        };
                         let right = if right_x + 1 < canvas.width {
                             canvas.get(right_x + 1, py)
                         } else {
@@ -1297,13 +1741,19 @@ fn title_span(bounds: &crate::graph::Rectangle, title: &str) -> (usize, usize) {
     (start, end)
 }
 
-fn shift_out_of_span(x: usize, span_start: usize, span_end: usize, min: usize, max: usize) -> usize {
+fn shift_out_of_span(
+    x: usize,
+    span_start: usize,
+    span_end: usize,
+    min: usize,
+    max: usize,
+) -> usize {
     let protected_start = span_start.saturating_sub(2);
     let protected_end = span_end.saturating_add(2).min(max);
     if x < protected_start || x > protected_end {
         return x;
     }
-    if protected_end + 1 <= max {
+    if protected_end < max {
         protected_end + 1
     } else if protected_start > min {
         protected_start.saturating_sub(1)
@@ -1345,6 +1795,47 @@ fn draw_subgraph_title(
     }
 }
 
+fn cleanup_bt_title_rows(canvas: &mut Canvas, graph: &Graph, chars: &crate::style::StyleChars) {
+    for subgraph in &graph.subgraphs {
+        let Some(title) = subgraph.title.as_deref() else {
+            continue;
+        };
+        if !subgraph.bounds.is_valid() || subgraph.bounds.height <= 2 {
+            continue;
+        }
+
+        let title_y = subgraph.bounds.y.saturating_add(1);
+        if title_y >= canvas.height {
+            continue;
+        }
+        let (title_start, title_end) = title_span(&subgraph.bounds, title);
+        let inner_left = subgraph.bounds.x.saturating_add(1);
+        let inner_right = subgraph.bounds.x + subgraph.bounds.width.saturating_sub(2);
+
+        for x in inner_left..=inner_right {
+            if x >= title_start && x <= title_end {
+                continue;
+            }
+
+            let current = canvas.get(x, title_y);
+            if current == ' ' || is_textual(current) {
+                continue;
+            }
+
+            let has_vertical_above =
+                title_y > 0 && topology::char_connects_down(canvas.get(x, title_y - 1));
+            let has_vertical_below = title_y + 1 < canvas.height
+                && topology::char_connects_up(canvas.get(x, title_y + 1));
+
+            if has_vertical_above && has_vertical_below {
+                canvas.set(x, title_y, chars.edge_v);
+            } else {
+                canvas.set(x, title_y, ' ');
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Edge Label Drawing
 // ============================================================================
@@ -1354,6 +1845,7 @@ use crate::style::StyleChars;
 /// Draw an edge label on the appropriate segment between two nodes.
 /// For TD/BT: labels go on vertical segments
 /// For LR/RL: labels go on horizontal segments
+#[allow(clippy::too_many_arguments)]
 fn draw_edge_label(
     canvas: &mut Canvas,
     from: &Node,
@@ -1362,61 +1854,56 @@ fn draw_edge_label(
     direction: Direction,
     style: &StyleChars,
     config: &Config,
-) {
+    edge_idx: usize,
+    edge: &crate::graph::Edge,
+    graph: &Graph,
+) -> Option<EdgeLabelPlacement> {
     use cycle::{center_x, center_y};
 
     let display_label = format_edge_label_with_limit(label, config.max_edge_label_width);
     let label_width = display_width(&display_label);
+    let owner_id = edge_owner_id(edge_idx, edge);
+    let mut cells = Vec::new();
 
     match direction {
         Direction::TD | Direction::TB => {
             // Vertical layout: place label on vertical segment
-            let src_center_x = center_x(from);
             let edge_x = center_x(to);
             let stem_start_y = from.bottom_y();
             let arrow_y = to.y.saturating_sub(1);
+            let lower_bound = stem_start_y.saturating_add(1);
+            let upper_bound = arrow_y.saturating_sub(1);
+            let mut label_y = arrow_y.saturating_sub(1);
 
-            // For straight edges (aligned), place label in middle of vertical span
-            // For L-shaped edges, place after junction
-            let mut label_y = if src_center_x == edge_x {
-                let span = arrow_y.saturating_sub(stem_start_y);
-                let mid = stem_start_y + span / 2;
-                let lower = stem_start_y.saturating_add(1);
-                let upper = arrow_y.saturating_sub(2);
-                let mut y = stem_start_y.saturating_add(1).max(mid);
-                if lower <= upper {
-                    y = y.max(lower).min(upper);
-                } else {
-                    y = arrow_y.saturating_sub(1);
+            if lower_bound <= upper_bound {
+                label_y = label_y.max(lower_bound).min(upper_bound);
+
+                let mut found = None;
+                let mut probe_y = label_y;
+                loop {
+                    if !is_textual(canvas.get(edge_x, probe_y)) {
+                        found = Some(probe_y);
+                        break;
+                    }
+
+                    if probe_y == lower_bound {
+                        break;
+                    }
+                    probe_y = probe_y.saturating_sub(1);
                 }
-                y
+
+                if let Some(y) = found {
+                    label_y = y;
+                }
             } else {
-                // L-shaped: place just below the junction
-                let junction_y = stem_start_y + STEM_LENGTH_VERTICAL;
-                junction_y.saturating_add(1)
-            };
-
-            // Avoid overwriting borders/text (e.g., subgraph labels). If the chosen row
-            // is textual, nudge the label down until we hit a free edge row before the arrow.
-            while label_y > stem_start_y && label_y < arrow_y && label_y < canvas.height {
-                if !is_textual(canvas.get(edge_x, label_y)) {
-                    break;
-                }
-                label_y += 1;
+                label_y = label_y.min(arrow_y.saturating_sub(1));
             }
-            if label_y + 1 < arrow_y {
-                label_y = arrow_y.saturating_sub(1);
-            }
-            label_y = label_y.min(arrow_y.saturating_sub(1));
 
             // Center the label around the edge position
-            let mut label_start_x = edge_x.saturating_sub(label_width / 2);
-            if overlaps_node(
-                &[from, to],
-                label_start_x,
-                label_y,
-                label_width,
-            ) && label_start_x + label_width + 1 < canvas.width
+            let max_label_start = canvas.width.saturating_sub(label_width);
+            let mut label_start_x = edge_x.saturating_sub(label_width / 2).min(max_label_start);
+            if overlaps_node(&[from, to], label_start_x, label_y, label_width)
+                && label_start_x + label_width + 1 < canvas.width
             {
                 label_start_x += 1;
             }
@@ -1424,196 +1911,283 @@ fn draw_edge_label(
             // Draw the label characters
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
-                if x_pos < canvas.width && label_y < canvas.height {
-                    if !is_textual(canvas.get(x_pos, label_y)) {
-                        canvas.set(x_pos, label_y, c);
-                    }
+                if x_pos < canvas.width
+                    && label_y < canvas.height
+                    && !is_textual(canvas.get(x_pos, label_y))
+                {
+                    canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
             }
         }
         Direction::BT => {
             // Bottom-to-top: similar to TD but arrows point up
-            let src_center_x = center_x(from);
             let edge_x = center_x(to);
             let stem_start_y = from.y.saturating_sub(1);
             let arrow_y = to.bottom_y();
+            let lower_bound = arrow_y.saturating_add(1);
+            let upper_bound = stem_start_y.saturating_sub(1);
+            let mut label_y = lower_bound;
 
-            let label_y = if src_center_x == edge_x {
-                // Straight edge: place label in middle of vertical span
-                let (top, bottom) = if stem_start_y < arrow_y {
-                    (stem_start_y, arrow_y)
-                } else {
-                    (arrow_y, stem_start_y)
-                };
-                top + (bottom - top) / 2
+            if lower_bound <= upper_bound {
+                let mut found = None;
+                let mut probe_y = label_y;
+                while probe_y <= upper_bound && probe_y < canvas.height {
+                    if !is_textual(canvas.get(edge_x, probe_y)) {
+                        found = Some(probe_y);
+                        break;
+                    }
+                    probe_y += 1;
+                }
+                if let Some(y) = found {
+                    label_y = y;
+                }
             } else {
-                // L-shaped: use junction-based positioning
-                stem_start_y
-                    .saturating_sub(STEM_LENGTH_VERTICAL.saturating_add(1))
-            };
+                label_y = lower_bound.min(stem_start_y);
+            }
 
-            let label_start_x = edge_x.saturating_sub(label_width / 2);
+            let label_start_x =
+                pick_bt_vertical_label_start(canvas, &[from, to], edge_x, label_y, label_width);
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
-                if x_pos < canvas.width && label_y < canvas.height && !is_textual(canvas.get(x_pos, label_y)) {
+                if x_pos < canvas.width
+                    && label_y < canvas.height
+                    && !is_textual(canvas.get(x_pos, label_y))
+                {
                     canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
             }
         }
         Direction::LR => {
-            // Left-to-right: place label INLINE with edge (on the connection line)
-            // Format: ├─ label ─→
             let edge_y = center_y(to);
             let stem_start_x = from.x + from.width;
             let arrow_x = to.x.saturating_sub(1);
-
-            // Calculate the middle of the horizontal span for label placement
             let span_width = arrow_x.saturating_sub(stem_start_x);
-            let label_with_padding = label_width + 2; // " label "
+            let outside_row =
+                pick_outside_horizontal_label_row(edge_y, canvas.height, &[from, to], graph);
+            let can_fit_full_inline = label_width + 3 <= span_width;
 
-            if span_width >= label_with_padding + 2 {
-                // Enough room for: ─ label ─
-                let label_start_x = stem_start_x + (span_width - label_with_padding) / 2;
+            if can_fit_full_inline {
+                let label_start_x = stem_start_x + (span_width - (label_width + 3)) / 2;
 
-                // Draw leading edge segment (from box to label)
                 for x in stem_start_x..label_start_x {
                     canvas.set(x, edge_y, style.edge_h);
                 }
 
-                // Draw space before label
                 canvas.set(label_start_x, edge_y, ' ');
 
-                // Draw label characters
                 let mut x_pos = label_start_x + 1;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
                         canvas.set(x_pos, edge_y, c);
+                        record_label_cell(&mut cells, x_pos, edge_y);
                     }
                     x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
                 }
 
-                // Draw space after label
                 if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
                     canvas.set(x_pos, edge_y, ' ');
                 }
                 x_pos += 1;
 
-                // Draw trailing edge segment (from label to arrow)
                 for x in x_pos..arrow_x {
                     if x < canvas.width {
                         canvas.set(x, edge_y, style.edge_h);
                     }
                 }
-            } else {
-                // Not enough room - place label above the edge
+            } else if let Some(label_row) = outside_row {
                 let label_x = stem_start_x + span_width / 2;
-                let mut label_start_x = label_x.saturating_sub(label_width / 2);
-                let label_row = edge_y.saturating_sub(1);
-
-                if overlaps_node(&[from, to], label_start_x, label_row, label_width) {
-                    label_start_x = adjust_horizontal_label_slot(
-                        label_start_x,
-                        arrow_x + 1,
-                        stem_start_x.saturating_sub(1),
-                        label_row,
-                        label_width,
-                        &[from, to],
-                    );
-                }
+                let max_label_start = canvas.width.saturating_sub(label_width);
+                let mut label_start_x =
+                    label_x.saturating_sub(label_width / 2).min(max_label_start);
+                label_start_x = adjust_horizontal_label_slot(
+                    label_start_x,
+                    0,
+                    canvas.width,
+                    label_row,
+                    label_width,
+                    &[from, to],
+                    graph,
+                );
 
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && label_row < canvas.height {
                         canvas.set(x_pos, label_row, c);
+                        record_label_cell(&mut cells, x_pos, label_row);
                     }
                     x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
                 }
-            }
-        }
-        Direction::RL => {
-            // Right-to-left: place label INLINE with edge (on the connection line)
-            // Format: ←─ label ─┤ (arrow on left, junction on right)
-            let edge_y = center_y(to);
-            let arrow_x = to.x + to.width; // Arrow is after target box
-            let stem_end_x = from.x; // Edge ends at left side of source box
+            } else {
+                let inline_limit = config
+                    .max_edge_label_width
+                    .min(span_width.saturating_sub(3).max(1));
+                let inline_label = format_edge_label_with_limit(label, inline_limit);
+                let inline_width = display_width(&inline_label);
+                let label_start_x =
+                    stem_start_x + (span_width.saturating_sub(inline_width + 3)) / 2;
 
-            // Calculate the span between arrow and source box
-            let span_width = stem_end_x.saturating_sub(arrow_x);
-            let label_with_padding = label_width + 2; // " label "
-
-            if span_width >= label_with_padding + 2 {
-                // Enough room for: ─ label ─
-                let label_start_x = arrow_x + (span_width - label_with_padding) / 2;
-
-                // Draw leading edge segment (from arrow to label)
-                for x in (arrow_x + 1)..label_start_x {
-                    if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
-                    }
+                for x in stem_start_x..label_start_x {
+                    canvas.set(x, edge_y, style.edge_h);
                 }
 
-                // Draw space before label
-                if label_start_x < canvas.width {
-                    canvas.set(label_start_x, edge_y, ' ');
-                }
+                canvas.set(label_start_x, edge_y, ' ');
 
-                // Draw label characters
                 let mut x_pos = label_start_x + 1;
-                for c in display_label.chars() {
+                for c in inline_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
                         canvas.set(x_pos, edge_y, c);
+                        record_label_cell(&mut cells, x_pos, edge_y);
                     }
                     x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
                 }
 
-                // Draw space after label
                 if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
                     canvas.set(x_pos, edge_y, ' ');
                 }
                 x_pos += 1;
 
-                // Draw trailing edge segment (from label to source box)
+                for x in x_pos..arrow_x {
+                    if x < canvas.width {
+                        canvas.set(x, edge_y, style.edge_h);
+                    }
+                }
+            }
+        }
+        Direction::RL => {
+            let edge_y = center_y(to);
+            let arrow_x = to.x + to.width; // Arrow is after target box
+            let stem_end_x = from.x; // Edge ends at left side of source box
+            let gap_start_x = arrow_x.saturating_add(1);
+            let span_width = stem_end_x.saturating_sub(gap_start_x);
+            let outside_row =
+                pick_outside_horizontal_label_row(edge_y, canvas.height, &[from, to], graph);
+            let can_fit_full_inline = label_width + 4 <= span_width;
+
+            if can_fit_full_inline {
+                let label_start_x = gap_start_x + 1 + (span_width - (label_width + 4)) / 2;
+
+                for x in gap_start_x..label_start_x {
+                    if x < canvas.width {
+                        canvas.set(x, edge_y, style.edge_h);
+                    }
+                }
+
+                if label_start_x < canvas.width {
+                    canvas.set(label_start_x, edge_y, ' ');
+                }
+
+                let mut x_pos = label_start_x + 1;
+                for c in display_label.chars() {
+                    if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
+                        canvas.set(x_pos, edge_y, c);
+                        record_label_cell(&mut cells, x_pos, edge_y);
+                    }
+                    x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                }
+
+                if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
+                    canvas.set(x_pos, edge_y, ' ');
+                }
+                x_pos += 1;
+
                 for x in x_pos..stem_end_x {
                     if x < canvas.width {
                         canvas.set(x, edge_y, style.edge_h);
                     }
                 }
-            } else {
-                // Not enough room - place label above the edge
-                let label_x = arrow_x + span_width / 2;
-                let label_start_x = label_x.saturating_sub(label_width / 2);
-                let label_row = edge_y.saturating_sub(1);
+            } else if let Some(label_row) = outside_row {
+                let label_x = gap_start_x + span_width / 2;
+                let max_label_start = canvas.width.saturating_sub(label_width);
+                let mut label_start_x =
+                    label_x.saturating_sub(label_width / 2).min(max_label_start);
+                label_start_x = adjust_horizontal_label_slot(
+                    label_start_x,
+                    0,
+                    canvas.width,
+                    label_row,
+                    label_width,
+                    &[from, to],
+                    graph,
+                );
 
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && label_row < canvas.height {
                         canvas.set(x_pos, label_row, c);
+                        record_label_cell(&mut cells, x_pos, label_row);
                     }
                     x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                }
+            } else {
+                let inline_limit = config
+                    .max_edge_label_width
+                    .min(span_width.saturating_sub(4).max(1));
+                let inline_label = format_edge_label_with_limit(label, inline_limit);
+                let inline_width = display_width(&inline_label);
+                let label_start_x =
+                    gap_start_x + 1 + (span_width.saturating_sub(inline_width + 4)) / 2;
+
+                for x in gap_start_x..label_start_x {
+                    if x < canvas.width {
+                        canvas.set(x, edge_y, style.edge_h);
+                    }
+                }
+
+                if label_start_x < canvas.width {
+                    canvas.set(label_start_x, edge_y, ' ');
+                }
+
+                let mut x_pos = label_start_x + 1;
+                for c in inline_label.chars() {
+                    if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
+                        canvas.set(x_pos, edge_y, c);
+                        record_label_cell(&mut cells, x_pos, edge_y);
+                    }
+                    x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                }
+
+                if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
+                    canvas.set(x_pos, edge_y, ' ');
+                }
+                x_pos += 1;
+
+                for x in x_pos..stem_end_x {
+                    if x < canvas.width {
+                        canvas.set(x, edge_y, style.edge_h);
+                    }
                 }
             }
         }
     }
+
+    build_label_placement(owner_id, cells)
 }
 
 /// Draw an edge label using a precomputed Manhattan route. Picks the longest
 /// segment (preferring horizontal) and centers the label along it.
+#[allow(clippy::too_many_arguments)]
 fn draw_routed_edge_label(
     canvas: &mut Canvas,
     route: &EdgeRoute,
     label: &str,
-    _style: &StyleChars,
+    style: &StyleChars,
     graph: &Graph,
     config: &Config,
-) {
+    edge_idx: usize,
+    edge: &crate::graph::Edge,
+) -> Option<EdgeLabelPlacement> {
     if route.segments.is_empty() {
-        return;
+        return None;
     }
 
     let display_label = format_edge_label_with_limit(label, config.max_edge_label_width);
     let label_width = display_width(&display_label);
+    let owner_id = edge_owner_id(edge_idx, edge);
+    let mut cells = Vec::new();
 
     let nodes: Vec<&Node> = graph.nodes.iter().collect();
     let border_spans: Vec<crate::graph::Rectangle> = graph
@@ -1653,9 +2227,7 @@ fn draw_routed_edge_label(
         }
     }
 
-    let Some((seg, _, is_horizontal)) = best else {
-        return;
-    };
+    let (seg, _, is_horizontal) = best?;
 
     if is_horizontal {
         let mut y = seg.from.y;
@@ -1666,7 +2238,7 @@ fn draw_routed_edge_label(
             if y + 1 < canvas.height {
                 y += 1;
             } else if y > 0 {
-                y -= 1;
+                y = y.saturating_sub(1);
             }
         }
         let (min_x, max_x) = if seg.from.x <= seg.to.x {
@@ -1674,22 +2246,110 @@ fn draw_routed_edge_label(
         } else {
             (seg.to.x, seg.from.x)
         };
-        let mid_x = min_x + (max_x.saturating_sub(min_x)) / 2;
-        let mut start_x = mid_x.saturating_sub(label_width / 2);
-        if start_x < min_x {
-            start_x = min_x;
-        }
-        if start_x + label_width > canvas.width {
-            start_x = canvas.width.saturating_sub(label_width);
-        }
-        start_x = adjust_horizontal_label_slot(start_x, min_x, max_x, y, label_width, &nodes);
+        let gap_start_x = min_x;
+        let gap_end_x = max_x.saturating_add(1);
+        let gap_width = gap_end_x.saturating_sub(gap_start_x);
+        let mid_x = gap_start_x + gap_width / 2;
+        let centered_start_x = mid_x.saturating_sub(label_width / 2);
+        let outside_row = pick_outside_horizontal_label_row(y, canvas.height, &nodes, graph);
+        let reserve_leading_shaft = graph.direction == Direction::RL;
+        let inline_margin = if reserve_leading_shaft { 4 } else { 3 };
+        let inline_collides = overlaps_node(&nodes, centered_start_x, y, label_width);
+        let can_fit_full_inline = !inline_collides && label_width + inline_margin <= gap_width;
 
-        let mut x_pos = start_x;
-        for c in display_label.chars() {
-            if y < canvas.height && x_pos < canvas.width {
-                canvas.set(x_pos, y, c);
+        if can_fit_full_inline {
+            let start_x = gap_start_x
+                + usize::from(reserve_leading_shaft)
+                + (gap_width - (label_width + inline_margin)) / 2;
+            for x in gap_start_x..start_x {
+                if y < canvas.height && x < canvas.width {
+                    canvas.set(x, y, style.edge_h);
+                }
             }
-            x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+
+            if start_x < canvas.width && y < canvas.height {
+                canvas.set(start_x, y, ' ');
+            }
+
+            let mut x_pos = start_x + 1;
+            for c in display_label.chars() {
+                if y < canvas.height && x_pos < canvas.width {
+                    canvas.set(x_pos, y, c);
+                    record_label_cell(&mut cells, x_pos, y);
+                }
+                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+            }
+
+            if x_pos < canvas.width && y < canvas.height {
+                canvas.set(x_pos, y, ' ');
+            }
+            x_pos += 1;
+
+            for x in x_pos..gap_end_x {
+                if y < canvas.height && x < canvas.width {
+                    canvas.set(x, y, style.edge_h);
+                }
+            }
+        } else if let Some(label_row) = outside_row {
+            let max_label_start = canvas.width.saturating_sub(label_width);
+            let mut start_x = centered_start_x.min(max_label_start);
+            start_x = adjust_horizontal_label_slot(
+                start_x,
+                0,
+                canvas.width,
+                label_row,
+                label_width,
+                &nodes,
+                graph,
+            );
+
+            let mut x_pos = start_x;
+            for c in display_label.chars() {
+                if label_row < canvas.height && x_pos < canvas.width {
+                    canvas.set(x_pos, label_row, c);
+                    record_label_cell(&mut cells, x_pos, label_row);
+                }
+                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+            }
+        } else {
+            let inline_limit = config
+                .max_edge_label_width
+                .min(gap_width.saturating_sub(inline_margin).max(1));
+            let inline_label = format_edge_label_with_limit(label, inline_limit);
+            let inline_width = display_width(&inline_label);
+            let start_x = gap_start_x
+                + usize::from(reserve_leading_shaft)
+                + (gap_width.saturating_sub(inline_width + inline_margin)) / 2;
+
+            for x in gap_start_x..start_x {
+                if y < canvas.height && x < canvas.width {
+                    canvas.set(x, y, style.edge_h);
+                }
+            }
+
+            if start_x < canvas.width && y < canvas.height {
+                canvas.set(start_x, y, ' ');
+            }
+
+            let mut x_pos = start_x + 1;
+            for c in inline_label.chars() {
+                if y < canvas.height && x_pos < canvas.width {
+                    canvas.set(x_pos, y, c);
+                    record_label_cell(&mut cells, x_pos, y);
+                }
+                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+            }
+
+            if x_pos < canvas.width && y < canvas.height {
+                canvas.set(x_pos, y, ' ');
+            }
+            x_pos += 1;
+
+            for x in x_pos..gap_end_x {
+                if y < canvas.height && x < canvas.width {
+                    canvas.set(x, y, style.edge_h);
+                }
+            }
         }
     } else {
         let x = seg.from.x;
@@ -1698,30 +2358,41 @@ fn draw_routed_edge_label(
         } else {
             (seg.to.y, seg.from.y)
         };
-        let mut mid_y = min_y + (max_y.saturating_sub(min_y)) / 2;
+        let mut mid_y = if canvas::is_arrow(canvas.get(x, min_y)) && min_y < max_y {
+            min_y + 1
+        } else if canvas::is_arrow(canvas.get(x, max_y)) && max_y > min_y {
+            max_y.saturating_sub(1)
+        } else {
+            min_y + (max_y.saturating_sub(min_y)) / 2
+        };
         if border_spans
             .iter()
             .any(|b| mid_y == b.y || mid_y == b.y + b.height.saturating_sub(1))
         {
-            if mid_y + 1 <= max_y && mid_y + 1 < canvas.height {
+            if canvas::is_arrow(canvas.get(x, min_y)) && mid_y < max_y && mid_y + 1 < canvas.height
+            {
                 mid_y += 1;
             } else if mid_y > min_y {
-                mid_y -= 1;
+                mid_y = mid_y.saturating_sub(1);
             }
         }
         let mut start_x = x.saturating_sub(label_width / 2);
         if start_x + label_width > canvas.width {
             start_x = canvas.width.saturating_sub(label_width);
         }
+
         // Avoid drawing over node interiors if possible.
         let mut x_pos = start_x;
         for c in display_label.chars() {
             if mid_y < canvas.height && x_pos < canvas.width {
                 canvas.set(x_pos, mid_y, c);
+                record_label_cell(&mut cells, x_pos, mid_y);
             }
             x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
         }
     }
+
+    build_label_placement(owner_id, cells)
 }
 
 /// Truncate and format edge label to the specified maximum width.
@@ -1790,6 +2461,62 @@ fn overlaps_node(nodes: &[&Node], x: usize, y: usize, width: usize) -> bool {
     false
 }
 
+fn pick_bt_vertical_label_start(
+    canvas: &Canvas,
+    nodes: &[&Node],
+    edge_x: usize,
+    y: usize,
+    width: usize,
+) -> usize {
+    if width == 0 {
+        return edge_x;
+    }
+
+    let max_start = canvas.width.saturating_sub(width);
+    let centered = edge_x.saturating_sub(width / 2).min(max_start);
+    let centered_covers_edge = centered <= edge_x && edge_x < centered.saturating_add(width);
+
+    if (!centered_covers_edge || canvas.get(edge_x, y) == ' ')
+        && !overlaps_node(nodes, centered, y, width)
+    {
+        return centered;
+    }
+
+    let candidates = [
+        edge_x
+            .saturating_sub(width.saturating_add(1))
+            .min(max_start),
+        edge_x.saturating_add(2).min(max_start),
+        centered,
+    ];
+    let mut best = centered;
+    let mut best_score = usize::MAX;
+
+    for start in candidates {
+        if start + width > canvas.width {
+            continue;
+        }
+
+        let covers_edge = start <= edge_x && edge_x < start.saturating_add(width);
+        let overlaps = overlaps_node(nodes, start, y, width);
+        let occupied = (start..start + width)
+            .filter(|x| canvas.get(*x, y) != ' ')
+            .count();
+        let distance = start.abs_diff(centered);
+        let score = usize::from(covers_edge) * 1000
+            + usize::from(overlaps) * 100
+            + occupied * 10
+            + distance;
+
+        if score < best_score {
+            best_score = score;
+            best = start;
+        }
+    }
+
+    best
+}
+
 fn adjust_horizontal_label_slot(
     start_x: usize,
     min_x: usize,
@@ -1797,9 +2524,12 @@ fn adjust_horizontal_label_slot(
     y: usize,
     width: usize,
     nodes: &[&Node],
+    graph: &Graph,
 ) -> usize {
     let candidate = start_x;
-    if !overlaps_node(nodes, candidate, y, width) {
+    if !overlaps_node(nodes, candidate, y, width)
+        && !overlaps_reserved_subgraph_cells(graph, candidate, y, width)
+    {
         return candidate;
     }
 
@@ -1807,12 +2537,14 @@ fn adjust_horizontal_label_slot(
     for delta in 1..=4 {
         if candidate >= delta
             && !overlaps_node(nodes, candidate - delta, y, width)
+            && !overlaps_reserved_subgraph_cells(graph, candidate - delta, y, width)
             && candidate - delta >= min_x
         {
             return candidate - delta;
         }
         if candidate + width + delta <= max_x
             && !overlaps_node(nodes, candidate + delta, y, width)
+            && !overlaps_reserved_subgraph_cells(graph, candidate + delta, y, width)
         {
             return candidate + delta;
         }
@@ -1820,12 +2552,85 @@ fn adjust_horizontal_label_slot(
     candidate
 }
 
+fn pick_outside_horizontal_label_row(
+    edge_y: usize,
+    canvas_height: usize,
+    nodes: &[&Node],
+    graph: &Graph,
+) -> Option<usize> {
+    let mut candidates = Vec::new();
+
+    for delta in [2usize, 3usize] {
+        if let Some(row) = edge_y.checked_sub(delta) {
+            candidates.push(row);
+        }
+        let row = edge_y.saturating_add(delta);
+        if row < canvas_height {
+            candidates.push(row);
+        }
+    }
+
+    candidates.into_iter().find(|row| {
+        let intersects_node = nodes
+            .iter()
+            .any(|node| *row >= node.y && *row < node.bottom_y());
+        !intersects_node && !is_reserved_subgraph_label_row(graph, *row)
+    })
+}
+
+fn is_reserved_subgraph_label_row(graph: &Graph, y: usize) -> bool {
+    graph.subgraphs.iter().any(|sg| {
+        if !sg.bounds.is_valid() {
+            return false;
+        }
+
+        let bottom_y = sg.bounds.y + sg.bounds.height.saturating_sub(1);
+        if y == sg.bounds.y || y == bottom_y {
+            return true;
+        }
+
+        sg.title.is_some()
+            && y == if graph.direction == Direction::BT && sg.bounds.height > 2 {
+                sg.bounds.y.saturating_add(1)
+            } else {
+                sg.bounds.y
+            }
+    })
+}
+
+fn overlaps_reserved_subgraph_cells(graph: &Graph, start_x: usize, y: usize, width: usize) -> bool {
+    let end_x = start_x.saturating_add(width);
+
+    graph.subgraphs.iter().any(|sg| {
+        if !sg.bounds.is_valid() {
+            return false;
+        }
+
+        let left = sg.bounds.x;
+        let right = sg.bounds.x + sg.bounds.width.saturating_sub(1);
+        let top = sg.bounds.y;
+        let bottom = sg.bounds.y + sg.bounds.height.saturating_sub(1);
+
+        (start_x..end_x).any(|x| {
+            let on_horizontal_border = (y == top || y == bottom) && x >= left && x <= right;
+            let on_vertical_border = (x == left || x == right) && y >= top && y <= bottom;
+            let on_vertical_border_gutter = y >= top
+                && y <= bottom
+                && (x == left.saturating_sub(1) || x == right.saturating_add(1));
+            on_horizontal_border
+                || on_vertical_border
+                || on_vertical_border_gutter
+                || is_subgraph_title_cell(graph, x, y)
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::Subgraph;
     use crate::CompositeStyle;
     use crate::Edge;
-    use crate::graph::Subgraph;
 
     #[test]
     fn precomputed_back_edge_renders_with_back_glyphs() {
@@ -1872,10 +2677,7 @@ mod tests {
     }
 
     fn char_at(output: &str, x: usize, y: usize) -> Option<char> {
-        output
-            .lines()
-            .nth(y)
-            .and_then(|line| line.chars().nth(x))
+        output.lines().nth(y).and_then(|line| line.chars().nth(x))
     }
 
     #[test]
@@ -1918,10 +2720,7 @@ mod tests {
             .build(&crate::parser::ParseConfig::default());
 
         let output = render(&graph, &config).expect("render td portal");
-        let portal_y = graph
-            .get_subgraph("sg")
-            .map(|sg| sg.bounds.y)
-            .unwrap_or(0);
+        let portal_y = graph.get_subgraph("sg").map(|sg| sg.bounds.y).unwrap_or(0);
         let portal_x = graph.get_node("B").map(|n| n.center_x()).unwrap_or(0);
         // With titled subgraphs we intentionally avoid drawing on the title row;
         // the "pierce" should appear just inside the container.
@@ -1961,8 +2760,14 @@ mod tests {
         graph.associate_node_with_subgraph("B", "sg");
 
         let mut route = EdgeRoute::new();
-        route.push_segment(crate::geom::Point::new(5, 3), crate::geom::Point::new(12, 3));
-        route.push_segment(crate::geom::Point::new(12, 3), crate::geom::Point::new(12, 4));
+        route.push_segment(
+            crate::geom::Point::new(5, 3),
+            crate::geom::Point::new(12, 3),
+        );
+        route.push_segment(
+            crate::geom::Point::new(12, 3),
+            crate::geom::Point::new(12, 4),
+        );
         graph.edge_routes.insert(0, route);
         graph.edges[0].label = Some("LBL".into());
 
@@ -2030,37 +2835,52 @@ mod tests {
 }
 
 /// Draw an edge label for convergent edges (multiple sources to one target).
-/// Labels are placed on the vertical segment from the source before the merge point.
+/// Labels are placed on the branch's outer side before the merge point so they
+/// do not crowd the shared junction corridor.
+#[allow(clippy::too_many_arguments)]
 fn draw_convergent_edge_label(
     canvas: &mut Canvas,
     from: &Node,
-    _to: &Node,
+    to: &Node,
     label: &str,
     direction: Direction,
     config: &Config,
-) {
+    edge_idx: usize,
+    edge: &crate::graph::Edge,
+) -> Option<EdgeLabelPlacement> {
     use cycle::{center_x, center_y};
 
     // Use slightly shorter limit for convergent labels to avoid crowding at merge points
     let convergent_limit = config.max_edge_label_width.saturating_sub(2).max(8);
     let display_label = format_edge_label_with_limit(label, convergent_limit);
     let label_width = display_width(&display_label);
+    let owner_id = edge_owner_id(edge_idx, edge);
+    let mut cells = Vec::new();
 
     match direction {
         Direction::TD | Direction::TB => {
             // Place label on vertical line from source, before merge point
             let src_x = center_x(from);
+            let target_x = center_x(to);
             let stem_start_y = from.bottom_y();
             // Place label just below the source box on the vertical stem
             let label_y = stem_start_y + 1;
 
-            // Center label horizontally around source's edge position
-            let label_start_x = src_x.saturating_sub(label_width / 2);
+            // Move the label away from the shared merge corridor when the source
+            // approaches the target from the left or right.
+            let label_start_x = if src_x + 1 < target_x {
+                src_x.saturating_sub(label_width)
+            } else if src_x > target_x + 1 {
+                src_x.saturating_add(2)
+            } else {
+                src_x.saturating_sub(label_width / 2)
+            };
 
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
                     canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
             }
@@ -2075,6 +2895,7 @@ fn draw_convergent_edge_label(
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
                     canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
             }
@@ -2091,6 +2912,7 @@ fn draw_convergent_edge_label(
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
                     canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
             }
@@ -2105,9 +2927,27 @@ fn draw_convergent_edge_label(
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
                     canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
                 }
                 x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
             }
         }
+    }
+
+    build_label_placement(owner_id, cells)
+}
+
+fn record_label_cell(cells: &mut Vec<(usize, usize)>, x: usize, y: usize) {
+    cells.push((x, y));
+}
+
+fn build_label_placement(
+    owner_id: String,
+    cells: Vec<(usize, usize)>,
+) -> Option<EdgeLabelPlacement> {
+    if cells.is_empty() {
+        None
+    } else {
+        Some(EdgeLabelPlacement { owner_id, cells })
     }
 }

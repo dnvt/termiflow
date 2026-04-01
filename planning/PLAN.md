@@ -1,7 +1,7 @@
 # Termiflow Development Plan
 
-> **Last Updated:** 2026-01-27
-> **Status:** Active development
+> **Last Updated:** 2026-04-01
+> **Status:** Active — pre-1.0 polish phase
 
 ---
 
@@ -12,104 +12,92 @@
 | Parser | ✅ Complete | 2-pass, forward refs, strict mode |
 | Layout | ✅ Complete | Coarse waterfall, all 4 directions |
 | Rendering | ✅ Complete | 9 styles, composite styling |
-| Subgraphs | ✅ Complete | Single-level, portal-aware |
-| Edge Labels | ✅ Complete | Pipe and text syntax |
+| Subgraphs | ✅ Complete (single-level) | Nested warns + ignores |
+| Edge Labels | ✅ Complete | Pipe and text syntax, configurable width |
 | Node Shapes | ✅ Complete | 9 shapes |
-| TUI Mode | ❌ Stub | Flag exists, not implemented |
+| Phase 6 Critic | ✅ Complete | 15 finding codes, topology analysis |
+| Phase 6 Repair | ✅ Complete | Greedy single-pass, bounded |
+| Phase 6 Provenance | ✅ Complete | Cell ownership tracking |
+| Phase 6 Diff/TUI | ✅ Complete | Frame diff, ANSI presenter |
+| Watch Mode | ✅ Complete | `--watch` live reload works |
+| TUI Mode | ⚠️ Partial | `--tui` functional, UX polish pending |
+| Beam Search (6.4) | ❌ Deferred | Greedy pass sufficient for now |
 | Per-Element Styling | ❌ Planned | Phase 2 (deferred) |
 
-**Tests:** 131+ passing
+**Tests:** 299 passing | **Clippy:** 0 warnings | **Unwrap violations:** 0
 
 ---
 
-## Active Work Queue
+## Priority Queue (Pre-1.0)
 
-### Phase 3a: Edge Label Config (QUICK WIN)
+### P1: Fix BT Subgraph Border Corruption (HIGH)
 
-**Effort:** ~30 min | **Status:** Ready
+**Effort:** ~2–3 hrs | **Severity:** High
 
-Edge labels are hardcoded to 12 chars while node labels allow 20 (configurable).
+Confirmed visual regression: junction characters (`┴`, `┼`) bleed into subgraph
+title rows in BT direction. Affects `subgraph_fanin_bt`, `subgraph_fanout_bt`.
 
-**Fix:**
-```rust
-// Add --max-edge-label CLI flag
-// Add max_edge_label_width to Config (default: 20)
-// Wire through format_edge_label() in render/mod.rs
-```
+Phase 6 critic detects this (`SubgraphTitleCorrupted` finding). Repair logic
+needs to prevent it at write time, not just detect after the fact.
 
-**Files:** `src/bin/common/mod.rs`, `src/config.rs`, `src/render/mod.rs`
+**Files:** `src/render/shapes.rs`, `src/render/repair.rs`, `src/render/critic.rs`
 
 ---
 
-### Phase 3b: LR/RL Aspect Ratio (URGENT)
+### P2: Add Unit Tests to Blind-Spot Modules (HIGH)
 
-**Effort:** ~2-3 hrs | **Status:** Ready
+**Effort:** ~3–4 hrs | **Risk:** Medium-High
 
-Terminal chars have ~2:1 aspect ratio. LR/RL layouts look cramped horizontally.
+Three core modules have zero unit tests:
+- `src/graph.rs` — graph construction, nesting, ID collision, forward refs
+- `src/render/edge.rs` — divergent/convergent routing, label placement
+- `src/render/shapes.rs` — junction placement, direction-aware rendering
 
-**Fix:**
-```rust
-// Increase STEM_LENGTH_HORIZONTAL from 3 → 6
-// Apply aspect multiplier to horizontal segments
-```
-
-**Files:** `src/style.rs`, `src/layout.rs`, `src/render/edge.rs`
+~30–45 tests needed across all three.
 
 ---
 
-### Phase 4: Remove Auto-Scaling
+### P3: Update Documentation to Match Reality (MEDIUM)
 
-**Effort:** ~1-2 hrs | **Status:** Ready (prerequisite for Phase 5)
+**Effort:** ~1 hr
 
-Currently auto-detects terminal width and compresses diagrams. Users want natural sizing.
+- `--audit` and `--optimize-render` CLI flags exist but are undocumented in `docs/reference.md`
+- Add `--render-iterations N` flag for iteration control
+- README positioning should be honest: "simple-to-moderate flowcharts"
 
-**Fix:**
-- Make scaling opt-in (`--fit-terminal`)
-- Raise/remove canvas limits (500x200 → 10000x5000)
-- Remove clipping warnings by default
-
-**Files:** `src/scaling.rs`, `src/style.rs`, `src/render/mod.rs`
+**Files:** `docs/reference.md`, `README.md`, `src/bin/common/mod.rs`
 
 ---
 
-### Phase 5: TUI Mode
+### P4: Open Links — `---` Edge Syntax (QUICK WIN)
 
-**Effort:** ~4-6 hrs | **Status:** Ready (blocked by Phase 4)
+**Effort:** ~1–2 hrs | **User Impact:** High
 
-Large diagrams need scrollable navigation.
+Parser recognizes open edges. Render: skip arrowhead when `EdgeKind::Open`.
+Add `edge_kinds_*` fixture variants. High Mermaid parity value for low cost.
 
-**Implementation:**
-- Add `ratatui` and `crossterm` dependencies
-- Create `src/tui/` module
-- Arrow keys, PgUp/PgDn, status bar
-- Wire up existing `--tui` flag
-
-**Files:** `Cargo.toml`, `src/tui/mod.rs` (NEW), `src/bin/common/mod.rs`
+**Files:** `src/parser.rs`, `src/render/edge.rs`, `tests/fixtures/`
 
 ---
 
-## Total Remaining Work
+### P5: Cycle Nested Fixture Completion (LOW)
 
-| Phase | Effort | Cumulative |
-|-------|--------|------------|
-| 3a | 30 min | 30 min |
-| 3b | 2-3 hrs | ~3 hrs |
-| 4 | 1-2 hrs | ~5 hrs |
-| 5 | 4-6 hrs | ~10 hrs |
+**Effort:** ~30 min
 
-**All 4 phases: ~8-12 hours**
+Add `cycle_nested_bt.md` and `cycle_nested_rl.md` fixture inputs + expected outputs.
 
 ---
 
-## Backlog (Future Work)
+## Deferred / Post-1.0 Backlog
 
 | Priority | Feature | Effort | Notes |
 |----------|---------|--------|-------|
-| HIGH | Open links (`---`) | Low | Edge type parity |
 | HIGH | Dotted edges (`-.->`) | Medium | Edge type parity |
 | HIGH | Thick edges (`==>`) | Low | Edge type parity |
-| MEDIUM | Nested subgraphs | High | Significant arch change |
-| MEDIUM | Per-element styling | High | Phase 2 spec exists |
+| MEDIUM | Bounded beam search (6.4) | Medium | Greedy pass sufficient for now |
+| MEDIUM | Nested subgraphs | High | Significant arch change; warns + ignores today |
+| MEDIUM | TUI UX polish | Medium | Viewport, keyboard, status bar |
+| LOW | Per-element styling (`classDef`) | High | Phase 2 spec exists |
 | LOW | Sequence diagrams | High | New diagram type |
 | LOW | State diagrams | High | New diagram type |
 
@@ -123,56 +111,43 @@ Large diagrams need scrollable navigation.
 | `AUDIT-termiflow-limits.md` | Internal limits reference (canvas, labels, routing) |
 | `spec/SPEC.md` | Technical specification |
 | `RFC-001-expanded-edge-routing.md` | Edge routing algorithm (implemented) |
-
----
-
-## Archived Documents
-
-The following documents are historical and kept for reference only:
-
-| Document | Status | Notes |
-|----------|--------|-------|
-| `ROADMAP.md` | Archived | Superseded by this file |
-| `FUTURE_WORK.md` | Archived | Merged into backlog above |
-| `LAYOUT_ROUTING_SPIKE.md` | Archived | Implemented |
-| `ROUTING_REVIEW.md` | Archived | Completed |
-| `SUBGRAPH_MIGRATION.md` | Archived | Implemented |
-| `phase2/` | Deferred | Per-element styling (future) |
+| `PHASE6_RENDER_FEEDBACK_ENGINE.md` | Phase 6 spec (60% implemented) |
+| `RENDERING_ISSUES_AUDIT.md` | Open rendering defects |
 
 ---
 
 ## Verification Commands
 
 ```bash
-# Phase 3a: Test edge label config
-echo 'graph TD
-A -->|validates credentials| B' | cargo run --bin termiflow -- --max-edge-label 25
-
-# Phase 3b: Test LR aspect ratio
-echo 'graph LR
-A --> B --> C' | cargo run --bin termiflow --
-
-# Phase 4: Test without auto-scaling
-COLUMNS=40 cargo run --bin termiflow -- tests/fixtures/inputs/flow_simple_td.md
-
-# Phase 5: Test TUI mode
-cargo run --bin termiflow -- --tui tests/fixtures/inputs/crossing_grid_td.md
-
 # All tests
 cargo test
 
-# Regenerate golden fixtures
+# Golden fixtures
 cargo test --features golden -- --ignored
+
+# Critic audit output
+echo 'graph TD; A-->B-->C' | cargo run --bin tw -- --audit
+
+# Watch mode
+cargo run --bin tw -- --watch diagram.md
+
+# TUI mode
+cargo run --bin tw -- --tui diagram.md
+
+# Quality check
+cargo clippy && cargo fmt --check
 ```
 
 ---
 
 ## Known Limitations
 
-1. **Sibling subgraph overlap** - Service/Data layers may render as nested
-2. **Nested subgraphs** - Warns and ignores (Mermaid supports)
-3. **Per-element styling** - `classDef`, `:::` not supported yet
+1. **BT subgraph borders** — junction chars bleed into title rows (P1 fix)
+2. **Sibling subgraph collision** — envelope merging artifacts in dense graphs
+3. **Nested subgraphs** — warns and ignores (Mermaid supports; arch change required)
+4. **Per-element styling** — `classDef`, `:::` not supported
+5. **Beam search** — greedy single-pass only; complex repair may miss optimal solution
 
 ---
 
-*Consolidated from multiple planning documents on 2026-01-27*
+*Updated 2026-04-01 from deep audit review (see `analysis/reviews/2026-04-01-deep-audit.md`)*

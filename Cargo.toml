@@ -18,13 +18,13 @@ path = "src/bin/tw.rs"
 golden = []
 
 [dependencies]
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.29"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
 anyhow = "1.0"
 dirs = "6"
-toml = "0.9"
+toml = "1"
 unicode-width = "0.2"
 lazy_static = "1.5"
 

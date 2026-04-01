@@ -17,6 +17,7 @@ use crate::geom::{EdgeRoute, Point, Rect};
 use crate::graph::{Direction, Graph};
 use crate::orientation::{Axis, OrientedCoords};
 use crate::portals::{compute_envelopes, SubgraphEnvelope};
+use crate::spacing::SpacingConfig;
 use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH};
 
 fn rect_fully_inside(outer: Rect, inner: Rect) -> bool {
@@ -72,6 +73,29 @@ fn shift_nodes_in_subgraph(
         }
         if let Some(r) = node_rects.get_mut(node_id) {
             r.x += delta_x;
+        }
+    }
+}
+
+fn shift_nodes_in_subgraph_y(
+    graph: &Graph,
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    subgraph_id: &str,
+    delta_y: usize,
+) {
+    if delta_y == 0 {
+        return;
+    }
+    let Some(sg) = graph.get_subgraph(subgraph_id) else {
+        return;
+    };
+    for node_id in &sg.node_ids {
+        if let Some(p) = positions.get_mut(node_id) {
+            p.y += delta_y;
+        }
+        if let Some(r) = node_rects.get_mut(node_id) {
+            r.y += delta_y;
         }
     }
 }
@@ -135,13 +159,7 @@ pub struct CoarseLayoutConfig {
 
 impl Default for CoarseLayoutConfig {
     fn default() -> Self {
-        Self {
-            node_padding: 1,
-            subgraph_gutter: 2,
-            min_horizontal_spacing: 4,
-            min_vertical_spacing: 4,
-            enable_portals: true,
-        }
+        Self::from_spacing(&SpacingConfig::default_config())
     }
 }
 
@@ -151,11 +169,15 @@ impl CoarseLayoutConfig {
     /// This is intentionally conservative (still leaves room for elbows/arrows)
     /// but reduces the default "big gaps" between ranks/columns.
     pub fn compact() -> Self {
+        Self::from_spacing(&SpacingConfig::compact())
+    }
+
+    pub fn from_spacing(spacing: &SpacingConfig) -> Self {
         Self {
-            node_padding: 1,
-            subgraph_gutter: 1,
-            min_horizontal_spacing: 2,
-            min_vertical_spacing: 2,
+            node_padding: spacing.node_margin,
+            subgraph_gutter: spacing.subgraph_gutter,
+            min_horizontal_spacing: spacing.col_spacing,
+            min_vertical_spacing: spacing.row_spacing,
             enable_portals: true,
         }
     }
@@ -300,6 +322,99 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         }
     }
 
+    // 2.26) Resolve vertical subgraph overlaps for TD/BT
+    if matches!(
+        input.graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) && !input.graph.subgraphs.is_empty()
+    {
+        for _ in 0..8 {
+            let envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            let mut shifts: HashMap<String, usize> = HashMap::new();
+
+            // Compute minimum rank for each subgraph to determine "earlier" vs "later"
+            let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
+            for sg in &input.graph.subgraphs {
+                let min_rank = sg
+                    .node_ids
+                    .iter()
+                    .filter_map(|id| placement.ranks.get(id))
+                    .copied()
+                    .min();
+                if let Some(r) = min_rank {
+                    subgraph_min_rank.insert(sg.id.as_str(), r);
+                }
+            }
+
+            // Check all sibling pairs for vertical overlap
+            let sg_ids: Vec<&String> = envelopes.keys().collect();
+            for i in 0..sg_ids.len() {
+                for j in (i + 1)..sg_ids.len() {
+                    let env1 = &envelopes[sg_ids[i]];
+                    let env2 = &envelopes[sg_ids[j]];
+
+                    // Must overlap horizontally to collide vertically
+                    let h_overlap =
+                        env1.outer.x < env2.outer.right() && env2.outer.x < env1.outer.right();
+                    let v_overlap =
+                        env1.outer.y < env2.outer.bottom() && env2.outer.y < env1.outer.bottom();
+
+                    if !h_overlap || !v_overlap {
+                        continue;
+                    }
+
+                    // Skip nested subgraphs
+                    let nested = rect_fully_inside(env1.outer, env2.outer)
+                        || rect_fully_inside(env2.outer, env1.outer);
+                    if nested {
+                        continue;
+                    }
+
+                    // Determine which subgraph is "later" (higher rank = drawn later)
+                    let r1 = subgraph_min_rank.get(sg_ids[i].as_str()).copied();
+                    let r2 = subgraph_min_rank.get(sg_ids[j].as_str()).copied();
+                    let (Some(rank1), Some(rank2)) = (r1, r2) else {
+                        continue;
+                    };
+
+                    // Shift the later-ranked subgraph down until it clears the earlier one
+                    let (late_id, early_env, late_env) = if rank1 <= rank2 {
+                        (sg_ids[j].as_str(), env1, env2)
+                    } else {
+                        (sg_ids[i].as_str(), env2, env1)
+                    };
+
+                    let required_top = early_env.outer.bottom().saturating_add(1);
+                    if late_env.outer.y < required_top {
+                        let delta = required_top - late_env.outer.y;
+                        shifts
+                            .entry(late_id.to_string())
+                            .and_modify(|d| *d = (*d).max(delta))
+                            .or_insert(delta);
+                    }
+                }
+            }
+
+            let Some((sg_id, delta)) = shifts
+                .iter()
+                .max_by_key(|(_, d)| *d)
+                .map(|(id, d)| (id.clone(), *d))
+            else {
+                break;
+            };
+
+            // Shift all nodes in the subgraph down
+            shift_nodes_in_subgraph_y(
+                input.graph,
+                &mut placement.positions,
+                &mut placement.node_rects,
+                &sg_id,
+                delta,
+            );
+        }
+    }
+
     // 2.5) Flip coordinates for BT/RL to match flow direction
     // Calculate strict content bounds
     let max_x = placement
@@ -366,7 +481,8 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     // Ensure we have at least one row between a subgraph bottom border and any
     // external target box below it. Otherwise the renderer's arrow would land on
     // the border row (missing the arrow at the target entry point).
-    if matches!(input.graph.direction, Direction::TD | Direction::TB) && !subgraph_envelopes.is_empty()
+    if matches!(input.graph.direction, Direction::TD | Direction::TB)
+        && !subgraph_envelopes.is_empty()
     {
         for _ in 0..8 {
             let mut required_shift_by_rank: HashMap<usize, usize> = HashMap::new();
@@ -578,11 +694,6 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                     if input.graph.get_node_subgraph(&edge.to) == Some(sg_id.as_str()) {
                         continue;
                     }
-                    // If the destination is inside another subgraph, let that subgraph's
-                    // internal padding/routing handle clearance.
-                    if input.graph.get_node_subgraph(&edge.to).is_some() {
-                        continue;
-                    }
                     let Some(to_rect) = placement.node_rects.get(&edge.to) else {
                         continue;
                     };
@@ -765,10 +876,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             .get(edge.from.as_str())
             .copied()
             .unwrap_or(0);
-        let in_degree = incoming_counts
-            .get(edge.to.as_str())
-            .copied()
-            .unwrap_or(0);
+        let in_degree = incoming_counts.get(edge.to.as_str()).copied().unwrap_or(0);
 
         // Convergent edges (multiple sources into one target) render best when the renderer
         // owns the junction, so skip pre-routing here.
@@ -1029,7 +1137,10 @@ pub fn apply_coarse_layout(
         for (idx, route) in &graph.edge_routes {
             eprintln!("termiflow: route {} segments {}", idx, route.segments.len());
             for (i, seg) in route.segments.iter().enumerate() {
-                eprintln!("  seg[{}]: ({}, {}) -> ({}, {})", i, seg.from.x, seg.from.y, seg.to.x, seg.to.y);
+                eprintln!(
+                    "  seg[{}]: ({}, {}) -> ({}, {})",
+                    i, seg.from.x, seg.from.y, seg.to.x, seg.to.y
+                );
             }
         }
     }
@@ -1041,10 +1152,7 @@ pub fn apply_coarse_layout(
     Ok(graph)
 }
 
-fn adjust_portal_slots_for_title(
-    envelopes: &mut HashMap<String, SubgraphEnvelope>,
-    graph: &Graph,
-) {
+fn adjust_portal_slots_for_title(envelopes: &mut HashMap<String, SubgraphEnvelope>, graph: &Graph) {
     // Titles are drawn on the top border row of subgraphs. In BT orientation, exiting
     // portals live on that top border and can otherwise pierce through the title
     // (including its surrounding spaces). Shift portal slots out of the title span.
@@ -1080,7 +1188,7 @@ fn adjust_portal_slots_for_title(
             if x < protected_start || x > protected_end {
                 return x;
             }
-            if protected_end + 1 <= max_x {
+            if protected_end < max_x {
                 protected_end + 1
             } else if protected_start > min_x {
                 protected_start.saturating_sub(1)
@@ -1159,12 +1267,7 @@ impl LayoutSpacingPolicy {
         }
     }
 
-    fn spacing_for_layer(
-        &self,
-        graph: &Graph,
-        layers: &[Vec<usize>],
-        layer_idx: usize,
-    ) -> usize {
+    fn spacing_for_layer(&self, graph: &Graph, layers: &[Vec<usize>], layer_idx: usize) -> usize {
         let layer = &layers[layer_idx];
 
         // Check fan-out: source (in this layer) has multiple targets
@@ -1295,11 +1398,11 @@ impl LayoutSpacingPolicy {
                 }
             }
 
-                if boundary_crosses_subgraph {
-                    if !has_fan_out && !has_fan_in && !has_labels {
-                        // Leave a visible connector row plus an arrow head before the next node.
-                        spacing = if crossing_into_titled_subgraph {
-                            SPACING_MINIMAL + 2
+            if boundary_crosses_subgraph {
+                if !has_fan_out && !has_fan_in && !has_labels {
+                    // Leave a visible connector row plus an arrow head before the next node.
+                    spacing = if crossing_into_titled_subgraph {
+                        SPACING_MINIMAL + 2
                     } else {
                         SPACING_MINIMAL + 1
                     };
@@ -1310,8 +1413,6 @@ impl LayoutSpacingPolicy {
                         self.gutter
                     } else if has_fan_out {
                         self.gutter * 2
-                    } else if has_fan_in {
-                        self.gutter
                     } else {
                         self.gutter
                     };
@@ -1344,6 +1445,20 @@ impl LayoutSpacingPolicy {
         // elbows/dashes room before hitting the targets.
         if matches!(graph.direction, Direction::LR | Direction::RL) && has_fan_out {
             spacing = spacing.max(SPACING_FANOUT + 4);
+        }
+
+        // Aspect ratio compensation for LR/RL layouts.
+        // Terminal characters are ~2:1 height:width ratio, so horizontal layouts
+        // need proportionally more spacing along the primary (horizontal) axis.
+        // For complex topologies (fan-out, fan-in, labels) we apply a 2x multiplier.
+        // For simple chains we honour the configured minimum horizontal spacing, which
+        // already encodes the 2x compensation via SpacingConfig::for_direction.
+        if matches!(graph.direction, Direction::LR | Direction::RL) {
+            if !has_fan_out && !has_fan_in && !has_labels {
+                spacing = self.min_horizontal.max(spacing * 2);
+            } else {
+                spacing *= 2;
+            }
         }
 
         spacing
@@ -1436,9 +1551,7 @@ fn place_nodes(
             if std::env::var("DEBUG_FANIN").is_ok() && node.id == "Merge" {
                 eprintln!(
                     "layout fanin node={} parents={:?} incoming_edges={}",
-                    node.id,
-                    parent_centers,
-                    has_incoming
+                    node.id, parent_centers, has_incoming
                 );
             }
 
@@ -1462,8 +1575,7 @@ fn place_nodes(
                 if !prev_centers.is_empty() {
                     let sum: usize = prev_centers.iter().sum();
                     sum / prev_centers.len()
-                } else if let Some(prior) = prior_positions.as_ref().and_then(|m| m.get(&node.id))
-                {
+                } else if let Some(prior) = prior_positions.as_ref().and_then(|m| m.get(&node.id)) {
                     match coords.secondary {
                         Axis::Horizontal => prior.x + node.width / 2,
                         Axis::Vertical => prior.y + node.height / 2,
@@ -1486,7 +1598,12 @@ fn place_nodes(
             if std::env::var("DEBUG_FANIN").is_ok() && node.id == "Merge" {
                 eprintln!(
                     "place {} desired_center={} extent={} start={} cursor={} -> pos={}",
-                    node.id, desired_center, extent_sec, desired_start, secondary_cursor, secondary_pos
+                    node.id,
+                    desired_center,
+                    extent_sec,
+                    desired_start,
+                    secondary_cursor,
+                    secondary_pos
                 );
             }
 
@@ -1727,8 +1844,11 @@ fn mark_back_edges(graph: &mut Graph) -> bool {
 // -----------------------------------------------------------------------------
 
 #[allow(dead_code)]
-#[deprecated(since = "0.2.0", note = "Use crate::crossing::CrossingMinimizer instead")]
-fn optimize_layer_order(graph: &Graph, layers: &mut Vec<Vec<usize>>) {
+#[deprecated(
+    since = "0.2.0",
+    note = "Use crate::crossing::CrossingMinimizer instead"
+)]
+fn optimize_layer_order(graph: &Graph, layers: &mut [Vec<usize>]) {
     // Run a few passes of barycenter minimization
     for _ in 0..4 {
         // Down sweep
@@ -1895,6 +2015,7 @@ fn balance_coordinates(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_balance_pass(
     graph: &Graph,
     positions: &mut HashMap<String, Point>,
@@ -1921,12 +2042,18 @@ fn apply_balance_pass(
             Axis::Horizontal => positions[node_id].x,
             Axis::Vertical => positions[node_id].y,
         };
+        let incoming_count = graph
+            .edges
+            .iter()
+            .filter(|e| !e.is_back_edge && &e.to == node_id)
+            .count();
         let has_fan_out = graph
             .edges
             .iter()
             .filter(|e| !e.is_back_edge && &e.from == node_id)
             .count()
             > 1;
+        let is_fanin_target = incoming_count > 1;
         let participates_in_fanin = graph
             .edges
             .iter()
@@ -1974,8 +2101,11 @@ fn apply_balance_pass(
             let ideal_start = ideal_center.saturating_sub(node_width / 2);
 
             let proposed = ideal_start.max(min_pos);
-            let clamp_for_fanin = !is_down_sweep && !has_fan_out && participates_in_fanin;
-            let new_pos = if clamp_for_fanin {
+            let clamp_for_fanin =
+                !is_down_sweep && !has_fan_out && participates_in_fanin && !is_fanin_target;
+            let new_pos = if !is_down_sweep && is_fanin_target {
+                current_pos.max(min_pos)
+            } else if clamp_for_fanin {
                 proposed.min(current_pos).max(min_pos)
             } else {
                 proposed
@@ -2239,11 +2369,7 @@ fn carve_subgraph_portals(
         if debug_timing {
             eprintln!(
                 "subgraph {} portals top={:?} bottom={:?} left={:?} right={:?}",
-                sg_id,
-                portals.top,
-                portals.bottom,
-                portals.left,
-                portals.right
+                sg_id, portals.top, portals.bottom, portals.left, portals.right
             );
         }
     }
@@ -2266,14 +2392,8 @@ fn median_slot(slots: &HashSet<usize>, fallback: usize) -> usize {
 fn portal_point(bounds: &SubgraphEnvelope, how: PortalUse, direction: Direction) -> Option<Point> {
     match (direction, how) {
         (Direction::TD | Direction::TB, PortalUse::Enter) => {
-            let x = median_slot(
-                &bounds.portals.top,
-                bounds.outer.x + bounds.outer.width / 2,
-            );
-            Some(Point::new(
-                x,
-                bounds.outer.y.saturating_add(1),
-            ))
+            let x = median_slot(&bounds.portals.top, bounds.outer.x + bounds.outer.width / 2);
+            Some(Point::new(x, bounds.outer.y.saturating_add(1)))
         }
         (Direction::TD | Direction::TB, PortalUse::Exit) => {
             let x = median_slot(
@@ -2294,19 +2414,31 @@ fn portal_point(bounds: &SubgraphEnvelope, how: PortalUse, direction: Direction)
             Some(Point::new(x, bounds.outer.y))
         }
         (Direction::LR, PortalUse::Enter) => {
-            let y = median_slot(&bounds.portals.left, bounds.outer.y + bounds.outer.height / 2);
+            let y = median_slot(
+                &bounds.portals.left,
+                bounds.outer.y + bounds.outer.height / 2,
+            );
             Some(Point::new(bounds.outer.x, y))
         }
         (Direction::LR, PortalUse::Exit) => {
-            let y = median_slot(&bounds.portals.right, bounds.outer.y + bounds.outer.height / 2);
+            let y = median_slot(
+                &bounds.portals.right,
+                bounds.outer.y + bounds.outer.height / 2,
+            );
             Some(Point::new(bounds.outer.right().saturating_sub(1), y))
         }
         (Direction::RL, PortalUse::Enter) => {
-            let y = median_slot(&bounds.portals.right, bounds.outer.y + bounds.outer.height / 2);
+            let y = median_slot(
+                &bounds.portals.right,
+                bounds.outer.y + bounds.outer.height / 2,
+            );
             Some(Point::new(bounds.outer.right().saturating_sub(1), y))
         }
         (Direction::RL, PortalUse::Exit) => {
-            let y = median_slot(&bounds.portals.left, bounds.outer.y + bounds.outer.height / 2);
+            let y = median_slot(
+                &bounds.portals.left,
+                bounds.outer.y + bounds.outer.height / 2,
+            );
             Some(Point::new(bounds.outer.x, y))
         }
     }
@@ -2479,6 +2611,7 @@ fn add_manhattan_segment(route: &mut EdgeRoute, from: Point, to: Point, directio
     route.push_segment(mid, to);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lane_route(
     start: Point,
     end: Point,
@@ -2602,6 +2735,8 @@ fn route_with_obstacles(
 
     let mut came_from: HashMap<Point, Point> = HashMap::new();
     let mut best_cost: HashMap<(Point, Option<Dir>), usize> = HashMap::new();
+    // Track overall best cost to each point (regardless of direction) for came_from updates
+    let mut best_cost_to_point: HashMap<Point, usize> = HashMap::new();
     let mut open = BinaryHeap::new();
 
     open.push(PathNode {
@@ -2613,6 +2748,7 @@ fn route_with_obstacles(
 
     // Initial cost for start point (any direction)
     best_cost.insert((start, None), 0);
+    best_cost_to_point.insert(start, 0);
 
     let mut found_end = false;
     let mut steps: usize = 0;
@@ -2631,7 +2767,7 @@ fn route_with_obstacles(
             );
             break;
         }
-        if debug_timing && steps % 500 == 0 {
+        if debug_timing && steps.is_multiple_of(500) {
             eprintln!(
                 "    routing step {} at {:?} (open={})",
                 steps,
@@ -2687,7 +2823,12 @@ fn route_with_obstacles(
 
             if new_cost < known {
                 best_cost.insert(key, new_cost);
-                came_from.insert(next, current.point);
+                // Only update came_from if this is the best overall path to this point
+                let best_to_next = best_cost_to_point.get(&next).copied().unwrap_or(usize::MAX);
+                if new_cost < best_to_next {
+                    best_cost_to_point.insert(next, new_cost);
+                    came_from.insert(next, current.point);
+                }
                 open.push(PathNode {
                     cost: new_cost,
                     estimate: manhattan(next, end),
@@ -2793,7 +2934,8 @@ fn route_with_detours(
         if !in_bounds(p1) || !in_bounds(p2) {
             continue;
         }
-        if (p1 != start && p1 != end && in_avoid(p1)) || (p2 != start && p2 != end && in_avoid(p2)) {
+        if (p1 != start && p1 != end && in_avoid(p1)) || (p2 != start && p2 != end && in_avoid(p2))
+        {
             continue;
         }
 

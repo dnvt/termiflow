@@ -78,11 +78,11 @@ impl CrossingMinimizer {
     /// # Arguments
     /// * `graph` - The graph being laid out
     /// * `layers` - Mutable reference to layer assignments (Vec<Vec<usize>> where each inner vec
-    ///              contains node indices for that layer)
+    ///   contains node indices for that layer)
     ///
     /// # Returns
     /// The final number of edge crossings after minimization
-    pub fn minimize(&self, graph: &Graph, layers: &mut Vec<Vec<usize>>) -> usize {
+    pub fn minimize(&self, graph: &Graph, layers: &mut [Vec<usize>]) -> usize {
         if layers.len() <= 1 {
             return 0;
         }
@@ -326,9 +326,12 @@ impl CrossingMinimizer {
                     }
                     Heuristic::Median => {
                         // Median position (more robust to outliers)
-                        neighbor_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+                        neighbor_positions
+                            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
                         let mid = neighbor_positions.len() / 2;
-                        if neighbor_positions.len() % 2 == 0 && neighbor_positions.len() > 1 {
+                        if neighbor_positions.len().is_multiple_of(2)
+                            && neighbor_positions.len() > 1
+                        {
                             (neighbor_positions[mid - 1] + neighbor_positions[mid]) / 2.0
                         } else {
                             neighbor_positions[mid]
@@ -431,7 +434,7 @@ mod tests {
     fn test_barycenter_heuristic() {
         let config = CrossingConfig {
             heuristic: Heuristic::Barycenter,
-            max_passes: 4, // Match original behavior
+            max_passes: 4,              // Match original behavior
             convergence_threshold: 0.0, // Always run all passes
         };
         let minimizer = CrossingMinimizer::with_config(config);
