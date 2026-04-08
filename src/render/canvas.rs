@@ -6,6 +6,8 @@
 use crate::graph::Node;
 use crate::style::StyleChars;
 
+use super::semantic::{CellMeta, CellOwnerKind, CellRole};
+
 // ============================================================================
 // Character Classification
 // ============================================================================
@@ -98,6 +100,10 @@ pub fn is_corner_right(c: char, s: &StyleChars) -> bool {
 
 /// Resolve what character to draw when two characters overlap.
 /// Creates junctions/crosses where appropriate, preserves sacred characters.
+///
+/// Note: Parallel edges (both horizontal or both vertical) do NOT create
+/// crossing indicators. This is intentional - they are visually distinguishable
+/// by separation, and crosses would create ambiguity about edge connectivity.
 pub fn resolve_overlap(existing: char, new: char, s: &StyleChars) -> char {
     // Empty space - just use new character
     if existing == ' ' || existing == '\0' {
@@ -140,16 +146,46 @@ pub fn resolve_overlap(existing: char, new: char, s: &StyleChars) -> char {
             };
         }
         // Two corners = junction (edges converging)
+        // Use arm-counting to determine the correct junction type based on
+        // which directions both corners open toward.
+        //
+        // Note: is_corner_left/right indicate which SIDE the corner is on, not
+        // which direction the arm points. Corners on the left side have their
+        // horizontal arm pointing RIGHT, and vice versa.
         if is_corner(new, s) {
-            let both_down = is_corner_down(existing, s) && is_corner_down(new, s);
-            let left_right = is_corner_left(existing, s) && is_corner_right(new, s);
-            let right_left = is_corner_right(existing, s) && is_corner_left(new, s);
-            if both_down || left_right || right_left {
-                return s.junction_down; // ┬
+            // Count all directional arms from both corners
+            let has_up_arm = is_corner_up(existing, s) || is_corner_up(new, s);
+            let has_down_arm = is_corner_down(existing, s) || is_corner_down(new, s);
+            // Corners on right side (is_corner_right) have arm going LEFT
+            let has_left_arm = is_corner_right(existing, s) || is_corner_right(new, s);
+            // Corners on left side (is_corner_left) have arm going RIGHT
+            let has_right_arm = is_corner_left(existing, s) || is_corner_left(new, s);
+
+            let arm_count = [has_up_arm, has_down_arm, has_left_arm, has_right_arm]
+                .iter()
+                .filter(|&&b| b)
+                .count();
+
+            if arm_count >= 4 {
+                return s.cross; // ┼ - all four directions
             }
-            if is_corner_up(existing, s) && is_corner_up(new, s) {
-                return s.junction_up; // ┴
+            if arm_count == 3 {
+                // Three-way junction - determine which direction is missing
+                if !has_up_arm {
+                    return s.junction_down; // ┬ - no up arm
+                }
+                if !has_down_arm {
+                    return s.junction_up; // ┴ - no down arm
+                }
+                if !has_left_arm {
+                    return s.junction_right; // ├ - no left arm
+                }
+                if !has_right_arm {
+                    return s.junction_left; // ┤ - no right arm
+                }
             }
+            // Two arms - this is actually a corner situation (shouldn't happen
+            // for two overlapping corners, but fall through to cross as safety)
             return s.cross;
         }
     }
@@ -202,6 +238,7 @@ pub struct Canvas {
     pub width: usize,
     pub height: usize,
     grid: Vec<Vec<char>>,
+    meta_grid: Vec<Vec<CellMeta>>,
 }
 
 impl Canvas {
@@ -211,14 +248,13 @@ impl Canvas {
             width,
             height,
             grid: vec![vec![' '; width]; height],
+            meta_grid: vec![vec![CellMeta::default(); width]; height],
         }
     }
 
     /// Set a character at position (x, y).
     pub fn set(&mut self, x: usize, y: usize, c: char) {
-        if x < self.width && y < self.height {
-            self.grid[y][x] = c;
-        }
+        self.set_inferred(x, y, c);
     }
 
     /// Get character at position (x, y).
@@ -240,7 +276,136 @@ impl Canvas {
     pub fn set_edge_char(&mut self, x: usize, y: usize, new_char: char, s: &StyleChars) {
         let existing = self.get(x, y);
         let final_char = resolve_overlap(existing, new_char, s);
-        self.set(x, y, final_char);
+        self.set_inferred(x, y, final_char);
+    }
+
+    /// Set a character and infer a generic semantic classification from the glyph.
+    pub fn set_inferred(&mut self, x: usize, y: usize, c: char) {
+        if x < self.width && y < self.height {
+            self.grid[y][x] = c;
+            self.meta_grid[y][x] = infer_meta(c);
+        }
+    }
+
+    /// Set a character with explicit semantic ownership.
+    pub fn set_owned(
+        &mut self,
+        x: usize,
+        y: usize,
+        c: char,
+        owner_kind: CellOwnerKind,
+        owner_id: &str,
+        z_index: u8,
+    ) {
+        if x < self.width && y < self.height {
+            self.grid[y][x] = c;
+            self.meta_grid[y][x] = infer_owned_meta(c, owner_kind, owner_id, z_index);
+        }
+    }
+
+    /// Set an edge character with overlap resolution and explicit ownership.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_edge_char_owned(
+        &mut self,
+        x: usize,
+        y: usize,
+        new_char: char,
+        s: &StyleChars,
+        owner_kind: CellOwnerKind,
+        owner_id: &str,
+        z_index: u8,
+    ) {
+        let existing = self.get(x, y);
+        let final_char = resolve_overlap(existing, new_char, s);
+        if x < self.width && y < self.height {
+            self.grid[y][x] = final_char;
+            let existing_meta = &self.meta_grid[y][x];
+            let final_role = infer_role(final_char);
+            let should_preserve_existing = final_char == existing
+                && !matches!(
+                    final_role,
+                    CellRole::Horizontal
+                        | CellRole::Vertical
+                        | CellRole::Corner
+                        | CellRole::Junction
+                        | CellRole::ArrowTip
+                );
+
+            if should_preserve_existing {
+                return;
+            }
+
+            let meta = infer_owned_meta(final_char, owner_kind, owner_id, z_index);
+            if meta.z_index >= existing_meta.z_index {
+                self.meta_grid[y][x] = meta;
+            }
+        }
+    }
+
+    /// Rebuild metadata for every cell from the current visible glyph grid.
+    pub fn refresh_inferred_meta(&mut self) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                self.meta_grid[y][x] = infer_meta(self.grid[y][x]);
+            }
+        }
+    }
+
+    /// Update semantic metadata without changing the visible character.
+    pub fn set_meta_only(
+        &mut self,
+        x: usize,
+        y: usize,
+        owner_kind: CellOwnerKind,
+        owner_id: Option<&str>,
+        role: CellRole,
+        z_index: u8,
+    ) {
+        if x < self.width && y < self.height {
+            let ch = self.grid[y][x];
+            if z_index >= self.meta_grid[y][x].z_index {
+                self.meta_grid[y][x] = CellMeta {
+                    ch,
+                    owner_kind,
+                    owner_id: owner_id.map(ToOwned::to_owned),
+                    role,
+                    z_index,
+                };
+            }
+        }
+    }
+
+    /// Get semantic metadata at position (x, y).
+    pub fn get_meta(&self, x: usize, y: usize) -> Option<&CellMeta> {
+        if x < self.width && y < self.height {
+            Some(&self.meta_grid[y][x])
+        } else {
+            None
+        }
+    }
+
+    /// Capture explicit edge-related metadata that should survive a metadata refresh.
+    pub fn explicit_edge_meta(&self) -> Vec<(usize, usize, CellMeta)> {
+        let mut preserved = Vec::new();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let meta = &self.meta_grid[y][x];
+                if meta.owner_id.is_some()
+                    && meta.z_index > 0
+                    && matches!(
+                        meta.role,
+                        CellRole::Horizontal
+                            | CellRole::Vertical
+                            | CellRole::Corner
+                            | CellRole::Junction
+                            | CellRole::ArrowTip
+                    )
+                {
+                    preserved.push((x, y, meta.clone()));
+                }
+            }
+        }
+        preserved
     }
 
     /// Check if a node is within visible canvas bounds.
@@ -287,6 +452,85 @@ impl Canvas {
         }
 
         pad_lines(&lines, pad)
+    }
+}
+
+fn infer_meta(c: char) -> CellMeta {
+    let role = infer_role(c);
+
+    let owner_kind = match role {
+        CellRole::Empty => CellOwnerKind::Empty,
+        CellRole::ArrowTip => CellOwnerKind::ArrowHead,
+        CellRole::Junction => CellOwnerKind::Junction,
+        CellRole::Horizontal | CellRole::Vertical | CellRole::Corner => CellOwnerKind::EdgeSegment,
+        CellRole::Text
+        | CellRole::Unknown
+        | CellRole::Fill
+        | CellRole::Border
+        | CellRole::Portal => CellOwnerKind::Unknown,
+    };
+
+    CellMeta {
+        ch: c,
+        owner_kind,
+        owner_id: None,
+        role,
+        z_index: 0,
+    }
+}
+
+fn infer_role(c: char) -> CellRole {
+    if c == ' ' {
+        CellRole::Empty
+    } else if is_arrow(c) {
+        CellRole::ArrowTip
+    } else if matches!(
+        c,
+        '┌' | '┐' | '└' | '┘' | '╔' | '╗' | '╚' | '╝' | '╭' | '╮' | '╰' | '╯'
+    ) {
+        CellRole::Corner
+    } else if matches!(c, '-' | '─' | '═' | '━' | '█') {
+        CellRole::Horizontal
+    } else if matches!(c, '|' | ':' | '│' | '║' | '┃') {
+        CellRole::Vertical
+    } else if matches!(
+        c,
+        '+' | '┼'
+            | '╬'
+            | '╋'
+            | '├'
+            | '┤'
+            | '┬'
+            | '┴'
+            | '╠'
+            | '╣'
+            | '╦'
+            | '╩'
+            | '┣'
+            | '┫'
+            | '┳'
+            | '┻'
+    ) {
+        CellRole::Junction
+    } else {
+        CellRole::Text
+    }
+}
+
+fn infer_owned_meta(c: char, owner_kind: CellOwnerKind, owner_id: &str, z_index: u8) -> CellMeta {
+    let role = infer_role(c);
+    let final_owner_kind = match (owner_kind, role) {
+        (CellOwnerKind::CycleEdge, CellRole::ArrowTip) => CellOwnerKind::CycleEdge,
+        (_, CellRole::ArrowTip) => CellOwnerKind::ArrowHead,
+        _ => owner_kind,
+    };
+
+    CellMeta {
+        ch: c,
+        owner_kind: final_owner_kind,
+        owner_id: Some(owner_id.to_string()),
+        role,
+        z_index,
     }
 }
 
@@ -460,6 +704,34 @@ mod tests {
         assert_eq!(resolve_overlap('A', '│', &s), 'A');
         assert_eq!(resolve_overlap('1', '─', &s), '1');
         assert_eq!(resolve_overlap('_', '┌', &s), '_');
+    }
+
+    #[test]
+    fn test_overlap_two_corners_creates_junction() {
+        let s = unicode_chars();
+        // Two up-opening corners (└ and ┘) combine to junction_up (┴)
+        // └ = up+right, ┘ = up+left → combined: up+right+left = ┴
+        assert_eq!(resolve_overlap('└', '┘', &s), '┴');
+        assert_eq!(resolve_overlap('┘', '└', &s), '┴');
+
+        // Two down-opening corners (┌ and ┐) combine to junction_down (┬)
+        // ┌ = down+right, ┐ = down+left → combined: down+right+left = ┬
+        assert_eq!(resolve_overlap('┌', '┐', &s), '┬');
+        assert_eq!(resolve_overlap('┐', '┌', &s), '┬');
+
+        // Opposite corners (└ and ┐) combine to cross or specific junction
+        // └ = up+right, ┐ = down+left → combined: all 4 = cross
+        assert_eq!(resolve_overlap('└', '┐', &s), '┼');
+        assert_eq!(resolve_overlap('┐', '└', &s), '┼');
+
+        // Same-side corners combine to appropriate junction
+        // └ = up+right, ┌ = down+right → combined: up+down+right = ├
+        assert_eq!(resolve_overlap('└', '┌', &s), '├');
+        assert_eq!(resolve_overlap('┌', '└', &s), '├');
+
+        // ┘ = up+left, ┐ = down+left → combined: up+down+left = ┤
+        assert_eq!(resolve_overlap('┘', '┐', &s), '┤');
+        assert_eq!(resolve_overlap('┐', '┘', &s), '┤');
     }
 
     // ==========================================================================

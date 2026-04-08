@@ -5,7 +5,9 @@
 
 use crate::config::Config;
 use crate::graph::{Graph, NodeShape};
-use crate::style::{box_width, display_width, truncate_label, BOX_HEIGHT, BOX_MIN_WIDTH, BOX_PADDING};
+use crate::style::{
+    box_width, display_width, truncate_label, BOX_HEIGHT, BOX_MIN_WIDTH, BOX_PADDING,
+};
 
 fn supports_multiline(shape: NodeShape) -> bool {
     matches!(
@@ -409,7 +411,10 @@ mod tests {
     #[test]
     fn wrap_uses_single_ellipsis_when_truncated_by_max_lines() {
         let mut g = Graph::new();
-        g.nodes.push(Node::new("A", "one two three four five six seven eight nine"));
+        g.nodes.push(Node::new(
+            "A",
+            "one two three four five six seven eight nine",
+        ));
 
         let mut cfg = Config::default();
         cfg.wrap_labels = true;

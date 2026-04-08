@@ -713,6 +713,41 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 }
             }
 
+            // Ensure at least one connector row between a subgraph bottom border and any
+            // external source node that feeds into content inside that envelope. In BT this
+            // matters for both direct targets and visually nested parent envelopes; otherwise
+            // an enlarged outer border can land on top of the lower source box.
+            for (_sg_id, env) in subgraph_envelopes.iter() {
+                for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+                    let Some(from_rect) = placement.node_rects.get(&edge.from) else {
+                        continue;
+                    };
+                    let Some(to_rect) = placement.node_rects.get(&edge.to) else {
+                        continue;
+                    };
+                    if rect_fully_inside(env.outer, *from_rect) {
+                        continue;
+                    }
+                    if !rect_fully_inside(env.outer, *to_rect) {
+                        continue;
+                    };
+                    // The source node must start at least one row below the outer envelope
+                    // bottom so there is room for the routing connector between them.
+                    let required_source_y = env.outer.bottom().saturating_add(1);
+                    if from_rect.y >= required_source_y {
+                        continue;
+                    }
+                    let Some(&rank) = placement.ranks.get(&edge.from) else {
+                        continue;
+                    };
+                    let delta = required_source_y - from_rect.y;
+                    required_shift_by_rank
+                        .entry(rank)
+                        .and_modify(|d| *d = (*d).max(delta))
+                        .or_insert(delta);
+                }
+            }
+
             // Ensure at least one empty row between stacked subgraphs when an edge crosses
             // from the lower subgraph to the upper one (BT flows upward).
             for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
@@ -1153,9 +1188,8 @@ pub fn apply_coarse_layout(
 }
 
 fn adjust_portal_slots_for_title(envelopes: &mut HashMap<String, SubgraphEnvelope>, graph: &Graph) {
-    // Titles are drawn on the top border row of subgraphs. In BT orientation, exiting
-    // portals live on that top border and can otherwise pierce through the title
-    // (including its surrounding spaces). Shift portal slots out of the title span.
+    // BT titles are drawn on the bottom border row. Any bottom-border portal slots
+    // must stay out of that title span (including its surrounding spaces).
     if !matches!(graph.direction, Direction::BT) {
         return;
     }
@@ -1188,22 +1222,35 @@ fn adjust_portal_slots_for_title(envelopes: &mut HashMap<String, SubgraphEnvelop
             if x < protected_start || x > protected_end {
                 return x;
             }
-            if protected_end < max_x {
-                protected_end + 1
-            } else if protected_start > min_x {
-                protected_start.saturating_sub(1)
-            } else {
-                x
+            let left = (protected_start > min_x).then(|| protected_start.saturating_sub(1));
+            let right = (protected_end < max_x).then(|| protected_end + 1);
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    let left_distance = x.abs_diff(left);
+                    let right_distance = x.abs_diff(right);
+                    if left_distance < right_distance {
+                        left
+                    } else if right_distance < left_distance {
+                        right
+                    } else if x <= (protected_start + protected_end) / 2 {
+                        left
+                    } else {
+                        right
+                    }
+                }
+                (Some(left), None) => left,
+                (None, Some(right)) => right,
+                (None, None) => x,
             }
         };
 
-        if !env.portals.top.is_empty() {
+        if !env.portals.bottom.is_empty() {
             let mut shifted = HashSet::new();
-            for &x in &env.portals.top {
+            for &x in &env.portals.bottom {
                 let cx = x.clamp(min_x, max_x);
                 shifted.insert(shift_out_of_span(cx));
             }
-            env.portals.top = shifted;
+            env.portals.bottom = shifted;
         }
     }
 }

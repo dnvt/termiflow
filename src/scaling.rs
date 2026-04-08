@@ -24,10 +24,10 @@ use crate::spacing::{SpacingConfig, SpacingMode};
 /// Scaling mode configuration
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ScalingMode {
-    /// Automatic scaling based on diagram complexity and terminal width
-    #[default]
+    /// Automatic scaling based on diagram complexity
     Auto,
     /// Fixed scaling (use default spacing regardless of diagram size)
+    #[default]
     Fixed,
 }
 
@@ -89,12 +89,8 @@ impl DiagramMetrics {
         let max_layer_width = rank_counts.values().max().copied().unwrap_or(0);
 
         // Compute complexity score
-        let complexity_score = Self::compute_complexity(
-            node_count,
-            edge_count,
-            max_depth,
-            max_layer_width,
-        );
+        let complexity_score =
+            Self::compute_complexity(node_count, edge_count, max_depth, max_layer_width);
 
         Self {
             node_count,
@@ -240,12 +236,16 @@ impl CanvasBudget {
 
     /// Get the effective width constraint
     pub fn effective_width(&self) -> usize {
-        self.target_width.unwrap_or(self.max_width).min(self.max_width)
+        self.target_width
+            .unwrap_or(self.max_width)
+            .min(self.max_width)
     }
 
     /// Get the effective height constraint
     pub fn effective_height(&self) -> usize {
-        self.target_height.unwrap_or(self.max_height).min(self.max_height)
+        self.target_height
+            .unwrap_or(self.max_height)
+            .min(self.max_height)
     }
 }
 
@@ -295,9 +295,10 @@ mod tests {
         // Add some edges
         for i in 0..node_count.saturating_sub(1) {
             if i + nodes_per_layer.max(1) < node_count {
-                graph
-                    .edges
-                    .push(Edge::new(&format!("n{}", i), &format!("n{}", i + nodes_per_layer.max(1))));
+                graph.edges.push(Edge::new(
+                    &format!("n{}", i),
+                    &format!("n{}", i + nodes_per_layer.max(1)),
+                ));
             }
         }
 

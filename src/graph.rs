@@ -22,6 +22,7 @@ pub enum NodeShape {
     Hexagon,          // {{text}} - hexagon
     Database,         // [(text)] - cylinder/database
     Subroutine,       // [[text]] - subroutine box
+    DoubleCircle,     // (((text))) - double circle (event/start)
 }
 
 /// Node in the graph (positioned after layout)
@@ -83,6 +84,19 @@ impl Node {
     }
 }
 
+/// Visual/semantic kind of an edge, matching Mermaid flowchart syntax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EdgeKind {
+    #[default]
+    Arrow, // --> standard directed with arrowhead
+    Open,          // --- open link, no arrowhead
+    Thick,         // ==> heavy/bold shaft with arrowhead
+    Dotted,        // -.-> dashed shaft with arrowhead
+    Bidirectional, // <--> arrowheads on both ends
+    CircleEnd,     // --o circle end marker (non-directional)
+    CrossEnd,      // --x cross end marker (non-directional)
+}
+
 /// Edge connecting two nodes
 #[derive(Debug, Clone)]
 pub struct Edge {
@@ -90,6 +104,7 @@ pub struct Edge {
     pub to: String,            // Target node ID
     pub label: Option<String>, // Optional edge label (from -->|label| syntax)
     pub is_back_edge: bool,    // True if this edge creates a cycle
+    pub kind: EdgeKind,        // Visual/semantic kind of the edge
 }
 
 impl Edge {
@@ -99,6 +114,7 @@ impl Edge {
             to: to.into(),
             label: None,
             is_back_edge: false,
+            kind: EdgeKind::Arrow,
         }
     }
 
@@ -112,6 +128,7 @@ impl Edge {
             to: to.into(),
             label: Some(label.into()),
             is_back_edge: false,
+            kind: EdgeKind::Arrow,
         }
     }
 }
@@ -304,5 +321,366 @@ impl Graph {
     #[inline]
     pub fn has_subgraphs(&self) -> bool {
         !self.subgraphs.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // Node
+    // =========================================================================
+
+    #[test]
+    fn node_new_defaults() {
+        let n = Node::new("id", "label");
+        assert_eq!(n.id, "id");
+        assert_eq!(n.label, "label");
+        assert_eq!(n.shape, NodeShape::Rectangle);
+        assert_eq!(n.x, 0);
+        assert_eq!(n.y, 0);
+        assert_eq!(n.rank, 0);
+        assert_eq!(n.height, crate::style::BOX_HEIGHT);
+        assert!(n.label_lines.is_empty());
+        assert!(n.click_target.is_none());
+    }
+
+    #[test]
+    fn node_with_shape_stores_shape() {
+        let shapes = [
+            NodeShape::Diamond,
+            NodeShape::Circle,
+            NodeShape::Stadium,
+            NodeShape::Hexagon,
+            NodeShape::Database,
+            NodeShape::Subroutine,
+            NodeShape::DoubleCircle,
+            NodeShape::Asymmetric,
+            NodeShape::Parallelogram,
+            NodeShape::ParallelogramAlt,
+            NodeShape::Trapezoid,
+            NodeShape::TrapezoidAlt,
+        ];
+        for shape in shapes {
+            let n = Node::with_shape("x", "label", shape);
+            assert_eq!(n.shape, shape, "shape variant {shape:?} not stored");
+        }
+    }
+
+    #[test]
+    fn node_center_x_even_width() {
+        let mut n = Node::new("a", "");
+        n.x = 10;
+        n.width = 20;
+        assert_eq!(n.center_x(), 20); // 10 + 20/2
+    }
+
+    #[test]
+    fn node_center_x_odd_width() {
+        let mut n = Node::new("a", "");
+        n.x = 0;
+        n.width = 11;
+        assert_eq!(n.center_x(), 5); // 0 + 11/2 (integer)
+    }
+
+    #[test]
+    fn node_center_y_uses_height_max_box_height() {
+        let bh = crate::style::BOX_HEIGHT;
+        let mut n = Node::new("a", "");
+        n.y = 10;
+
+        // height < BOX_HEIGHT → uses BOX_HEIGHT
+        n.height = bh.saturating_sub(1).max(1);
+        assert_eq!(n.center_y(), 10 + bh / 2);
+
+        // height > BOX_HEIGHT → uses height
+        n.height = bh + 4;
+        assert_eq!(n.center_y(), 10 + (bh + 4) / 2);
+
+        // height == BOX_HEIGHT
+        n.height = bh;
+        assert_eq!(n.center_y(), 10 + bh / 2);
+    }
+
+    #[test]
+    fn node_bottom_y_enforces_min_height() {
+        let bh = crate::style::BOX_HEIGHT;
+        let mut n = Node::new("a", "");
+        n.y = 5;
+
+        // height < BOX_HEIGHT → bottom_y uses BOX_HEIGHT
+        n.height = 1;
+        assert_eq!(n.bottom_y(), 5 + bh);
+
+        // height > BOX_HEIGHT → bottom_y uses height
+        n.height = bh + 2;
+        assert_eq!(n.bottom_y(), 5 + bh + 2);
+    }
+
+    // =========================================================================
+    // Edge
+    // =========================================================================
+
+    #[test]
+    fn edge_new_defaults() {
+        let e = Edge::new("a", "b");
+        assert_eq!(e.from, "a");
+        assert_eq!(e.to, "b");
+        assert!(e.label.is_none());
+        assert!(!e.is_back_edge);
+        assert_eq!(e.kind, EdgeKind::Arrow);
+    }
+
+    #[test]
+    fn edge_with_label_stores_label() {
+        let e = Edge::with_label("x", "y", "hello");
+        assert_eq!(e.label, Some("hello".to_string()));
+        assert_eq!(e.from, "x");
+        assert_eq!(e.to, "y");
+        assert!(!e.is_back_edge);
+        assert_eq!(e.kind, EdgeKind::Arrow);
+    }
+
+    #[test]
+    fn edge_kind_default_is_arrow() {
+        assert_eq!(EdgeKind::default(), EdgeKind::Arrow);
+    }
+
+    // =========================================================================
+    // Rectangle
+    // =========================================================================
+
+    #[test]
+    fn rectangle_contains_inclusive_corners() {
+        let r = Rectangle::new(5, 10, 4, 3); // x=5..8, y=10..12
+        assert!(r.contains(5, 10)); // top-left
+        assert!(r.contains(8, 12)); // bottom-right (x+w-1, y+h-1)
+        assert!(!r.contains(9, 12)); // one past right
+        assert!(!r.contains(5, 13)); // one past bottom
+        assert!(!r.contains(4, 10)); // one before left
+        assert!(!r.contains(5, 9)); // one above top
+        assert!(r.contains(7, 11)); // interior
+    }
+
+    #[test]
+    fn rectangle_contains_zero_dimensions() {
+        // Zero width: nothing inside
+        let r = Rectangle::new(5, 5, 0, 5);
+        assert!(!r.contains(5, 5));
+
+        // Zero height: nothing inside
+        let r = Rectangle::new(5, 5, 5, 0);
+        assert!(!r.contains(5, 5));
+    }
+
+    #[test]
+    fn rectangle_is_valid() {
+        assert!(Rectangle::new(0, 0, 1, 1).is_valid());
+        assert!(Rectangle::new(5, 5, 10, 10).is_valid());
+        assert!(!Rectangle::new(0, 0, 0, 5).is_valid());
+        assert!(!Rectangle::new(0, 0, 5, 0).is_valid());
+        assert!(!Rectangle::new(0, 0, 0, 0).is_valid());
+    }
+
+    // =========================================================================
+    // Subgraph
+    // =========================================================================
+
+    #[test]
+    fn subgraph_new_empty() {
+        let sg = Subgraph::new("sg1", Some("My Group".to_string()));
+        assert_eq!(sg.id, "sg1");
+        assert_eq!(sg.title, Some("My Group".to_string()));
+        assert!(sg.node_ids.is_empty());
+        assert!(!sg.bounds.is_valid());
+        assert_eq!(sg.rank_range, (0, 0));
+    }
+
+    #[test]
+    fn subgraph_no_title() {
+        let sg = Subgraph::new("sg", None);
+        assert!(!sg.has_title());
+        assert!(sg.title.is_none());
+    }
+
+    #[test]
+    fn subgraph_has_title() {
+        let sg = Subgraph::new("sg", Some("Title".to_string()));
+        assert!(sg.has_title());
+    }
+
+    #[test]
+    fn subgraph_add_and_contains_node() {
+        let mut sg = Subgraph::new("sg", None);
+        assert!(!sg.contains_node("n1"));
+        sg.add_node("n1");
+        assert!(sg.contains_node("n1"));
+        assert!(!sg.contains_node("n2"));
+
+        // Adding same node twice is idempotent (HashSet)
+        sg.add_node("n1");
+        assert_eq!(sg.node_ids.len(), 1);
+    }
+
+    #[test]
+    fn subgraph_contains_node_is_case_sensitive() {
+        let mut sg = Subgraph::new("sg", None);
+        sg.add_node("Node");
+        assert!(sg.contains_node("Node"));
+        assert!(!sg.contains_node("node"));
+    }
+
+    // =========================================================================
+    // Graph
+    // =========================================================================
+
+    #[test]
+    fn graph_new_is_empty() {
+        let g = Graph::new();
+        assert!(g.nodes.is_empty());
+        assert!(g.edges.is_empty());
+        assert!(g.warnings.is_empty());
+        assert!(g.subgraphs.is_empty());
+        assert!(!g.has_subgraphs());
+        assert!(!g.has_cycles());
+        assert_eq!(g.direction, Direction::TD);
+    }
+
+    #[test]
+    fn graph_add_node_and_get() {
+        let mut g = Graph::new();
+        g.add_node(Node::new("a", "Alpha"));
+        assert_eq!(g.nodes.len(), 1);
+        assert!(g.get_node("a").is_some());
+        assert_eq!(
+            g.get_node("a").expect("node 'a' was just added").label,
+            "Alpha"
+        );
+        assert!(g.get_node("b").is_none());
+    }
+
+    #[test]
+    fn graph_add_node_deduplicates_by_id() {
+        let mut g = Graph::new();
+        g.add_node(Node::new("a", "first"));
+        g.add_node(Node::new("a", "second")); // duplicate — should be skipped
+        assert_eq!(g.nodes.len(), 1);
+        assert_eq!(
+            g.get_node("a").expect("node 'a' was added first").label,
+            "first"
+        );
+    }
+
+    #[test]
+    fn graph_add_edge_no_dedup() {
+        let mut g = Graph::new();
+        g.add_edge(Edge::new("a", "b"));
+        g.add_edge(Edge::new("a", "b")); // duplicate allowed
+        assert_eq!(g.edges.len(), 2);
+    }
+
+    #[test]
+    fn graph_add_warning() {
+        let mut g = Graph::new();
+        g.add_warning("warn1".to_string());
+        g.add_warning("warn2".to_string());
+        assert_eq!(g.warnings, vec!["warn1", "warn2"]);
+    }
+
+    #[test]
+    fn graph_has_cycles_reflects_back_edges() {
+        let mut g = Graph::new();
+        g.add_edge(Edge::new("a", "b"));
+        assert!(!g.has_cycles());
+
+        let mut back = Edge::new("b", "a");
+        back.is_back_edge = true;
+        g.add_edge(back);
+        assert!(g.has_cycles());
+    }
+
+    #[test]
+    fn graph_add_subgraph_and_get() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("sg1", None));
+        assert!(g.has_subgraphs());
+        assert!(g.get_subgraph("sg1").is_some());
+        assert!(g.get_subgraph("sg2").is_none());
+    }
+
+    #[test]
+    fn graph_add_subgraph_deduplicates_by_id() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("sg", Some("First".to_string())));
+        g.add_subgraph(Subgraph::new("sg", Some("Second".to_string())));
+        assert_eq!(g.subgraphs.len(), 1);
+        assert_eq!(
+            g.get_subgraph("sg")
+                .expect("subgraph 'sg' was just added")
+                .title,
+            Some("First".to_string())
+        );
+    }
+
+    #[test]
+    fn graph_associate_node_with_subgraph() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("sg", None));
+        g.add_node(Node::new("n1", "Node 1"));
+
+        g.associate_node_with_subgraph("n1", "sg");
+
+        assert_eq!(g.get_node_subgraph("n1"), Some("sg"));
+        assert!(g
+            .get_subgraph("sg")
+            .expect("subgraph 'sg' was just added")
+            .contains_node("n1"));
+    }
+
+    #[test]
+    fn graph_get_node_subgraph_returns_none_for_unassociated() {
+        let mut g = Graph::new();
+        g.add_node(Node::new("n1", "Node 1"));
+        assert!(g.get_node_subgraph("n1").is_none());
+        assert!(g.get_node_subgraph("nonexistent").is_none());
+    }
+
+    #[test]
+    fn graph_get_node_mut_allows_mutation() {
+        let mut g = Graph::new();
+        g.add_node(Node::new("a", "Original"));
+        if let Some(n) = g.get_node_mut("a") {
+            n.label = "Modified".to_string();
+        }
+        assert_eq!(
+            g.get_node("a").expect("node 'a' was just added").label,
+            "Modified"
+        );
+    }
+
+    #[test]
+    fn graph_get_subgraph_mut_allows_mutation() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("sg", None));
+        if let Some(sg) = g.get_subgraph_mut("sg") {
+            sg.title = Some("New Title".to_string());
+        }
+        assert_eq!(
+            g.get_subgraph("sg")
+                .expect("subgraph 'sg' was just added")
+                .title,
+            Some("New Title".to_string())
+        );
+    }
+
+    #[test]
+    fn direction_default_is_td() {
+        assert_eq!(Direction::default(), Direction::TD);
+    }
+
+    #[test]
+    fn node_shape_default_is_rectangle() {
+        assert_eq!(NodeShape::default(), NodeShape::Rectangle);
     }
 }

@@ -13,7 +13,9 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```rust
+//! use termiflow::SpacingConfig;
+//!
 //! // Use default spacing
 //! let spacing = SpacingConfig::default();
 //!
@@ -22,10 +24,26 @@
 //!
 //! // Or customize
 //! let spacing = SpacingConfig::builder()
-//!     .base_cell_height(2)
+//!     .row_spacing(2)
 //!     .node_margin(0)
 //!     .build();
 //! ```
+
+// Default spacing constants (single source of truth).
+pub const BOX_HEIGHT: usize = 3;
+pub const BOX_MIN_WIDTH: usize = 5;
+pub const BOX_PADDING: usize = 2;
+pub const ROW_SPACING: usize = 4;
+pub const COL_SPACING: usize = 4;
+pub const STEM_LENGTH_VERTICAL: usize = 1;
+pub const STEM_LENGTH_HORIZONTAL: usize = 3;
+pub const EDGE_JUNCTION_HEIGHT: usize = 1;
+pub const EDGE_DROP_HEIGHT: usize = 1;
+pub const MAX_LABEL_WIDTH: usize = 20;
+pub const MAX_CANVAS_WIDTH: usize = 10000;
+pub const MAX_CANVAS_HEIGHT: usize = 5000;
+pub const CYCLE_GUTTER: usize = 4;
+pub const SUBGRAPH_GUTTER: usize = 2;
 
 /// Spacing mode presets
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -68,13 +86,15 @@ pub struct SpacingConfig {
     /// Padding inside boxes on each side (default: 2)
     pub box_padding: usize,
 
-    /// Vertical spacing between rows/layers (default: 2)
+    /// Vertical spacing between rows/layers (default: 4)
     pub row_spacing: usize,
-    /// Horizontal spacing between columns/nodes (default: 3)
+    /// Horizontal spacing between columns/nodes (default: 4)
     pub col_spacing: usize,
 
     /// Margin around nodes for edge routing (default: 1)
     pub node_margin: usize,
+    /// Gutter around subgraphs (default: 2)
+    pub subgraph_gutter: usize,
 
     // =========================================================================
     // Derived values (computed from base parameters)
@@ -110,20 +130,21 @@ impl SpacingConfig {
     /// Default spacing configuration (matches current behavior)
     pub fn default_config() -> Self {
         Self {
-            box_height: 3,
-            box_min_width: 5,
-            box_padding: 2,
-            row_spacing: 2,
-            col_spacing: 3,
+            box_height: BOX_HEIGHT,
+            box_min_width: BOX_MIN_WIDTH,
+            box_padding: BOX_PADDING,
+            row_spacing: ROW_SPACING,
+            col_spacing: COL_SPACING,
             node_margin: 1,
-            stem_length_vertical: 1,
-            stem_length_horizontal: 3,
-            edge_junction_height: 1,
-            edge_drop_height: 1,
-            max_label_width: 20,
-            max_canvas_width: 500,
-            max_canvas_height: 200,
-            cycle_gutter: 4,
+            subgraph_gutter: SUBGRAPH_GUTTER,
+            stem_length_vertical: STEM_LENGTH_VERTICAL,
+            stem_length_horizontal: STEM_LENGTH_HORIZONTAL,
+            edge_junction_height: EDGE_JUNCTION_HEIGHT,
+            edge_drop_height: EDGE_DROP_HEIGHT,
+            max_label_width: MAX_LABEL_WIDTH,
+            max_canvas_width: MAX_CANVAS_WIDTH,
+            max_canvas_height: MAX_CANVAS_HEIGHT,
+            cycle_gutter: CYCLE_GUTTER,
         }
     }
 
@@ -135,9 +156,10 @@ impl SpacingConfig {
     /// - Reduced margins
     pub fn compact() -> Self {
         let mut config = Self::default_config();
-        config.row_spacing = 1;
-        config.col_spacing = 2;
-        config.node_margin = 0;
+        config.row_spacing = 2;
+        config.col_spacing = 3;
+        config.node_margin = 1;
+        config.subgraph_gutter = 1;
         config.stem_length_vertical = 1;
         config.stem_length_horizontal = 2;
         config.edge_junction_height = 1;
@@ -154,11 +176,11 @@ impl SpacingConfig {
     pub fn spacious() -> Self {
         let mut config = Self::default_config();
         config.box_height = 3;
-        config.row_spacing = 3;
-        config.col_spacing = 4;
+        config.row_spacing = 6;
+        config.col_spacing = 8;
         config.node_margin = 2;
         config.stem_length_vertical = 2;
-        config.stem_length_horizontal = 4;
+        config.stem_length_horizontal = 6;
         config.edge_junction_height = 1;
         config.edge_drop_height = 1;
         config
@@ -171,6 +193,31 @@ impl SpacingConfig {
             SpacingMode::Default => Self::default_config(),
             SpacingMode::Spacious => Self::spacious(),
         }
+    }
+
+    /// Adjust spacing for direction-specific aspect ratio.
+    ///
+    /// Terminal characters are ~2:1 height:width, so horizontal layouts (LR/RL)
+    /// need proportionally more spacing along the primary axis to look balanced.
+    ///
+    /// For LR/RL layouts:
+    /// - Extend horizontal edges (stem_length_horizontal * 2)
+    /// - Minimize vertical spacing (row_spacing = 1) for tight vertical packing
+    pub fn for_direction(&self, direction: crate::graph::Direction) -> Self {
+        let mut spacing = self.clone();
+        if matches!(
+            direction,
+            crate::graph::Direction::LR | crate::graph::Direction::RL
+        ) {
+            // Apply 2x multiplier along the primary (horizontal) axis to compensate for
+            // the ~2:1 terminal character aspect ratio. Without this, horizontal layouts
+            // look visually cramped compared to equivalent TD/BT diagrams.
+            spacing.stem_length_horizontal *= 2;
+            spacing.col_spacing *= 2;
+            // Minimize vertical spacing for tight vertical packing in horizontal layouts.
+            spacing.row_spacing = 1;
+        }
+        spacing
     }
 
     /// Calculate the effective row height (box + spacing)
@@ -205,6 +252,7 @@ pub struct SpacingBuilder {
     row_spacing: Option<usize>,
     col_spacing: Option<usize>,
     node_margin: Option<usize>,
+    subgraph_gutter: Option<usize>,
     stem_length_vertical: Option<usize>,
     stem_length_horizontal: Option<usize>,
     max_label_width: Option<usize>,
@@ -248,6 +296,11 @@ impl SpacingBuilder {
         self
     }
 
+    pub fn subgraph_gutter(mut self, gutter: usize) -> Self {
+        self.subgraph_gutter = Some(gutter);
+        self
+    }
+
     pub fn stem_length_vertical(mut self, length: usize) -> Self {
         self.stem_length_vertical = Some(length);
         self
@@ -288,6 +341,7 @@ impl SpacingBuilder {
             row_spacing: self.row_spacing.unwrap_or(defaults.row_spacing),
             col_spacing: self.col_spacing.unwrap_or(defaults.col_spacing),
             node_margin: self.node_margin.unwrap_or(defaults.node_margin),
+            subgraph_gutter: self.subgraph_gutter.unwrap_or(defaults.subgraph_gutter),
             stem_length_vertical: self
                 .stem_length_vertical
                 .unwrap_or(defaults.stem_length_vertical),
@@ -311,18 +365,19 @@ mod tests {
     #[test]
     fn test_default_matches_existing_constants() {
         let spacing = SpacingConfig::default();
-        // These should match the existing constants in style.rs
-        assert_eq!(spacing.box_height, 3);
-        assert_eq!(spacing.box_min_width, 5);
-        assert_eq!(spacing.box_padding, 2);
-        assert_eq!(spacing.row_spacing, 2);
-        assert_eq!(spacing.col_spacing, 3);
-        assert_eq!(spacing.stem_length_vertical, 1);
-        assert_eq!(spacing.stem_length_horizontal, 3);
-        assert_eq!(spacing.max_label_width, 20);
-        assert_eq!(spacing.max_canvas_width, 500);
-        assert_eq!(spacing.max_canvas_height, 200);
-        assert_eq!(spacing.cycle_gutter, 4);
+        // These should match the default spacing constants.
+        assert_eq!(spacing.box_height, BOX_HEIGHT);
+        assert_eq!(spacing.box_min_width, BOX_MIN_WIDTH);
+        assert_eq!(spacing.box_padding, BOX_PADDING);
+        assert_eq!(spacing.row_spacing, ROW_SPACING);
+        assert_eq!(spacing.col_spacing, COL_SPACING);
+        assert_eq!(spacing.stem_length_vertical, STEM_LENGTH_VERTICAL);
+        assert_eq!(spacing.stem_length_horizontal, STEM_LENGTH_HORIZONTAL);
+        assert_eq!(spacing.max_label_width, MAX_LABEL_WIDTH);
+        assert_eq!(spacing.max_canvas_width, MAX_CANVAS_WIDTH);
+        assert_eq!(spacing.max_canvas_height, MAX_CANVAS_HEIGHT);
+        assert_eq!(spacing.cycle_gutter, CYCLE_GUTTER);
+        assert_eq!(spacing.subgraph_gutter, SUBGRAPH_GUTTER);
     }
 
     #[test]
@@ -380,8 +435,8 @@ mod tests {
     #[test]
     fn test_effective_dimensions() {
         let spacing = SpacingConfig::default();
-        assert_eq!(spacing.effective_row_height(), 5); // 3 + 2
-        assert_eq!(spacing.effective_col_width(), 8); // 5 + 3
+        assert_eq!(spacing.effective_row_height(), 7); // 3 + 4
+        assert_eq!(spacing.effective_col_width(), 9); // 5 + 4
     }
 
     #[test]
@@ -396,5 +451,28 @@ mod tests {
 
         // Long label: label_width=30 → clamped to 20 → 20 + 4 + 2 = 26
         assert_eq!(spacing.box_width_for_label(30), 26);
+    }
+
+    #[test]
+    fn test_directional_spacing_adjustment() {
+        let spacing = SpacingConfig::default_config();
+        let horizontal = spacing.for_direction(crate::graph::Direction::LR);
+        let vertical = spacing.for_direction(crate::graph::Direction::TD);
+
+        // Vertical layouts should not modify spacing
+        assert_eq!(vertical.col_spacing, spacing.col_spacing);
+        assert_eq!(vertical.row_spacing, spacing.row_spacing);
+        assert_eq!(
+            vertical.stem_length_horizontal,
+            spacing.stem_length_horizontal
+        );
+
+        // Horizontal layouts: apply 2x along primary axis, minimize vertical
+        assert_eq!(
+            horizontal.stem_length_horizontal,
+            spacing.stem_length_horizontal * 2
+        );
+        assert_eq!(horizontal.col_spacing, spacing.col_spacing * 2);
+        assert_eq!(horizontal.row_spacing, 1);
     }
 }

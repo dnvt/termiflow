@@ -1535,30 +1535,9 @@ fn reinforce_subgraph_portals(
                         let has_below = is_verticalish(below, chars, subgraph_chars);
                         let used = has_above || has_below;
                         if used {
-                            let left = if px > 0 {
-                                canvas.get(px - 1, bottom_y)
-                            } else {
-                                ' '
-                            };
-                            let right = if px + 1 < canvas.width {
-                                canvas.get(px + 1, bottom_y)
-                            } else {
-                                ' '
-                            };
-                            let has_horizontal = is_horizontalish(left, chars, subgraph_chars)
-                                || is_horizontalish(right, chars, subgraph_chars);
-                            let glyph = if has_horizontal {
-                                if has_above && has_below {
-                                    subgraph_chars.cross
-                                } else if has_below {
-                                    subgraph_chars.junction_up
-                                } else {
-                                    subgraph_chars.junction_down
-                                }
-                            } else {
-                                subgraph_chars.v
-                            };
-                            canvas.set(px, bottom_y, glyph);
+                            // The BT bottom border is also the title row. Treat border pierces
+                            // as clean vertical holes so junctions stay off the title row.
+                            canvas.set(px, bottom_y, chars.edge_v);
                         } else {
                             canvas.set(px, bottom_y, subgraph_chars.h);
                         }
@@ -1566,7 +1545,7 @@ fn reinforce_subgraph_portals(
                 }
             }
             Direction::LR | Direction::RL => {
-                for &y in &portals.left {
+                for y in sorted_slot_positions(&portals.left) {
                     let py = clamp_vertical(bounds, y);
                     let existing = canvas.get(left_x, py);
                     if left_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing)
@@ -1583,16 +1562,15 @@ fn reinforce_subgraph_portals(
                         };
                         let has_left = is_horizontalish(left, chars, subgraph_chars);
                         let has_right = is_horizontalish(right, chars, subgraph_chars);
-                        let glyph = match (has_left, has_right) {
-                            (true, true) => subgraph_chars.cross,
-                            (true, false) => subgraph_chars.junction_left,
-                            (false, true) => subgraph_chars.junction_right,
-                            (false, false) => subgraph_chars.v,
+                        let glyph = if has_left || has_right {
+                            chars.edge_h
+                        } else {
+                            subgraph_chars.v
                         };
                         canvas.set(left_x, py, glyph);
                     }
                 }
-                for &y in &portals.right {
+                for y in sorted_slot_positions(&portals.right) {
                     let py = clamp_vertical(bounds, y);
                     let existing = canvas.get(right_x, py);
                     if right_x < canvas.width
@@ -1611,11 +1589,10 @@ fn reinforce_subgraph_portals(
                         };
                         let has_left = is_horizontalish(left, chars, subgraph_chars);
                         let has_right = is_horizontalish(right, chars, subgraph_chars);
-                        let glyph = match (has_left, has_right) {
-                            (true, true) => subgraph_chars.cross,
-                            (true, false) => subgraph_chars.junction_left,
-                            (false, true) => subgraph_chars.junction_right,
-                            (false, false) => subgraph_chars.v,
+                        let glyph = if has_left || has_right {
+                            chars.edge_h
+                        } else {
+                            subgraph_chars.v
                         };
                         canvas.set(right_x, py, glyph);
                     }

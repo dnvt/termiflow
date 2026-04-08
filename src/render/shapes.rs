@@ -6,6 +6,7 @@ use crate::graph::{Direction, NodeShape};
 use crate::style::StyleChars;
 
 use super::canvas::{is_arrow, is_junction, is_vertical, Canvas};
+use super::subgraph_title_y;
 
 /// Draw a subgraph bounding box with optional title.
 pub fn draw_subgraph(
@@ -45,18 +46,12 @@ pub fn draw_subgraph(
     }
     canvas.set(x + width - 1, y + height - 1, style.br);
 
-    // Draw title if present
     if let Some(t) = title {
-        // Format: [  Title  ] centered on top edge
         let title_fmt = format!("[  {}  ]", t);
         let title_len = title_fmt.chars().count();
         if title_len <= width.saturating_sub(2) {
             let start_x = x + (width - title_len) / 2;
-            let title_y = if matches!(direction, Direction::BT) && y + 1 < y + height - 1 {
-                y + 1
-            } else {
-                y
-            };
+            let title_y = subgraph_title_y(rect, direction);
             for (i, c) in title_fmt.chars().enumerate() {
                 if start_x + i < canvas.width {
                     canvas.set(start_x + i, title_y, c);
@@ -738,4 +733,341 @@ fn draw_trapezoid(
         style,
         direction,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{Direction, NodeShape, Rectangle};
+    use crate::render::canvas::Canvas;
+    use crate::style::{ASCII_CHARS, UNICODE_CHARS};
+
+    fn mk_canvas(w: usize, h: usize) -> Canvas {
+        Canvas::new(w, h)
+    }
+
+    fn lines(s: &str) -> Vec<String> {
+        vec![s.to_string()]
+    }
+
+    // =========================================================================
+    // draw_subgraph
+    // =========================================================================
+
+    #[test]
+    fn subgraph_draws_corners_ascii() {
+        let mut c = mk_canvas(10, 6);
+        let r = Rectangle::new(0, 0, 10, 6);
+        draw_subgraph(&mut c, &r, None, &ASCII_CHARS, Direction::TD);
+        assert_eq!(c.get(0, 0), '+');
+        assert_eq!(c.get(9, 0), '+');
+        assert_eq!(c.get(0, 5), '+');
+        assert_eq!(c.get(9, 5), '+');
+    }
+
+    #[test]
+    fn subgraph_draws_corners_unicode() {
+        let mut c = mk_canvas(10, 6);
+        let r = Rectangle::new(0, 0, 10, 6);
+        draw_subgraph(&mut c, &r, None, &UNICODE_CHARS, Direction::TD);
+        assert_eq!(c.get(0, 0), '┌');
+        assert_eq!(c.get(9, 0), '┐');
+        assert_eq!(c.get(0, 5), '└');
+        assert_eq!(c.get(9, 5), '┘');
+    }
+
+    #[test]
+    fn subgraph_invalid_rect_is_noop() {
+        let mut c = mk_canvas(10, 6);
+        let r = Rectangle::new(0, 0, 0, 6); // zero width — invalid
+        draw_subgraph(&mut c, &r, None, &ASCII_CHARS, Direction::TD);
+        assert_eq!(c.get(0, 0), ' ');
+    }
+
+    #[test]
+    fn subgraph_title_appears_in_td() {
+        let mut c = mk_canvas(20, 5);
+        let r = Rectangle::new(0, 0, 20, 5);
+        draw_subgraph(&mut c, &r, Some("Grp"), &ASCII_CHARS, Direction::TD);
+        let row: String = (0..20).map(|x| c.get(x, 0)).collect();
+        assert!(row.contains("[  Grp  ]"), "title not found in row: {row:?}");
+    }
+
+    #[test]
+    fn subgraph_title_too_long_is_skipped() {
+        let mut c = mk_canvas(8, 4);
+        let r = Rectangle::new(0, 0, 8, 4);
+        draw_subgraph(
+            &mut c,
+            &r,
+            Some("VeryLongTitle"),
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        assert_eq!(c.get(0, 0), '+');
+        let row: String = (1..7).map(|x| c.get(x, 0)).collect();
+        assert!(!row.contains('['), "unexpected title bracket in: {row:?}");
+    }
+
+    // =========================================================================
+    // draw_node dispatch
+    // =========================================================================
+
+    #[test]
+    fn draw_node_rectangle_corners_ascii() {
+        let mut c = mk_canvas(12, 5);
+        draw_node(
+            &mut c,
+            0,
+            0,
+            12,
+            5,
+            &lines("hi"),
+            NodeShape::Rectangle,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        assert_eq!(c.get(0, 0), '+');
+        assert_eq!(c.get(11, 0), '+');
+        assert_eq!(c.get(0, 4), '+');
+        assert_eq!(c.get(11, 4), '+');
+    }
+
+    #[test]
+    fn draw_node_rounded_corners_ascii() {
+        let mut c = mk_canvas(12, 5);
+        draw_node(
+            &mut c,
+            0,
+            0,
+            12,
+            5,
+            &lines("hi"),
+            NodeShape::Rounded,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        assert_eq!(c.get(0, 0), '(');
+        assert_eq!(c.get(11, 0), ')');
+        assert_eq!(c.get(0, 4), '(');
+        assert_eq!(c.get(11, 4), ')');
+    }
+
+    #[test]
+    fn draw_node_rectangle_label_written() {
+        let mut c = mk_canvas(12, 3);
+        draw_node(
+            &mut c,
+            0,
+            0,
+            12,
+            3,
+            &lines("hi"),
+            NodeShape::Rectangle,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        let row: String = (0..12).map(|x| c.get(x, 1)).collect();
+        assert!(
+            row.contains("hi"),
+            "label not found in interior row: {row:?}"
+        );
+    }
+
+    #[test]
+    fn draw_node_all_shapes_no_panic() {
+        let shapes = [
+            NodeShape::Rectangle,
+            NodeShape::Rounded,
+            NodeShape::Diamond,
+            NodeShape::Circle,
+            NodeShape::DoubleCircle,
+            NodeShape::Stadium,
+            NodeShape::Hexagon,
+            NodeShape::Database,
+            NodeShape::Subroutine,
+            NodeShape::Asymmetric,
+            NodeShape::Parallelogram,
+            NodeShape::ParallelogramAlt,
+            NodeShape::Trapezoid,
+            NodeShape::TrapezoidAlt,
+        ];
+        for shape in shapes {
+            let mut c = mk_canvas(20, 7);
+            draw_node(
+                &mut c,
+                0,
+                0,
+                20,
+                7,
+                &lines("test"),
+                shape,
+                &UNICODE_CHARS,
+                Direction::TD,
+            );
+            let non_space = (0..20).any(|x| (0..7).any(|y| c.get(x, y) != ' '));
+            assert!(non_space, "shape {shape:?} produced blank canvas");
+        }
+    }
+
+    // =========================================================================
+    // draw_boxlike — TD junction at bottom border
+    // =========================================================================
+
+    #[test]
+    fn boxlike_td_junction_placed_on_bottom_border() {
+        let mut c = mk_canvas(14, 7);
+        let style = &UNICODE_CHARS;
+        c.set(7, 3, style.edge_v);
+        draw_node(
+            &mut c,
+            0,
+            0,
+            14,
+            3,
+            &lines("A"),
+            NodeShape::Rectangle,
+            style,
+            Direction::TD,
+        );
+        let ch = c.get(7, 2);
+        assert_eq!(
+            ch, style.junction_down,
+            "expected junction_down at bottom border col 7, got {ch:?}"
+        );
+    }
+
+    #[test]
+    fn boxlike_td_no_junction_without_down_arm() {
+        let mut c = mk_canvas(14, 3);
+        let style = &UNICODE_CHARS;
+        draw_node(
+            &mut c,
+            0,
+            0,
+            14,
+            3,
+            &lines("A"),
+            NodeShape::Rectangle,
+            style,
+            Direction::TD,
+        );
+        let ch = c.get(7, 2);
+        assert_eq!(ch, style.h, "expected plain h-line, got {ch:?}");
+    }
+
+    // =========================================================================
+    // draw_boxlike — BT junction at top border
+    // =========================================================================
+
+    #[test]
+    fn boxlike_bt_junction_placed_on_top_border() {
+        let mut c = mk_canvas(14, 7);
+        let style = &UNICODE_CHARS;
+        c.set(7, 1, style.edge_v);
+        draw_node(
+            &mut c,
+            0,
+            2,
+            14,
+            3,
+            &lines("A"),
+            NodeShape::Rectangle,
+            style,
+            Direction::BT,
+        );
+        let ch = c.get(7, 2);
+        assert_eq!(ch, style.junction_up, "expected junction_up, got {ch:?}");
+    }
+
+    #[test]
+    fn boxlike_bt_no_junction_without_arm_above() {
+        let mut c = mk_canvas(14, 7);
+        let style = &UNICODE_CHARS;
+        draw_node(
+            &mut c,
+            0,
+            2,
+            14,
+            3,
+            &lines("A"),
+            NodeShape::Rectangle,
+            style,
+            Direction::BT,
+        );
+        let ch = c.get(7, 2);
+        assert_eq!(ch, style.h, "expected plain h-line, got {ch:?}");
+    }
+
+    // =========================================================================
+    // Trapezoid and Parallelogram orientation variants
+    // =========================================================================
+
+    #[test]
+    fn trapezoid_variants_differ_at_top_left_corner() {
+        let mut c1 = mk_canvas(16, 5);
+        let mut c2 = mk_canvas(16, 5);
+        draw_node(
+            &mut c1,
+            0,
+            0,
+            16,
+            5,
+            &lines("x"),
+            NodeShape::Trapezoid,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        draw_node(
+            &mut c2,
+            0,
+            0,
+            16,
+            5,
+            &lines("x"),
+            NodeShape::TrapezoidAlt,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        let top1 = c1.get(0, 0);
+        let top2 = c2.get(0, 0);
+        assert_ne!(
+            top1, top2,
+            "Trapezoid variants should differ at top-left corner"
+        );
+    }
+
+    #[test]
+    fn parallelogram_variants_differ_at_top_left_corner() {
+        let mut c1 = mk_canvas(16, 5);
+        let mut c2 = mk_canvas(16, 5);
+        draw_node(
+            &mut c1,
+            0,
+            0,
+            16,
+            5,
+            &lines("x"),
+            NodeShape::Parallelogram,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        draw_node(
+            &mut c2,
+            0,
+            0,
+            16,
+            5,
+            &lines("x"),
+            NodeShape::ParallelogramAlt,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        let tl1 = c1.get(0, 0);
+        let tl2 = c2.get(0, 0);
+        assert_ne!(
+            tl1, tl2,
+            "Parallelogram variants should differ at top-left corner"
+        );
+    }
 }

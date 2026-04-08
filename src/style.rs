@@ -4,25 +4,12 @@
 
 use unicode_width::UnicodeWidthStr;
 
-/// Grid constants (SPEC §2.1)
-pub const BOX_HEIGHT: usize = 3;
-pub const BOX_MIN_WIDTH: usize = 5;
-pub const BOX_PADDING: usize = 2;
-pub const ROW_SPACING: usize = 2;
-pub const COL_SPACING: usize = 3;
-
-// Edge routing constants
-pub const STEM_LENGTH_VERTICAL: usize = 1; // Stem length for TD/BT layouts
-pub const STEM_LENGTH_HORIZONTAL: usize = 3; // Stem length for LR/RL layouts
-pub const EDGE_JUNCTION_HEIGHT: usize = 1; // Junction row spacing
-pub const EDGE_DROP_HEIGHT: usize = 1; // Drop spacing for multi-target
-pub const MAX_LABEL_WIDTH: usize = 20;
-
-pub const MAX_CANVAS_WIDTH: usize = 500;
-pub const MAX_CANVAS_HEIGHT: usize = 200;
-
-/// Cycle edge gutter size (right margin for TD/BT, bottom for LR/RL)
-pub const CYCLE_GUTTER: usize = 4;
+// Re-export spacing defaults so legacy call sites can keep using style:: constants.
+pub use crate::spacing::{
+    BOX_HEIGHT, BOX_MIN_WIDTH, BOX_PADDING, COL_SPACING, CYCLE_GUTTER, EDGE_DROP_HEIGHT,
+    EDGE_JUNCTION_HEIGHT, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, MAX_LABEL_WIDTH, ROW_SPACING,
+    STEM_LENGTH_HORIZONTAL, STEM_LENGTH_VERTICAL, SUBGRAPH_GUTTER,
+};
 
 /// Border style variants
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -95,6 +82,14 @@ pub struct StyleChars {
     // Back-edges
     pub back_h: char,
     pub back_v: char,
+
+    // Dotted/dashed edges (-.->)
+    pub dotted_h: char,
+    pub dotted_v: char,
+
+    // End markers (--o / --x)
+    pub circle_end: char,
+    pub cross_end: char,
 }
 
 impl BaseStyle {
@@ -264,6 +259,14 @@ impl CompositeStyle {
             // Back-edge components
             back_h: back_chars.back_h,
             back_v: back_chars.back_v,
+
+            // Dotted-edge components (reuse back/edge style dotted chars)
+            dotted_h: back_chars.dotted_h,
+            dotted_v: back_chars.dotted_v,
+
+            // End marker components (from arrow style)
+            circle_end: arrow_chars.circle_end,
+            cross_end: arrow_chars.cross_end,
         }
     }
 
@@ -301,6 +304,10 @@ pub static ASCII_CHARS: StyleChars = StyleChars {
     junction_left: '+',
     back_h: '-',
     back_v: ':',
+    dotted_h: '-',
+    dotted_v: ':',
+    circle_end: 'o',
+    cross_end: 'x',
 };
 
 pub static UNICODE_CHARS: StyleChars = StyleChars {
@@ -327,6 +334,10 @@ pub static UNICODE_CHARS: StyleChars = StyleChars {
     junction_left: '┤',
     back_h: '─',
     back_v: '│',
+    dotted_h: '╌',
+    dotted_v: '╎',
+    circle_end: '○',
+    cross_end: '✕',
 };
 
 pub static DOUBLE_CHARS: StyleChars = StyleChars {
@@ -353,6 +364,10 @@ pub static DOUBLE_CHARS: StyleChars = StyleChars {
     junction_left: '╣',
     back_h: '═',
     back_v: '║',
+    dotted_h: '╌',
+    dotted_v: '╎',
+    circle_end: '○',
+    cross_end: '✕',
 };
 
 pub static ROUNDED_CHARS: StyleChars = StyleChars {
@@ -379,6 +394,10 @@ pub static ROUNDED_CHARS: StyleChars = StyleChars {
     junction_left: '┤',
     back_h: '─',
     back_v: '│',
+    dotted_h: '╌',
+    dotted_v: '╎',
+    circle_end: '○',
+    cross_end: '✕',
 };
 
 pub static HEAVY_CHARS: StyleChars = StyleChars {
@@ -405,6 +424,10 @@ pub static HEAVY_CHARS: StyleChars = StyleChars {
     junction_left: '┫',
     back_h: '━',
     back_v: '┃',
+    dotted_h: '╌',
+    dotted_v: '╎',
+    circle_end: '○',
+    cross_end: '✕',
 };
 
 pub static DOTS_CHARS: StyleChars = StyleChars {
@@ -431,6 +454,10 @@ pub static DOTS_CHARS: StyleChars = StyleChars {
     junction_left: '┤',
     back_h: '─',
     back_v: '│',
+    dotted_h: '─',
+    dotted_v: ':',
+    circle_end: '○',
+    cross_end: '✕',
 };
 
 pub static PLUS_CHARS: StyleChars = StyleChars {
@@ -457,6 +484,10 @@ pub static PLUS_CHARS: StyleChars = StyleChars {
     junction_left: '+',
     back_h: '-',
     back_v: ':',
+    dotted_h: '-',
+    dotted_v: ':',
+    circle_end: 'o',
+    cross_end: 'x',
 };
 
 pub static STARS_CHARS: StyleChars = StyleChars {
@@ -483,6 +514,10 @@ pub static STARS_CHARS: StyleChars = StyleChars {
     junction_left: '┤',
     back_h: '─',
     back_v: '│',
+    dotted_h: '╌',
+    dotted_v: '╎',
+    circle_end: '○',
+    cross_end: '✕',
 };
 
 pub static BLOCKS_CHARS: StyleChars = StyleChars {
@@ -509,6 +544,10 @@ pub static BLOCKS_CHARS: StyleChars = StyleChars {
     junction_left: '┤',
     back_h: '█',
     back_v: '█',
+    dotted_h: '╌',
+    dotted_v: '╎',
+    circle_end: '○',
+    cross_end: '✕',
 };
 
 /// Calculate display width of a string (handles CJK, emoji, etc.)
