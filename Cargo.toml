@@ -27,6 +27,12 @@ exclude = [
     "DEMO.ts",
     "AGENTS.md",
     "MEMORY.md",
+    "tests/fixtures/",
+    "tests/visual_audit.rs",
+    "benches/",
+    "scripts/",
+    "docs/",
+    "deny.toml",
 ]
 
 [[bin]]
