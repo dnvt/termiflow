@@ -772,6 +772,106 @@ fn render_with_feedback_places_supported_bt_subgraph_titles_on_bottom_edge() {
 }
 
 #[test]
+fn render_with_feedback_keeps_bt_titled_subgraph_entries_clear_of_title_row() {
+    let inputs = [
+        (
+            "graph BT\nIn[Input]\nsubgraph G [Processing]\n  P1[Parse]\n  P2[Transform]\n  P3[Validate]\nend\nOut[Output]\nIn --> P1\nP1 --> P2\nP2 --> P3\nP3 --> Out\n",
+            termiflow::BaseStyle::Unicode,
+        ),
+        (
+            "graph BT\nsubgraph W [Workers]\n  W1[Worker 1]\n  W2[Worker 2]\n  W3[Worker 3]\nend\nSource[Source] --> W1\nSource --> W2\nSource --> W3\n",
+            termiflow::BaseStyle::Ascii,
+        ),
+    ];
+
+    for (input, style) in inputs {
+        let outcome = termiflow::render_with_feedback(
+            input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+
+        assert!(
+            !outcome.critic_report.findings.iter().any(|finding| {
+                finding.code == termiflow::FindingCode::SubgraphTitleCorrupted
+            }),
+            "expected BT titled-subgraph entry path to stay off the protected title gutter for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected clean BT titled-subgraph entry routing for {:?}\n{}",
+            style,
+            outcome.output
+        );
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_lr_subgraph_fanins_clean() {
+    let input = "graph LR\nsubgraph S [Sources]\n  S1[Source 1]\n  S2[Source 2]\n  S3[Source 3]\nend\nS1 --> Sink[Sink]\nS2 --> Sink\nS3 --> Sink\n";
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        let outcome = termiflow::render_with_feedback(
+            input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+
+        assert!(
+            !outcome
+                .critic_report
+                .findings
+                .iter()
+                .any(|finding| { finding.code == termiflow::FindingCode::RouteTopologyMismatch }),
+            "expected LR subgraph fan-in seams to avoid route-topology artifacts for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected clean LR subgraph fan-in routing for {:?}\n{}",
+            style,
+            outcome.output
+        );
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_lr_sibling_subgraph_exits_clean() {
+    let input = "graph LR\nsubgraph A [Frontend]\n  UI[UI]\n  Auth[Auth]\nend\nsubgraph B [Backend]\n  API[API]\n  DB[Database]\nend\nUI --> API\nAuth --> API\nAPI --> DB\n";
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        let outcome = termiflow::render_with_feedback(
+            input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+
+        assert!(
+            !outcome
+                .critic_report
+                .findings
+                .iter()
+                .any(|finding| { finding.code == termiflow::FindingCode::RouteTopologyMismatch }),
+            "expected LR sibling-subgraph exits to avoid border seam artifacts for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected clean LR sibling-subgraph routing for {:?}\n{}",
+            style,
+            outcome.output
+        );
+    }
+}
+
+#[test]
 fn render_with_feedback_keeps_converge_cascade_fanins_centered_in_all_directions() {
     for fixture in [
         "tests/fixtures/inputs/converge_cascade_td.md",

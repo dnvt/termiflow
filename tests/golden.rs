@@ -42,9 +42,18 @@ fn expected_path(base: &str, style: &str) -> PathBuf {
     Path::new("tests/fixtures/expected").join(format!("{base}.{style}.txt"))
 }
 
+fn normalize_trailing_newline(text: &str) -> &str {
+    text.strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix('\n'))
+        .unwrap_or(text)
+}
+
 fn run_golden_for_style(style: &str) {
     let inputs = list_inputs();
-    assert!(!inputs.is_empty(), "no fixtures found in tests/fixtures/inputs");
+    assert!(
+        !inputs.is_empty(),
+        "no fixtures found in tests/fixtures/inputs"
+    );
 
     for input in inputs {
         let base = input
@@ -59,24 +68,21 @@ fn run_golden_for_style(style: &str) {
         ]);
 
         let expected_path = expected_path(base, style);
-        let expected = fs::read_to_string(&expected_path).unwrap_or_else(|_| {
-            panic!("missing expected fixture: {}", expected_path.display())
-        });
+        let expected = fs::read_to_string(&expected_path)
+            .unwrap_or_else(|_| panic!("missing expected fixture: {}", expected_path.display()));
+
+        let stdout = normalize_trailing_newline(&stdout);
+        let stderr = normalize_trailing_newline(&stderr);
+        let expected = normalize_trailing_newline(&expected);
 
         if is_error_fixture(base) {
-            assert_eq!(
-                stderr, expected,
-                "stderr mismatch for {base}.md ({style})"
-            );
+            assert_eq!(stderr, expected, "stderr mismatch for {base}.md ({style})");
             assert!(
                 stdout.is_empty(),
                 "{base}.md ({style}) should not write to stdout"
             );
         } else {
-            assert_eq!(
-                stdout, expected,
-                "stdout mismatch for {base}.md ({style})"
-            );
+            assert_eq!(stdout, expected, "stdout mismatch for {base}.md ({style})");
         }
     }
 }

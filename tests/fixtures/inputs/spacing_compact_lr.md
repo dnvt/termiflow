@@ -1,0 +1,4 @@
+%% termiflow: spacing=compact
+graph LR
+    A[Start] --> B[Process]
+    B --> C[End]

@@ -21,6 +21,42 @@ fn tw_binary_alias_exists_and_prints() {
 }
 
 #[test]
+fn audit_flag_emits_clean_visual_summary_for_simple_diagram() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    cmd.arg("--audit")
+        .write_stdin("flowchart TD\nA[Start] --> B[End]\n")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("audit verdict=Clean"))
+        .stderr(predicate::str::contains("warnings=0"))
+        .stderr(predicate::str::contains("errors=0"));
+}
+
+#[test]
+fn audit_flag_keeps_diagram_output_newline_terminated() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .args(["--audit", "--style", "ascii"])
+        .write_stdin("flowchart TD\nA[Start] --> B[End]\n")
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let last_line = stdout.lines().last().unwrap_or("").trim_start();
+
+    assert!(
+        stdout.ends_with('\n'),
+        "expected audit-print stdout to end with newline, got:\n{}",
+        stdout
+    );
+    assert!(
+        last_line.starts_with('+') || last_line.starts_with('\\'),
+        "expected the diagram border to remain the last stdout line, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
 fn output_is_cropped_by_default() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     let assert = cmd
@@ -107,6 +143,100 @@ fn wrap_flag_renders_multiline_boxes() {
 }
 
 #[test]
+fn directive_style_applies_without_cli_override() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .write_stdin("graph TD\n%% termiflow: style=ascii\nA[Node]\n")
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    let first_line = output.lines().next().unwrap_or("");
+    assert!(
+        first_line.starts_with('+'),
+        "expected ascii border from in-file directive, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn directive_max_label_applies_without_cli_override() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .write_stdin("graph TD\n%% termiflow: max_label=5\nA[abcdefghij]\n")
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        !output.contains("abcdefghij"),
+        "expected in-file max_label directive to truncate, got:\n{}",
+        output
+    );
+    assert!(
+        output.contains("..."),
+        "expected truncated output with ellipsis, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn directive_wrap_applies_without_cli_override() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .write_stdin(
+            "graph TD\n%% termiflow: wrap=true\n%% termiflow: max_lines=3\nA[hello world from termiflow]\n",
+        )
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    let lines: Vec<&str> = output.lines().collect();
+    let label_lines: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| (l.contains("hello world") || l.contains("termiflow")).then_some(i))
+        .collect();
+
+    assert!(
+        label_lines.len() >= 2 && label_lines[0] != label_lines[1],
+        "expected wrapped label from in-file directives, got:\n{}",
+        output
+    );
+    assert!(
+        !output.contains("..."),
+        "expected wrap (not ellipsis truncation), got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn classdef_warning_does_not_render_bogus_node() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("termiflow");
+    let assert = cmd
+        .arg("--print")
+        .arg("tests/fixtures/inputs/warn_classDef_td.md")
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+
+    assert!(stdout.contains("Start"));
+    assert!(stdout.contains("End"));
+    assert!(
+        !stdout.contains("highlight"),
+        "expected classDef to be ignored during rendering, got:\n{}",
+        stdout
+    );
+    assert!(
+        stderr.contains("Mermaid classes not supported"),
+        "expected classDef warning, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
 fn wrap_prefers_code_delimiters_over_mid_word_splits() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     let assert = cmd
@@ -127,7 +257,8 @@ fn wrap_prefers_code_delimiters_over_mid_word_splits() {
         output
     );
     assert!(
-        output.contains("Canvas::") && (output.contains("set_edge_char") || output.contains("set_edge_")),
+        output.contains("Canvas::")
+            && (output.contains("set_edge_char") || output.contains("set_edge_")),
         "expected delimiter-aware wrapping for `Canvas::set_edge_char`, got:\n{}",
         output
     );
@@ -194,6 +325,29 @@ fn subgraph_complex_td_title_stays_clean() {
     assert!(
         !title_row.contains('┼'),
         "expected no edge to pierce the title row, got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn subgraph_fanin_bt_title_renders_on_bottom_edge() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .arg("tests/fixtures/inputs/subgraph_fanin_bt.md")
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    let lines: Vec<&str> = output.lines().collect();
+    let title_idx = lines
+        .iter()
+        .position(|line| line.contains("Data Sources"))
+        .expect("BT title row");
+
+    assert_eq!(
+        title_idx,
+        lines.len().saturating_sub(1),
+        "expected BT subgraph title on the bottom border row, got:\n{}",
         output
     );
 }

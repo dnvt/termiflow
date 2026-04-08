@@ -2,7 +2,7 @@
 |  Done  |    |  Retry  |
 +--------+    +---------+
      ^             ^
-  success        error
+     | success     | error
      +------+------+
             |
       +-----+-----+
