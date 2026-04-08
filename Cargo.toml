@@ -2,9 +2,32 @@
 name = "termiflow"
 version = "0.1.0"
 edition = "2021"
-description = "Interactive TUI graph explorer - jq for diagrams"
+description = "Terminal-native Mermaid flowchart renderer — jq for diagrams"
 license = "MIT"
+repository = "https://github.com/dnvt/termiflow"
+homepage = "https://github.com/dnvt/termiflow"
+documentation = "https://github.com/dnvt/termiflow/blob/main/docs/reference.md"
+keywords = ["mermaid", "diagram", "terminal", "cli", "ascii"]
+categories = ["command-line-utilities", "visualization"]
+rust-version = "1.87"
 default-run = "termiflow"
+exclude = [
+    ".claude/",
+    ".maestro/",
+    ".maestro-project/",
+    ".helix/",
+    "context/",
+    "planning/",
+    "analysis/",
+    "inbox/",
+    "decisions/",
+    "artifacts/",
+    "maestro.toml",
+    "maestro.toml.example",
+    "DEMO.ts",
+    "AGENTS.md",
+    "MEMORY.md",
+]
 
 [[bin]]
 name = "termiflow"

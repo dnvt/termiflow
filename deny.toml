@@ -1,0 +1,45 @@
+# cargo-deny 0.18.x configuration
+# Run: cargo deny check
+
+[graph]
+targets = []
+
+[licenses]
+# Permissive licenses accepted in the dependency tree.
+# Run `cargo deny list` to see every license in use.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "BSD-2-Clause",
+    "Zlib",
+    "Unlicense",
+]
+
+# Exceptions for specific crates whose licenses don't fit the general allowlist.
+# Each exception is narrowly scoped to the exact crate that needs it.
+[[licenses.exceptions]]
+# option-ext (dirs transitive dep): MPL-2.0 is a weak copyleft library license.
+# Library usage does not require releasing derivative works.
+allow = ["MPL-2.0"]
+name = "option-ext"
+
+
+[bans]
+# Warn on duplicate semver-incompatible versions of the same crate.
+multiple-versions = "warn"
+# Deny wildcard dep specs.
+wildcards = "deny"
+
+[advisories]
+# Deny crates with known security vulnerabilities. No ignores by default.
+ignore = []
+
+[sources]
+# Only allow crates from crates.io; deny private registries and git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

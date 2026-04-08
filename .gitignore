@@ -23,6 +23,14 @@ Thumbs.db
 AGENT.md
 CLAUDE.md
 
-# Maestro — local-only (reapply after machine setup or generate.sh run)
+# Maestro / AI workflow state (local only)
 .claude/settings.json
-context/.compact-signal
+.claude/state/
+.maestro
+.maestro-project/
+maestro.toml
+context/
+analysis/research-pulse/
+analysis/ingest/
+inbox/
+MEMORY.md
