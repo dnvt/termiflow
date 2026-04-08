@@ -26,7 +26,8 @@ fi
 for f in tests/fixtures/inputs/*.md; do
   base="$(basename "${f%.md}")"
 
-  if [[ "${base}" == "error_sequence" ]]; then
+  # Error fixtures: capture stderr (the error message) instead of stdout
+  if [[ "${base}" == error_* ]]; then
     "${bin}" --print --style unicode "${f}" 1> /dev/null 2> "tests/fixtures/expected/${base}.unicode.txt" || true
     "${bin}" --print --style ascii "${f}" 1> /dev/null 2> "tests/fixtures/expected/${base}.ascii.txt" || true
     continue

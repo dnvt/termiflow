@@ -88,7 +88,6 @@ tw --strict diagram.md
 
 - Pipelines (Terraform/Docker Compose/npm → Mermaid → TermiFlow): `docs/pipelines.md`
 - CLI + syntax reference (flags, config, supported syntax): `docs/reference.md`
-- Implementation notes/specs: `planning/`
 
 ## License
 

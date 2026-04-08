@@ -1,0 +1,27 @@
+# Termiflow Helix formatter config
+# Rust project - uses rustfmt (default Rust formatter)
+
+[[language]]
+name = "rust"
+auto-format = true
+# rustfmt is the default formatter for Rust in Helix
+# If rustfmt.toml exists in project root, it will be used automatically
+
+[[language]]
+name = "toml"
+auto-format = true
+formatter = { command = "taplo", args = ["fmt", "-"] }
+
+[[language]]
+name = "markdown"
+auto-format = true
+formatter = { command = "prettier", args = [
+  "--prose-wrap", "always",
+  "--print-width", "80",
+  "--parser", "markdown"
+] }
+
+[[language]]
+name = "yaml"
+auto-format = true
+formatter = { command = "prettier", args = ["--parser", "yaml"] }
