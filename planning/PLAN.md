@@ -1,6 +1,6 @@
 # Termiflow Development Plan
 
-> **Last Updated:** 2026-04-01
+> **Last Updated:** 2026-04-09
 > **Status:** Active — pre-1.0 polish phase
 
 ---
@@ -12,7 +12,7 @@
 | Parser | ✅ Complete | 2-pass, forward refs, strict mode |
 | Layout | ✅ Complete | Coarse waterfall, all 4 directions |
 | Rendering | ✅ Complete | 9 styles, composite styling |
-| Subgraphs | ✅ Complete (single-level) | Nested warns + ignores |
+| Subgraphs | ⚠️ Partial | Single-level is stable; nested is structural/experimental and still being hardened |
 | Edge Labels | ✅ Complete | Pipe and text syntax, configurable width |
 | Node Shapes | ✅ Complete | 14 shapes |
 | Phase 6 Critic | ✅ Complete | 15 finding codes, topology analysis |
@@ -24,7 +24,7 @@
 | Beam Search (6.4) | ❌ Deferred | Greedy pass sufficient for now |
 | Per-Element Styling | ❌ Planned | Phase 2 (deferred) |
 
-**Tests:** 311 passing | **Clippy:** 0 warnings | **Unwrap violations:** 0
+**Tests:** full suite passing | **Clippy:** 0 warnings | **Unwrap violations:** 0
 
 ---
 
@@ -100,7 +100,7 @@ Add `cycle_nested_bt.md` and `cycle_nested_rl.md` fixture inputs + expected outp
 | HIGH | Markdown-aware labels | Medium | Mermaid parity / label semantics |
 | MEDIUM | Mermaid `@{}` shape family | Medium | Broader flowchart shape parity |
 | MEDIUM | Bounded beam search (6.4) | Medium | Greedy pass sufficient for now |
-| MEDIUM | Nested subgraphs | High | Significant arch change; warns + ignores today |
+| MEDIUM | Nested subgraphs | High | Significant arch change; Phase 3 now needs route-aware width budgeting for route-dense nested children |
 | MEDIUM | TUI UX polish | Medium | Viewport, keyboard, status bar |
 | LOW | Per-element styling (`classDef`) | High | Phase 2 spec exists |
 | LOW | Sequence diagrams | High | New diagram type |
@@ -149,11 +149,13 @@ cargo clippy && cargo fmt --check
 
 1. ~~**BT subgraph borders** — junction chars bleed into title rows~~ ✅ Fixed 2026-04-01
 2. **Sibling subgraph collision** — envelope merging artifacts in dense graphs
-3. **Nested subgraphs** — warns and ignores (Mermaid supports; arch change required)
+3. **Nested subgraphs** — parsed structurally with experimental support;
+   ancestor-aware portals/clearance are in place, but route-aware width
+   budgeting and final render polish still require further phases
 4. **Per-element styling** — `classDef`, `:::` not supported
 5. **Mermaid edge IDs / markdown labels / `@{}` shapes** — not supported yet
 6. **Beam search** — greedy single-pass only; complex repair may miss optimal solution
 
 ---
 
-*Updated 2026-04-01 from deep audit review (see `analysis/reviews/2026-04-01-deep-audit.md`)*
+*Updated 2026-04-09 during nested-subgraph Phase 3 planning refresh*

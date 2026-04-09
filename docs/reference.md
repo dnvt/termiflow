@@ -45,7 +45,7 @@ Supported patterns:
 - Grouped edges: `A & B --> C`, `A --> B & C`
 - Edges: `A --> B`, `A ---> B`, `A --- B`, `A ==> B`, `A -.-> B`, `A <--> B`, `A --o B`, `A --x B`
 - Edge labels: `A -->|label| B` and `A -- label --> B`
-- Subgraphs (single-level): `subgraph ... end` (nested subgraphs warn; `--strict` makes warnings fatal)
+- Subgraphs: `subgraph ... end` (nested structure is preserved with an experimental warning; `--strict` makes warnings fatal)
 - Per-diagram directives: `%% termiflow: style=...`, `%% termiflow: max_label=...`
 - Multiline: `%% termiflow: wrap=true`, `%% termiflow: max_lines=3`
 - Click targets: `click ID "file.md"` (parsed; currently informational only)
@@ -56,7 +56,9 @@ Supported patterns:
 - Mermaid flowchart edge IDs
 - Mermaid `@{}` shape family
 - Mermaid markdown-aware labels / markdown strings
-- Nested subgraphs (warn and ignore inner subgraphs today)
+- Nested subgraphs: parser/model hierarchy is preserved and ancestor-aware
+  portal carving is partially in place, but full hierarchical containment and
+  root-level headroom/render polish are still pending
 - A line containing only `end` closes the current subgraph. Avoid bare lowercase `end` as generated content inside flowcharts.
 - Non-flowchart diagram types (sequence/class/state/ER/gantt/etc.)
 

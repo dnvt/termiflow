@@ -478,6 +478,15 @@ fn branch_symmetry_finding(
     ) {
         return None;
     }
+    if other_ids.iter().any(|node_id| {
+        if anchor_is_source {
+            graph.edge_crosses_subgraph_boundary(anchor_id, node_id)
+        } else {
+            graph.edge_crosses_subgraph_boundary(node_id, anchor_id)
+        }
+    }) {
+        return None;
+    }
 
     let mut owner_ids = Vec::with_capacity(other_ids.len() + 1);
     owner_ids.push(anchor_id.to_string());

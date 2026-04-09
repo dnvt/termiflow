@@ -55,7 +55,10 @@ graph TD    # or TB, LR, BT
 
 ### 1.4 Unsupported Syntax (Generates Warnings)
 
-- Nested subgraphs (single-level only): `subgraph ... subgraph ... end end`
+- Nested subgraphs: parsed structurally with a warning today; ancestor-aware
+  portal and clearance work is in progress, but full hierarchical
+  layout/render support remains incomplete:
+  `subgraph ... subgraph ... end end`
 - Mermaid styling: `style A fill:#f00`
 - Class definitions: `classDef`
 - Mermaid class usage: `:::`

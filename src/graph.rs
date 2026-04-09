@@ -170,7 +170,7 @@ impl Rectangle {
     }
 }
 
-/// Subgraph grouping nodes together (single-level only in v1)
+/// Subgraph grouping nodes together.
 ///
 /// Subgraphs provide visual grouping of related nodes with:
 /// - Dashed border to distinguish from node boxes
@@ -182,6 +182,10 @@ pub struct Subgraph {
     pub id: String,
     /// Optional title shown in the subgraph border
     pub title: Option<String>,
+    /// Parent subgraph ID when this subgraph is nested.
+    pub parent_id: Option<String>,
+    /// Child subgraph IDs in declaration order.
+    pub child_ids: Vec<String>,
     /// Set of node IDs contained in this subgraph
     pub node_ids: HashSet<String>,
     /// Bounding box calculated during layout
@@ -198,6 +202,8 @@ impl Subgraph {
         Self {
             id: id.into(),
             title,
+            parent_id: None,
+            child_ids: Vec::new(),
             node_ids: HashSet::new(),
             bounds: Rectangle::default(),
             inner_bounds: Rectangle::default(),
@@ -216,10 +222,30 @@ impl Subgraph {
         self.node_ids.insert(node_id.into());
     }
 
+    /// Add a child subgraph to this subgraph, preserving declaration order.
+    pub fn add_child(&mut self, child_id: impl Into<String>) {
+        let child_id = child_id.into();
+        if !self.child_ids.iter().any(|existing| existing == &child_id) {
+            self.child_ids.push(child_id);
+        }
+    }
+
     /// Check if the subgraph has a title
     #[inline]
     pub fn has_title(&self) -> bool {
         self.title.is_some()
+    }
+
+    /// Check if this subgraph has a parent.
+    #[inline]
+    pub fn has_parent(&self) -> bool {
+        self.parent_id.is_some()
+    }
+
+    /// Check if this subgraph has nested child subgraphs.
+    #[inline]
+    pub fn has_children(&self) -> bool {
+        !self.child_ids.is_empty()
     }
 }
 
@@ -230,7 +256,8 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     pub direction: Direction,
     pub warnings: Vec<String>,
-    /// Subgraphs for visual grouping (single-level only in v1)
+    /// Subgraphs for visual grouping. Nested parent/child structure may be present
+    /// even when later layout/render phases do not yet fully exploit it.
     pub subgraphs: Vec<Subgraph>,
     /// Maps node ID to its containing subgraph ID (if any)
     pub node_subgraph: HashMap<String, String>,
@@ -305,8 +332,15 @@ impl Graph {
 
     /// Associate a node with a subgraph (tracks membership)
     pub fn associate_node_with_subgraph(&mut self, node_id: &str, subgraph_id: &str) {
-        self.node_subgraph
-            .insert(node_id.to_string(), subgraph_id.to_string());
+        if let Some(previous_id) = self
+            .node_subgraph
+            .insert(node_id.to_string(), subgraph_id.to_string())
+            .filter(|previous_id| previous_id != subgraph_id)
+        {
+            if let Some(previous_subgraph) = self.get_subgraph_mut(&previous_id) {
+                previous_subgraph.node_ids.remove(node_id);
+            }
+        }
         if let Some(subgraph) = self.get_subgraph_mut(subgraph_id) {
             subgraph.add_node(node_id);
         }
@@ -315,6 +349,60 @@ impl Graph {
     /// Get the subgraph containing a node (if any)
     pub fn get_node_subgraph(&self, node_id: &str) -> Option<&str> {
         self.node_subgraph.get(node_id).map(|s| s.as_str())
+    }
+
+    /// Return the node's subgraph ancestry from innermost to outermost.
+    pub fn node_subgraph_chain<'a>(&'a self, node_id: &str) -> Vec<&'a str> {
+        let mut chain = Vec::new();
+        let mut current = self.get_node_subgraph(node_id);
+        while let Some(current_id) = current {
+            chain.push(current_id);
+            current = self
+                .get_subgraph(current_id)
+                .and_then(|subgraph| subgraph.parent_id.as_deref());
+        }
+        chain
+    }
+
+    /// Return the subgraph borders an edge exits and enters.
+    ///
+    /// Each vector is ordered from innermost to outermost exclusive boundary,
+    /// stopping at the nearest common ancestor shared by the endpoints.
+    pub fn edge_boundary_crossings<'a>(
+        &'a self,
+        from_node_id: &str,
+        to_node_id: &str,
+    ) -> (Vec<&'a str>, Vec<&'a str>) {
+        let from_chain = self.node_subgraph_chain(from_node_id);
+        let to_chain = self.node_subgraph_chain(to_node_id);
+
+        let mut from_exclusive_len = from_chain.len();
+        let mut to_exclusive_len = to_chain.len();
+        while from_exclusive_len > 0
+            && to_exclusive_len > 0
+            && from_chain[from_exclusive_len - 1] == to_chain[to_exclusive_len - 1]
+        {
+            from_exclusive_len -= 1;
+            to_exclusive_len -= 1;
+        }
+
+        (
+            from_chain[..from_exclusive_len].to_vec(),
+            to_chain[..to_exclusive_len].to_vec(),
+        )
+    }
+
+    /// Check whether an edge crosses any subgraph boundary.
+    pub fn edge_crosses_subgraph_boundary(&self, from_node_id: &str, to_node_id: &str) -> bool {
+        let (exit_subgraphs, enter_subgraphs) =
+            self.edge_boundary_crossings(from_node_id, to_node_id);
+        !exit_subgraphs.is_empty() || !enter_subgraphs.is_empty()
+    }
+
+    /// Check whether a node belongs to a subgraph directly or through one of its
+    /// nested descendants.
+    pub fn is_node_in_subgraph_tree(&self, node_id: &str, subgraph_id: &str) -> bool {
+        self.node_subgraph_chain(node_id).contains(&subgraph_id)
     }
 
     /// Check if the graph has any subgraphs
@@ -492,6 +580,8 @@ mod tests {
         let sg = Subgraph::new("sg1", Some("My Group".to_string()));
         assert_eq!(sg.id, "sg1");
         assert_eq!(sg.title, Some("My Group".to_string()));
+        assert!(sg.parent_id.is_none());
+        assert!(sg.child_ids.is_empty());
         assert!(sg.node_ids.is_empty());
         assert!(!sg.bounds.is_valid());
         assert_eq!(sg.rank_range, (0, 0));
@@ -508,6 +598,19 @@ mod tests {
     fn subgraph_has_title() {
         let sg = Subgraph::new("sg", Some("Title".to_string()));
         assert!(sg.has_title());
+    }
+
+    #[test]
+    fn subgraph_tracks_children_without_duplicates() {
+        let mut sg = Subgraph::new("parent", None);
+        assert!(!sg.has_children());
+        assert!(!sg.has_parent());
+
+        sg.add_child("child");
+        sg.add_child("child");
+
+        assert!(sg.has_children());
+        assert_eq!(sg.child_ids, vec!["child".to_string()]);
     }
 
     #[test]
@@ -639,11 +742,115 @@ mod tests {
     }
 
     #[test]
+    fn graph_associate_node_with_subgraph_reassigns_membership() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("outer", None));
+        g.add_subgraph(Subgraph::new("inner", None));
+        g.add_node(Node::new("n1", "Node 1"));
+
+        g.associate_node_with_subgraph("n1", "outer");
+        g.associate_node_with_subgraph("n1", "inner");
+
+        assert_eq!(g.get_node_subgraph("n1"), Some("inner"));
+        assert!(!g
+            .get_subgraph("outer")
+            .expect("outer subgraph should exist")
+            .contains_node("n1"));
+        assert!(g
+            .get_subgraph("inner")
+            .expect("inner subgraph should exist")
+            .contains_node("n1"));
+    }
+
+    #[test]
     fn graph_get_node_subgraph_returns_none_for_unassociated() {
         let mut g = Graph::new();
         g.add_node(Node::new("n1", "Node 1"));
         assert!(g.get_node_subgraph("n1").is_none());
         assert!(g.get_node_subgraph("nonexistent").is_none());
+    }
+
+    #[test]
+    fn graph_is_node_in_subgraph_tree_checks_ancestor_chain() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("outer", None));
+        g.add_subgraph(Subgraph::new("inner", None));
+        g.get_subgraph_mut("inner").unwrap().parent_id = Some("outer".to_string());
+        g.get_subgraph_mut("outer").unwrap().add_child("inner");
+        g.add_node(Node::new("n1", "Node 1"));
+        g.associate_node_with_subgraph("n1", "inner");
+
+        assert!(g.is_node_in_subgraph_tree("n1", "inner"));
+        assert!(g.is_node_in_subgraph_tree("n1", "outer"));
+        assert!(!g.is_node_in_subgraph_tree("n1", "missing"));
+        assert!(!g.is_node_in_subgraph_tree("missing-node", "outer"));
+    }
+
+    #[test]
+    fn graph_node_subgraph_chain_orders_inner_to_outer() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("outer", None));
+        g.add_subgraph(Subgraph::new("inner", None));
+        g.get_subgraph_mut("inner").unwrap().parent_id = Some("outer".to_string());
+        g.get_subgraph_mut("outer").unwrap().add_child("inner");
+        g.add_node(Node::new("n1", "Node 1"));
+        g.associate_node_with_subgraph("n1", "inner");
+
+        assert_eq!(g.node_subgraph_chain("n1"), vec!["inner", "outer"]);
+    }
+
+    #[test]
+    fn graph_edge_boundary_crossings_child_to_parent_exit_only_child() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("parent", None));
+        g.add_subgraph(Subgraph::new("child", None));
+        g.get_subgraph_mut("child").unwrap().parent_id = Some("parent".to_string());
+        g.get_subgraph_mut("parent").unwrap().add_child("child");
+        g.add_node(Node::new("inner", "Inner"));
+        g.add_node(Node::new("outer", "Outer"));
+        g.associate_node_with_subgraph("inner", "child");
+        g.associate_node_with_subgraph("outer", "parent");
+
+        let (exits, enters) = g.edge_boundary_crossings("inner", "outer");
+        assert_eq!(exits, vec!["child"]);
+        assert!(enters.is_empty());
+    }
+
+    #[test]
+    fn graph_edge_boundary_crossings_between_siblings_skip_common_parent() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("parent", None));
+        g.add_subgraph(Subgraph::new("left", None));
+        g.add_subgraph(Subgraph::new("right", None));
+        g.get_subgraph_mut("left").unwrap().parent_id = Some("parent".to_string());
+        g.get_subgraph_mut("right").unwrap().parent_id = Some("parent".to_string());
+        g.get_subgraph_mut("parent").unwrap().add_child("left");
+        g.get_subgraph_mut("parent").unwrap().add_child("right");
+        g.add_node(Node::new("a", "A"));
+        g.add_node(Node::new("b", "B"));
+        g.associate_node_with_subgraph("a", "left");
+        g.associate_node_with_subgraph("b", "right");
+
+        let (exits, enters) = g.edge_boundary_crossings("a", "b");
+        assert_eq!(exits, vec!["left"]);
+        assert_eq!(enters, vec!["right"]);
+    }
+
+    #[test]
+    fn graph_edge_boundary_crossings_external_to_nested_include_all_entered_ancestors() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("parent", None));
+        g.add_subgraph(Subgraph::new("child", None));
+        g.get_subgraph_mut("child").unwrap().parent_id = Some("parent".to_string());
+        g.get_subgraph_mut("parent").unwrap().add_child("child");
+        g.add_node(Node::new("outside", "Outside"));
+        g.add_node(Node::new("inside", "Inside"));
+        g.associate_node_with_subgraph("inside", "child");
+
+        let (exits, enters) = g.edge_boundary_crossings("outside", "inside");
+        assert!(exits.is_empty());
+        assert_eq!(enters, vec!["child", "parent"]);
+        assert!(g.edge_crosses_subgraph_boundary("outside", "inside"));
     }
 
     #[test]

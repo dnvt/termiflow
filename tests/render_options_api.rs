@@ -499,6 +499,83 @@ fn render_with_feedback_keeps_complex_td_subgraph_titles_clean() {
 }
 
 #[test]
+fn render_with_feedback_preserves_visually_nested_inner_subgraph_border_cells() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md").unwrap();
+    let parsed = termiflow::parse(&input, false).unwrap();
+    let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+
+    let inner = graph.get_subgraph("SG2").expect("inner subgraph");
+    let overlapping_node = graph.get_node("S2").expect("overlapping node");
+    assert!(
+        overlapping_node.y > inner.bounds.y
+            && overlapping_node.y < inner.bounds.y + inner.bounds.height.saturating_sub(1),
+        "expected S2 row to overlap SG2 vertical span: sg={:?} node=({}, {})",
+        inner.bounds,
+        overlapping_node.x,
+        overlapping_node.y
+    );
+
+    let outcome =
+        termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
+    let cell = outcome
+        .semantic_frame
+        .get(inner.bounds.x, overlapping_node.y)
+        .expect("border cell");
+
+    assert_eq!(
+        cell.owner_kind,
+        termiflow::render::semantic::CellOwnerKind::SubgraphBorder,
+        "expected inner subgraph left border to survive visual nesting overlap\n{}",
+        outcome.output
+    );
+}
+
+#[test]
+fn render_with_feedback_keeps_nested_child_bottom_border_clean_after_fanin() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md").unwrap();
+    let parsed = termiflow::parse(&input, false).unwrap();
+    let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+    let inner = graph.get_subgraph("SG2").expect("inner subgraph");
+
+    let outcome =
+        termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
+    let bottom_y = inner.bounds.y + inner.bounds.height.saturating_sub(1);
+    let edge_owned_cells = (inner.bounds.x..inner.bounds.x + inner.bounds.width)
+        .filter_map(|x| outcome.semantic_frame.get(x, bottom_y))
+        .filter(|cell| cell.owner_kind == termiflow::render::semantic::CellOwnerKind::EdgeSegment)
+        .count();
+
+    assert_eq!(
+        edge_owned_cells, 1,
+        "expected the nested child bottom border to expose a single exit portal after fan-in routing\n{}",
+        outcome.output
+    );
+}
+
+#[test]
+fn render_with_feedback_keeps_nested_child_fanin_spine_off_left_wall() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md").unwrap();
+    let parsed = termiflow::parse(&input, false).unwrap();
+    let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+    let inner = graph.get_subgraph("SG2").expect("inner subgraph");
+
+    let outcome =
+        termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
+    let left_interior_x = inner.bounds.x + 1;
+    let bottom_y = inner.bounds.y + inner.bounds.height.saturating_sub(1);
+    let edge_owned_cells = ((bottom_y.saturating_sub(2))..bottom_y)
+        .filter_map(|y| outcome.semantic_frame.get(left_interior_x, y))
+        .filter(|cell| cell.owner_kind == termiflow::render::semantic::CellOwnerKind::EdgeSegment)
+        .count();
+
+    assert_eq!(
+        edge_owned_cells, 0,
+        "expected the nested child fan-in spine to stay off the left interior wall\n{}",
+        outcome.output
+    );
+}
+
+#[test]
 fn render_with_feedback_keeps_complex_bt_subgraph_connectors_clean() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_bt.md").unwrap();
 
@@ -1005,4 +1082,89 @@ fn default_render_fixes_obvious_degree_mismatch_cases() {
         .findings
         .iter()
         .any(|finding| { finding.code == termiflow::FindingCode::SubgraphTitleCorrupted }));
+}
+
+#[test]
+fn render_matches_verified_collision_edge_along_border_lr_snapshots() {
+    let input =
+        std::fs::read_to_string("tests/fixtures/inputs/collision_edge_along_border_lr.md").unwrap();
+
+    for (style, must_contain, must_not_contain) in [
+        (
+            termiflow::BaseStyle::Unicode,
+            "┌──────┐        ┌─────┐",
+            "┌──────│        ┌─────┐",
+        ),
+        (
+            termiflow::BaseStyle::Ascii,
+            "+------+        +-----+",
+            "+------|        +-----+",
+        ),
+    ] {
+        let output =
+            termiflow::render(&input, termiflow::RenderOptions::new().with_style(style)).unwrap();
+
+        assert!(
+            output.contains(must_contain),
+            "expected verified LR border-contact fixture to preserve node corners against the subgraph wall for {:?}\n{}",
+            style,
+            output
+        );
+        assert!(
+            !output.contains(must_not_contain),
+            "expected LR border-contact fixture to avoid clobbering box corners with a subgraph wall for {:?}\n{}",
+            style,
+            output
+        );
+    }
+}
+
+#[test]
+fn render_matches_verified_collision_sibling_subgraphs_lr_snapshots() {
+    let input =
+        std::fs::read_to_string("tests/fixtures/inputs/collision_sibling_subgraphs_lr.md").unwrap();
+
+    for (style, upper_crossing, lower_crossing) in [
+        (
+            termiflow::BaseStyle::Unicode,
+            "├─────┬────────────────┐",
+            "└────────────────────┼────→",
+        ),
+        (
+            termiflow::BaseStyle::Ascii,
+            "+-----+----------------+",
+            "+--------------------+---->",
+        ),
+    ] {
+        let output =
+            termiflow::render(&input, termiflow::RenderOptions::new().with_style(style)).unwrap();
+
+        assert!(
+            output.contains(upper_crossing) && output.contains(lower_crossing),
+            "expected verified LR sibling-subgraph crossings to preserve border intersections for {:?}\n{}",
+            style,
+            output
+        );
+    }
+}
+
+#[test]
+fn render_matches_verified_collision_parallel_cross_bt_snapshots() {
+    let input =
+        std::fs::read_to_string("tests/fixtures/inputs/collision_parallel_cross_bt.md").unwrap();
+
+    for (style, source_border_crossing) in [
+        (termiflow::BaseStyle::Unicode, "┏━━━━━┼━━━━━━━━━━━┼━━━━┓"),
+        (termiflow::BaseStyle::Ascii, "+-----+-----------+----+"),
+    ] {
+        let output =
+            termiflow::render(&input, termiflow::RenderOptions::new().with_style(style)).unwrap();
+
+        assert!(
+            output.contains(source_border_crossing),
+            "expected verified BT parallel-cross fixture to preserve shared border intersections for {:?}\n{}",
+            style,
+            output
+        );
+    }
 }

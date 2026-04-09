@@ -508,6 +508,14 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         }
     }
 
+    restore_subgraph_borders(
+        &mut canvas,
+        graph,
+        &portal_slots,
+        graph.direction,
+        subgraph_chars,
+    );
+
     // Redraw subgraph titles last so portals/edges cannot corrupt the text.
     for subgraph in &graph.subgraphs {
         draw_subgraph_title(
@@ -807,6 +815,16 @@ fn annotate_node_region(canvas: &mut Canvas, node: &Node, chars: &crate::style::
     for y in node.y..node.y + node.height.max(BOX_HEIGHT) {
         for x in node.x..node.x + node.width {
             if x >= canvas.width || y >= canvas.height {
+                continue;
+            }
+            if matches!(
+                canvas.get_meta(x, y).map(|meta| meta.owner_kind),
+                Some(
+                    semantic::CellOwnerKind::SubgraphBorder
+                        | semantic::CellOwnerKind::SubgraphTitle
+                        | semantic::CellOwnerKind::PortalOpening
+                )
+            ) {
                 continue;
             }
             let ch = canvas.get(x, y);
@@ -1655,6 +1673,160 @@ fn sorted_slot_positions(slots: &HashSet<usize>) -> Vec<usize> {
     let mut ordered: Vec<usize> = slots.iter().copied().collect();
     ordered.sort_unstable();
     ordered
+}
+
+fn restore_subgraph_borders(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    slots: &HashMap<String, PortalSlots>,
+    direction: Direction,
+    subgraph_chars: &StyleChars,
+) {
+    for subgraph in &graph.subgraphs {
+        let bounds = &subgraph.bounds;
+        if !bounds.is_valid() {
+            continue;
+        }
+
+        let left_x = bounds.x;
+        let right_x = bounds.x + bounds.width.saturating_sub(1);
+        let top_y = bounds.y;
+        let bottom_y = bounds.y + bounds.height.saturating_sub(1);
+
+        let portal_slots = slots.get(&subgraph.id);
+        let top_slots: HashSet<usize> = portal_slots
+            .map(|slots| {
+                slots
+                    .top
+                    .iter()
+                    .map(|x| clamp_horizontal(bounds, *x))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let bottom_slots: HashSet<usize> = portal_slots
+            .map(|slots| {
+                slots
+                    .bottom
+                    .iter()
+                    .map(|x| clamp_horizontal(bounds, *x))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let left_slots: HashSet<usize> = portal_slots
+            .map(|slots| {
+                slots
+                    .left
+                    .iter()
+                    .map(|y| clamp_vertical(bounds, *y))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let right_slots: HashSet<usize> = portal_slots
+            .map(|slots| {
+                slots
+                    .right
+                    .iter()
+                    .map(|y| clamp_vertical(bounds, *y))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let title_span = subgraph
+            .title
+            .as_deref()
+            .map(|title| title_span(bounds, title));
+        let top_portals_on_border = matches!(direction, Direction::BT) || subgraph.title.is_none();
+
+        if left_x < canvas.width
+            && top_y < canvas.height
+            && should_restore_corner(canvas.get(left_x, top_y), subgraph_chars.tl)
+        {
+            canvas.set(left_x, top_y, subgraph_chars.tl);
+        }
+        if right_x < canvas.width
+            && top_y < canvas.height
+            && should_restore_corner(canvas.get(right_x, top_y), subgraph_chars.tr)
+        {
+            canvas.set(right_x, top_y, subgraph_chars.tr);
+        }
+        if left_x < canvas.width
+            && bottom_y < canvas.height
+            && should_restore_corner(canvas.get(left_x, bottom_y), subgraph_chars.bl)
+        {
+            canvas.set(left_x, bottom_y, subgraph_chars.bl);
+        }
+        if right_x < canvas.width
+            && bottom_y < canvas.height
+            && should_restore_corner(canvas.get(right_x, bottom_y), subgraph_chars.br)
+        {
+            canvas.set(right_x, bottom_y, subgraph_chars.br);
+        }
+
+        for x in left_x.saturating_add(1)..right_x {
+            if x >= canvas.width {
+                continue;
+            }
+            if title_span
+                .is_some_and(|(start, end)| top_y < canvas.height && x >= start && x <= end)
+            {
+                continue;
+            }
+            if top_portals_on_border && top_slots.contains(&x) {
+                continue;
+            }
+            if top_y < canvas.height
+                && should_restore_horizontal_border(canvas.get(x, top_y), subgraph_chars)
+            {
+                canvas.set(x, top_y, subgraph_chars.h);
+            }
+            if bottom_slots.contains(&x) {
+                continue;
+            }
+            if bottom_y < canvas.height
+                && should_restore_horizontal_border(canvas.get(x, bottom_y), subgraph_chars)
+            {
+                canvas.set(x, bottom_y, subgraph_chars.h);
+            }
+        }
+
+        for y in top_y.saturating_add(1)..bottom_y {
+            if y >= canvas.height {
+                continue;
+            }
+            if !left_slots.contains(&y)
+                && should_restore_vertical_border(canvas.get(left_x, y), subgraph_chars)
+            {
+                canvas.set(left_x, y, subgraph_chars.v);
+            }
+            if !right_slots.contains(&y)
+                && should_restore_vertical_border(canvas.get(right_x, y), subgraph_chars)
+            {
+                canvas.set(right_x, y, subgraph_chars.v);
+            }
+        }
+    }
+}
+
+fn should_restore_horizontal_border(existing: char, subgraph_chars: &StyleChars) -> bool {
+    if is_textual(existing) {
+        return false;
+    }
+
+    existing == ' '
+        || canvas::is_horizontal(existing, subgraph_chars)
+        || existing == subgraph_chars.h
+}
+
+fn should_restore_vertical_border(existing: char, subgraph_chars: &StyleChars) -> bool {
+    if is_textual(existing) {
+        return false;
+    }
+
+    existing == ' ' || canvas::is_vertical(existing, subgraph_chars) || existing == subgraph_chars.v
+}
+
+fn should_restore_corner(existing: char, target: char) -> bool {
+    existing == ' ' || existing == target
 }
 
 fn clamp_horizontal(bounds: &crate::graph::Rectangle, x: usize) -> usize {

@@ -136,6 +136,16 @@ fn annotate_node_region(canvas: &mut Canvas, node: &Node, chars: &StyleChars) {
             if x >= canvas.width || y >= canvas.height {
                 continue;
             }
+            if matches!(
+                canvas.get_meta(x, y).map(|meta| meta.owner_kind),
+                Some(
+                    CellOwnerKind::SubgraphBorder
+                        | CellOwnerKind::SubgraphTitle
+                        | CellOwnerKind::PortalOpening
+                )
+            ) {
+                continue;
+            }
             let ch = canvas.get(x, y);
             let (owner_kind, role) = if ch == ' ' {
                 (CellOwnerKind::NodeFill, CellRole::Fill)

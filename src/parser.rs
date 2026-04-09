@@ -50,6 +50,8 @@ lazy_static! {
     static ref RE_NODE_TRAPEZOID_ALT: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[\\([^/\\]*)\/\]").unwrap();
     // Rectangle: ID[label] - default, must be last
     static ref RE_NODE: Regex = Regex::new(r"([a-zA-Z0-9_]+)\[([^\[\]]*)\]").unwrap();
+    // Bare node reference: `A`
+    static ref RE_NODE_REF: Regex = Regex::new(r"^([a-zA-Z0-9_]+)$").unwrap();
 
     // Grouped edge (& syntax): A & B --> C & D  or  A & B -->|label| C & D
     // Group IDs are plain identifiers only (no inline shape syntax in & groups).
@@ -170,6 +172,14 @@ pub struct ParseResult {
     pub config: ParseConfig,
 }
 
+#[derive(Debug, Default)]
+struct SubgraphParseData {
+    title: Option<String>,
+    parent_id: Option<String>,
+    child_ids: Vec<String>,
+    node_ids: Vec<String>,
+}
+
 /// Find the first meaningful line (non-blank, non-config comment) and its index
 fn first_meaningful_line<'a>(lines: &[&'a str]) -> Option<(usize, &'a str)> {
     for (i, line) in lines.iter().enumerate() {
@@ -227,7 +237,7 @@ pub(crate) fn decode_mermaid_label(s: &str) -> String {
 
 fn associate_node_with_subgraph_data(
     node_to_subgraph: &mut HashMap<String, String>,
-    subgraph_data: &mut HashMap<String, (Option<String>, Vec<String>)>,
+    subgraph_data: &mut HashMap<String, SubgraphParseData>,
     node_id: &str,
     subgraph_id: &str,
 ) {
@@ -235,14 +245,14 @@ fn associate_node_with_subgraph_data(
         .insert(node_id.to_string(), subgraph_id.to_string())
         .filter(|previous_id| previous_id != subgraph_id)
     {
-        if let Some((_, nodes)) = subgraph_data.get_mut(&previous_id) {
-            nodes.retain(|existing| existing != node_id);
+        if let Some(previous) = subgraph_data.get_mut(&previous_id) {
+            previous.node_ids.retain(|existing| existing != node_id);
         }
     }
 
-    if let Some((_, nodes)) = subgraph_data.get_mut(subgraph_id) {
-        if !nodes.iter().any(|existing| existing == node_id) {
-            nodes.push(node_id.to_string());
+    if let Some(current) = subgraph_data.get_mut(subgraph_id) {
+        if !current.node_ids.iter().any(|existing| existing == node_id) {
+            current.node_ids.push(node_id.to_string());
         }
     }
 }
@@ -403,10 +413,9 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     let mut node_first_ref: HashMap<String, usize> = HashMap::new();
 
     // Subgraph tracking
-    let mut current_subgraph: Option<String> = None;
-    let mut subgraph_nesting_depth: usize = 0;
-    // subgraph_id -> (title, node_ids)
-    let mut subgraph_data: HashMap<String, (Option<String>, Vec<String>)> = HashMap::new();
+    let mut subgraph_stack: Vec<String> = Vec::new();
+    let mut seen_nested_subgraph = false;
+    let mut subgraph_data: HashMap<String, SubgraphParseData> = HashMap::new();
     let mut subgraph_order: Vec<String> = Vec::new(); // Preserve declaration order
                                                       // node_id -> subgraph_id
     let mut node_to_subgraph: HashMap<String, String> = HashMap::new();
@@ -433,21 +442,36 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 Some(decode_mermaid_label(title.trim_matches('"')))
             };
 
-            if current_subgraph.is_some() {
-                // Nested subgraph - warn and track depth for proper `end` matching
-                subgraph_nesting_depth += 1;
-                warnings.push(format!(
-                    "termiflow: warning: line {}: Nested subgraphs not supported, ignoring inner subgraph '{}'",
-                    i + 1, id
-                ));
+            let parent_id = subgraph_stack.last().cloned();
+            if parent_id.is_some() && !seen_nested_subgraph {
+                let warning = format!(
+                    "termiflow: warning: line {}: Nested subgraphs are experimental; hierarchy is preserved but layout/render support is incomplete",
+                    i + 1
+                );
+                warnings.push(warning.clone());
+                seen_nested_subgraph = true;
                 if strict {
-                    bail!("{}", warnings.last().unwrap());
+                    bail!("{warning}");
                 }
-            } else {
-                current_subgraph = Some(id.clone());
-                subgraph_data.insert(id.clone(), (title, Vec::new()));
-                subgraph_order.push(id);
             }
+            subgraph_data.insert(
+                id.clone(),
+                SubgraphParseData {
+                    title,
+                    parent_id: parent_id.clone(),
+                    child_ids: Vec::new(),
+                    node_ids: Vec::new(),
+                },
+            );
+            if let Some(parent_id) = parent_id {
+                if let Some(parent) = subgraph_data.get_mut(&parent_id) {
+                    if !parent.child_ids.iter().any(|existing| existing == &id) {
+                        parent.child_ids.push(id.clone());
+                    }
+                }
+            }
+            subgraph_order.push(id.clone());
+            subgraph_stack.push(id);
             continue;
         }
 
@@ -456,34 +480,43 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 let title = decode_mermaid_label(caps[1].trim());
                 let id = sanitize_subgraph_id(&title);
 
-                if current_subgraph.is_some() {
-                    subgraph_nesting_depth += 1;
-                    warnings.push(format!(
-                        "termiflow: warning: line {}: Nested subgraphs not supported, ignoring inner subgraph '{}'",
-                        i + 1, title
-                    ));
+                let parent_id = subgraph_stack.last().cloned();
+                if parent_id.is_some() && !seen_nested_subgraph {
+                    let warning = format!(
+                        "termiflow: warning: line {}: Nested subgraphs are experimental; hierarchy is preserved but layout/render support is incomplete",
+                        i + 1
+                    );
+                    warnings.push(warning.clone());
+                    seen_nested_subgraph = true;
                     if strict {
-                        bail!("{}", warnings.last().unwrap());
+                        bail!("{warning}");
                     }
-                } else {
-                    current_subgraph = Some(id.clone());
-                    subgraph_data.insert(id.clone(), (Some(title), Vec::new()));
-                    subgraph_order.push(id);
                 }
+                subgraph_data.insert(
+                    id.clone(),
+                    SubgraphParseData {
+                        title: Some(title),
+                        parent_id: parent_id.clone(),
+                        child_ids: Vec::new(),
+                        node_ids: Vec::new(),
+                    },
+                );
+                if let Some(parent_id) = parent_id {
+                    if let Some(parent) = subgraph_data.get_mut(&parent_id) {
+                        if !parent.child_ids.iter().any(|existing| existing == &id) {
+                            parent.child_ids.push(id.clone());
+                        }
+                    }
+                }
+                subgraph_order.push(id.clone());
+                subgraph_stack.push(id);
                 continue;
             }
         }
 
         // Handle subgraph end: `end`
         if RE_SUBGRAPH_END.is_match(trimmed) {
-            if subgraph_nesting_depth > 0 {
-                // Closing a nested (ignored) subgraph
-                subgraph_nesting_depth -= 1;
-            } else if current_subgraph.is_some() {
-                // Closing the current subgraph
-                current_subgraph = None;
-            }
-            // If no subgraph open, just ignore stray `end`
+            let _ = subgraph_stack.pop();
             continue;
         }
 
@@ -557,6 +590,19 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 &mut explicit_line_nodes,
                 i + 1,
             );
+        }
+
+        // Bare node references should count as explicit line membership too. This matters
+        // inside subgraphs when the node was already introduced on an earlier edge line.
+        if explicit_line_nodes.is_empty() {
+            if let Some(caps) = RE_NODE_REF.captures(trimmed) {
+                let id = caps[1].to_string();
+                if known_ids.insert(id.clone()) {
+                    ordered_ids.push(id.clone());
+                }
+                node_first_ref.entry(id.clone()).or_insert(i + 1);
+                explicit_line_nodes.push(id);
+            }
         }
 
         // Note: labeled edges are parsed below and labels are preserved
@@ -689,7 +735,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
         }
 
         // Associate newly discovered nodes with current subgraph
-        if let Some(ref sg_id) = current_subgraph {
+        if let Some(sg_id) = subgraph_stack.last() {
             for node_id in &explicit_line_nodes {
                 associate_node_with_subgraph_data(
                     &mut node_to_subgraph,
@@ -713,7 +759,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
     }
 
     // Warn about unclosed subgraph
-    if current_subgraph.is_some() {
+    if !subgraph_stack.is_empty() {
         warnings.push("termiflow: warning: Unclosed subgraph at end of file".to_string());
         if strict {
             bail!("{}", warnings.last().unwrap());
@@ -722,9 +768,13 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
 
     // Build Subgraph objects from collected data
     for sg_id in &subgraph_order {
-        if let Some((title, node_ids)) = subgraph_data.remove(sg_id) {
-            let mut subgraph = Subgraph::new(sg_id.clone(), title);
-            for node_id in node_ids {
+        if let Some(data) = subgraph_data.remove(sg_id) {
+            let mut subgraph = Subgraph::new(sg_id.clone(), data.title);
+            subgraph.parent_id = data.parent_id;
+            for child_id in data.child_ids {
+                subgraph.add_child(child_id);
+            }
+            for node_id in data.node_ids {
                 subgraph.add_node(node_id);
             }
             graph.add_subgraph(subgraph);
@@ -1576,20 +1626,61 @@ click A "gateway.md""#;
     }
 
     #[test]
-    fn test_subgraph_nested_warns() {
+    fn test_subgraph_nested_preserves_hierarchy_and_warns_experimental() {
         let input = "graph TD\nsubgraph Outer\nA[Node]\nsubgraph Inner\nB[Node]\nend\nend";
         let result = parse(input, false).unwrap();
         assert!(result
             .graph
             .warnings
             .iter()
-            .any(|w| w.contains("Nested subgraphs not supported")));
-        // Only outer subgraph should exist
-        assert_eq!(result.graph.subgraphs.len(), 1);
-        assert_eq!(result.graph.subgraphs[0].id, "outer");
-        // Both nodes should be in outer subgraph (inner is ignored)
-        assert!(result.graph.subgraphs[0].contains_node("A"));
-        assert!(result.graph.subgraphs[0].contains_node("B"));
+            .any(|w| w.contains("Nested subgraphs are experimental")));
+        assert_eq!(result.graph.subgraphs.len(), 2);
+
+        let outer = result.graph.get_subgraph("outer").expect("outer subgraph");
+        let inner = result.graph.get_subgraph("inner").expect("inner subgraph");
+
+        assert!(outer.contains_node("A"));
+        assert!(!outer.contains_node("B"));
+        assert_eq!(outer.parent_id, None);
+        assert_eq!(outer.child_ids, vec!["inner".to_string()]);
+
+        assert!(inner.contains_node("B"));
+        assert_eq!(inner.parent_id.as_deref(), Some("outer"));
+        assert!(inner.child_ids.is_empty());
+
+        assert_eq!(result.graph.get_node_subgraph("A"), Some("outer"));
+        assert_eq!(result.graph.get_node_subgraph("B"), Some("inner"));
+    }
+
+    #[test]
+    fn test_subgraph_nested_bracket_syntax_preserves_parent_child_links() {
+        let input =
+            "graph TD\nsubgraph OUTER [Outer]\nA[Node]\nsubgraph INNER [Inner]\nB[Node]\nend\nend";
+        let result = parse(input, false).unwrap();
+
+        let outer = result.graph.get_subgraph("OUTER").expect("outer subgraph");
+        let inner = result.graph.get_subgraph("INNER").expect("inner subgraph");
+
+        assert_eq!(inner.parent_id.as_deref(), Some("OUTER"));
+        assert_eq!(outer.child_ids, vec!["INNER".to_string()]);
+        assert_eq!(result.graph.get_node_subgraph("A"), Some("OUTER"));
+        assert_eq!(result.graph.get_node_subgraph("B"), Some("INNER"));
+    }
+
+    #[test]
+    fn test_nested_service_data_sample_preserves_parent_child_links() {
+        let input = "graph TD\nA[API Gateway] --> B[User Service]\nsubgraph SL[Service Layer]\nB\nsubgraph DL[Data Layer]\nC[Order Service] --> D[(Order DB)]\nE[(User DB)]\nend\nB --> E\nD --> F[Response Builder]\nE --> F\nend";
+        let result = parse(input, false).unwrap();
+
+        let service = result.graph.get_subgraph("SL").expect("service layer");
+        let data = result.graph.get_subgraph("DL").expect("data layer");
+
+        assert_eq!(service.child_ids, vec!["DL".to_string()]);
+        assert_eq!(data.parent_id.as_deref(), Some("SL"));
+        assert_eq!(result.graph.get_node_subgraph("B"), Some("SL"));
+        assert_eq!(result.graph.get_node_subgraph("C"), Some("DL"));
+        assert_eq!(result.graph.get_node_subgraph("D"), Some("DL"));
+        assert_eq!(result.graph.get_node_subgraph("E"), Some("DL"));
     }
 
     #[test]

@@ -42,194 +42,43 @@ pub fn compute_envelopes(
     node_rects: &HashMap<String, Rect>,
     gutter: usize,
 ) -> HashMap<String, SubgraphEnvelope> {
-    let mut envelopes = HashMap::new();
+    let mut envelopes: HashMap<String, SubgraphEnvelope> = HashMap::new();
+    let mut subgraphs_by_depth: Vec<&crate::graph::Subgraph> = graph.subgraphs.iter().collect();
+    subgraphs_by_depth.sort_by_key(|subgraph| std::cmp::Reverse(subgraph_depth(graph, subgraph)));
 
-    for subgraph in &graph.subgraphs {
-        let mut content = Rect::default();
-        let mut max_exit_y = 0;
-        for node_id in &subgraph.node_ids {
-            if let Some(r) = node_rects.get(node_id) {
-                content = if content.is_empty() {
-                    *r
-                } else {
-                    content.union(r)
-                };
-                max_exit_y = max_exit_y.max(r.bottom());
-            }
+    for subgraph in subgraphs_by_depth {
+        let child_ids = child_subgraph_ids(graph, &subgraph.id);
+        let (mut content, mut max_exit_y) = direct_subgraph_content(subgraph, node_rects);
+        for child_id in &child_ids {
+            let Some(child_env) = envelopes.get(child_id) else {
+                continue;
+            };
+            let child_clearance = child_env.outer.inflate(1);
+            content = if content.is_empty() {
+                child_clearance
+            } else {
+                content.union(&child_clearance)
+            };
+            max_exit_y = max_exit_y.max(child_env.outer.bottom());
         }
         if content.is_empty() {
             continue;
         }
 
-        let mut has_external_edges = false;
-        let mut has_outgoing = false;
-        let mut outgoing_cross_count = 0usize;
-        let mut incoming_cross_count = 0usize;
-        let mut incoming_outside_sources: HashSet<&str> = HashSet::new();
-        for e in &graph.edges {
-            let from_in = subgraph.contains_node(&e.from);
-            let to_in = subgraph.contains_node(&e.to);
-            if (from_in || to_in) && from_in != to_in {
-                has_external_edges = true;
-                if from_in {
-                    has_outgoing = true;
-                    outgoing_cross_count += 1;
-                } else {
-                    incoming_cross_count += 1;
-                    incoming_outside_sources.insert(e.from.as_str());
-                }
-            }
-        }
-
-        // Minimal padding: spacer under the top border (larger when a visible title exists),
-        // one at the bottom, minimal inner pad, and side gutters as configured.
-        let inner_pad = 0;
-        let mut side_pad = if has_external_edges { gutter } else { 2 };
-
-        // Ensure titled subgraphs are wide enough to display the title with portal clearance.
-        let title_buffer = if matches!(graph.direction, Direction::BT) && incoming_cross_count > 1 {
-            6
-        } else if matches!(graph.direction, Direction::BT) && incoming_cross_count > 0 {
-            4
-        } else if has_external_edges {
-            2
-        } else {
-            1
-        };
-        if let Some(t) = subgraph.title.as_ref() {
-            let title_len = format!("[  {}  ]", t).chars().count();
-            let min_outer_width = title_len.saturating_add(2 + title_buffer * 2);
-            if content.width + side_pad * 2 < min_outer_width {
-                let needed = min_outer_width.saturating_sub(content.width);
-                side_pad = side_pad.max(needed.div_ceil(2));
-            }
-            if matches!(graph.direction, Direction::BT) && incoming_cross_count > 0 {
-                side_pad = side_pad.max(title_buffer);
-            }
-        }
-
-        let title_fits = subgraph.title.as_ref().is_some_and(|t| {
-            let title_len = format!("[  {}  ]", t).chars().count();
-            let available = (content.width + side_pad * 2).saturating_sub(2);
-            title_len.saturating_add(title_buffer * 2) <= available
-        });
-
-        let mut top_pad = if title_fits {
-            // Title lives on the border row; keep one empty row below it by default.
-            //
-            // Special-case: when a single external source fans out into multiple targets
-            // inside this titled subgraph, we need extra internal rows to draw a trunk,
-            // split bar, drops, and arrowheads without colliding with the title row.
-            let is_fanout_entry = incoming_cross_count > 1 && incoming_outside_sources.len() == 1;
-            if is_fanout_entry {
-                5
-            } else if incoming_cross_count > 0
-                && matches!(graph.direction, Direction::TD | Direction::TB)
-            {
-                3
+        let mut envelope = build_envelope(graph, subgraph, node_rects, gutter, content, max_exit_y);
+        for child_id in &child_ids {
+            let Some(child_env) = envelopes.get(child_id) else {
+                continue;
+            };
+            let child_clearance = child_env.outer.inflate(1);
+            envelope.inner = if envelope.inner.is_empty() {
+                child_clearance
             } else {
-                2
-            }
-        } else if has_external_edges {
-            if incoming_cross_count > 0 {
-                2
-            } else {
-                1
-            }
-        } else {
-            0
-        };
-
-        // BT with outgoing edges: edges exit from TOP of sources and need merge space
-        // above the sources (smaller y). This is the opposite of TD where outgoing
-        // edges need bottom_pad.
-        if matches!(graph.direction, Direction::BT) && has_outgoing && outgoing_cross_count > 1 {
-            // Need space for: merge line + vertical stems from sources
-            top_pad = top_pad.max(gutter.saturating_add(2));
+                envelope.inner.union(&child_clearance)
+            };
+            envelope.outer = envelope.outer.union(&child_clearance);
         }
-
-        let mut bottom_pad = 1;
-        if matches!(graph.direction, Direction::BT) && incoming_cross_count > 0 {
-            bottom_pad = bottom_pad.max(if title_fits { 3 } else { 2 });
-        }
-
-        let inner = content.inflate(inner_pad);
-        let min_bottom_pad = if has_external_edges {
-            let clearance = if outgoing_cross_count > 1 { 2 } else { 1 };
-            max_exit_y
-                .saturating_add(clearance)
-                .saturating_sub(inner.y + inner.height)
-        } else {
-            0
-        };
-        let mut bottom_pad = bottom_pad.max(min_bottom_pad);
-        if has_outgoing && outgoing_cross_count > 1 {
-            bottom_pad = bottom_pad.max(gutter.saturating_add(2));
-        }
-
-        // Avoid overlapping the bottom border with an outgoing target box:
-        // keep at least one empty row between the border and the target arrow row.
-        if matches!(graph.direction, Direction::TD | Direction::TB) && has_outgoing {
-            let inner_bottom_inclusive = inner.y + inner.height.saturating_sub(1);
-            let mut min_target_y: Option<usize> = None;
-            for e in &graph.edges {
-                if !subgraph.contains_node(&e.from) || subgraph.contains_node(&e.to) {
-                    continue;
-                }
-                let Some(target_rect) = node_rects.get(&e.to) else {
-                    continue;
-                };
-                // Only consider targets placed below the subgraph content.
-                if target_rect.y <= inner_bottom_inclusive {
-                    continue;
-                }
-                // If the target is inside another subgraph, we need clearance for
-                // that subgraph's top border (title row + border), not just the node.
-                let effective_y = if let Some(target_sg_id) = graph.get_node_subgraph(&e.to) {
-                    // Find the target subgraph and compute its topmost node Y
-                    if let Some(target_sg) = graph.get_subgraph(target_sg_id) {
-                        // Compute the minimum Y of all nodes in the target subgraph
-                        let min_node_y = target_sg
-                            .node_ids
-                            .iter()
-                            .filter_map(|id| node_rects.get(id))
-                            .map(|r| r.y)
-                            .min()
-                            .unwrap_or(target_rect.y);
-                        // Estimate top border position: nodes have padding above them for
-                        // title (2-3 rows) and border (1 row)
-                        let has_title = target_sg.title.is_some();
-                        let title_clearance = if has_title { 3 } else { 1 };
-                        min_node_y.saturating_sub(title_clearance)
-                    } else {
-                        target_rect.y
-                    }
-                } else {
-                    target_rect.y
-                };
-                min_target_y = Some(min_target_y.map_or(effective_y, |v| v.min(effective_y)));
-            }
-            if let Some(target_y) = min_target_y {
-                let allowed_border_y = target_y.saturating_sub(2);
-                let allowed_bottom_pad = allowed_border_y.saturating_sub(inner_bottom_inclusive);
-                bottom_pad = bottom_pad.min(allowed_bottom_pad.max(min_bottom_pad));
-            }
-        }
-        let outer = Rect::new(
-            inner.x.saturating_sub(side_pad),
-            inner.y.saturating_sub(top_pad),
-            inner.width + side_pad * 2,
-            inner.height + top_pad + bottom_pad,
-        );
-
-        envelopes.insert(
-            subgraph.id.clone(),
-            SubgraphEnvelope {
-                outer,
-                inner,
-                portals: PortalSlots::default(),
-            },
-        );
+        envelopes.insert(subgraph.id.clone(), envelope);
     }
 
     // If two subgraphs overlap in canvas space and there is a cross-subgraph edge
@@ -287,7 +136,8 @@ pub fn compute_envelopes(
                 // Don't expand for stacked subgraphs - let layout constraint loop handle spacing
                 continue;
             }
-            let mut new_outer = parent.outer.union(&child.outer);
+            let child_clearance = child.outer.inflate(2);
+            let mut new_outer = parent.outer.union(&child_clearance);
             let bt_titled_nested = graph.direction == Direction::BT
                 && (graph
                     .get_subgraph(parent_id)
@@ -300,13 +150,13 @@ pub fn compute_envelopes(
             // Ensure the parent border doesn't land on the same row as the child border;
             // give the parent at least one extra row of depth beyond the child.
             if matches!(graph.direction, Direction::TD | Direction::TB) {
-                let desired_bottom = child.outer.bottom().saturating_add(1);
+                let desired_bottom = child_clearance.bottom();
                 if new_outer.bottom() < desired_bottom {
                     new_outer.height += desired_bottom - new_outer.bottom();
                 }
             } else if graph.direction == Direction::BT {
                 // BT: children are below parents, so expand TOP to give clearance
-                let desired_top = child.outer.y.saturating_sub(1);
+                let desired_top = child_clearance.y;
                 if new_outer.y > desired_top {
                     let extra = new_outer.y - desired_top;
                     new_outer.y = desired_top;
@@ -337,6 +187,223 @@ pub fn compute_envelopes(
     }
 
     envelopes
+}
+
+fn subgraph_depth(graph: &Graph, subgraph: &crate::graph::Subgraph) -> usize {
+    let mut depth = 0usize;
+    let mut current = subgraph.parent_id.as_deref();
+    while let Some(parent_id) = current {
+        depth += 1;
+        current = graph
+            .get_subgraph(parent_id)
+            .and_then(|parent| parent.parent_id.as_deref());
+    }
+    depth
+}
+
+fn child_subgraph_ids(graph: &Graph, parent_id: &str) -> Vec<String> {
+    graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.parent_id.as_deref() == Some(parent_id))
+        .map(|subgraph| subgraph.id.clone())
+        .collect()
+}
+
+fn direct_subgraph_content(
+    subgraph: &crate::graph::Subgraph,
+    node_rects: &HashMap<String, Rect>,
+) -> (Rect, usize) {
+    let mut content = Rect::default();
+    let mut max_exit_y = 0;
+    for node_id in &subgraph.node_ids {
+        if let Some(r) = node_rects.get(node_id) {
+            content = if content.is_empty() {
+                *r
+            } else {
+                content.union(r)
+            };
+            max_exit_y = max_exit_y.max(r.bottom());
+        }
+    }
+    (content, max_exit_y)
+}
+
+fn build_envelope(
+    graph: &Graph,
+    subgraph: &crate::graph::Subgraph,
+    node_rects: &HashMap<String, Rect>,
+    gutter: usize,
+    content: Rect,
+    max_exit_y: usize,
+) -> SubgraphEnvelope {
+    let mut has_external_edges = false;
+    let mut has_outgoing = false;
+    let mut outgoing_cross_count = 0usize;
+    let mut incoming_cross_count = 0usize;
+    let mut incoming_outside_sources: HashSet<&str> = HashSet::new();
+    for e in &graph.edges {
+        let from_in = graph.is_node_in_subgraph_tree(&e.from, &subgraph.id);
+        let to_in = graph.is_node_in_subgraph_tree(&e.to, &subgraph.id);
+        if (from_in || to_in) && from_in != to_in {
+            has_external_edges = true;
+            if from_in {
+                has_outgoing = true;
+                outgoing_cross_count += 1;
+            } else {
+                incoming_cross_count += 1;
+                incoming_outside_sources.insert(e.from.as_str());
+            }
+        }
+    }
+
+    // Minimal padding: spacer under the top border (larger when a visible title exists),
+    // one at the bottom, minimal inner pad, and side gutters as configured.
+    let inner_pad = 0;
+    let mut side_pad = if has_external_edges { gutter } else { 2 };
+
+    // Ensure titled subgraphs are wide enough to display the title with portal clearance.
+    let title_buffer = if matches!(graph.direction, Direction::BT) && incoming_cross_count > 1 {
+        6
+    } else if matches!(graph.direction, Direction::BT) && incoming_cross_count > 0 {
+        4
+    } else if has_external_edges {
+        2
+    } else {
+        1
+    };
+    if let Some(t) = subgraph.title.as_ref() {
+        let title_len = format!("[  {}  ]", t).chars().count();
+        let min_outer_width = title_len.saturating_add(2 + title_buffer * 2);
+        if content.width + side_pad * 2 < min_outer_width {
+            let needed = min_outer_width.saturating_sub(content.width);
+            side_pad = side_pad.max(needed.div_ceil(2));
+        }
+        if matches!(graph.direction, Direction::BT) && incoming_cross_count > 0 {
+            side_pad = side_pad.max(title_buffer);
+        }
+    }
+
+    let title_fits = subgraph.title.as_ref().is_some_and(|t| {
+        let title_len = format!("[  {}  ]", t).chars().count();
+        let available = (content.width + side_pad * 2).saturating_sub(2);
+        title_len.saturating_add(title_buffer * 2) <= available
+    });
+
+    let mut top_pad = if title_fits {
+        // Title lives on the border row; keep one empty row below it by default.
+        //
+        // Special-case: when a single external source fans out into multiple targets
+        // inside this titled subgraph, we need extra internal rows to draw a trunk,
+        // split bar, drops, and arrowheads without colliding with the title row.
+        let is_fanout_entry = incoming_cross_count > 1 && incoming_outside_sources.len() == 1;
+        if is_fanout_entry {
+            5
+        } else if incoming_cross_count > 0
+            && matches!(graph.direction, Direction::TD | Direction::TB)
+        {
+            3
+        } else {
+            2
+        }
+    } else if has_external_edges {
+        if incoming_cross_count > 0 {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    };
+
+    // BT with outgoing edges: edges exit from TOP of sources and need merge space
+    // above the sources (smaller y). This is the opposite of TD where outgoing
+    // edges need bottom_pad.
+    if matches!(graph.direction, Direction::BT) && has_outgoing && outgoing_cross_count > 1 {
+        // Need space for: merge line + vertical stems from sources
+        top_pad = top_pad.max(gutter.saturating_add(2));
+    }
+
+    let mut bottom_pad = 1;
+    if matches!(graph.direction, Direction::BT) && incoming_cross_count > 0 {
+        bottom_pad = bottom_pad.max(if title_fits { 3 } else { 2 });
+    }
+
+    let inner = content.inflate(inner_pad);
+    let min_bottom_pad = if has_external_edges {
+        let clearance = if outgoing_cross_count > 1 { 2 } else { 1 };
+        max_exit_y
+            .saturating_add(clearance)
+            .saturating_sub(inner.y + inner.height)
+    } else {
+        0
+    };
+    let mut bottom_pad = bottom_pad.max(min_bottom_pad);
+    if has_outgoing && outgoing_cross_count > 1 {
+        bottom_pad = bottom_pad.max(gutter.saturating_add(2));
+    }
+
+    // Avoid overlapping the bottom border with an outgoing target box:
+    // keep at least one empty row between the border and the target arrow row.
+    if matches!(graph.direction, Direction::TD | Direction::TB) && has_outgoing {
+        let inner_bottom_inclusive = inner.y + inner.height.saturating_sub(1);
+        let mut min_target_y: Option<usize> = None;
+        for e in &graph.edges {
+            if !graph.is_node_in_subgraph_tree(&e.from, &subgraph.id)
+                || graph.is_node_in_subgraph_tree(&e.to, &subgraph.id)
+            {
+                continue;
+            }
+            let Some(target_rect) = node_rects.get(&e.to) else {
+                continue;
+            };
+            // Only consider targets placed below the subgraph content.
+            if target_rect.y <= inner_bottom_inclusive {
+                continue;
+            }
+            // If the target is inside another subgraph, we need clearance for
+            // that subgraph's top border (title row + border), not just the node.
+            let effective_y = if let Some(target_sg_id) = graph.get_node_subgraph(&e.to) {
+                // Find the target subgraph and compute its topmost node Y
+                if let Some(target_sg) = graph.get_subgraph(target_sg_id) {
+                    // Compute the minimum Y of all nodes in the target subgraph
+                    let min_node_y = target_sg
+                        .node_ids
+                        .iter()
+                        .filter_map(|id| node_rects.get(id))
+                        .map(|r| r.y)
+                        .min()
+                        .unwrap_or(target_rect.y);
+                    // Estimate top border position: nodes have padding above them for
+                    // title (2-3 rows) and border (1 row)
+                    let has_title = target_sg.title.is_some();
+                    let title_clearance = if has_title { 3 } else { 1 };
+                    min_node_y.saturating_sub(title_clearance)
+                } else {
+                    target_rect.y
+                }
+            } else {
+                target_rect.y
+            };
+            min_target_y = Some(min_target_y.map_or(effective_y, |v| v.min(effective_y)));
+        }
+        if let Some(target_y) = min_target_y {
+            let allowed_border_y = target_y.saturating_sub(2);
+            let allowed_bottom_pad = allowed_border_y.saturating_sub(inner_bottom_inclusive);
+            bottom_pad = bottom_pad.min(allowed_bottom_pad.max(min_bottom_pad));
+        }
+    }
+    let outer = Rect::new(
+        inner.x.saturating_sub(side_pad),
+        inner.y.saturating_sub(top_pad),
+        inner.width + side_pad * 2,
+        inner.height + top_pad + bottom_pad,
+    );
+    SubgraphEnvelope {
+        outer,
+        inner,
+        portals: PortalSlots::default(),
+    }
 }
 
 /// Shared portal slot discovery (used by layout + render).
@@ -455,17 +522,13 @@ pub fn collect_portal_slots(
             let Some(to) = graph.get_node(&edge.to) else {
                 continue;
             };
-            let Some(target_sg_id) = graph.get_node_subgraph(&edge.to) else {
-                continue;
-            };
-            if graph.get_node_subgraph(&edge.from) == Some(target_sg_id) {
-                continue;
+            let (_, enter_subgraphs) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+            for target_sg_id in enter_subgraphs {
+                grouped_targets
+                    .entry((edge.from.clone(), target_sg_id.to_string()))
+                    .or_default()
+                    .push(node_center_x(node_rects, &edge.to, to));
             }
-
-            grouped_targets
-                .entry((edge.from.clone(), target_sg_id.to_string()))
-                .or_default()
-                .push(node_center_x(node_rects, &edge.to, to));
         }
 
         for ((from_id, sg_id), target_xs) in grouped_targets {
@@ -497,16 +560,71 @@ pub fn collect_portal_slots(
             continue;
         };
 
-        let from_sg = graph.get_node_subgraph(&edge.from);
-        let to_sg = graph.get_node_subgraph(&edge.to);
-
-        if from_sg == to_sg {
+        let (exit_subgraphs, enter_subgraphs) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+        if exit_subgraphs.is_empty() && enter_subgraphs.is_empty() {
             continue;
         }
 
         match direction {
             Direction::TD | Direction::TB => {
-                if let Some(id) = to_sg {
+                for &id in &enter_subgraphs {
+                    let Some(target_sg) = graph.get_subgraph(id) else {
+                        continue;
+                    };
+
+                    let source_x = node_center_x(node_rects, &edge.from, from);
+                    let source_exit_y = node_exit_y(node_rects, &edge.from, from);
+                    let target_top_interior = target_sg.bounds.y.saturating_add(1);
+                    let target_bottom_interior = target_sg
+                        .bounds
+                        .y
+                        .saturating_add(target_sg.bounds.height.saturating_sub(2));
+                    let visually_nested_parent = graph.subgraphs.iter().any(|candidate| {
+                        if candidate.id == id || !candidate.bounds.is_valid() {
+                            return false;
+                        }
+                        let child_right = target_sg.bounds.x + target_sg.bounds.width;
+                        let child_bottom = target_sg.bounds.y + target_sg.bounds.height;
+                        let source_right = from.x + from.width;
+                        let source_bottom = from.y + from.height.max(crate::style::BOX_HEIGHT);
+                        target_sg.bounds.x >= candidate.bounds.x
+                            && target_sg.bounds.y >= candidate.bounds.y
+                            && child_right <= candidate.bounds.x + candidate.bounds.width
+                            && child_bottom <= candidate.bounds.y + candidate.bounds.height
+                            && from.x >= candidate.bounds.x
+                            && from.y >= candidate.bounds.y
+                            && source_right <= candidate.bounds.x + candidate.bounds.width
+                            && source_bottom <= candidate.bounds.y + candidate.bounds.height
+                    });
+
+                    let can_side_enter = visually_nested_parent
+                        && target_sg.bounds.is_valid()
+                        && source_exit_y >= target_top_interior
+                        && source_exit_y <= target_bottom_interior;
+
+                    if can_side_enter && source_x < target_sg.bounds.x {
+                        slots
+                            .entry(id.to_string())
+                            .or_default()
+                            .left
+                            .insert(source_exit_y);
+                        continue;
+                    }
+                    if can_side_enter
+                        && source_x
+                            > target_sg
+                                .bounds
+                                .x
+                                .saturating_add(target_sg.bounds.width.saturating_sub(1))
+                    {
+                        slots
+                            .entry(id.to_string())
+                            .or_default()
+                            .right
+                            .insert(source_exit_y);
+                        continue;
+                    }
+
                     let mut x = node_center_x(node_rects, &edge.to, to);
                     if let Some(&shared_x) =
                         shared_td_fanout_top_slots.get(&(edge.from.clone(), id.to_string()))
@@ -517,7 +635,32 @@ pub fn collect_portal_slots(
                     }
                     slots.entry(id.to_string()).or_default().top.insert(x);
                 }
-                if let Some(id) = from_sg {
+                for id in exit_subgraphs {
+                    let Some(exit_sg) = graph.get_subgraph(id) else {
+                        continue;
+                    };
+                    let suppress_exit = enter_subgraphs.iter().any(|target_id| {
+                        let Some(target_sg) = graph.get_subgraph(target_id) else {
+                            return false;
+                        };
+                        let target_right = target_sg.bounds.x + target_sg.bounds.width;
+                        let target_bottom = target_sg.bounds.y + target_sg.bounds.height;
+                        let source_right = from.x + from.width;
+                        let source_bottom = from.y + from.height.max(crate::style::BOX_HEIGHT);
+                        target_sg.bounds.is_valid()
+                            && exit_sg.bounds.is_valid()
+                            && target_sg.bounds.x >= exit_sg.bounds.x
+                            && target_sg.bounds.y >= exit_sg.bounds.y
+                            && target_right <= exit_sg.bounds.x + exit_sg.bounds.width
+                            && target_bottom <= exit_sg.bounds.y + exit_sg.bounds.height
+                            && from.x >= exit_sg.bounds.x
+                            && from.y >= exit_sg.bounds.y
+                            && source_right <= exit_sg.bounds.x + exit_sg.bounds.width
+                            && source_bottom <= exit_sg.bounds.y + exit_sg.bounds.height
+                    });
+                    if suppress_exit {
+                        continue;
+                    }
                     slots
                         .entry(id.to_string())
                         .or_default()
@@ -526,13 +669,13 @@ pub fn collect_portal_slots(
                 }
             }
             Direction::BT => {
-                if let Some(id) = to_sg {
+                for id in enter_subgraphs {
                     let mut x = node_center_x(node_rects, &edge.to, to);
                     x = shift_x_out_of_title(id, x);
                     x = bt_nudge_from_corners(id, x);
                     slots.entry(id.to_string()).or_default().bottom.insert(x);
                 }
-                if let Some(id) = from_sg {
+                for id in exit_subgraphs {
                     let mut x = node_center_x(node_rects, &edge.from, from);
                     x = shift_x_out_of_title(id, x);
                     x = bt_nudge_from_corners(id, x);
@@ -540,14 +683,14 @@ pub fn collect_portal_slots(
                 }
             }
             Direction::LR => {
-                if let Some(id) = to_sg {
+                for id in enter_subgraphs {
                     slots
                         .entry(id.to_string())
                         .or_default()
                         .left
                         .insert(node_center_y(node_rects, &edge.to, to));
                 }
-                if let Some(id) = from_sg {
+                for id in exit_subgraphs {
                     slots
                         .entry(id.to_string())
                         .or_default()
@@ -556,14 +699,14 @@ pub fn collect_portal_slots(
                 }
             }
             Direction::RL => {
-                if let Some(id) = to_sg {
+                for id in enter_subgraphs {
                     slots
                         .entry(id.to_string())
                         .or_default()
                         .right
                         .insert(node_center_y(node_rects, &edge.to, to));
                 }
-                if let Some(id) = from_sg {
+                for id in exit_subgraphs {
                     slots
                         .entry(id.to_string())
                         .or_default()
@@ -599,10 +742,28 @@ fn node_center_y(
         .unwrap_or_else(|| fallback_node.center_y())
 }
 
+fn node_exit_y(
+    rects: &HashMap<String, Rect>,
+    node_id: &str,
+    fallback_node: &crate::graph::Node,
+) -> usize {
+    rects
+        .get(node_id)
+        .map(|r| r.y + r.height)
+        .unwrap_or_else(|| fallback_node.bottom_y())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::graph::{Edge, Node, Subgraph};
+
+    fn rect_inside(outer: Rect, inner: Rect) -> bool {
+        inner.x >= outer.x
+            && inner.y >= outer.y
+            && inner.right() <= outer.right()
+            && inner.bottom() <= outer.bottom()
+    }
 
     #[test]
     fn portal_slots_cross_subgraph_td() {
@@ -686,5 +847,211 @@ mod tests {
             "shared TD fanout should reserve one top entry slot, got {:?}",
             portals.top
         );
+    }
+
+    #[test]
+    fn portal_slots_td_visually_nested_child_can_use_left_side_entry() {
+        let mut g = Graph::new();
+        g.direction = Direction::TD;
+        g.nodes.push(Node::new("s2", "Order Service"));
+        g.nodes.push(Node::new("d2", "Order DB"));
+        g.edges.push(Edge::new("s2", "d2"));
+
+        let mut outer = Subgraph::new("outer", Some("Service".into()));
+        outer.bounds = crate::graph::Rectangle::new(0, 6, 47, 29);
+        outer.add_node("s2");
+
+        let mut inner = Subgraph::new("inner", Some("Data".into()));
+        inner.bounds = crate::graph::Rectangle::new(22, 16, 23, 17);
+        inner.add_node("d2");
+
+        g.add_subgraph(outer);
+        g.add_subgraph(inner);
+        g.associate_node_with_subgraph("s2", "outer");
+        g.associate_node_with_subgraph("d2", "inner");
+
+        g.get_node_mut("s2").unwrap().x = 2;
+        g.get_node_mut("s2").unwrap().y = 19;
+        g.get_node_mut("s2").unwrap().width = 19;
+        g.get_node_mut("s2").unwrap().height = 3;
+        g.get_node_mut("d2").unwrap().x = 24;
+        g.get_node_mut("d2").unwrap().y = 26;
+        g.get_node_mut("d2").unwrap().width = 14;
+        g.get_node_mut("d2").unwrap().height = 3;
+
+        let node_rects = node_rects_from_graph(&g);
+        let slots = collect_portal_slots(&g, &node_rects, g.direction);
+        let portals = slots.get("inner").expect("slots for inner");
+
+        assert!(
+            portals.left.contains(&22),
+            "expected the visually nested child to expose a left-side TD entry slot: {portals:?}"
+        );
+        assert!(
+            portals.top.is_empty(),
+            "expected side-entry routing to avoid a redundant top slot for this edge: {portals:?}"
+        );
+        assert!(
+            slots.get("outer").is_none_or(|outer_portals| outer_portals.bottom.is_empty()),
+            "expected the containing parent to avoid a redundant bottom exit slot when the edge stays visually inside it: {:?}",
+            slots.get("outer")
+        );
+    }
+
+    #[test]
+    fn portal_slots_external_to_nested_child_open_all_entered_ancestors() {
+        let mut g = Graph::new();
+        g.direction = Direction::TD;
+        g.nodes.push(Node::new("src", "Source"));
+        g.nodes.push(Node::new("dst", "Target"));
+        g.edges.push(Edge::new("src", "dst"));
+
+        g.add_subgraph(Subgraph::new("parent", Some("Parent".into())));
+        g.add_subgraph(Subgraph::new("child", Some("Child".into())));
+        g.get_subgraph_mut("child").unwrap().parent_id = Some("parent".into());
+        g.get_subgraph_mut("parent").unwrap().add_child("child");
+        g.associate_node_with_subgraph("dst", "child");
+
+        g.get_node_mut("src").unwrap().x = 10;
+        g.get_node_mut("src").unwrap().y = 0;
+        g.get_node_mut("dst").unwrap().x = 12;
+        g.get_node_mut("dst").unwrap().y = 10;
+
+        let node_rects = node_rects_from_graph(&g);
+        let slots = collect_portal_slots(&g, &node_rects, g.direction);
+
+        assert!(!slots
+            .get("parent")
+            .expect("parent slots should exist")
+            .top
+            .is_empty());
+        assert!(!slots
+            .get("child")
+            .expect("child slots should exist")
+            .top
+            .is_empty());
+    }
+
+    #[test]
+    fn portal_slots_child_to_external_open_all_exited_ancestors() {
+        let mut g = Graph::new();
+        g.direction = Direction::TD;
+        g.nodes.push(Node::new("src", "Source"));
+        g.nodes.push(Node::new("dst", "Target"));
+        g.edges.push(Edge::new("src", "dst"));
+
+        g.add_subgraph(Subgraph::new("parent", Some("Parent".into())));
+        g.add_subgraph(Subgraph::new("child", Some("Child".into())));
+        g.get_subgraph_mut("child").unwrap().parent_id = Some("parent".into());
+        g.get_subgraph_mut("parent").unwrap().add_child("child");
+        g.associate_node_with_subgraph("src", "child");
+
+        g.get_node_mut("src").unwrap().x = 12;
+        g.get_node_mut("src").unwrap().y = 10;
+        g.get_node_mut("dst").unwrap().x = 10;
+        g.get_node_mut("dst").unwrap().y = 20;
+
+        let node_rects = node_rects_from_graph(&g);
+        let slots = collect_portal_slots(&g, &node_rects, g.direction);
+
+        assert!(!slots
+            .get("parent")
+            .expect("parent slots should exist")
+            .bottom
+            .is_empty());
+        assert!(!slots
+            .get("child")
+            .expect("child slots should exist")
+            .bottom
+            .is_empty());
+    }
+
+    #[test]
+    fn compute_envelopes_builds_parent_from_child_when_parent_has_no_direct_nodes() {
+        let mut g = Graph::new();
+        g.direction = Direction::TD;
+        g.add_subgraph(Subgraph::new("parent", Some("Parent".into())));
+        g.add_subgraph(Subgraph::new("child", Some("Child".into())));
+        g.get_subgraph_mut("child").unwrap().parent_id = Some("parent".into());
+        g.get_subgraph_mut("parent").unwrap().add_child("child");
+
+        g.add_node(Node::new("n1", "Inner"));
+        g.get_node_mut("n1").unwrap().x = 10;
+        g.get_node_mut("n1").unwrap().y = 8;
+        g.associate_node_with_subgraph("n1", "child");
+
+        let node_rects = node_rects_from_graph(&g);
+        let envelopes = compute_envelopes(&g, &node_rects, 2);
+        let parent = envelopes.get("parent").expect("parent envelope");
+        let child = envelopes.get("child").expect("child envelope");
+
+        assert!(rect_inside(parent.inner, child.outer.inflate(1)));
+        assert!(rect_inside(parent.outer, child.outer));
+    }
+
+    #[test]
+    fn compute_envelopes_counts_descendant_edges_as_parent_external_edges() {
+        let mut g = Graph::new();
+        g.direction = Direction::TD;
+        g.add_subgraph(Subgraph::new("parent", Some("Parent".into())));
+        g.add_subgraph(Subgraph::new("child", Some("Child".into())));
+        g.get_subgraph_mut("child").unwrap().parent_id = Some("parent".into());
+        g.get_subgraph_mut("parent").unwrap().add_child("child");
+
+        g.add_node(Node::new("inside", "Inside"));
+        g.add_node(Node::new("outside", "Outside"));
+        g.get_node_mut("inside").unwrap().x = 12;
+        g.get_node_mut("inside").unwrap().y = 8;
+        g.get_node_mut("outside").unwrap().x = 35;
+        g.get_node_mut("outside").unwrap().y = 16;
+        g.associate_node_with_subgraph("inside", "child");
+        g.add_edge(Edge::new("inside", "outside"));
+
+        let node_rects = node_rects_from_graph(&g);
+        let envelopes = compute_envelopes(&g, &node_rects, 3);
+        let parent = envelopes.get("parent").expect("parent envelope");
+
+        assert!(
+            parent.outer.width > parent.inner.width + 4,
+            "parent should reserve external-edge gutter for descendant crossings: outer={:?} inner={:?}",
+            parent.outer,
+            parent.inner
+        );
+    }
+
+    #[test]
+    fn compute_envelopes_keep_parent_visibly_outside_nested_child() {
+        let mut g = Graph::new();
+        g.direction = Direction::TD;
+        g.add_subgraph(Subgraph::new("parent", Some("Parent".into())));
+        g.add_subgraph(Subgraph::new("child", Some("Child".into())));
+        g.get_subgraph_mut("child").unwrap().parent_id = Some("parent".into());
+        g.get_subgraph_mut("parent").unwrap().add_child("child");
+
+        g.add_node(Node::new("parent_node", "Parent Node"));
+        g.add_node(Node::new("child_node", "Child Node"));
+        g.add_node(Node::new("outside", "Outside"));
+        g.get_node_mut("parent_node").unwrap().x = 2;
+        g.get_node_mut("parent_node").unwrap().y = 6;
+        g.get_node_mut("child_node").unwrap().x = 24;
+        g.get_node_mut("child_node").unwrap().y = 12;
+        g.get_node_mut("outside").unwrap().x = 12;
+        g.get_node_mut("outside").unwrap().y = 20;
+        g.associate_node_with_subgraph("parent_node", "parent");
+        g.associate_node_with_subgraph("child_node", "child");
+        g.add_edge(Edge::new("child_node", "outside"));
+
+        let node_rects = node_rects_from_graph(&g);
+        let envelopes = compute_envelopes(&g, &node_rects, 2);
+        let parent = envelopes.get("parent").expect("parent envelope");
+        let child = envelopes.get("child").expect("child envelope");
+
+        assert!(
+            parent.outer.y < child.outer.y || parent.outer.bottom() > child.outer.bottom(),
+            "parent should stay visibly outside nested child: parent={:?} child={:?}",
+            parent.outer,
+            child.outer
+        );
+        assert!(rect_inside(parent.outer, child.outer));
     }
 }
