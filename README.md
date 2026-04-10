@@ -16,11 +16,12 @@ terminal emulator.
 - **Supported edge kinds** - `-->`, `---`, `==>`, `-.->`, `<-->`, `--o`, `--x`, plus pipe/text labels
 - **9 border styles** - `ascii`, `unicode`, `double`, `rounded`, `heavy`, `dots`, `plus`, `stars`, `blocks`
 - **Composite styling** - Mix and match style components: `corner:dots,border:heavy`
-- **Multiline labels (experimental)** - `--wrap` with `--max-lines` for taller boxes
-- **Subgraphs** - Single-level `subgraph ... end` containers with titles and portal-aware border piercing
+- **Multiline labels** - `--wrap` with `--max-lines` for taller boxes
+- **Subgraphs** - Nested `subgraph ... end` containers with titles, ancestor-aware portal piercing, and clean multi-direction containment
 - **14 node shapes** - Rectangle, rounded, diamond, circle, double-circle, database, subroutine, and trapezoid/parallelogram variants
 - **Edge labels** - Pipe syntax `A -->|label| B` and text syntax `A -- label --> B`
 - **Pipe-friendly** - Reads stdin / writes stdout by default
+- **JSON input mode** - `--from-json` for TermiFlow's lightweight graph schema
 - **Cycle detection** - Back-edges rendered in gutter with warnings (or skipped when clipped)
 - **Config precedence** - CLI > in-file `%% termiflow:` directive > `~/.config/termiflow/config.toml`
 - **Live preview** - `--watch` for low-flicker inline redraws in normal scrollback; `--tui` for partial alternate-screen panning/reload/findings
@@ -47,10 +48,13 @@ tw diagram.md
 # Pipe a generated Mermaid flowchart into TermiFlow
 some-generator | tw
 
+# Render the lightweight JSON graph schema instead of Mermaid
+cat graph.json | tw --from-json
+
 # Choose a style or composite style
 tw --style "corner:dots,border:heavy" diagram.md
 
-# Wrap long labels across multiple lines (experimental)
+# Wrap long labels across multiple lines
 tw --wrap --max-lines 3 diagram.md
 
 # Output trimming/padding
@@ -78,11 +82,14 @@ tw --strict diagram.md
 - `--tui` uses raw mode plus the alternate screen; wheel scrolling and some
   fullscreen keybindings can be translated or intercepted by the terminal
   emulator.
+- Wrapping, truncation, preview frames, and status rows all follow the same
+  display-width policy. The final rendered canvas is still char-backed, so some
+  multi-codepoint grapheme composition can still vary by terminal.
 - Unicode width for emoji, CJK, and ambiguous-width characters can vary across
   terminals and emulator config. Use `--style ascii` for the most portable
   output.
 - For current Mermaid syntax gaps such as `style`, `classDef`, edge IDs,
-  `@{}` shapes, markdown labels, and nested subgraphs, see `docs/reference.md`.
+  `@{}` shapes, and markdown labels, see `docs/reference.md`.
 
 ## Docs
 

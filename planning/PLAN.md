@@ -1,6 +1,6 @@
 # Termiflow Development Plan
 
-> **Last Updated:** 2026-04-09
+> **Last Updated:** 2026-04-10
 > **Status:** Active — pre-1.0 polish phase
 
 ---
@@ -12,7 +12,7 @@
 | Parser | ✅ Complete | 2-pass, forward refs, strict mode |
 | Layout | ✅ Complete | Coarse waterfall, all 4 directions |
 | Rendering | ✅ Complete | 9 styles, composite styling |
-| Subgraphs | ⚠️ Partial | Single-level is stable; nested is structural/experimental and still being hardened |
+| Subgraphs | ⚠️ Partial | Declared nesting, horizontal parity, and anchored frame geometry are in place; broader architecture and polish still remain |
 | Edge Labels | ✅ Complete | Pipe and text syntax, configurable width |
 | Node Shapes | ✅ Complete | 14 shapes |
 | Phase 6 Critic | ✅ Complete | 15 finding codes, topology analysis |
@@ -20,7 +20,7 @@
 | Phase 6 Provenance | ✅ Complete | Cell ownership tracking |
 | Phase 6 Diff/TUI | ✅ Complete | Frame diff, ANSI presenter |
 | Watch Mode | ✅ Complete | `--watch` live reload works |
-| TUI Mode | ⚠️ Partial | `--tui` functional, UX polish pending |
+| TUI Mode | ⚠️ Partial | `--tui` functional, UX polish and emulator variance pending |
 | Beam Search (6.4) | ❌ Deferred | Greedy pass sufficient for now |
 | Per-Element Styling | ❌ Planned | Phase 2 (deferred) |
 
@@ -47,6 +47,19 @@
 Two-part fix in `src/layout.rs` (clearance loop) and `src/render/edge.rs`
 (TD-style routing + `CellOwnerKind::PortalOpening` for merge portal).
 Golden fixtures regenerated. 311 tests passing.
+
+---
+
+Recent completion:
+- **Rendering precision program** — see `planning/RENDERING_PRECISION_PROGRAM.md`.
+  Status: Complete (2026-04-10). Closed after nested-subgraph budgeting,
+  synchronized presenter updates, grapheme-safe text-width handling, expanded
+  audit/benchmark/oracle coverage, and doc-truth alignment.
+- **Cell scene graph + hybrid orth router** — see `planning/CELL_SCENE_GRAPH_HYBRID_ORTH_ROUTER.md`.
+  Status: Complete (2026-04-10). Closed as a bounded architecture pilot after
+  landing the render-layer contract, shared display profile, geometry traces,
+  the selective LR/RL hard-route pilot on `subgraph_complex_{lr,rl}`, and a
+  full expected-fixture refresh from the verified renderer.
 
 ---
 
@@ -100,8 +113,9 @@ Add `cycle_nested_bt.md` and `cycle_nested_rl.md` fixture inputs + expected outp
 | HIGH | Markdown-aware labels | Medium | Mermaid parity / label semantics |
 | MEDIUM | Mermaid `@{}` shape family | Medium | Broader flowchart shape parity |
 | MEDIUM | Bounded beam search (6.4) | Medium | Greedy pass sufficient for now |
-| MEDIUM | Nested subgraphs | High | Significant arch change; Phase 3 now needs route-aware width budgeting for route-dense nested children |
+| MEDIUM | Subgraph architecture follow-up | High | Reopen only if later evidence exceeds the completed selective pilot in `CELL_SCENE_GRAPH_HYBRID_ORTH_ROUTER.md` |
 | MEDIUM | TUI UX polish | Medium | Viewport, keyboard, status bar |
+| LOW | Engine rewrite revisit | Medium | `planning/ENGINE_REWRITE_EVALUATION.md` closed 2026-04-10 with "keep current engine"; reopen only if rewrite triggers are met |
 | LOW | Per-element styling (`classDef`) | High | Phase 2 spec exists |
 | LOW | Sequence diagrams | High | New diagram type |
 | LOW | State diagrams | High | New diagram type |
@@ -114,6 +128,7 @@ Add `cycle_nested_bt.md` and `cycle_nested_rl.md` fixture inputs + expected outp
 |----------|---------|
 | `AUDIT-mermaid-parity.md` | Comprehensive Mermaid vs Termiflow feature gaps |
 | `AUDIT-termiflow-limits.md` | Internal limits reference (canvas, labels, routing) |
+| `SUBGRAPH_TITLE_ALIGNMENT_AND_BALANCED_PADDING.md` | Completed plan for anchored titles and axis-balanced subgraph framing |
 | `spec/SPEC.md` | Technical specification |
 | `RFC-001-expanded-edge-routing.md` | Edge routing algorithm (implemented) |
 | `PHASE6_RENDER_FEEDBACK_ENGINE.md` | Phase 6 spec (60% implemented) |
@@ -147,15 +162,16 @@ cargo clippy && cargo fmt --check
 
 ## Known Limitations
 
-1. ~~**BT subgraph borders** — junction chars bleed into title rows~~ ✅ Fixed 2026-04-01
-2. **Sibling subgraph collision** — envelope merging artifacts in dense graphs
-3. **Nested subgraphs** — parsed structurally with experimental support;
-   ancestor-aware portals/clearance are in place, but route-aware width
-   budgeting and final render polish still require further phases
-4. **Per-element styling** — `classDef`, `:::` not supported
-5. **Mermaid edge IDs / markdown labels / `@{}` shapes** — not supported yet
-6. **Beam search** — greedy single-pass only; complex repair may miss optimal solution
+1. **Unicode multi-codepoint composition** — wrapping/truncation/preview/status
+   now share one display-width policy, but the main render canvas is still
+   char-backed and some grapheme composition remains emulator-sensitive
+2. **Subgraph architecture headroom** — declared nesting, anchored titles, and
+   balanced frame geometry are in place, but broader model/router evolution may
+   still be warranted if later evidence reopens subgraph edge cases
+3. **Per-element styling** — `classDef`, `:::` not supported
+4. **Mermaid edge IDs / markdown labels / `@{}` shapes** — not supported yet
+5. **Beam search** — greedy single-pass only; complex repair may miss optimal solution
 
 ---
 
-*Updated 2026-04-09 during nested-subgraph Phase 3 planning refresh*
+*Updated 2026-04-10 during rendering-precision closeout*

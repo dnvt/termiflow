@@ -1,6 +1,6 @@
 //! Helpers for low-flicker live preview frames.
 
-use super::frame::TerminalFrame;
+use super::frame::{line_display_width, write_line_slice, TerminalFrame};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Viewport {
@@ -8,14 +8,23 @@ pub struct Viewport {
     pub offset_y: u16,
 }
 
+pub fn initial_viewport(content: &str, size: (u16, u16)) -> Viewport {
+    let (width, _) = size;
+    let content_width = content.lines().map(line_display_width).max().unwrap_or(0);
+    let offset_x = content_width.saturating_sub(width) / 2;
+
+    let mut viewport = Viewport {
+        offset_x,
+        offset_y: 0,
+    };
+    clamp_viewport(&mut viewport, content, size);
+    viewport
+}
+
 pub fn clamp_viewport(viewport: &mut Viewport, content: &str, size: (u16, u16)) {
     let (width, height) = size;
     let content_height = content.lines().count() as u16;
-    let content_width = content
-        .lines()
-        .map(|line| line.chars().count() as u16)
-        .max()
-        .unwrap_or(0);
+    let content_width = content.lines().map(line_display_width).max().unwrap_or(0);
     let viewport_height = height.saturating_sub(1);
 
     viewport.offset_x = viewport.offset_x.min(content_width.saturating_sub(width));
@@ -43,20 +52,11 @@ pub fn build_preview_frame(
         .take(usize::from(viewport_height))
         .enumerate()
     {
-        for (col, ch) in line
-            .chars()
-            .skip(usize::from(viewport.offset_x))
-            .take(usize::from(width))
-            .enumerate()
-        {
-            frame.set(col as u16, row as u16, ch);
-        }
+        write_line_slice(&mut frame, row as u16, line, viewport.offset_x, width);
     }
 
     let status_y = height.saturating_sub(1);
-    for (col, ch) in status.chars().take(usize::from(width)).enumerate() {
-        frame.set(col as u16, status_y, ch);
-    }
+    write_line_slice(&mut frame, status_y, status, 0, width);
 
     frame
 }
@@ -66,24 +66,20 @@ pub fn build_inline_frame(content: &str, status: &str) -> TerminalFrame {
     let content_height = content_lines.len() as u16;
     let content_width = content_lines
         .iter()
-        .map(|line| line.chars().count() as u16)
+        .map(|line| line_display_width(line))
         .max()
         .unwrap_or(0);
-    let status_width = status.chars().count() as u16;
+    let status_width = line_display_width(status);
     let width = content_width.max(status_width);
     let height = content_height.saturating_add(1);
 
     let mut frame = TerminalFrame::new(width, height);
     for (row, line) in content_lines.iter().enumerate() {
-        for (col, ch) in line.chars().enumerate() {
-            frame.set(col as u16, row as u16, ch);
-        }
+        write_line_slice(&mut frame, row as u16, line, 0, width);
     }
 
     let status_y = height.saturating_sub(1);
-    for (col, ch) in status.chars().enumerate() {
-        frame.set(col as u16, status_y, ch);
-    }
+    write_line_slice(&mut frame, status_y, status, 0, width);
 
     frame
 }
@@ -132,5 +128,46 @@ mod tests {
             .map(|x| frame.get(x, 2).map(|cell| cell.ch).unwrap_or(' '))
             .collect();
         assert_eq!(status_row, "status");
+    }
+
+    #[test]
+    fn clamp_viewport_uses_display_columns() {
+        let mut viewport = Viewport {
+            offset_x: 20,
+            offset_y: 0,
+        };
+
+        clamp_viewport(&mut viewport, "界ab", (2, 2));
+
+        assert_eq!(viewport.offset_x, 2);
+    }
+
+    #[test]
+    fn build_inline_frame_tracks_wide_glyph_width() {
+        let frame = build_inline_frame("界a", "ok");
+
+        assert_eq!(frame.width, 3);
+        assert_eq!(frame.get(0, 0).map(|cell| cell.ch), Some('界'));
+        assert_eq!(frame.get(2, 0).map(|cell| cell.ch), Some('a'));
+    }
+
+    #[test]
+    fn initial_viewport_centers_wide_content_horizontally() {
+        let viewport = initial_viewport("0123456789", (4, 2));
+
+        assert_eq!(
+            viewport,
+            Viewport {
+                offset_x: 3,
+                offset_y: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn initial_viewport_keeps_narrow_content_left_aligned() {
+        let viewport = initial_viewport("abc", (10, 2));
+
+        assert_eq!(viewport, Viewport::default());
     }
 }

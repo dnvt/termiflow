@@ -1,10 +1,10 @@
 # Project: Nested Subgraph Support
 
-**Status:** Active
-**Roadmap Slot:** Active Workstreams
+**Status:** Completed
+**Roadmap Slot:** Completed rendering-precision child slice
 **Owner:** Maintainer
-**Timeline:** 2026-04-08 -> TBD
-**Aligned To:** Post-1.0 Mermaid parity backlog and diagram-fidelity work
+**Timeline:** 2026-04-08 -> 2026-04-10
+**Aligned To:** `planning/RENDERING_PRECISION_PROGRAM.md`
 **Decision Links:** Rationale captured in `analysis/2026-04-08-nested-subgraph-containment.md`; linked issue `#4`
 
 ## Objective
@@ -25,41 +25,43 @@ subgraph styling, non-flowchart diagram types, and crates.io / OSS launch work.
 
 ## Why This Exists
 
-Nested subgraphs are currently documented as unsupported. The parser warns and
-ignores the inner subgraph, which causes misleading output for diagrams that
-expect true containment. The user-visible symptom is border overlap, but the
-underlying issue is that hierarchy is flattened before layout and render.
+Nested subgraphs started as a documented unsupported case. The original parser
+warning path effectively flattened the inner subgraph, which caused misleading
+output for diagrams that expected true containment. The user-visible symptom
+was border overlap, but the underlying issue was that hierarchy was lost before
+layout and render. That original failure mode is no longer the active problem:
+hierarchy is now preserved, and the remaining work is the last layout/audit
+slice needed to make nested rendering support credible across directions.
 
 ## Current Execution Slice
 
-Phase 3 is still in progress, but the focus has changed:
+Execution is closed:
 
-- keep the Phase 1 parser/model hierarchy intact, including bare node-reference
-  membership lines inside subgraphs
-- keep the Phase 2 bottom-up envelope construction and descendant-edge padding
-- keep portal-slot selection and layout clearance ancestor-aware for nested
+- parser/model hierarchy is preserved, including bare node-reference membership
+  lines inside subgraphs
+- bottom-up envelope construction and descendant-edge padding are in place
+- portal-slot selection and layout clearance are ancestor-aware for nested
   border crossings
-- estimate internal fan-in/fan-out span before final envelopes
-- widen child subgraphs when internal merges/exits would otherwise crowd the
-  child border or sibling nodes
-- place nodes inside that widened child before render, instead of relying on
-  post-layout edge routing to absorb congestion
+- route-dense nested children reserve internal fan-in/fan-out span before
+  final envelopes
+- nested render/audit coverage now includes dedicated `TD`, `BT`, `LR`, and
+  `RL` regressions plus curated fixture coverage
 
 ## Success Criteria
 
-- [ ] Nested subgraph syntax is preserved in the parse/model layer instead of
+- [x] Nested subgraph syntax is preserved in the parse/model layer instead of
       being flattened into the outer subgraph.
-- [ ] A child subgraph's outer bounds are fully contained within its parent's
+- [x] A child subgraph's outer bounds are fully contained within its parent's
       interior with at least one clear spacer row/column in all supported
       directions.
-- [ ] Representative nested fixtures for `TD`, `LR`, `BT`, and `RL` render
+- [x] Representative nested fixtures for `TD`, `LR`, `BT`, and `RL` render
       without node-on-border artifacts or parent/child border collisions.
-- [ ] Route-dense nested children reserve enough horizontal budget that
+- [x] Route-dense nested children reserve enough horizontal budget that
       internal fan-in/fan-out paths do not collapse against child borders.
-- [ ] Cross-subgraph edges entering or leaving nested containers route through
+- [x] Cross-subgraph edges entering or leaving nested containers route through
       the correct ancestor border with stable ownership/provenance.
-- [ ] `--audit` and targeted tests flag nested-boundary corruption regressions.
-- [ ] `README.md` and `docs/reference.md` are updated to reflect the new
+- [x] `--audit` and targeted tests flag nested-boundary corruption regressions.
+- [x] `README.md` and `docs/reference.md` are updated to reflect the new
       support level and any remaining limits.
 
 ## Dependencies
@@ -117,17 +119,21 @@ with parser/model preservation and a minimal nested-fixture matrix.
 multi-direction fixture set render with full parent/child enclosure and without
 border-eating artifacts.
 
-**Actual Observation:** explicit parent envelopes can now be built from child
-envelopes even when the parent has no direct nodes; descendant crossings are
-counted as parent external edges during envelope construction; portal-slot
-selection/layout clearance now reason about ancestor-boundary crossings instead
-of only the innermost subgraph; and the remaining `subgraph_complex_td` defect
-is no longer basic containment. The current failure is that nested child width
-is still sized from node boxes plus minimal clearance, so render-time fan-in
-and exit geometry is forced to compete inside an envelope that layout never
-budgeted for.
+**Actual Observation:** explicit parent envelopes now build cleanly from child
+envelopes even when the parent has no direct nodes; descendant crossings count
+as parent external edges during envelope construction; portal-slot
+selection/layout clearance reason about ancestor-boundary crossings instead of
+only the innermost subgraph; declared nested vertical children get both
+side-biased outgoing-pressure widening and centered internal span budgeting;
+and the horizontal directions now reserve enough headroom/side clearance that
+nested titles and external node boxes do not collapse into the parent border.
+Representative nested `TD`, `LR`, `BT`, and `RL` fixtures now audit clean in
+both ASCII and Unicode.
 
-**Conclusion:** pending
+**Conclusion:** the hypothesis held. Explicit hierarchy plus targeted layout
+budgeting produced cleaner and more predictable containment than the old flat
+overlap heuristics, and nested subgraph support is now complete for the
+currently supported flowchart directions.
 
 ## Execution Outline
 
@@ -155,7 +161,7 @@ budgeted for.
   crossings.
 - Clarify which border an edge pierces when moving from child to sibling,
   child to parent, or parent to external node.
-- Status: in progress
+- Status: done
 - Current state:
   - `Graph` now exposes explicit edge boundary crossings (exclusive exit and
     enter ancestor chains).
@@ -163,19 +169,25 @@ budgeted for.
     of only the innermost source/target subgraph.
   - TD/BT layout clearance loops now key off ancestor crossings instead of
     direct subgraph equality.
-  - Remaining defect: nested child width is still computed from contained node
-    boxes and minimal clearance only, not from the internal route span that the
-    child must host.
-  - User-visible symptom: route-dense nested children such as `Data Layer`
-    still compress `Order DB` / `User DB` exits and nested fan-in geometry into
-    a width budget chosen before those routes are considered.
-- Next slice:
-  - add a pre-envelope route-demand estimate for nested children
-  - derive a minimum child width from contained nodes plus internal merge/exit
-    span, not only from node-box extents
-  - place nodes within that widened child before final envelope construction
-  - keep render focused on drawing clean routes instead of compensating for
-    under-sized nested envelopes
+  - Declared nested `TD`/`TB` children now participate in both the earlier
+    side-biased outgoing route-pressure widening pass and a centered internal
+    route-span budget pass. When multiple child sources converge to one
+    external target, or one external source fans into multiple child targets,
+    layout can now widen the child's right partition even when the external
+    anchor stays centered inside the child span.
+  - Declared nested `LR`/`RL` parents now reserve enough vertical headroom for
+    stepped title rows and enough horizontal clearance that adjacent external
+    node boxes no longer collapse into the crossed parent border.
+  - Dedicated render/audit regressions now cover nested `BT`, `LR`, and `RL`
+    cases that previously relied on smoke coverage or manual inspection.
+- Phase 3 exit gate:
+  - completed: dedicated nested `BT` and horizontal render regressions exist
+    in `tests/render_options_api.rs`
+  - completed: representative nested fixtures for `TD`, `LR`, `BT`, and `RL`
+    were re-run and reviewed clean
+  - completed: curated visual-audit coverage now includes nested fixtures, so
+    title corruption, wrong-border portal carving, and similar nested-boundary
+    regressions fail fast instead of relying on manual inspection
 
 ### Phase 4: Rendering and Provenance
 

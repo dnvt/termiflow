@@ -41,6 +41,30 @@ fn large_branching_diagram() -> &'static str {
     B8 --> C4"
 }
 
+fn subgraph_complex_td_fixture() -> &'static str {
+    include_str!("../tests/fixtures/inputs/subgraph_complex_td.md")
+}
+
+fn subgraph_complex_lr_fixture() -> &'static str {
+    include_str!("../tests/fixtures/inputs/subgraph_complex_lr.md")
+}
+
+fn subgraph_complex_bt_fixture() -> &'static str {
+    include_str!("../tests/fixtures/inputs/subgraph_complex_bt.md")
+}
+
+fn subgraph_complex_rl_fixture() -> &'static str {
+    include_str!("../tests/fixtures/inputs/subgraph_complex_rl.md")
+}
+
+fn collision_sibling_subgraphs_lr_fixture() -> &'static str {
+    include_str!("../tests/fixtures/inputs/collision_sibling_subgraphs_lr.md")
+}
+
+fn collision_sibling_subgraphs_rl_fixture() -> &'static str {
+    include_str!("../tests/fixtures/inputs/collision_sibling_subgraphs_rl.md")
+}
+
 fn benchmark_simple_render(c: &mut Criterion) {
     let input = simple_diagram();
     c.bench_function("render_simple_td", |b| {
@@ -132,12 +156,38 @@ fn benchmark_different_styles(c: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_route_dense_subgraphs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("route_dense_subgraphs");
+
+    for (name, input) in [
+        ("subgraph_complex_td", subgraph_complex_td_fixture()),
+        ("subgraph_complex_lr", subgraph_complex_lr_fixture()),
+        ("subgraph_complex_bt", subgraph_complex_bt_fixture()),
+        ("subgraph_complex_rl", subgraph_complex_rl_fixture()),
+        (
+            "collision_sibling_subgraphs_lr",
+            collision_sibling_subgraphs_lr_fixture(),
+        ),
+        (
+            "collision_sibling_subgraphs_rl",
+            collision_sibling_subgraphs_rl_fixture(),
+        ),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| render(black_box(input), RenderOptions::default()))
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_simple_render,
     benchmark_complex_render,
     benchmark_large_branching,
     benchmark_different_orientations,
-    benchmark_different_styles
+    benchmark_different_styles,
+    benchmark_route_dense_subgraphs
 );
 criterion_main!(benches);

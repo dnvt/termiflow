@@ -20,6 +20,7 @@
 
 use crate::graph::Graph;
 use crate::spacing::{SpacingConfig, SpacingMode};
+use crate::style::display_width;
 
 /// Scaling mode configuration
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -69,7 +70,7 @@ impl DiagramMetrics {
         let max_label_width = graph
             .nodes
             .iter()
-            .map(|n| unicode_width::UnicodeWidthStr::width(n.label.as_str()))
+            .map(|n| display_width(n.label.as_str()))
             .max()
             .unwrap_or(0);
 

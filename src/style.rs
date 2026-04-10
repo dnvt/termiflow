@@ -2,9 +2,11 @@
 //!
 //! See SPEC §4 for complete character definitions
 
-use unicode_width::UnicodeWidthStr;
-
 // Re-export spacing defaults so legacy call sites can keep using style:: constants.
+pub use crate::display_profile::{
+    display_char_width, display_width, graphemes, split_text_to_width_chunks, truncate_to_width,
+    DisplayProfile, DEFAULT_DISPLAY_PROFILE,
+};
 pub use crate::spacing::{
     BOX_HEIGHT, BOX_MIN_WIDTH, BOX_PADDING, COL_SPACING, CYCLE_GUTTER, EDGE_DROP_HEIGHT,
     EDGE_JUNCTION_HEIGHT, MAX_CANVAS_HEIGHT, MAX_CANVAS_WIDTH, MAX_LABEL_WIDTH, ROW_SPACING,
@@ -550,11 +552,6 @@ pub static BLOCKS_CHARS: StyleChars = StyleChars {
     cross_end: '✕',
 };
 
-/// Calculate display width of a string (handles CJK, emoji, etc.)
-pub fn display_width(s: &str) -> usize {
-    s.width()
-}
-
 /// Truncate label to fit within max display columns
 pub fn truncate_label(label: &str, max_width: usize) -> String {
     let current_width = display_width(label);
@@ -562,20 +559,14 @@ pub fn truncate_label(label: &str, max_width: usize) -> String {
         return label.to_string();
     }
 
-    let mut result = String::new();
-    let mut width = 0;
-    let ellipsis_width = 3; // "..."
-
-    for c in label.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-        if width + cw + ellipsis_width > max_width {
-            result.push_str("...");
-            break;
-        }
-        result.push(c);
-        width += cw;
+    let ellipsis = "...";
+    let ellipsis_width = display_width(ellipsis);
+    if max_width <= ellipsis_width {
+        return truncate_to_width(ellipsis, max_width);
     }
-    result
+
+    let prefix = truncate_to_width(label, max_width.saturating_sub(ellipsis_width));
+    format!("{prefix}{ellipsis}")
 }
 
 /// Calculate box width from label
@@ -599,6 +590,36 @@ mod tests {
         assert_eq!(truncate_label("Short", 10), "Short");
         // max_width=10, ellipsis=3, so 7 chars fit + "..." = "VeryLon..."
         assert_eq!(truncate_label("VeryLongLabel", 10), "VeryLon...");
+    }
+
+    #[test]
+    fn truncate_to_width_preserves_grapheme_clusters() {
+        let family = "👨‍👩‍👧‍👦";
+        assert_eq!(
+            truncate_to_width(&format!("{family}{family}"), display_width(family)),
+            family
+        );
+    }
+
+    #[test]
+    fn split_text_to_width_chunks_preserves_grapheme_clusters() {
+        let family = "👨‍👩‍👧‍👦";
+        assert_eq!(
+            split_text_to_width_chunks(&format!("{family}{family}"), display_width(family)),
+            vec![family.to_string(), family.to_string()]
+        );
+    }
+
+    #[test]
+    fn truncate_label_preserves_combining_clusters() {
+        let accented = "e\u{301}";
+        assert_eq!(
+            truncate_label(
+                &format!("{accented}{accented}{accented}{accented}{accented}"),
+                4
+            ),
+            format!("{accented}...")
+        );
     }
 
     #[test]

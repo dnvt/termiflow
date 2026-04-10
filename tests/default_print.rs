@@ -21,6 +21,19 @@ fn tw_binary_alias_exists_and_prints() {
 }
 
 #[test]
+fn from_json_flag_renders_json_graphs() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    cmd.arg("--from-json")
+        .write_stdin(
+            r#"{"direction":"TD","nodes":[{"id":"A","label":"Upstream"},{"id":"B","label":"Downstream"}],"edges":[{"from":"A","to":"B"}]}"#,
+        )
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Upstream"))
+        .stdout(predicate::str::contains("Downstream"));
+}
+
+#[test]
 fn audit_flag_emits_clean_visual_summary_for_simple_diagram() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     cmd.arg("--audit")
@@ -275,7 +288,7 @@ fn subgraph_title_stays_clean_for_entry_edge_td() {
     cmd.arg("tests/fixtures/inputs/subgraph_single_td.md")
         .assert()
         .success()
-        .stdout(predicate::str::contains("┏━━[  Container  ]━━┓"))
+        .stdout(predicate::str::contains("[  Container  ]"))
         .stdout(predicate::str::contains("┼").not());
 }
 

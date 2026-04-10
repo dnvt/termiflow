@@ -1,293 +1,110 @@
-# Termiflow Internal Limits & Constraints
+# Termiflow Internal Limits & Precision Notes
 
-> **Generated**: 2026-01-27
-> **Purpose**: Quick reference for developers and users
-
----
-
-## Canvas Limits
-
-| Limit | Value | Location | Behavior |
-|-------|-------|----------|----------|
-| **Max width** | 500 chars | `style.rs:21` | Clipped + warning |
-| **Max height** | 200 rows | `style.rs:22` | Clipped + warning |
-| **Min canvas** | 1×1 | `render/mod.rs` | Clamped |
+> **Reviewed:** 2026-04-10
+> **Purpose:** quick truth source for current beta-era limits and approximations
 
 ---
 
-## Label Constraints
+## Canvas And Spacing
 
-| Constraint | Value | Location | Configurable |
-|------------|-------|----------|--------------|
-| **Max width** | 20 chars | `style.rs:19` | ✅ `--max-label` |
-| **Max lines** | 3 (default) | `config.rs` | ✅ `--max-lines` |
-| **Truncation** | `...` suffix | `style.rs:519` | ❌ |
-| **Wrapping** | Off (default) | `config.rs` | ✅ `--wrap` |
-| **Line breaks** | Not supported | `measure.rs` | ❌ |
+| Item | Current value | Notes |
+|------|---------------|-------|
+| Max canvas width | 500 cells | Clipped with warning when exceeded |
+| Max canvas height | 200 rows | Clipped with warning when exceeded |
+| Min box width | 5 cells | Shared spacing default |
+| Default node height | 3 rows | Taller only when wrapped multiline labels are enabled |
+| Row spacing | 2 rows | Shared spacing default |
+| Column spacing | 3 cells | Shared spacing default |
+| Cycle gutter | 4 cells | Used for routed back-edges |
 
-### Truncation Behavior
-
-```
-Input:  "VeryLongLabelText"  (17 chars)
-Limit:  10 chars
-Output: "VeryLo..."          (9 chars + ellipsis)
-```
-
-### Wrapping Behavior
-
-```
-Input:  "This is a very long label"
-Width:  10 chars
-Lines:  3 max
-
-Output:
-  "This is a"
-  "very long"
-  "label"
-
-If > 3 lines:
-  "This is a"
-  "very long"
-  "lab..."
-```
+These numbers live in the shared spacing layer, not in ad hoc renderer-local
+constants.
 
 ---
 
-## Box Dimensions
+## Label Behavior
 
-| Dimension | Value | Formula | Location |
-|-----------|-------|---------|----------|
-| **Min width** | 5 chars | Fixed | `style.rs:8` |
-| **Fixed height** | 3 rows | Fixed (non-wrapped) | `style.rs:7` |
-| **Padding** | 2 chars | Left + right | `style.rs:9` |
-| **Actual width** | 7-26 chars | `min(label, 20) + 4 + 2` | `style.rs:543` |
+| Item | Current value | Configurable |
+|------|---------------|--------------|
+| Node label width budget | 20 columns by default | `--max-label` |
+| Edge label width budget | 20 columns by default | `--max-edge-label` |
+| Label wrapping | Off by default | `--wrap` |
+| Max wrapped lines | 1 by default | `--max-lines` |
+| Node truncation suffix | `...` | No |
+| Edge truncation suffix | `…` | No |
 
-### Box Width Calculation
+Current behavior:
 
-```rust
-box_width = min(display_width(label), MAX_LABEL_WIDTH) + BOX_PADDING*2 + 2
-          = min(label_width, 20) + 4 + 2
-          = 7 to 26 characters
-```
+- Wrapping and truncation use display columns, not byte count.
+- Node-label measurement, wrapped-line splitting, preview/status wrapping, and
+  edge-label truncation are grapheme-safe.
+- Manual line breaks are normalized from `CRLF`, `<br>`, `<br/>`, `<br />`, and
+  literal `\n`.
+- In single-line mode, normalized breaks collapse to spaces before truncation.
 
----
+Important boundary:
 
-## Spacing Constants
-
-| Constant | Value | Location | Purpose |
-|----------|-------|----------|---------|
-| **Row spacing** | 2 rows | `style.rs:10` | Vertical gap between ranks |
-| **Column spacing** | 3 chars | `style.rs:11` | Horizontal gap between nodes |
-| **Stem (vertical)** | 1 row | `style.rs:12` | TD/BT edge exit length |
-| **Stem (horizontal)** | 3 chars | `style.rs:13` | LR/RL edge exit length |
-| **Junction height** | 1 row | `style.rs:14` | Junction row spacing |
-| **Drop height** | 1 row | `style.rs:15` | Multi-target drop spacing |
-| **Cycle gutter** | 4 chars | `style.rs:17` | Back-edge margin |
+- The final diagram canvas is still char-backed. Width budgeting is now
+  consistent, but some multi-codepoint grapheme composition on the main canvas
+  can still depend on terminal behavior because a rendered cell stores a single
+  character, not a full text cluster.
 
 ---
 
-## Routing Constraints
+## Subgraphs
 
-| Constraint | Value | Location | Behavior |
-|------------|-------|----------|----------|
-| **Max routing steps** | 2500 | `layout.rs:2517` | Warning + abort |
-| **Node padding** | 1 cell | `layout.rs` | Obstacle margin |
-| **Gutter (TD/BT)** | Right side | `render/mod.rs` | Back-edge routing |
-| **Gutter (LR/RL)** | Bottom side | `render/mod.rs` | Back-edge routing |
+Current declared support:
 
-### Routing Abort
+- Nested `subgraph ... end` containers are supported in `TD`, `LR`, `BT`, and
+  `RL`.
+- Parent/child containment, title headroom, portal allocation, and clean
+  side-wall openings are all part of the active renderer contract.
 
-When pathfinding exceeds 2500 steps:
-```
-termiflow: warning: routing aborted after 2500 steps
-```
-Edge may render incorrectly or be dropped.
+Border-crossing rule:
 
----
-
-## Parser Constraints
-
-| Constraint | Value | Behavior |
-|------------|-------|----------|
-| **Node ID chars** | `[a-zA-Z0-9_]` | Others rejected |
-| **Node ID length** | Unlimited | No enforcement |
-| **Forward references** | Supported | Two-pass parsing |
-| **Nested subgraphs** | Not supported | Warning + ignored |
-| **Multiple directions** | First wins | Warning |
-
-### Valid Node IDs
-
-```
-✅ A, Node1, my_node, A1B2C3
-❌ my-node (hyphen), A B (space), @node (special char)
-```
+- Borders are portal boundaries, not merge or branch targets.
+- `TD` / `TB` / `BT`: a real top/bottom pierce may look like a crossing on the
+  border row.
+- `LR` / `RL`: a side-wall pierce must stay a clean horizontal opening rather
+  than turning into a junction glyph on the border column.
 
 ---
 
-## Configuration Precedence
+## Preview Modes
 
-```
-1. CLI flags           (highest)
-2. In-file directives  (%% termiflow: key=value)
-3. Config file         (~/.config/termiflow/config.toml)
-4. Defaults            (lowest)
-```
-
-### Default Values
-
-| Key | Default | Type |
-|-----|---------|------|
-| `max_label_width` | 20 | Number |
-| `wrap_labels` | false | Boolean |
-| `max_label_lines` | 1 | Number |
-| `crop` | true | Boolean |
-| `pad` | 0 | Number |
-| `strict_parsing` | false | Boolean |
+- `--watch` is the safer live-preview mode when normal scrollback matters.
+- `--tui` remains a partial alternate-screen mode because raw-mode input and
+  fullscreen interaction still depend on the terminal emulator.
+- Presenter updates use synchronized update markers where supported and degrade
+  cleanly when they are not.
 
 ---
 
-## Shape-Specific Limits
+## Routing And Quality Surface
 
-### Shapes Supporting Multiline
-
-- Rectangle ✅
-- Rounded ✅
-- Stadium ✅
-- Hexagon ✅
-- Database ✅
-- Subroutine ✅
-- Asymmetric ✅
-- Parallelogram ✅
-- Trapezoid ✅
-
-### Single-Line Only
-
-- Diamond ❌ (single line)
-- Circle ❌ (single line)
+- Route-dense nested fixtures now have explicit regression coverage in the
+  curated visual-audit suite.
+- Criterion includes a `route_dense_subgraphs` benchmark group.
+- The critic includes a reusable oracle for the `LR` / `RL` side-wall portal
+  contract so bad border merges are rejected without relying only on goldens.
 
 ---
 
-## Edge Label Limits
+## Still Approximate
 
-| Constraint | Value | Notes |
-|------------|-------|-------|
-| **Max width** | **12 chars (HARDCODED)** | `render/mod.rs:1541` |
-| **Convergent edges** | **10 chars** | Even shorter! |
-| **Configurable** | ❌ No | No `--max-edge-label` flag |
-| **Position** | Vertical segment only | TD/BT: on vertical, LR/RL: inline |
-| **Line breaks** | Not supported | Single line only |
-| **Fan-in/out** | Labels skipped | Labeled edges with degree > 1 |
-
-### Edge Label Truncation
-
-```rust
-// src/render/mod.rs:1540-1541
-fn format_edge_label(label: &str) -> String {
-    format_edge_label_with_limit(label, 12)  // HARDCODED!
-}
-```
-
-**Example:**
-```
-Input:  A -->|validates credentials| B
-Output: validates c…   (12 chars with ellipsis)
-```
-
-**Gap**: Node labels allow 20 chars (configurable), but edge labels are stuck at 12.
+- Unicode ambiguous-width behavior still depends on terminal configuration.
+- The main canvas remains char-backed, so full multi-codepoint grapheme scene
+  composition is deferred to the deeper cell-scene-graph architecture plan.
+- Mermaid styling/classes (`style`, `classDef`, `:::`), edge IDs, markdown
+  labels, and `@{}` shapes remain unsupported.
 
 ---
 
-## Character Encoding
+## Do Not Repeat
 
-| Character Type | Width | Notes |
-|----------------|-------|-------|
-| ASCII | 1 | Standard |
-| CJK | 2 | Double-width |
-| Emoji | Variable | May cause alignment issues |
-| Combining marks | 0 | Supported |
+The following claims are no longer true and should not reappear in docs:
 
-### Example
-
-```rust
-display_width("Hello")   = 5   // 5 ASCII chars
-display_width("日本語")   = 6   // 3 CJK × 2 width
-display_width("café")    = 4   // 4 chars (é = 1 width)
-```
-
----
-
-## Error Thresholds
-
-### Fatal Errors (Always Stop)
-
-- Empty file
-- No direction found
-- Unsupported diagram type
-
-### Strict Mode Fatals
-
-- Nested subgraphs
-- Unsupported syntax (classDef, style, etc.)
-- Malformed edges/nodes
-- Nested brackets in labels
-- Pipe in labels
-- Multiple directions
-- Content before direction
-
-### Never Fatal
-
-- Node auto-created from edge reference
-
----
-
-## Memory & Performance
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| **Max canvas memory** | ~100KB | 500×200 chars |
-| **Node storage** | HashMap | O(1) lookup |
-| **Edge storage** | Vec | O(n) iteration |
-| **Routing complexity** | O(n²) worst | Capped at 2500 steps |
-
----
-
-## Environment Variables
-
-| Variable | Effect |
-|----------|--------|
-| `TERMIFLOW_DEBUG_TIMING` | Enable timing debug output |
-| `TERMIFLOW_DISABLE_PORTALS` | Disable portal carving |
-
----
-
-## Silent Behaviors
-
-These operations are **silent** (no warning):
-
-1. Out-of-bounds canvas `set()` - no-op
-2. Out-of-bounds canvas `get()` - returns space
-3. Edge to invisible node - skipped
-4. Unknown config keys - ignored
-
----
-
-## Quick Limits Summary
-
-```
-┌──────────────────────────────────────────┐
-│  TERMIFLOW LIMITS AT A GLANCE            │
-├──────────────────────────────────────────┤
-│  Canvas:       500 × 200 chars           │
-│  Node label:   20 chars (configurable)   │
-│  Edge label:   12 chars (HARDCODED!)     │
-│  Lines:        3 max (configurable)      │
-│  Box width:    7-26 chars                │
-│  Box height:   3 rows (fixed)            │
-│  Routing:      2500 steps max            │
-│  Gutter:       4 chars                   │
-└──────────────────────────────────────────┘
-```
-
----
-
-*End of Limits Document*
+- "Nested subgraphs are not supported"
+- "Line breaks are not supported"
+- "Edge labels are hardcoded to 12 columns"
+- "`--wrap` is only an experimental placeholder"

@@ -1257,8 +1257,9 @@ fn route_convergent_from_subgraph_td(
     };
     set_route_char(canvas, merge_x, merge_y, junction_char, Some(fanin_owner));
 
-    // Drop vertically out of the subgraph first, then fan horizontally if needed
-    // (keeps the merge spine centered and avoids interior sideways runs).
+    // Drop vertically out of the subgraph first, then fan horizontally if needed.
+    // If the target arrow row sits directly against the outer border, keep the
+    // final turn one row above the arrow so the target still gets a visible shaft.
     let (mut cursor_x, mut cursor_y) = coords.advance(merge_x, merge_y, 1);
     if let Some(outer) = outer_container {
         let relay_y = outer.bounds.y + outer.bounds.height;
@@ -1329,25 +1330,77 @@ fn route_convergent_from_subgraph_td(
         }
     }
 
+    let turn_y = if cursor_x != arrow_x && arrow_y > cursor_y {
+        arrow_y
+            .saturating_sub(1)
+            .min(bottom_limit.saturating_sub(1))
+            .max(cursor_y)
+    } else {
+        arrow_y
+    };
+
     draw_line_primary(
         cursor_x,
         cursor_y,
         cursor_x,
-        arrow_y,
+        turn_y,
         &coords,
         canvas,
         style,
         Some(graph),
         Some(fanin_owner),
     );
-    cursor_y = arrow_y;
+    cursor_y = turn_y;
 
     if cursor_x != arrow_x {
-        draw_line_secondary(
+        let start_corner = if arrow_x > cursor_x {
+            style.corner_ul
+        } else {
+            style.corner_ur
+        };
+        set_route_edge_char(
+            canvas,
             cursor_x,
             cursor_y,
+            start_corner,
+            style,
+            Some(fanin_owner),
+        );
+
+        let (hx0, hx1) = if cursor_x < arrow_x {
+            (cursor_x.saturating_add(1), arrow_x.saturating_sub(1))
+        } else {
+            (arrow_x.saturating_add(1), cursor_x.saturating_sub(1))
+        };
+        for x in hx0..=hx1 {
+            if is_subgraph_title_cell(graph, x, cursor_y) {
+                continue;
+            }
+            set_route_edge_char(canvas, x, cursor_y, style.edge_h, style, Some(fanin_owner));
+        }
+
+        let end_corner = if arrow_x > cursor_x {
+            style.corner_dr
+        } else {
+            style.corner_dl
+        };
+        set_route_edge_char(
+            canvas,
             arrow_x,
             cursor_y,
+            end_corner,
+            style,
+            Some(fanin_owner),
+        );
+        cursor_x = arrow_x;
+    }
+
+    if cursor_y < arrow_y {
+        draw_line_primary(
+            cursor_x,
+            cursor_y.saturating_add(1),
+            cursor_x,
+            arrow_y,
             &coords,
             canvas,
             style,
@@ -1631,7 +1684,6 @@ fn route_convergent_from_subgraph_lr(
     }
 
     let coords = OrientedCoords::new(direction);
-    let (target_x, target_y) = get_node_center(target);
     let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
     let fanin_owner_id = format!("fanin:{}", target.id);
     let fanin_owner = RouteOwner {
@@ -1658,11 +1710,6 @@ fn route_convergent_from_subgraph_lr(
         .map(|(x, y, _)| coords.secondary_coord(*x, *y))
         .max()
         .unwrap_or(arrow_y);
-    let target_secondary = coords.secondary_coord(target_x, target_y);
-    if target_secondary < span_start || target_secondary > span_end {
-        return false;
-    }
-
     let left_border_x = sg.bounds.x;
     let right_border_x = sg.bounds.x + sg.bounds.width.saturating_sub(1);
     let min_inside_x = left_border_x.saturating_add(1);
@@ -1696,10 +1743,44 @@ fn route_convergent_from_subgraph_lr(
         }
         _ => unreachable!(),
     };
-    let merge_y = arrow_y.clamp(
+    let border_x = match direction {
+        Direction::LR => right_border_x,
+        Direction::RL => left_border_x,
+        _ => unreachable!(),
+    };
+    let outside_x = match direction {
+        Direction::LR => border_x.saturating_add(1),
+        Direction::RL => border_x.saturating_sub(1),
+        _ => unreachable!(),
+    };
+    let centered_merge_y = ((span_start + span_end) / 2).clamp(
         sg.bounds.y.saturating_add(1),
         sg.bounds.y + sg.bounds.height.saturating_sub(2),
     );
+    let merge_y = if centered_merge_y != arrow_y && outside_x != arrow_x {
+        centered_merge_y
+    } else {
+        arrow_y.clamp(
+            sg.bounds.y.saturating_add(1),
+            sg.bounds.y + sg.bounds.height.saturating_sub(2),
+        )
+    };
+    if std::env::var("DEBUG_FANIN").is_ok() {
+        eprintln!(
+            "horizontal fanin target={} dir={:?} sg={} span=({}, {}) arrow=({}, {}) border_x={} outside_x={} centered_merge_y={} merge_y={}",
+            target.id,
+            direction,
+            sg.id,
+            span_start,
+            span_end,
+            arrow_x,
+            arrow_y,
+            border_x,
+            outside_x,
+            centered_merge_y,
+            merge_y
+        );
+    }
 
     let (actual_span_start, actual_span_end) = draw_source_lines_to_merge(
         &source_positions,
@@ -1736,28 +1817,88 @@ fn route_convergent_from_subgraph_lr(
         Some(fanin_owner),
     );
 
-    let border_x = match direction {
-        Direction::LR => right_border_x,
-        Direction::RL => left_border_x,
-        _ => unreachable!(),
-    };
-    let outside_x = match direction {
-        Direction::LR => border_x.saturating_add(1),
-        Direction::RL => border_x.saturating_sub(1),
-        _ => unreachable!(),
-    };
+    if merge_y == arrow_y {
+        draw_line_primary(
+            outside_x,
+            merge_y,
+            arrow_x,
+            arrow_y,
+            &coords,
+            canvas,
+            style,
+            Some(graph),
+            Some(fanin_owner),
+        );
+    } else {
+        let turn_x = match direction {
+            Direction::LR => arrow_x
+                .saturating_sub(2)
+                .clamp(outside_x, arrow_x.saturating_sub(1)),
+            Direction::RL => arrow_x
+                .saturating_add(2)
+                .clamp(arrow_x.saturating_add(1), outside_x),
+            _ => unreachable!(),
+        };
+        let going_before = merge_y > arrow_y;
+        if std::env::var("DEBUG_FANIN").is_ok() {
+            eprintln!(
+                "horizontal fanin jog target={} dir={:?} turn_x={} going_before={}",
+                target.id, direction, turn_x, going_before
+            );
+        }
 
-    draw_line_primary(
-        outside_x,
-        merge_y,
-        arrow_x,
-        arrow_y,
-        &coords,
-        canvas,
-        style,
-        Some(graph),
-        Some(fanin_owner),
-    );
+        draw_line_primary(
+            outside_x,
+            merge_y,
+            turn_x,
+            merge_y,
+            &coords,
+            canvas,
+            style,
+            Some(graph),
+            Some(fanin_owner),
+        );
+        set_route_edge_char(
+            canvas,
+            turn_x,
+            merge_y,
+            coords.corner_start_to_secondary(going_before, style),
+            style,
+            Some(fanin_owner),
+        );
+        draw_line_secondary(
+            turn_x,
+            merge_y,
+            turn_x,
+            arrow_y,
+            &coords,
+            canvas,
+            style,
+            Some(graph),
+            Some(fanin_owner),
+        );
+        set_route_edge_char(
+            canvas,
+            turn_x,
+            arrow_y,
+            coords.corner_secondary_to_end(going_before, style),
+            style,
+            Some(fanin_owner),
+        );
+
+        let (seg_start_x, seg_start_y) = coords.advance(turn_x, arrow_y, 1);
+        draw_line_primary(
+            seg_start_x,
+            seg_start_y,
+            arrow_x,
+            arrow_y,
+            &coords,
+            canvas,
+            style,
+            Some(graph),
+            Some(fanin_owner),
+        );
+    }
 
     for (_, sy, _) in &source_positions {
         let border_y = coords.secondary_coord(border_x, *sy);
@@ -2663,7 +2804,9 @@ fn preferred_portal_x(
     let mut protected_title_span: Option<(usize, usize)> = None;
     if avoid_title {
         if let Some(t) = title {
-            let (start, end) = title_span(bounds, t);
+            let Some((start, end)) = title_span(bounds, t, direction) else {
+                return x;
+            };
             protected_title_span = Some((start, end));
             let protected_start = start.saturating_sub(2);
             let protected_end = end.saturating_add(2).min(max);
@@ -2717,6 +2860,50 @@ fn preferred_portal_x(
     x
 }
 
+fn nearest_title_safe_x(
+    bounds: &crate::graph::Rectangle,
+    title: Option<&str>,
+    desired: usize,
+    direction: Direction,
+) -> usize {
+    let min = bounds.x.saturating_add(1);
+    let max = bounds.x + bounds.width.saturating_sub(2);
+    let x = desired.clamp(min, max);
+    let Some(title) = title else {
+        return x;
+    };
+
+    let Some((start, end)) = title_span(bounds, title, direction) else {
+        return x;
+    };
+    let protected_start = start.saturating_sub(2);
+    let protected_end = end.saturating_add(2).min(max);
+    if x < protected_start || x > protected_end {
+        return x;
+    }
+
+    let left = (protected_start > min).then(|| protected_start.saturating_sub(1));
+    let right = (protected_end < max).then(|| protected_end + 1);
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let left_distance = x.abs_diff(left);
+            let right_distance = x.abs_diff(right);
+            if left_distance < right_distance {
+                left
+            } else if right_distance < left_distance {
+                right
+            } else if x <= (protected_start + protected_end) / 2 {
+                left
+            } else {
+                right
+            }
+        }
+        (Some(left), None) => left,
+        (None, Some(right)) => right,
+        (None, None) => x,
+    }
+}
+
 fn bounds_contains_subgraph(
     outer: &crate::graph::Rectangle,
     inner: &crate::graph::Rectangle,
@@ -2747,7 +2934,8 @@ fn has_visual_container_for_nested_entry(
     graph.subgraphs.iter().any(|candidate| {
         candidate.id != target_sg.id
             && bounds_contains_subgraph(&candidate.bounds, &target_sg.bounds)
-            && bounds_contains_node(&candidate.bounds, source)
+            && (graph.is_node_in_subgraph_tree(&source.id, &candidate.id)
+                || bounds_contains_node(&candidate.bounds, source))
     })
 }
 
@@ -2804,56 +2992,84 @@ fn route_cross_subgraph_td(
     let entering_from_above =
         stem_start_y < sg.bounds.y && arrow_y >= sg.bounds.y.saturating_add(1);
     if entering_from_above {
-        let min_x = sg.bounds.x.saturating_add(1);
-        let max_x = sg.bounds.x + sg.bounds.width.saturating_sub(2);
-        let portal_x = arrow_x.clamp(min_x, max_x);
-
-        let outside_y = sg.bounds.y.saturating_sub(1);
-        let inside_y = sg.bounds.y.saturating_add(1);
-
-        if stem_start_y <= outside_y {
-            for y in stem_start_y..=outside_y {
-                set_route_edge_char(canvas, stem_start_x, y, style.edge_v, style, owner);
-            }
-        }
-
-        // If we need to shift columns to enter within the subgraph bounds, do it
-        // immediately above the border.
-        if portal_x != stem_start_x && outside_y < canvas.height {
-            let start_corner = if portal_x > stem_start_x {
-                style.corner_ul
-            } else {
-                style.corner_ur
+        let (_, enter_subgraphs) = graph.edge_boundary_crossings(&from.id, &to.id);
+        let mut current_x = stem_start_x;
+        let mut current_y = stem_start_y;
+        let shared_entry_x = enter_subgraphs
+            .iter()
+            .rev()
+            .filter_map(|ancestor_id| graph.get_subgraph(ancestor_id))
+            .filter(|ancestor_sg| ancestor_sg.id != sg_id && ancestor_sg.bounds.is_valid())
+            .fold(stem_start_x, |entry_x, ancestor_sg| {
+                nearest_title_safe_x(
+                    &ancestor_sg.bounds,
+                    ancestor_sg.title.as_deref(),
+                    entry_x,
+                    graph.direction,
+                )
+            });
+        for ancestor_id in enter_subgraphs.iter().rev() {
+            let Some(ancestor_sg) = graph.get_subgraph(ancestor_id) else {
+                continue;
             };
-            set_route_edge_char(canvas, stem_start_x, outside_y, start_corner, style, owner);
-
-            let (hx0, hx1) = if portal_x > stem_start_x {
-                (stem_start_x + 1, portal_x.saturating_sub(1))
-            } else {
-                (portal_x + 1, stem_start_x.saturating_sub(1))
-            };
-            for x in hx0..=hx1 {
-                set_route_edge_char(canvas, x, outside_y, style.edge_h, style, owner);
+            if !ancestor_sg.bounds.is_valid() {
+                continue;
             }
 
-            let end_corner = if portal_x > stem_start_x {
-                style.corner_dr
+            let outside_y = ancestor_sg.bounds.y.saturating_sub(1);
+            if current_y <= outside_y {
+                for y in current_y..=outside_y {
+                    set_route_edge_char(canvas, current_x, y, style.edge_v, style, owner);
+                }
+            }
+
+            let entry_x = if *ancestor_id == sg_id {
+                let min_x = ancestor_sg.bounds.x.saturating_add(1);
+                let max_x = ancestor_sg.bounds.x + ancestor_sg.bounds.width.saturating_sub(2);
+                arrow_x.clamp(min_x, max_x)
             } else {
-                style.corner_dl
+                shared_entry_x
             };
-            set_route_edge_char(canvas, portal_x, outside_y, end_corner, style, owner);
+
+            if entry_x != current_x && outside_y < canvas.height {
+                let start_corner = if entry_x > current_x {
+                    style.corner_ul
+                } else {
+                    style.corner_ur
+                };
+                set_route_edge_char(canvas, current_x, outside_y, start_corner, style, owner);
+
+                let (hx0, hx1) = if entry_x > current_x {
+                    (current_x + 1, entry_x.saturating_sub(1))
+                } else {
+                    (entry_x + 1, current_x.saturating_sub(1))
+                };
+                for x in hx0..=hx1 {
+                    set_route_edge_char(canvas, x, outside_y, style.edge_h, style, owner);
+                }
+
+                let end_corner = if entry_x > current_x {
+                    style.corner_dr
+                } else {
+                    style.corner_dl
+                };
+                set_route_edge_char(canvas, entry_x, outside_y, end_corner, style, owner);
+            }
+
+            current_x = entry_x;
+            current_y = ancestor_sg.bounds.y.saturating_add(1);
         }
 
-        if arrow_y >= inside_y && inside_y < canvas.height {
-            for y in inside_y..=arrow_y {
-                set_route_edge_char(canvas, portal_x, y, style.edge_v, style, owner);
+        if arrow_y >= current_y && current_y < canvas.height {
+            for y in current_y..=arrow_y {
+                set_route_edge_char(canvas, current_x, y, style.edge_v, style, owner);
             }
         }
 
         if debug_timing {
             eprintln!(
                 "  cross-subgraph enter-under-title {} -> {} at x={} border_y={}",
-                from.id, to.id, portal_x, sg.bounds.y
+                from.id, to.id, current_x, sg.bounds.y
             );
         }
 
@@ -2865,7 +3081,8 @@ fn route_cross_subgraph_td(
     let target_top_interior = sg.bounds.y.saturating_add(1);
     let target_bottom_interior = sg.bounds.y + sg.bounds.height.saturating_sub(2);
 
-    let can_side_enter = has_visual_container_for_nested_entry(graph, from, sg)
+    let has_visual_container = has_visual_container_for_nested_entry(graph, from, sg);
+    let can_side_enter = has_visual_container
         && stem_start_y >= target_top_interior
         && stem_start_y <= target_bottom_interior;
     if can_side_enter && stem_start_x < target_left_border {
@@ -2881,7 +3098,14 @@ fn route_cross_subgraph_td(
         for x in (stem_start_x + 1)..target_left_border {
             set_route_edge_char(canvas, x, entry_y, style.edge_h, style, owner);
         }
-        set_route_char(canvas, target_left_border, entry_y, style.edge_h, owner);
+        canvas.set_owned(
+            target_left_border,
+            entry_y,
+            style.edge_h,
+            CellOwnerKind::PortalOpening,
+            "side_entry_portal",
+            ROUTE_Z_INDEX,
+        );
 
         let turn_x = arrow_x.clamp(
             sg.bounds.x.saturating_add(1),
@@ -2940,7 +3164,14 @@ fn route_cross_subgraph_td(
         for x in (target_right_border + 1)..stem_start_x {
             set_route_edge_char(canvas, x, entry_y, style.edge_h, style, owner);
         }
-        set_route_char(canvas, target_right_border, entry_y, style.edge_h, owner);
+        canvas.set_owned(
+            target_right_border,
+            entry_y,
+            style.edge_h,
+            CellOwnerKind::PortalOpening,
+            "side_entry_portal",
+            ROUTE_Z_INDEX,
+        );
 
         let turn_x = arrow_x.clamp(
             sg.bounds.x.saturating_add(1),
@@ -3168,94 +3399,116 @@ fn route_cross_subgraph_bt(
             let tgt_border_y = tgt_sg.bounds.y + tgt_sg.bounds.height.saturating_sub(1);
             let entering_from_below = stem_start_y > tgt_border_y && arrow_y < tgt_border_y;
             if entering_from_below {
-                let entry_x = preferred_portal_x(
-                    &tgt_sg.bounds,
-                    tgt_sg.title.as_deref(),
-                    arrow_x,
-                    canvas,
-                    Direction::BT,
-                    true,
-                );
-                let outside_y = tgt_border_y.saturating_add(1);
-                let inside_y = tgt_border_y.saturating_sub(1);
-
-                draw_line_primary(
-                    stem_start_x,
-                    stem_start_y,
-                    stem_start_x,
-                    outside_y,
-                    &coords,
-                    canvas,
-                    style,
-                    Some(graph),
-                    owner,
-                );
-
-                if entry_x != stem_start_x && outside_y < canvas.height {
-                    let start_corner = if entry_x > stem_start_x {
-                        style.corner_dl
-                    } else {
-                        style.corner_dr
-                    };
-                    set_route_edge_char(
+                let (_, enter_subgraphs) = graph.edge_boundary_crossings(&from.id, &to.id);
+                if enter_subgraphs.len() <= 1 {
+                    let entry_x = preferred_portal_x(
+                        &tgt_sg.bounds,
+                        tgt_sg.title.as_deref(),
+                        arrow_x,
                         canvas,
+                        Direction::BT,
+                        true,
+                    );
+                    let outside_y = tgt_border_y.saturating_add(1);
+                    let inside_y = tgt_border_y.saturating_sub(1);
+
+                    draw_line_primary(
+                        stem_start_x,
+                        stem_start_y,
                         stem_start_x,
                         outside_y,
-                        start_corner,
+                        &coords,
+                        canvas,
                         style,
+                        Some(graph),
                         owner,
                     );
 
-                    let (hx0, hx1) = if entry_x > stem_start_x {
-                        (stem_start_x + 1, entry_x.saturating_sub(1))
-                    } else {
-                        (entry_x + 1, stem_start_x.saturating_sub(1))
-                    };
-                    for x in hx0..=hx1 {
-                        set_route_edge_char(canvas, x, outside_y, style.edge_h, style, owner);
+                    if entry_x != stem_start_x && outside_y < canvas.height {
+                        let start_corner = if entry_x > stem_start_x {
+                            style.corner_dl
+                        } else {
+                            style.corner_dr
+                        };
+                        set_route_edge_char(
+                            canvas,
+                            stem_start_x,
+                            outside_y,
+                            start_corner,
+                            style,
+                            owner,
+                        );
+
+                        let (hx0, hx1) = if entry_x > stem_start_x {
+                            (stem_start_x + 1, entry_x.saturating_sub(1))
+                        } else {
+                            (entry_x + 1, stem_start_x.saturating_sub(1))
+                        };
+                        for x in hx0..=hx1 {
+                            set_route_edge_char(canvas, x, outside_y, style.edge_h, style, owner);
+                        }
+
+                        let end_corner = if entry_x > stem_start_x {
+                            style.corner_ur
+                        } else {
+                            style.corner_ul
+                        };
+                        set_route_edge_char(canvas, entry_x, outside_y, end_corner, style, owner);
                     }
 
-                    let end_corner = if entry_x > stem_start_x {
-                        style.corner_ur
-                    } else {
-                        style.corner_ul
-                    };
-                    set_route_edge_char(canvas, entry_x, outside_y, end_corner, style, owner);
-                }
-
-                if tgt_border_y < canvas.height {
-                    set_route_edge_char(canvas, entry_x, tgt_border_y, style.edge_v, style, owner);
-                }
-
-                if entry_x != arrow_x && inside_y < canvas.height {
-                    let start_corner = if arrow_x > entry_x {
-                        style.corner_dl
-                    } else {
-                        style.corner_dr
-                    };
-                    set_route_edge_char(canvas, entry_x, inside_y, start_corner, style, owner);
-
-                    let (hx0, hx1) = if arrow_x > entry_x {
-                        (entry_x + 1, arrow_x.saturating_sub(1))
-                    } else {
-                        (arrow_x + 1, entry_x.saturating_sub(1))
-                    };
-                    for x in hx0..=hx1 {
-                        set_route_edge_char(canvas, x, inside_y, style.edge_h, style, owner);
+                    if tgt_border_y < canvas.height {
+                        set_route_edge_char(
+                            canvas,
+                            entry_x,
+                            tgt_border_y,
+                            style.edge_v,
+                            style,
+                            owner,
+                        );
                     }
 
-                    let end_corner = if arrow_x > entry_x {
-                        style.corner_ur
-                    } else {
-                        style.corner_ul
-                    };
-                    set_route_edge_char(canvas, arrow_x, inside_y, end_corner, style, owner);
+                    if entry_x != arrow_x && inside_y < canvas.height {
+                        let start_corner = if arrow_x > entry_x {
+                            style.corner_dl
+                        } else {
+                            style.corner_dr
+                        };
+                        set_route_edge_char(canvas, entry_x, inside_y, start_corner, style, owner);
 
-                    if arrow_y < inside_y {
+                        let (hx0, hx1) = if arrow_x > entry_x {
+                            (entry_x + 1, arrow_x.saturating_sub(1))
+                        } else {
+                            (arrow_x + 1, entry_x.saturating_sub(1))
+                        };
+                        for x in hx0..=hx1 {
+                            set_route_edge_char(canvas, x, inside_y, style.edge_h, style, owner);
+                        }
+
+                        let end_corner = if arrow_x > entry_x {
+                            style.corner_ur
+                        } else {
+                            style.corner_ul
+                        };
+                        set_route_edge_char(canvas, arrow_x, inside_y, end_corner, style, owner);
+
+                        if arrow_y < inside_y {
+                            draw_line_primary(
+                                arrow_x,
+                                inside_y.saturating_sub(1),
+                                arrow_x,
+                                arrow_y,
+                                &coords,
+                                canvas,
+                                style,
+                                Some(graph),
+                                owner,
+                            );
+                        }
+                    } else {
                         draw_line_primary(
-                            arrow_x,
-                            inside_y.saturating_sub(1),
-                            arrow_x,
+                            entry_x,
+                            inside_y,
+                            entry_x,
                             arrow_y,
                             &coords,
                             canvas,
@@ -3265,10 +3518,100 @@ fn route_cross_subgraph_bt(
                         );
                     }
                 } else {
+                    let mut current_x = stem_start_x;
+                    let mut current_y = stem_start_y;
+                    for ancestor_id in enter_subgraphs.iter().rev() {
+                        let Some(ancestor_sg) = graph.get_subgraph(ancestor_id) else {
+                            continue;
+                        };
+                        if !ancestor_sg.bounds.is_valid() {
+                            continue;
+                        }
+
+                        let border_y = ancestor_sg
+                            .bounds
+                            .y
+                            .saturating_add(ancestor_sg.bounds.height.saturating_sub(1));
+                        let outside_y = border_y.saturating_add(1);
+                        draw_line_primary(
+                            current_x,
+                            current_y,
+                            current_x,
+                            outside_y,
+                            &coords,
+                            canvas,
+                            style,
+                            Some(graph),
+                            owner,
+                        );
+
+                        let entry_x = if *ancestor_id == tgt_id {
+                            preferred_portal_x(
+                                &ancestor_sg.bounds,
+                                ancestor_sg.title.as_deref(),
+                                arrow_x,
+                                canvas,
+                                Direction::BT,
+                                true,
+                            )
+                        } else {
+                            nearest_title_safe_x(
+                                &ancestor_sg.bounds,
+                                ancestor_sg.title.as_deref(),
+                                current_x,
+                                Direction::BT,
+                            )
+                        };
+
+                        if entry_x != current_x && outside_y < canvas.height {
+                            let start_corner = if entry_x > current_x {
+                                style.corner_dl
+                            } else {
+                                style.corner_dr
+                            };
+                            set_route_edge_char(
+                                canvas,
+                                current_x,
+                                outside_y,
+                                start_corner,
+                                style,
+                                owner,
+                            );
+
+                            let (hx0, hx1) = if entry_x > current_x {
+                                (current_x + 1, entry_x.saturating_sub(1))
+                            } else {
+                                (entry_x + 1, current_x.saturating_sub(1))
+                            };
+                            for x in hx0..=hx1 {
+                                set_route_edge_char(
+                                    canvas,
+                                    x,
+                                    outside_y,
+                                    style.edge_h,
+                                    style,
+                                    owner,
+                                );
+                            }
+
+                            let end_corner = if entry_x > current_x {
+                                style.corner_ur
+                            } else {
+                                style.corner_ul
+                            };
+                            set_route_edge_char(
+                                canvas, entry_x, outside_y, end_corner, style, owner,
+                            );
+                        }
+
+                        current_x = entry_x;
+                        current_y = border_y.saturating_sub(1);
+                    }
+
                     draw_line_primary(
-                        entry_x,
-                        inside_y,
-                        entry_x,
+                        current_x,
+                        current_y,
+                        current_x,
                         arrow_y,
                         &coords,
                         canvas,
@@ -3675,21 +4018,34 @@ fn route_divergent_into_subgraph_td(
         }
     }
 
-    // Branch row: horizontal bar with a center tee.
+    // Branch row: horizontal bar with an entry junction that matches the actual
+    // drop topology at the entry column.
     for x in min_x..=max_x {
         set_route_edge_char(canvas, x, branch_y, style.edge_h, style, Some(fanout_owner));
     }
     set_route_char(canvas, min_x, branch_y, style.corner_dl, Some(fanout_owner));
     set_route_char(canvas, max_x, branch_y, style.corner_dr, Some(fanout_owner));
-    // The trunk enters from above; keep the branch row as a "cap" (no down stroke)
-    // so drops start on the next row.
-    set_route_char(
-        canvas,
-        entry_x,
-        branch_y,
-        style.junction_up,
-        Some(fanout_owner),
-    );
+    let entry_has_drop = target_positions.iter().any(|(tx, _, _)| *tx == entry_x);
+    let entry_char = if min_x == max_x {
+        style.edge_v
+    } else if entry_x == min_x {
+        if entry_has_drop {
+            style.junction_right
+        } else {
+            style.corner_dl
+        }
+    } else if entry_x == max_x {
+        if entry_has_drop {
+            style.junction_left
+        } else {
+            style.corner_dr
+        }
+    } else if entry_has_drop {
+        style.cross
+    } else {
+        style.junction_up
+    };
+    set_route_char(canvas, entry_x, branch_y, entry_char, Some(fanout_owner));
 
     // Drop to targets starting immediately after the branch row.
     for (tx, _, target) in target_positions {

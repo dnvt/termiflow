@@ -12,7 +12,7 @@ the real repo state, and report evidence.
 - READ related decisions from `decisions/` when they constrain the scope
 - ISSUE CHECK — search GitHub for an existing issue:
   ```bash
-  gh issue list --repo Frame/termiflow --search "in:title {Type} {ID}" --json number,title --limit 3
+  gh issue list --repo dnvt/termiflow --search "in:title {Type} {ID}" --json number,title --limit 3
   ```
   If found → note issue number. If not → create from spec. Print:
   `Linked to GitHub issue #{N}`

@@ -463,13 +463,15 @@ fn restore_subgraph_title(
         return false;
     }
 
-    let title_fmt = format!("[  {}  ]", title);
-    let title_len = title_fmt.chars().count();
-    if title_len > subgraph.bounds.width.saturating_sub(2) {
+    let title_fmt = crate::graph::subgraph_title_text(title);
+    let Some(start_x) = crate::graph::subgraph_title_start_x(
+        subgraph.bounds.x,
+        subgraph.bounds.width,
+        title,
+        direction,
+    ) else {
         return false;
-    }
-
-    let start_x = subgraph.bounds.x + (subgraph.bounds.width - title_len) / 2;
+    };
     let title_y = subgraph_title_y(&subgraph.bounds, direction);
 
     let mut changed = false;

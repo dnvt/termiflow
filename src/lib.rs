@@ -25,8 +25,10 @@
 
 pub mod config;
 pub mod crossing;
+pub mod display_profile;
 pub mod geom;
 pub mod graph;
+pub mod json_input;
 pub mod layout;
 pub mod measure;
 pub mod orientation;
@@ -44,13 +46,22 @@ pub mod tui;
 
 pub use config::{Config, ConfigBuilder};
 pub use crossing::{CrossingConfig, CrossingMinimizer, Heuristic};
+pub use display_profile::{
+    display_char_width, display_width, graphemes, split_text_to_width_chunks, truncate_to_width,
+    DisplayProfile, DEFAULT_DISPLAY_PROFILE,
+};
 pub use graph::{Edge, EdgeKind, Graph, Node};
+pub use json_input::parse_json_graph;
 pub use layout::coarse_waterfall;
 pub use parser::{parse, ParseConfig, ParseResult};
 pub use render::critic::{
     AuditSummary, AuditVerdict, CriticFinding, CriticReport, FindingCode, FindingSeverity,
 };
 pub use render::render as render_canvas;
+pub use render::{
+    current_render_layer_contract, EdgeTrace, GeometryTrace, NodeTrace, RectTrace, RenderLayer,
+    RenderLayerContract, RenderLayerSpec, SegmentAxis, SegmentTrace, SubgraphTrace,
+};
 pub use render::{render_with_feedback as render_canvas_with_feedback, RenderOutcome};
 pub use scaling::{CanvasBudget, DiagramMetrics, ScalingMode};
 pub use spacing::{SpacingConfig, SpacingMode};
@@ -220,9 +231,20 @@ pub fn render(input: &str, options: RenderOptions) -> Result<String> {
 
 /// Render a Mermaid diagram and return critic/semantic feedback for the final frame.
 pub fn render_with_feedback(input: &str, options: RenderOptions) -> Result<RenderOutcome> {
-    // Parse
     let parse_result = parser::parse(input, options.strict)?;
+    render_parse_result_with_feedback(parse_result, options)
+}
 
+/// Render a TermiFlow JSON graph (see `parse_json_graph`) to ASCII/Unicode art.
+pub fn render_json(input: &str, options: RenderOptions) -> Result<String> {
+    let (graph, config) = json_input::parse_json_graph(input)?;
+    Ok(render_parse_result_with_feedback(ParseResult { graph, config }, options)?.output)
+}
+
+fn render_parse_result_with_feedback(
+    parse_result: ParseResult,
+    options: RenderOptions,
+) -> Result<RenderOutcome> {
     let defaults = RenderOptions::default();
     let mut builder = Config::builder();
 

@@ -8,6 +8,7 @@
 ## Modes
 
 - Default: print-to-stdout (jq-style). Reads a file (if provided) or stdin.
+- `--from-json`: parse stdin or the input file as TermiFlow's lightweight JSON graph schema instead of Mermaid.
 - `--tui`: alternate-screen live preview with auto-reload, panning, and findings overlay. Partial first-beta mode: raw-mode input, wheel scrolling, and some fullscreen keybindings depend on the terminal emulator.
 - `--watch`: primary-screen watch mode with low-flicker inline redraw in normal scrollback. This is the safer live-preview mode when you want normal scrollback and fewer fullscreen-emulator surprises.
 - `--print [FILE]`: explicit print mode (optional file argument; `-` means stdin).
@@ -16,7 +17,8 @@
 
 - `--style`, `-s`: base style (`ascii`, `unicode`, `double`, `rounded`, `heavy`, `dots`, `plus`, `stars`, `blocks`) or composite (e.g. `corner:dots,border:heavy`).
 - `--max-label`: label width budget in columns (default 20). Affects truncation and box sizing.
-- `--wrap`: enable multiline label wrapping (experimental; default off).
+- `--max-edge-label`: edge-label width budget in columns (default 20).
+- `--wrap`: enable multiline label wrapping (default off).
 - `--max-lines`: max label lines when wrapping is enabled (default 1).
 - `--crop` / `--no-crop`: crop empty margins around output (default on).
 - `--pad N`: add padding (spaces/lines) around output (default 0).
@@ -28,6 +30,28 @@
 - `--audit`: emit a compact visual audit summary to stderr.
 - `--debug-critic`: emit critic findings for the rendered frame.
 - `--strict`: treat parse warnings as errors.
+
+## JSON Graph Input
+
+TermiFlow also accepts a small JSON graph schema behind `--from-json`.
+
+Example:
+
+```json
+{
+  "direction": "TD",
+  "nodes": [
+    { "id": "A", "label": "Start" },
+    { "id": "B", "label": "End", "shape": "rounded" }
+  ],
+  "edges": [
+    { "from": "A", "to": "B", "label": "go" }
+  ],
+  "subgraphs": [
+    { "id": "sg1", "title": "Group", "nodes": ["A", "B"] }
+  ]
+}
+```
 
 Composite components: `corner`, `border`, `arrow`, `edge`, `junction`, `back`, `subgraph`.
 
@@ -45,10 +69,38 @@ Supported patterns:
 - Grouped edges: `A & B --> C`, `A --> B & C`
 - Edges: `A --> B`, `A ---> B`, `A --- B`, `A ==> B`, `A -.-> B`, `A <--> B`, `A --o B`, `A --x B`
 - Edge labels: `A -->|label| B` and `A -- label --> B`
-- Subgraphs: `subgraph ... end` (nested structure is preserved with an experimental warning; `--strict` makes warnings fatal)
+- Subgraphs: `subgraph ... end` with preserved parent/child hierarchy, ancestor-aware portal routing, and clean nested containment across `TD`, `LR`, `BT`, and `RL`
 - Per-diagram directives: `%% termiflow: style=...`, `%% termiflow: max_label=...`
 - Multiline: `%% termiflow: wrap=true`, `%% termiflow: max_lines=3`
 - Click targets: `click ID "file.md"` (parsed; currently informational only)
+
+### Subgraph Crossing Contract
+
+- Subgraph borders are portal boundaries, not merge or branch targets.
+- Edge topology must live inside or outside the subgraph; the border is only the
+  pierce point between those route segments.
+- `TD` / `TB` / `BT`: a vertical shaft crossing a horizontal border may render
+  as a crossing or tee when that border row is truly intersected.
+- `LR` / `RL`: a horizontal shaft crossing a vertical border should stay a clean
+  horizontal portal opening, not a junction glyph on the side wall.
+- Edges never semantically "point to another edge". If a border cell looks like
+  a crossing, that is only the visual portal glyph for the routed shaft.
+
+Directional matrix:
+
+| Flow | Border Crossed | Allowed Border Glyph Behavior | Reject |
+|------|----------------|-------------------------------|--------|
+| `TD` / `TB` | top border | vertical shaft may pierce just under the title band; a true border-row intersection may read as `│`, `┬`, `┴`, or `┼` depending real degree | merge bars or arrows living on the title row |
+| `BT` | bottom border | vertical shaft may pierce just above the bottom title/border row; a true border-row intersection may read as `│`, `┬`, `┴`, or `┼` depending real degree | merge bars or arrows living on the protected title span |
+| `LR` | left/right border | border cell must resolve to a plain horizontal opening (`─` / `-` / style equivalent) | `├`, `┤`, `┼`, `+`, or any side-wall merge glyph |
+| `RL` | left/right border | same as `LR`; the wall is only a portal opening | `├`, `┤`, `┼`, `+`, or any side-wall merge glyph |
+
+Practical rule:
+
+- If the route is crossing a top/bottom border, the border row may visually
+  participate in the topology.
+- If the route is crossing a left/right border, the wall must stay a clean hole
+  and the topology must be on one side or the other, never on the wall itself.
 
 ## Current Gaps And Caveats
 
@@ -56,9 +108,6 @@ Supported patterns:
 - Mermaid flowchart edge IDs
 - Mermaid `@{}` shape family
 - Mermaid markdown-aware labels / markdown strings
-- Nested subgraphs: parser/model hierarchy is preserved and ancestor-aware
-  portal carving is partially in place, but full hierarchical containment and
-  root-level headroom/render polish are still pending
 - A line containing only `end` closes the current subgraph. Avoid bare lowercase `end` as generated content inside flowcharts.
 - Non-flowchart diagram types (sequence/class/state/ER/gantt/etc.)
 
@@ -66,6 +115,8 @@ Supported patterns:
 
 - `--watch` is the safer live-preview mode when you want normal scrollback and fewer alternate-screen surprises.
 - `--tui` uses raw mode plus the alternate screen. Depending on the emulator, wheel input can be translated into arrow keys and some fullscreen keybindings may stay bound by the terminal.
+- Label wrapping, truncation, preview frames, findings panes, and status rows all use the same `unicode-width` display-column policy and grapheme-safe chunking.
+- The main render canvas is still char-backed, so some multi-codepoint grapheme composition can remain approximate even when the width budget is computed correctly.
 - Unicode output follows the `unicode-width` policy used by the renderer, but actual width for emoji, CJK, and ambiguous-width characters can still vary with emulator configuration.
 - Use `--style ascii` for the most portable output when you need predictable cross-terminal rendering.
 

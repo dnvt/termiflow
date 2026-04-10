@@ -12,13 +12,14 @@ use std::time::{Duration, SystemTime};
 
 // Use the termiflow library
 use termiflow::{
+    display_profile::{display_width, split_text_to_width_chunks},
     layout_and_render_with_feedback, measure, parse, CanvasBudget, CompositeStyle, Config,
-    DiagramMetrics, ScalingMode, SpacingConfig, SpacingMode,
+    DiagramMetrics, ParseResult, ScalingMode, SpacingConfig, SpacingMode,
 };
 use termiflow::{
     tui::{
-        build_inline_frame, build_preview_frame, clamp_viewport, AnsiDiffPresenter,
-        InlinePresenter, TerminalPresenter, Viewport,
+        build_inline_frame, build_preview_frame, clamp_viewport, initial_viewport,
+        AnsiDiffPresenter, InlinePresenter, TerminalPresenter, Viewport,
     },
     CriticReport, FindingSeverity, RenderOutcome,
 };
@@ -84,6 +85,10 @@ pub struct Cli {
     /// or composite (corner:rounded,border:heavy,arrow:unicode)
     #[arg(short, long, value_name = "STYLE")]
     pub style: Option<String>,
+
+    /// Deprecated compatibility flag; ANSI title inversion is the default in TTY print mode
+    #[arg(long, hide = true)]
+    pub ansi_title_invert: bool,
 
     /// Output to stdout (no interactive TUI)
     #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "-")]
@@ -161,6 +166,10 @@ pub struct Cli {
     /// Emit a compact visual audit summary for the rendered frame
     #[arg(long)]
     pub audit: bool,
+
+    /// Treat input as TermiFlow JSON graph schema instead of Mermaid
+    #[arg(long = "from-json")]
+    pub from_json: bool,
 
     /// Exit with error on any parse warning
     #[arg(long)]
@@ -344,8 +353,9 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     // border row.
     use std::io::Write;
     let mut stdout = std::io::stdout();
-    write!(stdout, "{}", rendered.outcome.output)?;
-    if cli.audit && !rendered.outcome.output.ends_with('\n') {
+    let output = printable_output(&rendered, stdout.is_terminal());
+    write!(stdout, "{output}")?;
+    if cli.audit && !output.ends_with('\n') {
         writeln!(stdout)?;
     }
     stdout.flush()?;
@@ -372,6 +382,7 @@ fn run_tui_mode(cli: &Cli) -> Result<()> {
     let _session = TerminalSession::enter()?;
     let mut presenter = AnsiDiffPresenter::new(std::io::stdout());
     let mut viewport = Viewport::default();
+    let mut viewport_user_controlled = false;
     let mut last_modified = file_modified_time(&path);
     let mut dirty = true;
     // Track last rendered content for End/G key and findings overlay.
@@ -393,8 +404,14 @@ fn run_tui_mode(cli: &Cli) -> Result<()> {
             } else {
                 match std::fs::read_to_string(&path) {
                     Ok(input) => {
-                        let (f, content, report) =
-                            build_tui_frame(cli, &path, &input, terminal_size, &mut viewport);
+                        let (f, content, report) = build_tui_frame(
+                            cli,
+                            &path,
+                            &input,
+                            terminal_size,
+                            &mut viewport,
+                            viewport_user_controlled,
+                        );
                         last_content = content;
                         last_report = report;
                         f
@@ -447,18 +464,22 @@ fn run_tui_mode(cli: &Cli) -> Result<()> {
                         dirty = true;
                     }
                     KeyCode::Left | KeyCode::Char('h') => {
+                        viewport_user_controlled = true;
                         viewport.offset_x = viewport.offset_x.saturating_sub(2);
                         dirty = true;
                     }
                     KeyCode::Right | KeyCode::Char('l') => {
+                        viewport_user_controlled = true;
                         viewport.offset_x = viewport.offset_x.saturating_add(2);
                         dirty = true;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
+                        viewport_user_controlled = true;
                         viewport.offset_y = viewport.offset_y.saturating_sub(1);
                         dirty = true;
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
+                        viewport_user_controlled = true;
                         viewport.offset_y = viewport.offset_y.saturating_add(1);
                         dirty = true;
                     }
@@ -466,6 +487,7 @@ fn run_tui_mode(cli: &Cli) -> Result<()> {
                         if findings_mode {
                             findings_scroll = findings_scroll.saturating_sub(page_step);
                         } else {
+                            viewport_user_controlled = true;
                             viewport.offset_y = viewport.offset_y.saturating_sub(page_step);
                         }
                         dirty = true;
@@ -474,6 +496,7 @@ fn run_tui_mode(cli: &Cli) -> Result<()> {
                         if findings_mode {
                             findings_scroll = findings_scroll.saturating_add(page_step);
                         } else {
+                            viewport_user_controlled = true;
                             viewport.offset_y = viewport.offset_y.saturating_add(page_step);
                         }
                         dirty = true;
@@ -482,12 +505,14 @@ fn run_tui_mode(cli: &Cli) -> Result<()> {
                         if findings_mode {
                             findings_scroll = 0;
                         } else {
+                            viewport_user_controlled = true;
                             viewport = Viewport::default();
                         }
                         dirty = true;
                     }
                     KeyCode::End | KeyCode::Char('G') => {
                         if !findings_mode {
+                            viewport_user_controlled = true;
                             let content_lines = last_content.lines().count() as u16;
                             let viewport_lines = terminal_size.1.saturating_sub(1);
                             viewport.offset_y = content_lines.saturating_sub(viewport_lines);
@@ -547,6 +572,87 @@ struct PreparedRender {
     outcome: RenderOutcome,
 }
 
+fn printable_output(rendered: &PreparedRender, stdout_is_tty: bool) -> String {
+    if stdout_is_tty {
+        invert_subgraph_titles_ansi(&rendered.outcome.output, &rendered.graph)
+    } else {
+        rendered.outcome.output.clone()
+    }
+}
+
+fn invert_subgraph_titles_ansi(output: &str, graph: &termiflow::Graph) -> String {
+    let mut title_tokens = std::collections::BTreeSet::new();
+    for subgraph in &graph.subgraphs {
+        if let Some(title) = subgraph.title.as_deref() {
+            title_tokens.insert((format!("[  {title}  ]"), format_inverted_title(title)));
+        }
+    }
+
+    if title_tokens.is_empty() {
+        return output.to_string();
+    }
+
+    let mut title_tokens: Vec<(String, String)> = title_tokens.into_iter().collect();
+    title_tokens.sort_by(|left, right| {
+        right
+            .0
+            .chars()
+            .count()
+            .cmp(&left.0.chars().count())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    output
+        .split('\n')
+        .map(|line| invert_titles_in_line(line, &title_tokens))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_inverted_title(title: &str) -> String {
+    format!("\u{1b}[7m   {title}   \u{1b}[0m")
+}
+
+fn invert_titles_in_line(line: &str, title_tokens: &[(String, String)]) -> String {
+    let mut raw_matches: Vec<(usize, usize, usize)> = Vec::new();
+    for (priority, token) in title_tokens.iter().enumerate() {
+        for (start, _) in line.match_indices(&token.0) {
+            raw_matches.push((start, start + token.0.len(), priority));
+        }
+    }
+
+    if raw_matches.is_empty() {
+        return line.to_string();
+    }
+
+    raw_matches.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| (right.1 - right.0).cmp(&(left.1 - left.0)))
+    });
+
+    let mut accepted: Vec<(usize, usize, usize)> = Vec::new();
+    let mut last_end = 0usize;
+    for (start, end, token_idx) in raw_matches {
+        if start < last_end {
+            continue;
+        }
+        accepted.push((start, end, token_idx));
+        last_end = end;
+    }
+
+    let mut styled = String::with_capacity(line.len() + accepted.len() * 16);
+    let mut cursor = 0usize;
+    for (start, end, token_idx) in accepted {
+        styled.push_str(&line[cursor..start]);
+        styled.push_str(&title_tokens[token_idx].1);
+        cursor = end;
+    }
+    styled.push_str(&line[cursor..]);
+    styled
+}
+
 fn emit_audit_summary(outcome: &RenderOutcome) {
     let summary = outcome.critic_report.audit_summary();
     eprintln!(
@@ -575,13 +681,44 @@ fn build_tui_status(
     report: &CriticReport,
     warning_count: usize,
     file_label: &str,
-    scroll_indicator: &str,
+    viewport_indicator: &str,
 ) -> String {
     let summary = report.audit_summary();
     let top_finding = top_finding_label(report);
     format!(
         "q/ESC quit | j/k/arrows pan | g/G top/bot | ? findings | verdict={:?} score={} warn={} top={} | {} | {}",
-        summary.verdict, summary.score, warning_count, top_finding, scroll_indicator, file_label,
+        summary.verdict,
+        summary.score,
+        warning_count,
+        top_finding,
+        viewport_indicator,
+        file_label,
+    )
+}
+
+fn build_viewport_indicator(content: &str, viewport: Viewport) -> String {
+    let content_lines = content.lines().count() as u16;
+    let content_width = content
+        .lines()
+        .map(display_width)
+        .max()
+        .unwrap_or(0)
+        .min(usize::from(u16::MAX)) as u16;
+
+    let visible_line = if content_lines == 0 {
+        0
+    } else {
+        viewport.offset_y.saturating_add(1).min(content_lines)
+    };
+    let visible_col = if content_width == 0 {
+        0
+    } else {
+        viewport.offset_x.saturating_add(1).min(content_width)
+    };
+
+    format!(
+        "line {}/{} | col {}/{}",
+        visible_line, content_lines, visible_col, content_width
     )
 }
 
@@ -621,7 +758,12 @@ fn build_watch_error_frame(path: &std::path::Path, message: &str) -> termiflow::
 }
 
 fn render_cli_input(cli: &Cli, input: &str, emit_debug_critic: bool) -> Result<PreparedRender> {
-    let parse_result = parse(input, cli.strict)?;
+    let parse_result = if cli.from_json {
+        let (graph, config) = termiflow::parse_json_graph(input)?;
+        ParseResult { graph, config }
+    } else {
+        parse(input, cli.strict)?
+    };
 
     let scaling_mode = cli
         .scaling
@@ -717,28 +859,29 @@ fn build_tui_frame(
     input: &str,
     terminal_size: (u16, u16),
     viewport: &mut Viewport,
+    viewport_user_controlled: bool,
 ) -> (termiflow::TerminalFrame, String, CriticReport) {
     match render_cli_input(cli, input, false) {
         Ok(rendered) => {
             let content = rendered.outcome.output.clone();
             let report = rendered.outcome.critic_report.clone();
-            clamp_viewport(viewport, &content, terminal_size);
+            if viewport_user_controlled {
+                clamp_viewport(viewport, &content, terminal_size);
+            } else {
+                *viewport = initial_viewport(&content, terminal_size);
+            }
 
             let file_label = path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("diagram");
 
-            // Scroll position: "line Y+1/total"
-            let content_lines = content.lines().count() as u16;
-            let visible_line = viewport.offset_y + 1;
-            let scroll_indicator =
-                format!("line {}/{}", visible_line.min(content_lines), content_lines);
+            let viewport_indicator = build_viewport_indicator(&content, *viewport);
             let status = build_tui_status(
                 &report,
                 rendered.graph.warnings.len(),
                 file_label,
-                &scroll_indicator,
+                &viewport_indicator,
             );
 
             let frame = build_preview_frame(&content, &status, terminal_size, *viewport);
@@ -851,36 +994,54 @@ fn build_findings_frame(
 
 /// Wrap a string into chunks of at most `max_width` characters, breaking at spaces.
 fn wrap_text(s: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 || s.len() <= max_width {
+    if max_width == 0 || display_width(s) <= max_width {
         return vec![s.to_string()];
     }
-    let mut chunks = Vec::new();
-    let mut start = 0;
-    while start < s.len() {
-        let remaining = &s[start..];
-        if remaining.len() <= max_width {
-            chunks.push(remaining.to_string());
-            break;
-        }
-        // If the character right after the window is a space, the full window is a clean word.
-        let break_at = if s.as_bytes().get(start + max_width) == Some(&b' ') {
-            start + max_width
-        } else {
-            // Find the last space in the window to break at a word boundary.
-            match remaining[..max_width].rfind(' ') {
-                Some(p) if p > 0 => start + p,
-                _ => start + max_width, // Hard break — no space found
-            }
-        };
-        chunks.push(s[start..break_at].to_string());
-        // Advance past the break, skipping any space at the break point.
-        start = if s.as_bytes().get(break_at) == Some(&b' ') {
-            break_at + 1
-        } else {
-            break_at
-        };
+    if s.trim().is_empty() {
+        return vec![s.to_string()];
     }
-    chunks
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for word in s.split_whitespace() {
+        let word_width = display_width(word);
+        if current.is_empty() {
+            if word_width <= max_width {
+                current.push_str(word);
+                current_width = word_width;
+            } else {
+                lines.extend(split_text_to_width_chunks(word, max_width));
+            }
+            continue;
+        }
+
+        if current_width + 1 + word_width <= max_width {
+            current.push(' ');
+            current.push_str(word);
+            current_width += 1 + word_width;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current_width = 0;
+
+            if word_width <= max_width {
+                current.push_str(word);
+                current_width = word_width;
+            } else {
+                lines.extend(split_text_to_width_chunks(word, max_width));
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
 }
 
 fn file_modified_time(path: &std::path::Path) -> Option<SystemTime> {
@@ -911,7 +1072,22 @@ mod tests {
     fn wrap_text_falls_back_to_hard_break() {
         let result = wrap_text("abcdefghij", 5);
         assert!(!result.is_empty());
-        assert!(result[0].len() <= 5);
+        assert!(display_width(&result[0]) <= 5);
+    }
+
+    #[test]
+    fn wrap_text_preserves_grapheme_clusters_on_hard_break() {
+        let family = "👨‍👩‍👧‍👦";
+        assert_eq!(
+            wrap_text(&format!("{family}{family}"), display_width(family)),
+            vec![family.to_string(), family.to_string()]
+        );
+    }
+
+    #[test]
+    fn wrap_text_uses_display_width_for_cjk() {
+        let result = wrap_text("日本語 日本語", 6);
+        assert_eq!(result, vec!["日本語".to_string(), "日本語".to_string()]);
     }
 
     #[test]
@@ -977,6 +1153,12 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_legacy_ansi_title_invert_flag() {
+        let cli = Cli::try_parse_from(["termiflow", "--ansi-title-invert"]).unwrap();
+        assert!(cli.ansi_title_invert);
+    }
+
+    #[test]
     fn build_watch_frame_includes_status_row() {
         let rendered = PreparedRender {
             graph: Graph::new(),
@@ -1005,5 +1187,81 @@ mod tests {
         assert!(status_row.contains("watch"));
         assert!(status_row.contains("diagram.md"));
         assert!(status_row.contains("verdict=Clean"));
+    }
+
+    #[test]
+    fn invert_subgraph_titles_ansi_wraps_title_tokens() {
+        use termiflow::graph::Subgraph;
+
+        let mut graph = Graph::new();
+        graph
+            .subgraphs
+            .push(Subgraph::new("service", Some("Service Layer".to_string())));
+        graph
+            .subgraphs
+            .push(Subgraph::new("data", Some("Data Layer".to_string())));
+
+        let output = "┏━━[  Service Layer  ]━━┓ ┏━━[  Data Layer  ]━━┓";
+        let styled = invert_subgraph_titles_ansi(output, &graph);
+
+        assert!(styled.contains("\u{1b}[7m   Service Layer   \u{1b}[0m"));
+        assert!(styled.contains("\u{1b}[7m   Data Layer   \u{1b}[0m"));
+        assert!(!styled.contains("[  Service Layer  ]"));
+        assert!(!styled.contains("[  Data Layer  ]"));
+    }
+
+    #[test]
+    fn printable_output_inverts_titles_by_default_for_tty_print_mode() {
+        use termiflow::graph::Subgraph;
+
+        let mut graph = Graph::new();
+        graph
+            .subgraphs
+            .push(Subgraph::new("group", Some("My Group".to_string())));
+        let rendered = PreparedRender {
+            graph,
+            outcome: RenderOutcome {
+                output: "┏━━[  My Group  ]━━┓".to_string(),
+                semantic_frame: SemanticFrame::default(),
+                critic_report: CriticReport::default(),
+                warnings: Vec::new(),
+                optimized: false,
+                repair_passes: 0,
+                layout_attempts: 1,
+                layout_repairs_applied: 0,
+            },
+        };
+
+        let tty_output = printable_output(&rendered, true);
+        let piped_output = printable_output(&rendered, false);
+
+        assert!(tty_output.contains("\u{1b}[7m   My Group   \u{1b}[0m"));
+        assert_eq!(piped_output, rendered.outcome.output);
+    }
+
+    #[test]
+    fn viewport_indicator_reports_line_and_column_position() {
+        let indicator = build_viewport_indicator(
+            "0123456789\nabcdef",
+            Viewport {
+                offset_x: 3,
+                offset_y: 1,
+            },
+        );
+
+        assert_eq!(indicator, "line 2/2 | col 4/10");
+    }
+
+    #[test]
+    fn tui_status_can_surface_horizontal_pan_state() {
+        let status = build_tui_status(
+            &CriticReport::default(),
+            0,
+            "diagram.md",
+            "line 3/8 | col 9/42",
+        );
+
+        assert!(status.contains("line 3/8 | col 9/42"));
+        assert!(status.contains("j/k/arrows pan"));
     }
 }

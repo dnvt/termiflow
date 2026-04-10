@@ -55,10 +55,6 @@ graph TD    # or TB, LR, BT
 
 ### 1.4 Unsupported Syntax (Generates Warnings)
 
-- Nested subgraphs: parsed structurally with a warning today; ancestor-aware
-  portal and clearance work is in progress, but full hierarchical
-  layout/render support remains incomplete:
-  `subgraph ... subgraph ... end end`
 - Mermaid styling: `style A fill:#f00`
 - Class definitions: `classDef`
 - Mermaid class usage: `:::`
@@ -143,6 +139,33 @@ B[Label]   # Definition comes later
 7. Draw node boxes + labels.
 8. Reinforce portal piercings (so crossings read clearly) and convert grid to string.
 
+### 3.1.1 Render Layer Contract
+
+The current renderer now exposes an explicit layer contract in
+`src/render/contract.rs`:
+
+- **Reservation** — `layout`, `portals`, `spacing`, `graph`
+- **Topology** — `geom`, `render::edge`, `render::cycle`, `graph`
+- **Semantic cells** — `render::canvas`, `render::semantic`, `render::provenance`
+- **Glyph projection** — `render::mod`, `render::shapes`, `render::repair`, `render::topology`
+- **Terminal transport** — `tui::frame`, `tui::live`, `tui::presenter`
+
+These are still evolutionary boundaries, not a rewrite boundary, but they are
+the canonical ownership model for future scene-graph and routing work.
+
+### 3.1.2 Display Profile
+
+`src/display_profile.rs` defines the shared display contract used by wrapping,
+truncation, scaling, preview slicing, and cursor math:
+
+- extended grapheme segmentation
+- `unicode-width` cell budgeting
+- grapheme-safe truncation and hard chunking helpers
+
+The final render canvas remains char-backed, so display-width policy is unified
+even though full multi-codepoint cell composition is still a future
+architecture step.
+
 ### 3.2 Edge Routing
 
 Edge routing is direction-agnostic via `OrientedCoords`:
@@ -150,6 +173,25 @@ Edge routing is direction-agnostic via `OrientedCoords`:
 - **Convergent edges (N→1)**: stems → shared junction → arrow
 - **Cross-subgraph edges**: portal-aware border piercing to avoid corrupting container borders/titles
 - **Back-edges**: routed through a dedicated gutter to avoid cluttering the main diagram
+
+Cross-subgraph routing contract:
+- Subgraph borders are portal boundaries only. Merge bars, branch spans, and
+  other topology must terminate inside or outside the subgraph, not on the
+  border itself.
+- The renderer may draw a border cell with a crossing-style glyph only when the
+  routed shaft truly intersects that border row or column as a portal.
+- For `LR` / `RL`, side-wall pierces should read as clean horizontal portal
+  openings rather than junction-like side-wall merges.
+- Edges do not target other edges. Any crossing-looking border cell is a visual
+  artifact of the portal, not an edge-to-edge semantic connection.
+
+Directional validation matrix:
+
+| Direction family | Crossing surface | Expected border behavior | Invalid behavior |
+|------------------|------------------|--------------------------|------------------|
+| `TD` / `TB` | top border | vertical shaft may intersect the border row or pass just below the title band; crossing/tee glyphs are acceptable only when the real route degree warrants them | title-row corruption, arrows resting on foreign borders, merge spans living on the title row |
+| `BT` | bottom border | vertical shaft may intersect the bottom border row or pass just above the protected bottom title span | bottom-title corruption, arrows resting on the protected border span |
+| `LR` / `RL` | side wall | border cell must remain a plain horizontal portal opening; the merge or branch must be either inside or outside the container | side-wall `├` / `┤` / `┼` / `+` style junctions, or arrows terminating on the wall |
 
 ### 3.3 Character Selection Rules
 

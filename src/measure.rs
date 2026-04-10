@@ -6,7 +6,8 @@
 use crate::config::Config;
 use crate::graph::{Graph, NodeShape};
 use crate::style::{
-    box_width, display_width, truncate_label, BOX_HEIGHT, BOX_MIN_WIDTH, BOX_PADDING,
+    box_width, display_width, split_text_to_width_chunks, truncate_label, truncate_to_width,
+    BOX_HEIGHT, BOX_MIN_WIDTH, BOX_PADDING,
 };
 
 fn supports_multiline(shape: NodeShape) -> bool {
@@ -118,31 +119,7 @@ fn split_long_word(word: &str, max_width: usize) -> Vec<String> {
         }
     }
 
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut width = 0usize;
-
-    for c in word.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-        if width + cw > max_width && !current.is_empty() {
-            out.push(std::mem::take(&mut current));
-            width = 0;
-        }
-        current.push(c);
-        width += cw;
-        if width >= max_width {
-            out.push(std::mem::take(&mut current));
-            width = 0;
-        }
-    }
-
-    if !current.is_empty() {
-        out.push(current);
-    }
-    if out.is_empty() {
-        out.push(String::new());
-    }
-    out
+    split_text_to_width_chunks(word, max_width)
 }
 
 fn wrap_line_to_width(line: &str, max_width: usize) -> Vec<String> {
@@ -225,20 +202,7 @@ fn apply_max_lines(mut lines: Vec<String>, max_lines: usize, max_width: usize) -
 }
 
 fn truncate_label_hard(label: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    let mut width = 0usize;
-    for c in label.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-        if width + cw > max_width {
-            break;
-        }
-        out.push(c);
-        width += cw;
-    }
-    out
+    truncate_to_width(label, max_width)
 }
 
 fn single_line_label(label: &str, max_width: usize) -> Vec<String> {
@@ -425,5 +389,31 @@ mod tests {
         assert_eq!(g.nodes[0].label_lines.len(), 2);
         assert!(g.nodes[0].label_lines[1].ends_with("..."));
         assert!(!g.nodes[0].label_lines[1].ends_with("......"));
+    }
+
+    #[test]
+    fn split_long_word_preserves_emoji_graphemes() {
+        let family = "👨‍👩‍👧‍👦";
+        assert_eq!(
+            split_long_word(&format!("{family}{family}"), display_width(family)),
+            vec![family.to_string(), family.to_string()]
+        );
+    }
+
+    #[test]
+    fn wrapped_label_lines_preserve_combining_graphemes() {
+        let accented = "e\u{301}";
+        assert_eq!(
+            wrapped_label_lines(
+                &format!("{accented}{accented}{accented}"),
+                display_width(accented),
+                8
+            ),
+            vec![
+                accented.to_string(),
+                accented.to_string(),
+                accented.to_string()
+            ]
+        );
     }
 }

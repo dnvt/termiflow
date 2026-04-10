@@ -414,7 +414,6 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
 
     // Subgraph tracking
     let mut subgraph_stack: Vec<String> = Vec::new();
-    let mut seen_nested_subgraph = false;
     let mut subgraph_data: HashMap<String, SubgraphParseData> = HashMap::new();
     let mut subgraph_order: Vec<String> = Vec::new(); // Preserve declaration order
                                                       // node_id -> subgraph_id
@@ -443,17 +442,6 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             };
 
             let parent_id = subgraph_stack.last().cloned();
-            if parent_id.is_some() && !seen_nested_subgraph {
-                let warning = format!(
-                    "termiflow: warning: line {}: Nested subgraphs are experimental; hierarchy is preserved but layout/render support is incomplete",
-                    i + 1
-                );
-                warnings.push(warning.clone());
-                seen_nested_subgraph = true;
-                if strict {
-                    bail!("{warning}");
-                }
-            }
             subgraph_data.insert(
                 id.clone(),
                 SubgraphParseData {
@@ -481,17 +469,6 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 let id = sanitize_subgraph_id(&title);
 
                 let parent_id = subgraph_stack.last().cloned();
-                if parent_id.is_some() && !seen_nested_subgraph {
-                    let warning = format!(
-                        "termiflow: warning: line {}: Nested subgraphs are experimental; hierarchy is preserved but layout/render support is incomplete",
-                        i + 1
-                    );
-                    warnings.push(warning.clone());
-                    seen_nested_subgraph = true;
-                    if strict {
-                        bail!("{warning}");
-                    }
-                }
                 subgraph_data.insert(
                     id.clone(),
                     SubgraphParseData {
@@ -1626,10 +1603,10 @@ click A "gateway.md""#;
     }
 
     #[test]
-    fn test_subgraph_nested_preserves_hierarchy_and_warns_experimental() {
+    fn test_subgraph_nested_preserves_hierarchy_without_warning() {
         let input = "graph TD\nsubgraph Outer\nA[Node]\nsubgraph Inner\nB[Node]\nend\nend";
         let result = parse(input, false).unwrap();
-        assert!(result
+        assert!(!result
             .graph
             .warnings
             .iter()
@@ -1650,6 +1627,13 @@ click A "gateway.md""#;
 
         assert_eq!(result.graph.get_node_subgraph("A"), Some("outer"));
         assert_eq!(result.graph.get_node_subgraph("B"), Some("inner"));
+    }
+
+    #[test]
+    fn test_subgraph_nested_parses_in_strict_mode() {
+        let input = "graph TD\nsubgraph Outer\nA[Node]\nsubgraph Inner\nB[Node]\nend\nend";
+        let result = parse(input, true).expect("nested subgraphs should parse in strict mode");
+        assert_eq!(result.graph.subgraphs.len(), 2);
     }
 
     #[test]

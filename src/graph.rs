@@ -170,6 +170,58 @@ impl Rectangle {
     }
 }
 
+/// Rendered subgraph title token, including surrounding Mermaid-style brackets.
+pub fn subgraph_title_text(title: &str) -> String {
+    format!("[  {}  ]", title)
+}
+
+/// Display width of the rendered subgraph title token.
+pub fn subgraph_title_len(title: &str) -> usize {
+    subgraph_title_text(title).chars().count()
+}
+
+/// Border row that carries the subgraph title for the given orientation.
+pub fn subgraph_title_row(top_y: usize, height: usize, direction: Direction) -> usize {
+    if matches!(direction, Direction::BT) {
+        top_y + height.saturating_sub(1)
+    } else {
+        top_y
+    }
+}
+
+/// Horizontal title origin inside a subgraph border for the given orientation.
+///
+/// Titles are anchored to the leading edge of the subgraph based on direction:
+/// TD/TB/LR anchor left, RL anchors right, and BT anchors bottom-left.
+pub fn subgraph_title_start_x(
+    left_x: usize,
+    width: usize,
+    title: &str,
+    direction: Direction,
+) -> Option<usize> {
+    let len = subgraph_title_len(title);
+    if len == 0 || len > width.saturating_sub(2) {
+        return None;
+    }
+
+    Some(match direction {
+        Direction::RL => left_x + width.saturating_sub(len + 1),
+        Direction::TD | Direction::TB | Direction::LR | Direction::BT => left_x.saturating_add(1),
+    })
+}
+
+/// Inclusive x-span of the rendered title token inside the subgraph border.
+pub fn subgraph_title_span(
+    left_x: usize,
+    width: usize,
+    title: &str,
+    direction: Direction,
+) -> Option<(usize, usize)> {
+    let start = subgraph_title_start_x(left_x, width, title, direction)?;
+    let end = start + subgraph_title_len(title).saturating_sub(1);
+    Some((start, end))
+}
+
 /// Subgraph grouping nodes together.
 ///
 /// Subgraphs provide visual grouping of related nodes with:
@@ -267,7 +319,7 @@ pub struct Graph {
 }
 
 /// Graph direction (from Mermaid `graph TD/LR/TB/BT`)
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Direction {
     #[default]
     TD, // Top-down (same as TB)
@@ -362,6 +414,22 @@ impl Graph {
                 .and_then(|subgraph| subgraph.parent_id.as_deref());
         }
         chain
+    }
+
+    /// Return true when `ancestor_id` is a declared ancestor of `descendant_id`.
+    pub fn is_subgraph_ancestor(&self, ancestor_id: &str, descendant_id: &str) -> bool {
+        let mut current = self
+            .get_subgraph(descendant_id)
+            .and_then(|subgraph| subgraph.parent_id.as_deref());
+        while let Some(parent_id) = current {
+            if parent_id == ancestor_id {
+                return true;
+            }
+            current = self
+                .get_subgraph(parent_id)
+                .and_then(|subgraph| subgraph.parent_id.as_deref());
+        }
+        false
     }
 
     /// Return the subgraph borders an edge exits and enters.
@@ -851,6 +919,23 @@ mod tests {
         assert!(exits.is_empty());
         assert_eq!(enters, vec!["child", "parent"]);
         assert!(g.edge_crosses_subgraph_boundary("outside", "inside"));
+    }
+
+    #[test]
+    fn graph_is_subgraph_ancestor_checks_parent_chain() {
+        let mut g = Graph::new();
+        g.add_subgraph(Subgraph::new("outer", Some("Outer".into())));
+        g.add_subgraph(Subgraph::new("inner", Some("Inner".into())));
+        g.add_subgraph(Subgraph::new("leaf", Some("Leaf".into())));
+
+        g.get_subgraph_mut("inner").unwrap().parent_id = Some("outer".to_string());
+        g.get_subgraph_mut("leaf").unwrap().parent_id = Some("inner".to_string());
+
+        assert!(g.is_subgraph_ancestor("outer", "inner"));
+        assert!(g.is_subgraph_ancestor("outer", "leaf"));
+        assert!(g.is_subgraph_ancestor("inner", "leaf"));
+        assert!(!g.is_subgraph_ancestor("leaf", "inner"));
+        assert!(!g.is_subgraph_ancestor("inner", "outer"));
     }
 
     #[test]

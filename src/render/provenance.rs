@@ -50,9 +50,9 @@ pub fn refresh_provenance(
     for node in &graph.nodes {
         annotate_node_region(canvas, node, chars);
     }
-    annotate_portal_openings(canvas, graph, portal_slots);
     annotate_edge_routes(canvas, graph, chars);
     annotate_edge_labels(canvas, edge_label_placements);
+    annotate_portal_openings(canvas, graph, portal_slots);
 }
 
 fn annotate_subgraph_region(
@@ -108,10 +108,10 @@ fn annotate_subgraph_region(
     }
 
     if let Some(title) = subgraph.title.as_deref() {
-        let title_fmt = format!("[  {}  ]", title);
-        let title_len = title_fmt.chars().count();
-        if title_len <= bounds.width.saturating_sub(2) {
-            let start_x = bounds.x + (bounds.width - title_len) / 2;
+        let title_fmt = crate::graph::subgraph_title_text(title);
+        if let Some(start_x) =
+            crate::graph::subgraph_title_start_x(bounds.x, bounds.width, title, direction)
+        {
             let title_y = super::subgraph_title_y(bounds, direction);
             for (i, _) in title_fmt.chars().enumerate() {
                 let x = start_x + i;
@@ -138,11 +138,7 @@ fn annotate_node_region(canvas: &mut Canvas, node: &Node, chars: &StyleChars) {
             }
             if matches!(
                 canvas.get_meta(x, y).map(|meta| meta.owner_kind),
-                Some(
-                    CellOwnerKind::SubgraphBorder
-                        | CellOwnerKind::SubgraphTitle
-                        | CellOwnerKind::PortalOpening
-                )
+                Some(CellOwnerKind::SubgraphTitle | CellOwnerKind::PortalOpening)
             ) {
                 continue;
             }
@@ -200,7 +196,22 @@ fn annotate_portal_openings(
 }
 
 fn annotate_portal_cell(canvas: &mut Canvas, x: usize, y: usize, owner_id: &str) {
-    if x >= canvas.width || y >= canvas.height || canvas.get(x, y) != ' ' {
+    if x >= canvas.width || y >= canvas.height {
+        return;
+    }
+    let ch = canvas.get(x, y);
+    if ch != ' ' && super::is_textual(ch) {
+        return;
+    }
+    if matches!(
+        canvas.get_meta(x, y).map(|meta| meta.owner_kind),
+        Some(
+            CellOwnerKind::NodeBorder
+                | CellOwnerKind::NodeFill
+                | CellOwnerKind::NodeLabel
+                | CellOwnerKind::SubgraphTitle
+        )
+    ) {
         return;
     }
     canvas.set_meta_only(

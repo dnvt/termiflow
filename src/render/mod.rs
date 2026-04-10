@@ -10,11 +10,14 @@
 //! # Module Structure
 //!
 //! - `canvas` - Canvas struct and character classification
+//! - `contract` - Code-facing render-layer contract
 //! - `edge` - Normal edge routing (all directions)
 //! - `cycle` - Cycle/loop edge routing through gutters
+//! - `trace` - Normalized geometry traces for non-glyph inspection
 //! - `shapes` - Box drawing for all 9 node shapes
 
 pub mod canvas;
+pub mod contract;
 pub mod critic;
 pub mod cycle;
 pub mod edge;
@@ -23,9 +26,16 @@ pub mod repair;
 pub mod semantic;
 pub mod shapes;
 pub mod topology;
+pub mod trace;
 
 // Re-exports
 pub use canvas::Canvas;
+pub use contract::{
+    current_render_layer_contract, RenderLayer, RenderLayerContract, RenderLayerSpec,
+};
+pub use trace::{
+    EdgeTrace, GeometryTrace, NodeTrace, RectTrace, SegmentAxis, SegmentTrace, SubgraphTrace,
+};
 
 use anyhow::Result;
 use critic::{analyze, emit_debug_report};
@@ -34,7 +44,9 @@ use crate::config::Config;
 use crate::geom::{EdgeRoute, Segment};
 use crate::graph::{EdgeKind, Graph, Node, NodeShape};
 use crate::portals::{collect_portal_slots, node_rects_from_graph, PortalSlots};
-use crate::style::{display_width, truncate_label, BaseStyle, BOX_HEIGHT};
+use crate::style::{
+    display_char_width, display_width, truncate_label, truncate_to_width, BaseStyle, BOX_HEIGHT,
+};
 
 use crate::graph::Direction;
 use cycle::route_cycle_edge;
@@ -513,6 +525,7 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         graph,
         &portal_slots,
         graph.direction,
+        &chars,
         subgraph_chars,
     );
 
@@ -526,7 +539,7 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         );
     }
     if graph.direction == Direction::BT {
-        cleanup_bt_title_rows(&mut canvas, graph, &chars);
+        cleanup_bt_title_rows(&mut canvas, graph, &portal_slots, &chars);
     }
 
     // ASCII-only cleanup: avoid adjacent '+' on BT horizontal runs when only one stem exists.
@@ -679,6 +692,14 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         applied_repair_passes = repair_passes;
     }
 
+    finalize_horizontal_side_portals(
+        &mut canvas,
+        graph,
+        &portal_slots,
+        graph.direction,
+        &chars,
+        subgraph_chars,
+    );
     refresh_provenance(
         &mut canvas,
         graph,
@@ -789,23 +810,24 @@ fn annotate_subgraph_region(
     }
 
     if let Some(title) = subgraph.title.as_deref() {
-        let title_fmt = format!("[  {}  ]", title);
-        let title_len = title_fmt.chars().count();
-        if title_len <= bounds.width.saturating_sub(2) {
-            let start_x = bounds.x + (bounds.width - title_len) / 2;
-            let title_y = subgraph_title_y(bounds, direction);
-            for (i, _) in title_fmt.chars().enumerate() {
-                let x = start_x + i;
-                if x < canvas.width {
-                    canvas.set_meta_only(
-                        x,
-                        title_y,
-                        semantic::CellOwnerKind::SubgraphTitle,
-                        Some(&subgraph.id),
-                        semantic::CellRole::Text,
-                        2,
-                    );
-                }
+        let title_fmt = crate::graph::subgraph_title_text(title);
+        let Some(start_x) =
+            crate::graph::subgraph_title_start_x(bounds.x, bounds.width, title, direction)
+        else {
+            return;
+        };
+        let title_y = subgraph_title_y(bounds, direction);
+        for (i, _) in title_fmt.chars().enumerate() {
+            let x = start_x + i;
+            if x < canvas.width {
+                canvas.set_meta_only(
+                    x,
+                    title_y,
+                    semantic::CellOwnerKind::SubgraphTitle,
+                    Some(&subgraph.id),
+                    semantic::CellRole::Text,
+                    2,
+                );
             }
         }
     }
@@ -1420,7 +1442,10 @@ fn reinforce_subgraph_portals(
         if !bounds.is_valid() {
             continue;
         }
-        let title_span = sg.title.as_deref().map(|t| title_span(bounds, t));
+        let title_span = sg
+            .title
+            .as_deref()
+            .and_then(|t| title_span(bounds, t, direction));
 
         let top_y = bounds.y;
         let bottom_y = bounds.y + bounds.height.saturating_sub(1);
@@ -1675,13 +1700,139 @@ fn sorted_slot_positions(slots: &HashSet<usize>) -> Vec<usize> {
     ordered
 }
 
+fn finalize_horizontal_side_portals(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    slots: &HashMap<String, PortalSlots>,
+    direction: Direction,
+    chars: &StyleChars,
+    subgraph_chars: &StyleChars,
+) {
+    if !matches!(direction, Direction::LR | Direction::RL) {
+        return;
+    }
+
+    let stamp_side_portal = |canvas: &mut Canvas, x: usize, y: usize| {
+        if x >= canvas.width || y >= canvas.height || is_node_owned_cell(canvas, x, y) {
+            return;
+        }
+        canvas.set_owned(
+            x,
+            y,
+            chars.edge_h,
+            semantic::CellOwnerKind::PortalOpening,
+            "final_side_portal",
+            4,
+        );
+    };
+
+    let is_horizontalish = |c: char| {
+        canvas::is_horizontal(c, chars)
+            || canvas::is_junction(c, chars)
+            || canvas::is_junction(c, subgraph_chars)
+            || canvas::is_arrow(c)
+    };
+
+    for subgraph in &graph.subgraphs {
+        let Some(portals) = slots.get(&subgraph.id) else {
+            continue;
+        };
+        let bounds = &subgraph.bounds;
+        if !bounds.is_valid() {
+            continue;
+        }
+
+        let left_x = bounds.x;
+        let right_x = bounds.x + bounds.width.saturating_sub(1);
+
+        for y in sorted_slot_positions(&portals.left) {
+            let py = clamp_vertical(bounds, y);
+            let left = if left_x > 0 {
+                canvas.get(left_x - 1, py)
+            } else {
+                ' '
+            };
+            let right = if left_x + 1 < canvas.width {
+                canvas.get(left_x + 1, py)
+            } else {
+                ' '
+            };
+            if is_horizontalish(left) || is_horizontalish(right) {
+                stamp_side_portal(canvas, left_x, py);
+            }
+        }
+
+        for y in sorted_slot_positions(&portals.right) {
+            let py = clamp_vertical(bounds, y);
+            let left = if right_x > 0 {
+                canvas.get(right_x - 1, py)
+            } else {
+                ' '
+            };
+            let right = if right_x + 1 < canvas.width {
+                canvas.get(right_x + 1, py)
+            } else {
+                ' '
+            };
+            if is_horizontalish(left) || is_horizontalish(right) {
+                stamp_side_portal(canvas, right_x, py);
+            }
+        }
+    }
+
+    // The selective LR/RL pilot can intentionally route through a visually
+    // containing subgraph wall that is not a semantic boundary crossing. Scan
+    // the final routed geometry itself so those extra visual pierces are
+    // stamped as clean portal openings too.
+    for subgraph in &graph.subgraphs {
+        let bounds = &subgraph.bounds;
+        if !bounds.is_valid() || bounds.height < 3 {
+            continue;
+        }
+        let left_x = bounds.x;
+        let right_x = bounds.x + bounds.width.saturating_sub(1);
+        let min_y = bounds.y.saturating_add(1);
+        let max_y = bounds.y + bounds.height.saturating_sub(2);
+
+        for route in graph.edge_routes.values() {
+            for segment in &route.segments {
+                if segment.from.y != segment.to.y {
+                    continue;
+                }
+                let y = segment.from.y;
+                if y < min_y || y > max_y {
+                    continue;
+                }
+                let (min_x, max_x) = if segment.from.x <= segment.to.x {
+                    (segment.from.x, segment.to.x)
+                } else {
+                    (segment.to.x, segment.from.x)
+                };
+                if left_x >= min_x && left_x <= max_x {
+                    stamp_side_portal(canvas, left_x, y);
+                }
+                if right_x >= min_x && right_x <= max_x {
+                    stamp_side_portal(canvas, right_x, y);
+                }
+            }
+        }
+    }
+}
+
 fn restore_subgraph_borders(
     canvas: &mut Canvas,
     graph: &Graph,
     slots: &HashMap<String, PortalSlots>,
     direction: Direction,
+    chars: &StyleChars,
     subgraph_chars: &StyleChars,
 ) {
+    let is_horizontalish = |c: char| {
+        canvas::is_horizontal(c, chars)
+            || canvas::is_junction(c, chars)
+            || canvas::is_junction(c, subgraph_chars)
+            || canvas::is_arrow(c)
+    };
     for subgraph in &graph.subgraphs {
         let bounds = &subgraph.bounds;
         if !bounds.is_valid() {
@@ -1734,29 +1885,33 @@ fn restore_subgraph_borders(
         let title_span = subgraph
             .title
             .as_deref()
-            .map(|title| title_span(bounds, title));
+            .and_then(|title| title_span(bounds, title, direction));
         let top_portals_on_border = matches!(direction, Direction::BT) || subgraph.title.is_none();
 
         if left_x < canvas.width
             && top_y < canvas.height
+            && !is_node_owned_cell(canvas, left_x, top_y)
             && should_restore_corner(canvas.get(left_x, top_y), subgraph_chars.tl)
         {
             canvas.set(left_x, top_y, subgraph_chars.tl);
         }
         if right_x < canvas.width
             && top_y < canvas.height
+            && !is_node_owned_cell(canvas, right_x, top_y)
             && should_restore_corner(canvas.get(right_x, top_y), subgraph_chars.tr)
         {
             canvas.set(right_x, top_y, subgraph_chars.tr);
         }
         if left_x < canvas.width
             && bottom_y < canvas.height
+            && !is_node_owned_cell(canvas, left_x, bottom_y)
             && should_restore_corner(canvas.get(left_x, bottom_y), subgraph_chars.bl)
         {
             canvas.set(left_x, bottom_y, subgraph_chars.bl);
         }
         if right_x < canvas.width
             && bottom_y < canvas.height
+            && !is_node_owned_cell(canvas, right_x, bottom_y)
             && should_restore_corner(canvas.get(right_x, bottom_y), subgraph_chars.br)
         {
             canvas.set(right_x, bottom_y, subgraph_chars.br);
@@ -1775,6 +1930,7 @@ fn restore_subgraph_borders(
                 continue;
             }
             if top_y < canvas.height
+                && !is_node_owned_cell(canvas, x, top_y)
                 && should_restore_horizontal_border(canvas.get(x, top_y), subgraph_chars)
             {
                 canvas.set(x, top_y, subgraph_chars.h);
@@ -1782,8 +1938,15 @@ fn restore_subgraph_borders(
             if bottom_slots.contains(&x) {
                 continue;
             }
+            let bottom_existing = canvas.get(x, bottom_y);
+            let can_restore_bt_title_row = matches!(direction, Direction::BT)
+                && subgraph.title.is_some()
+                && !is_textual(bottom_existing)
+                && !canvas::is_arrow(bottom_existing);
             if bottom_y < canvas.height
-                && should_restore_horizontal_border(canvas.get(x, bottom_y), subgraph_chars)
+                && !is_node_owned_cell(canvas, x, bottom_y)
+                && (can_restore_bt_title_row
+                    || should_restore_horizontal_border(bottom_existing, subgraph_chars))
             {
                 canvas.set(x, bottom_y, subgraph_chars.h);
             }
@@ -1793,18 +1956,103 @@ fn restore_subgraph_borders(
             if y >= canvas.height {
                 continue;
             }
+            if matches!(direction, Direction::LR | Direction::RL)
+                && !is_node_owned_cell(canvas, left_x, y)
+            {
+                let current = canvas.get(left_x, y);
+                let left = if left_x > 0 {
+                    canvas.get(left_x - 1, y)
+                } else {
+                    ' '
+                };
+                let right = if left_x + 1 < canvas.width {
+                    canvas.get(left_x + 1, y)
+                } else {
+                    ' '
+                };
+                if canvas::is_horizontal(current, chars)
+                    || canvas::is_junction(current, chars)
+                    || canvas::is_arrow(current)
+                    || is_horizontalish(left)
+                    || is_horizontalish(right)
+                {
+                    canvas.set_owned(
+                        left_x,
+                        y,
+                        chars.edge_h,
+                        semantic::CellOwnerKind::PortalOpening,
+                        "side_portal_band",
+                        4,
+                    );
+                    continue;
+                }
+            }
             if !left_slots.contains(&y)
-                && should_restore_vertical_border(canvas.get(left_x, y), subgraph_chars)
+                && !is_node_owned_cell(canvas, left_x, y)
+                && (should_restore_vertical_border(canvas.get(left_x, y), subgraph_chars)
+                    || (matches!(direction, Direction::LR | Direction::RL)
+                        && (canvas::is_horizontal(canvas.get(left_x, y), chars)
+                            || canvas::is_junction(canvas.get(left_x, y), chars)
+                            || canvas::is_junction(canvas.get(left_x, y), subgraph_chars)
+                            || canvas::is_arrow(canvas.get(left_x, y)))))
             {
                 canvas.set(left_x, y, subgraph_chars.v);
             }
+            if matches!(direction, Direction::LR | Direction::RL)
+                && !is_node_owned_cell(canvas, right_x, y)
+            {
+                let current = canvas.get(right_x, y);
+                let left = if right_x > 0 {
+                    canvas.get(right_x - 1, y)
+                } else {
+                    ' '
+                };
+                let right = if right_x + 1 < canvas.width {
+                    canvas.get(right_x + 1, y)
+                } else {
+                    ' '
+                };
+                if canvas::is_horizontal(current, chars)
+                    || canvas::is_junction(current, chars)
+                    || canvas::is_arrow(current)
+                    || is_horizontalish(left)
+                    || is_horizontalish(right)
+                {
+                    canvas.set_owned(
+                        right_x,
+                        y,
+                        chars.edge_h,
+                        semantic::CellOwnerKind::PortalOpening,
+                        "side_portal_band",
+                        4,
+                    );
+                    continue;
+                }
+            }
             if !right_slots.contains(&y)
-                && should_restore_vertical_border(canvas.get(right_x, y), subgraph_chars)
+                && !is_node_owned_cell(canvas, right_x, y)
+                && (should_restore_vertical_border(canvas.get(right_x, y), subgraph_chars)
+                    || (matches!(direction, Direction::LR | Direction::RL)
+                        && (canvas::is_horizontal(canvas.get(right_x, y), chars)
+                            || canvas::is_junction(canvas.get(right_x, y), chars)
+                            || canvas::is_junction(canvas.get(right_x, y), subgraph_chars)
+                            || canvas::is_arrow(canvas.get(right_x, y)))))
             {
                 canvas.set(right_x, y, subgraph_chars.v);
             }
         }
     }
+}
+
+fn is_node_owned_cell(canvas: &Canvas, x: usize, y: usize) -> bool {
+    matches!(
+        canvas.get_meta(x, y).map(|meta| meta.owner_kind),
+        Some(
+            semantic::CellOwnerKind::NodeBorder
+                | semantic::CellOwnerKind::NodeFill
+                | semantic::CellOwnerKind::NodeLabel
+        )
+    )
 }
 
 fn should_restore_horizontal_border(existing: char, subgraph_chars: &StyleChars) -> bool {
@@ -1878,19 +2126,15 @@ pub(super) fn is_textual(c: char) -> bool {
 }
 
 pub(super) fn subgraph_title_y(bounds: &crate::graph::Rectangle, direction: Direction) -> usize {
-    if matches!(direction, Direction::BT) {
-        bounds.y + bounds.height.saturating_sub(1)
-    } else {
-        bounds.y
-    }
+    crate::graph::subgraph_title_row(bounds.y, bounds.height, direction)
 }
 
-fn title_span(bounds: &crate::graph::Rectangle, title: &str) -> (usize, usize) {
-    let title_fmt = format!("[  {}  ]", title);
-    let len = title_fmt.chars().count();
-    let start = bounds.x + bounds.width.saturating_sub(len) / 2;
-    let end = start + len.saturating_sub(1);
-    (start, end)
+pub(crate) fn title_span(
+    bounds: &crate::graph::Rectangle,
+    title: &str,
+    direction: Direction,
+) -> Option<(usize, usize)> {
+    crate::graph::subgraph_title_span(bounds.x, bounds.width, title, direction)
 }
 
 fn draw_subgraph_title(
@@ -1905,12 +2149,11 @@ fn draw_subgraph_title(
     if !rect.is_valid() {
         return;
     }
-    let title_fmt = format!("[  {}  ]", t);
-    let title_len = title_fmt.chars().count();
-    if title_len > rect.width.saturating_sub(2) {
+    let title_fmt = crate::graph::subgraph_title_text(t);
+    let Some(start_x) = crate::graph::subgraph_title_start_x(rect.x, rect.width, t, direction)
+    else {
         return;
-    }
-    let start_x = rect.x + (rect.width - title_len) / 2;
+    };
     let title_y = subgraph_title_y(rect, direction);
     if title_y >= canvas.height {
         return;
@@ -1922,7 +2165,12 @@ fn draw_subgraph_title(
     }
 }
 
-fn cleanup_bt_title_rows(canvas: &mut Canvas, graph: &Graph, chars: &crate::style::StyleChars) {
+fn cleanup_bt_title_rows(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    portal_slots: &HashMap<String, PortalSlots>,
+    chars: &crate::style::StyleChars,
+) {
     for subgraph in &graph.subgraphs {
         let Some(title) = subgraph.title.as_deref() else {
             continue;
@@ -1936,9 +2184,22 @@ fn cleanup_bt_title_rows(canvas: &mut Canvas, graph: &Graph, chars: &crate::styl
         if title_y >= canvas.height {
             continue;
         }
-        let (title_start, title_end) = title_span(&subgraph.bounds, title);
+        let Some((title_start, title_end)) = title_span(&subgraph.bounds, title, Direction::BT)
+        else {
+            continue;
+        };
         let inner_left = subgraph.bounds.x.saturating_add(1);
         let inner_right = subgraph.bounds.x + subgraph.bounds.width.saturating_sub(2);
+        let bottom_slots: HashSet<usize> = portal_slots
+            .get(&subgraph.id)
+            .map(|slots| {
+                slots
+                    .bottom
+                    .iter()
+                    .map(|x| clamp_horizontal(&subgraph.bounds, *x))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         for x in inner_left..=inner_right {
             if x >= title_start && x <= title_end {
@@ -1956,7 +2217,7 @@ fn cleanup_bt_title_rows(canvas: &mut Canvas, graph: &Graph, chars: &crate::styl
                 && topology::char_connects_up(canvas.get(x, title_y + 1));
 
             if title_y == bottom_y {
-                if has_vertical_above || has_vertical_below {
+                if bottom_slots.contains(&x) && (has_vertical_above || has_vertical_below) {
                     canvas.set(x, title_y, chars.edge_v);
                 } else {
                     canvas.set(x, title_y, chars.edge_h);
@@ -2052,7 +2313,7 @@ fn draw_edge_label(
                     canvas.set(x_pos, label_y, c);
                     record_label_cell(&mut cells, x_pos, label_y);
                 }
-                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                x_pos += display_char_width(c);
             }
         }
         Direction::BT => {
@@ -2092,7 +2353,7 @@ fn draw_edge_label(
                     canvas.set(x_pos, label_y, c);
                     record_label_cell(&mut cells, x_pos, label_y);
                 }
-                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                x_pos += display_char_width(c);
             }
         }
         Direction::LR => {
@@ -2119,7 +2380,7 @@ fn draw_edge_label(
                         canvas.set(x_pos, edge_y, c);
                         record_label_cell(&mut cells, x_pos, edge_y);
                     }
-                    x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                    x_pos += display_char_width(c);
                 }
 
                 if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
@@ -2153,7 +2414,7 @@ fn draw_edge_label(
                         canvas.set(x_pos, label_row, c);
                         record_label_cell(&mut cells, x_pos, label_row);
                     }
-                    x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                    x_pos += display_char_width(c);
                 }
             } else {
                 let inline_limit = config
@@ -2176,7 +2437,7 @@ fn draw_edge_label(
                         canvas.set(x_pos, edge_y, c);
                         record_label_cell(&mut cells, x_pos, edge_y);
                     }
-                    x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                    x_pos += display_char_width(c);
                 }
 
                 if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
@@ -2220,7 +2481,7 @@ fn draw_edge_label(
                         canvas.set(x_pos, edge_y, c);
                         record_label_cell(&mut cells, x_pos, edge_y);
                     }
-                    x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                    x_pos += display_char_width(c);
                 }
 
                 if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
@@ -2254,7 +2515,7 @@ fn draw_edge_label(
                         canvas.set(x_pos, label_row, c);
                         record_label_cell(&mut cells, x_pos, label_row);
                     }
-                    x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                    x_pos += display_char_width(c);
                 }
             } else {
                 let inline_limit = config
@@ -2281,7 +2542,7 @@ fn draw_edge_label(
                         canvas.set(x_pos, edge_y, c);
                         record_label_cell(&mut cells, x_pos, edge_y);
                     }
-                    x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                    x_pos += display_char_width(c);
                 }
 
                 if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
@@ -2411,7 +2672,7 @@ fn draw_routed_edge_label(
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
-                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                x_pos += display_char_width(c);
             }
 
             if x_pos < canvas.width && y < canvas.height {
@@ -2443,7 +2704,7 @@ fn draw_routed_edge_label(
                     canvas.set(x_pos, label_row, c);
                     record_label_cell(&mut cells, x_pos, label_row);
                 }
-                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                x_pos += display_char_width(c);
             }
         } else {
             let inline_limit = config
@@ -2471,7 +2732,7 @@ fn draw_routed_edge_label(
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
-                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                x_pos += display_char_width(c);
             }
 
             if x_pos < canvas.width && y < canvas.height {
@@ -2522,7 +2783,7 @@ fn draw_routed_edge_label(
                 canvas.set(x_pos, mid_y, c);
                 record_label_cell(&mut cells, x_pos, mid_y);
             }
-            x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+            x_pos += display_char_width(c);
         }
     }
 
@@ -2534,19 +2795,14 @@ fn format_edge_label_with_limit(label: &str, max_len: usize) -> String {
     if display_width(label) <= max_len {
         return label.to_string();
     }
-
-    let mut truncated = String::new();
-    let mut width = 0;
-    for c in label.chars() {
-        let char_width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-        if width + char_width > max_len - 1 {
-            truncated.push('…');
-            break;
-        }
-        truncated.push(c);
-        width += char_width;
+    let ellipsis = "…";
+    let ellipsis_width = display_width(ellipsis);
+    if max_len <= ellipsis_width {
+        return truncate_to_width(ellipsis, max_len);
     }
-    truncated
+
+    let prefix = truncate_to_width(label, max_len.saturating_sub(ellipsis_width));
+    format!("{prefix}{ellipsis}")
 }
 
 fn segment_on_border(seg: &Segment, bounds: &crate::graph::Rectangle) -> bool {
@@ -2810,6 +3066,24 @@ mod tests {
     }
 
     #[test]
+    fn edge_label_truncation_preserves_grapheme_clusters() {
+        let family = "👨‍👩‍👧‍👦";
+        assert_eq!(
+            format_edge_label_with_limit(&format!("{family}{family}"), display_width(family) + 1),
+            format!("{family}…")
+        );
+    }
+
+    #[test]
+    fn edge_label_truncation_preserves_combining_clusters() {
+        let accented = "e\u{301}";
+        assert_eq!(
+            format_edge_label_with_limit(&format!("{accented}{accented}{accented}"), 2),
+            format!("{accented}…")
+        );
+    }
+
+    #[test]
     fn cross_subgraph_edge_pierces_border_td() {
         let mut graph = Graph::new();
         graph.direction = Direction::TD;
@@ -2863,7 +3137,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_subgraph_edge_pierces_border_lr() {
+    fn cross_subgraph_edge_pierces_border_lr_as_clean_side_opening() {
         let mut graph = Graph::new();
         graph.direction = Direction::LR;
 
@@ -2905,16 +3179,16 @@ mod tests {
             .build(&crate::parser::ParseConfig::default());
 
         let output = render(&graph, &config).expect("render lr portal");
-        let portal_y = graph
-            .get_subgraph("sg")
-            .map(|sg| sg.bounds.y + 1)
-            .unwrap_or(0);
         let portal_x = graph.get_subgraph("sg").map(|sg| sg.bounds.x).unwrap_or(0);
-        let glyph = char_at(&output, portal_x, portal_y).unwrap_or(' ');
-        let is_pierced = !glyph.is_alphabetic();
+        let sg = graph.get_subgraph("sg").expect("subgraph");
+        let glyph = ((sg.bounds.y + 1)..(sg.bounds.y + sg.bounds.height.saturating_sub(1)))
+            .filter_map(|y| char_at(&output, portal_x, y))
+            .find(|glyph| matches!(glyph, '─' | '━'))
+            .unwrap_or(' ');
+        let is_pierced = glyph != ' ';
         assert!(
             is_pierced,
-            "expected horizontal pierce at ({portal_x},{portal_y}), got '{glyph}'\n{output}"
+            "expected clean horizontal side-wall opening somewhere on left border x={portal_x}, got '{glyph}'\n{output}"
         );
     }
 
@@ -3011,7 +3285,7 @@ fn draw_convergent_edge_label(
                     canvas.set(x_pos, label_y, c);
                     record_label_cell(&mut cells, x_pos, label_y);
                 }
-                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                x_pos += display_char_width(c);
             }
         }
         Direction::BT => {
@@ -3026,7 +3300,7 @@ fn draw_convergent_edge_label(
                     canvas.set(x_pos, label_y, c);
                     record_label_cell(&mut cells, x_pos, label_y);
                 }
-                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                x_pos += display_char_width(c);
             }
         }
         Direction::LR => {
@@ -3043,7 +3317,7 @@ fn draw_convergent_edge_label(
                     canvas.set(x_pos, label_y, c);
                     record_label_cell(&mut cells, x_pos, label_y);
                 }
-                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                x_pos += display_char_width(c);
             }
         }
         Direction::RL => {
@@ -3058,7 +3332,7 @@ fn draw_convergent_edge_label(
                     canvas.set(x_pos, label_y, c);
                     record_label_cell(&mut cells, x_pos, label_y);
                 }
-                x_pos += unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                x_pos += display_char_width(c);
             }
         }
     }

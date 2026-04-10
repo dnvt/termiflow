@@ -47,10 +47,8 @@ pub fn draw_subgraph(
     canvas.set(x + width - 1, y + height - 1, style.br);
 
     if let Some(t) = title {
-        let title_fmt = format!("[  {}  ]", t);
-        let title_len = title_fmt.chars().count();
-        if title_len <= width.saturating_sub(2) {
-            let start_x = x + (width - title_len) / 2;
+        let title_fmt = crate::graph::subgraph_title_text(t);
+        if let Some(start_x) = crate::graph::subgraph_title_start_x(x, width, t, direction) {
             let title_y = subgraph_title_y(rect, direction);
             for (i, c) in title_fmt.chars().enumerate() {
                 if start_x + i < canvas.width {

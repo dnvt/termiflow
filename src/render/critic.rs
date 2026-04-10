@@ -173,7 +173,7 @@ pub fn analyze(
     findings.extend(find_arrow_touching_node_borders(graph, frame));
     findings.extend(find_arrow_touching_subgraph_borders(graph, frame));
     findings.extend(find_subgraph_border_portal_artifacts(
-        graph, frame, direction,
+        graph, frame, direction, chars,
     ));
     findings.extend(find_route_crossing_node_interiors(graph, frame));
     findings.extend(find_subgraph_title_corruption(graph, frame, direction));
@@ -315,6 +315,9 @@ fn find_route_topology_mismatches(frame: &SemanticFrame, chars: &StyleChars) -> 
             ) {
                 continue;
             }
+            if is_clean_horizontal_side_portal(frame, x, y, cell.ch, chars) {
+                continue;
+            }
 
             let connections = frame_connections(frame, x, y);
             let Some(expected) = canonical_routing_glyph(connections, chars, cell.owner_kind)
@@ -339,6 +342,89 @@ fn find_route_topology_mismatches(frame: &SemanticFrame, chars: &StyleChars) -> 
     }
 
     findings
+}
+
+fn is_clean_horizontal_side_portal(
+    frame: &SemanticFrame,
+    x: usize,
+    y: usize,
+    ch: char,
+    chars: &StyleChars,
+) -> bool {
+    // LR/RL side-wall portals are only clean if the border cell itself stays a
+    // horizontal opening. Junction glyphs still imply topology living on the
+    // wall, which is exactly the artifact this oracle is meant to catch.
+    if !super::canvas::is_horizontal(ch, chars) {
+        return false;
+    }
+
+    let left = x
+        .checked_sub(1)
+        .and_then(|xx| frame.get(xx, y))
+        .is_some_and(|cell| char_connects_right(cell.ch));
+    let right = frame
+        .get(x.saturating_add(1), y)
+        .is_some_and(|cell| char_connects_left(cell.ch));
+    if !left && !right {
+        return false;
+    }
+
+    let up = y
+        .checked_sub(1)
+        .and_then(|yy| frame.get(x, yy))
+        .filter(|cell| char_connects_down(cell.ch));
+    let down = frame
+        .get(x, y.saturating_add(1))
+        .filter(|cell| char_connects_up(cell.ch));
+
+    let vertical_neighbors_are_only_subgraph_borders = [up, down]
+        .into_iter()
+        .flatten()
+        .all(|cell| cell.owner_kind == CellOwnerKind::SubgraphBorder);
+
+    vertical_neighbors_are_only_subgraph_borders && (up.is_some() || down.is_some())
+}
+
+fn is_compact_horizontal_portal_arrow(
+    frame: &SemanticFrame,
+    x: usize,
+    y: usize,
+    ch: char,
+    subgraph: &crate::graph::Subgraph,
+) -> bool {
+    if !matches!(ch, '>' | '→' | '▶' | '<' | '←' | '◀') {
+        return false;
+    }
+    if x != subgraph.bounds.x && x != subgraph.bounds.x + subgraph.bounds.width.saturating_sub(1) {
+        return false;
+    }
+
+    let horizontal_neighbor = match ch {
+        '>' | '→' | '▶' => x
+            .checked_sub(1)
+            .and_then(|xx| frame.get(xx, y))
+            .is_some_and(|cell| char_connects_right(cell.ch)),
+        '<' | '←' | '◀' => frame
+            .get(x.saturating_add(1), y)
+            .is_some_and(|cell| char_connects_left(cell.ch)),
+        _ => false,
+    };
+    if !horizontal_neighbor {
+        return false;
+    }
+
+    let up = y
+        .checked_sub(1)
+        .and_then(|yy| frame.get(x, yy))
+        .filter(|cell| char_connects_down(cell.ch));
+    let down = frame
+        .get(x, y.saturating_add(1))
+        .filter(|cell| char_connects_up(cell.ch));
+
+    [up, down]
+        .into_iter()
+        .flatten()
+        .all(|cell| cell.owner_kind == CellOwnerKind::SubgraphBorder)
 }
 
 fn find_route_symmetry_imbalances(graph: &Graph, direction: Direction) -> Vec<CriticFinding> {
@@ -972,7 +1058,8 @@ fn find_arrow_touching_subgraph_borders(
                 }
                 let on_border =
                     x == subgraph.bounds.x || x == max_x || y == subgraph.bounds.y || y == max_y;
-                if on_border {
+                if on_border && !is_compact_horizontal_portal_arrow(frame, x, y, cell.ch, subgraph)
+                {
                     findings.push(CriticFinding {
                         code: FindingCode::ArrowTouchesSubgraphBorder,
                         severity: FindingSeverity::Warning,
@@ -1085,13 +1172,16 @@ fn find_subgraph_title_corruption(
             continue;
         }
 
-        let title_fmt = format!("[  {}  ]", title);
-        let title_len = title_fmt.chars().count();
-        if title_len > subgraph.bounds.width.saturating_sub(2) {
+        let title_fmt = crate::graph::subgraph_title_text(title);
+        let Some(start_x) = crate::graph::subgraph_title_start_x(
+            subgraph.bounds.x,
+            subgraph.bounds.width,
+            title,
+            direction,
+        ) else {
             continue;
-        }
-
-        let start_x = subgraph.bounds.x + (subgraph.bounds.width - title_len) / 2;
+        };
+        let title_len = title_fmt.chars().count();
         let title_y = subgraph_title_y(&subgraph.bounds, direction);
 
         let mut cells = Vec::new();
@@ -1168,6 +1258,7 @@ fn find_subgraph_border_portal_artifacts(
     graph: &Graph,
     frame: &SemanticFrame,
     direction: Direction,
+    chars: &StyleChars,
 ) -> Vec<CriticFinding> {
     if !matches!(direction, Direction::LR | Direction::RL) {
         return Vec::new();
@@ -1194,10 +1285,20 @@ fn find_subgraph_border_portal_artifacts(
                 if !is_line_like(cell.ch) {
                     continue;
                 }
+                if is_clean_horizontal_side_portal(frame, x, y, cell.ch, chars) {
+                    continue;
+                }
+                if cell.owner_kind == CellOwnerKind::PortalOpening {
+                    continue;
+                }
 
                 let has_horizontal = char_connects_left(cell.ch) || char_connects_right(cell.ch);
                 let has_vertical = char_connects_up(cell.ch) || char_connects_down(cell.ch);
                 if has_horizontal && has_vertical {
+                    // In LR/RL, a side-wall portal must be a clean horizontal
+                    // opening. Any glyph that still advertises vertical
+                    // topology on the border column implies a merge/junction
+                    // living on the wall instead of inside or outside it.
                     cells.push((x, y));
                 }
             }
@@ -1784,6 +1885,137 @@ mod tests {
             .findings
             .iter()
             .any(|finding| finding.code == FindingCode::RouteTopologyMismatch));
+    }
+
+    #[test]
+    fn analyze_reports_route_topology_mismatch_for_junction_like_lr_side_pierce() {
+        let mut graph = Graph::new();
+        let mut subgraph = Subgraph::new("sg", Some("Svc".to_string()));
+        subgraph.bounds = Rectangle {
+            x: 1,
+            y: 0,
+            width: 3,
+            height: 5,
+        };
+        graph.add_subgraph(subgraph);
+
+        let mut cells = vec![CellMeta::default(); 5 * 5];
+        for y in 1..=3 {
+            cells[y * 5 + 1] = CellMeta {
+                ch: '|',
+                owner_kind: CellOwnerKind::SubgraphBorder,
+                owner_id: Some("sg".to_string()),
+                role: CellRole::Vertical,
+                z_index: 2,
+            };
+        }
+        cells[2 * 5] = CellMeta {
+            ch: '-',
+            owner_kind: CellOwnerKind::EdgeSegment,
+            owner_id: Some("edge:0:A->B".to_string()),
+            role: CellRole::Horizontal,
+            z_index: 4,
+        };
+        cells[2 * 5 + 1] = CellMeta {
+            ch: '+',
+            owner_kind: CellOwnerKind::Junction,
+            owner_id: Some("edge:0:A->B".to_string()),
+            role: CellRole::Junction,
+            z_index: 4,
+        };
+        cells[2 * 5 + 2] = CellMeta {
+            ch: '>',
+            owner_kind: CellOwnerKind::ArrowHead,
+            owner_id: Some("edge:0:A->B".to_string()),
+            role: CellRole::ArrowTip,
+            z_index: 4,
+        };
+        let frame = SemanticFrame {
+            width: 5,
+            height: 5,
+            cells,
+        };
+
+        let findings = find_subgraph_border_portal_artifacts(
+            &graph,
+            &frame,
+            Direction::LR,
+            &crate::style::ASCII_CHARS,
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.code == FindingCode::RouteTopologyMismatch),
+            "expected junction-like side pierce to trigger a border-portal artifact finding: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_does_not_report_route_topology_mismatch_for_clean_lr_side_opening() {
+        let mut graph = Graph::new();
+        let mut subgraph = Subgraph::new("sg", Some("Svc".to_string()));
+        subgraph.bounds = Rectangle {
+            x: 1,
+            y: 0,
+            width: 3,
+            height: 5,
+        };
+        graph.add_subgraph(subgraph);
+
+        let mut cells = vec![CellMeta::default(); 5 * 5];
+        for y in 1..=3 {
+            cells[y * 5 + 1] = CellMeta {
+                ch: '|',
+                owner_kind: CellOwnerKind::SubgraphBorder,
+                owner_id: Some("sg".to_string()),
+                role: CellRole::Vertical,
+                z_index: 2,
+            };
+        }
+        cells[2 * 5] = CellMeta {
+            ch: '-',
+            owner_kind: CellOwnerKind::EdgeSegment,
+            owner_id: Some("edge:0:A->B".to_string()),
+            role: CellRole::Horizontal,
+            z_index: 4,
+        };
+        cells[2 * 5 + 1] = CellMeta {
+            ch: '-',
+            owner_kind: CellOwnerKind::PortalOpening,
+            owner_id: Some("sg".to_string()),
+            role: CellRole::Portal,
+            z_index: 4,
+        };
+        cells[2 * 5 + 2] = CellMeta {
+            ch: '-',
+            owner_kind: CellOwnerKind::EdgeSegment,
+            owner_id: Some("edge:0:A->B".to_string()),
+            role: CellRole::Horizontal,
+            z_index: 4,
+        };
+        cells[2 * 5 + 3] = CellMeta {
+            ch: '>',
+            owner_kind: CellOwnerKind::ArrowHead,
+            owner_id: Some("edge:0:A->B".to_string()),
+            role: CellRole::ArrowTip,
+            z_index: 4,
+        };
+        let frame = SemanticFrame {
+            width: 5,
+            height: 5,
+            cells,
+        };
+
+        let findings = find_subgraph_border_portal_artifacts(
+            &graph,
+            &frame,
+            Direction::LR,
+            &crate::style::ASCII_CHARS,
+        );
+        assert!(
+            findings.is_empty(),
+            "expected clean horizontal side opening to avoid border-portal artifact finding: {findings:?}"
+        );
     }
 
     #[test]

@@ -11,10 +11,10 @@ use crossterm::{
     cursor::{Hide, MoveTo, Show},
     style::Print,
     terminal::{Clear, ClearType},
-    QueueableCommand,
+    QueueableCommand, SynchronizedUpdate,
 };
 
-use super::frame::{FrameDelta, TerminalFrame};
+use super::frame::{is_continuation_cell, FrameDelta, TerminalFrame};
 
 pub trait TerminalPresenter {
     fn present(&mut self, next: &TerminalFrame) -> io::Result<()>;
@@ -45,18 +45,23 @@ impl<W: Write> AnsiDiffPresenter<W> {
 impl<W: Write> TerminalPresenter for AnsiDiffPresenter<W> {
     fn present(&mut self, next: &TerminalFrame) -> io::Result<()> {
         let delta = FrameDelta::between(self.previous.as_ref(), next);
+        if !delta.full_redraw && delta.changes.is_empty() {
+            return Ok(());
+        }
 
-        self.writer.queue(Hide)?;
-        if delta.full_redraw {
-            self.writer.queue(MoveTo(0, 0))?;
-            self.writer.queue(Clear(ClearType::All))?;
-        }
-        for change in &delta.changes {
-            self.writer.queue(MoveTo(change.x, change.y))?;
-            self.writer.queue(Print(change.cell.ch))?;
-        }
-        self.writer.queue(Show)?;
-        self.writer.flush()?;
+        self.writer.sync_update(|writer| -> io::Result<()> {
+            writer.queue(Hide)?;
+            if delta.full_redraw {
+                writer.queue(MoveTo(0, 0))?;
+                writer.queue(Clear(ClearType::All))?;
+            }
+            for segment in diff_segments(&delta) {
+                writer.queue(MoveTo(segment.x, segment.y))?;
+                writer.queue(Print(&segment.text))?;
+            }
+            writer.queue(Show)?;
+            Ok(())
+        })??;
 
         self.previous = Some(next.clone());
         Ok(())
@@ -96,60 +101,6 @@ impl<W: Write> InlinePresenter<W> {
     pub fn previous_frame(&self) -> Option<&TerminalFrame> {
         self.previous.as_ref()
     }
-
-    fn move_to_top_of_previous_region(&mut self) -> io::Result<()> {
-        let previous_height = self.previous.as_ref().map_or(0, |frame| frame.height);
-        if previous_height > 0 {
-            write!(self.writer, "\x1b[{}A", previous_height)?;
-        }
-        Ok(())
-    }
-
-    fn render_full_frame(&mut self, next: &TerminalFrame) -> io::Result<()> {
-        let previous_height = self.previous.as_ref().map_or(0, |frame| frame.height);
-
-        for y in 0..next.height {
-            let line = frame_line(next, y);
-            write!(self.writer, "\r{}\x1b[K\n", line)?;
-        }
-
-        for _ in next.height..previous_height {
-            write!(self.writer, "\r\x1b[K\n")?;
-        }
-
-        let surplus = previous_height.saturating_sub(next.height);
-        if surplus > 0 {
-            write!(self.writer, "\x1b[{}A", surplus)?;
-        }
-
-        Ok(())
-    }
-
-    fn render_diff(&mut self, next: &TerminalFrame, delta: &FrameDelta) -> io::Result<()> {
-        let mut current_row = 0u16;
-        let mut current_col = 0u16;
-
-        for segment in diff_segments(delta) {
-            move_inline_cursor(
-                &mut self.writer,
-                current_row,
-                current_col,
-                segment.y,
-                segment.x,
-            )?;
-            write!(self.writer, "{}", segment.text)?;
-            current_row = segment.y;
-            current_col = segment.x + segment.text.chars().count() as u16;
-        }
-
-        write!(self.writer, "\r")?;
-        let move_down = next.height.saturating_sub(current_row);
-        if move_down > 0 {
-            write!(self.writer, "\x1b[{}B", move_down)?;
-        }
-
-        Ok(())
-    }
 }
 
 impl<W: Write> TerminalPresenter for InlinePresenter<W> {
@@ -159,15 +110,18 @@ impl<W: Write> TerminalPresenter for InlinePresenter<W> {
             return Ok(());
         }
 
-        self.move_to_top_of_previous_region()?;
+        let previous_height = self.previous.as_ref().map_or(0, |frame| frame.height);
+        self.writer.sync_update(|writer| -> io::Result<()> {
+            move_to_top_of_previous_region(writer, previous_height)?;
 
-        if delta.full_redraw {
-            self.render_full_frame(next)?;
-        } else {
-            self.render_diff(next, &delta)?;
-        }
+            if delta.full_redraw {
+                render_full_frame(writer, next, previous_height)?;
+            } else {
+                render_diff(writer, next, &delta)?;
+            }
 
-        self.writer.flush()?;
+            Ok(())
+        })??;
         self.previous = Some(next.clone());
         Ok(())
     }
@@ -178,14 +132,74 @@ struct DiffSegment {
     x: u16,
     y: u16,
     text: String,
+    span: u16,
 }
 
 fn frame_line(frame: &TerminalFrame, y: u16) -> String {
     let mut line = String::new();
     for x in 0..frame.width {
-        line.push(frame.get(x, y).map(|cell| cell.ch).unwrap_or(' '));
+        let cell = frame.get(x, y).cloned().unwrap_or_default();
+        if !is_continuation_cell(cell.ch) {
+            line.push_str(cell.text());
+        }
     }
     line.trim_end_matches(' ').to_string()
+}
+
+fn move_to_top_of_previous_region<W: Write>(
+    writer: &mut W,
+    previous_height: u16,
+) -> io::Result<()> {
+    if previous_height > 0 {
+        write!(writer, "\x1b[{}A", previous_height)?;
+    }
+    Ok(())
+}
+
+fn render_full_frame<W: Write>(
+    writer: &mut W,
+    next: &TerminalFrame,
+    previous_height: u16,
+) -> io::Result<()> {
+    for y in 0..next.height {
+        let line = frame_line(next, y);
+        write!(writer, "\r{}\x1b[K\n", line)?;
+    }
+
+    for _ in next.height..previous_height {
+        write!(writer, "\r\x1b[K\n")?;
+    }
+
+    let surplus = previous_height.saturating_sub(next.height);
+    if surplus > 0 {
+        write!(writer, "\x1b[{}A", surplus)?;
+    }
+
+    Ok(())
+}
+
+fn render_diff<W: Write>(
+    writer: &mut W,
+    next: &TerminalFrame,
+    delta: &FrameDelta,
+) -> io::Result<()> {
+    let mut current_row = 0u16;
+    let mut current_col = 0u16;
+
+    for segment in diff_segments(delta) {
+        move_inline_cursor(writer, current_row, current_col, segment.y, segment.x)?;
+        write!(writer, "{}", segment.text)?;
+        current_row = segment.y;
+        current_col = segment.x + segment.span;
+    }
+
+    write!(writer, "\r")?;
+    let move_down = next.height.saturating_sub(current_row);
+    if move_down > 0 {
+        write!(writer, "\x1b[{}B", move_down)?;
+    }
+
+    Ok(())
 }
 
 fn diff_segments(delta: &FrameDelta) -> Vec<DiffSegment> {
@@ -194,21 +208,27 @@ fn diff_segments(delta: &FrameDelta) -> Vec<DiffSegment> {
 
     while let Some(change) = iter.next() {
         let mut text = String::new();
-        text.push(change.cell.ch);
+        if !is_continuation_cell(change.cell.ch) {
+            text.push_str(change.cell.text());
+        }
         let x = change.x;
         let y = change.y;
+        let mut span = 1;
         let mut next_x = change.x + 1;
 
         while let Some(candidate) = iter.peek() {
             if candidate.y != y || candidate.x != next_x {
                 break;
             }
-            text.push(candidate.cell.ch);
+            if !is_continuation_cell(candidate.cell.ch) {
+                text.push_str(candidate.cell.text());
+            }
+            span += 1;
             next_x += 1;
             iter.next();
         }
 
-        segments.push(DiffSegment { x, y, text });
+        segments.push(DiffSegment { x, y, text, span });
     }
 
     segments
@@ -341,17 +361,17 @@ mod tests {
                 crate::tui::frame::FrameChange {
                     x: 1,
                     y: 2,
-                    cell: crate::tui::frame::FrameCell { ch: 'a' },
+                    cell: crate::tui::frame::FrameCell::from_char('a'),
                 },
                 crate::tui::frame::FrameChange {
                     x: 2,
                     y: 2,
-                    cell: crate::tui::frame::FrameCell { ch: 'b' },
+                    cell: crate::tui::frame::FrameCell::from_char('b'),
                 },
                 crate::tui::frame::FrameChange {
                     x: 4,
                     y: 2,
-                    cell: crate::tui::frame::FrameCell { ch: 'c' },
+                    cell: crate::tui::frame::FrameCell::from_char('c'),
                 },
             ],
         };
@@ -361,7 +381,61 @@ mod tests {
         assert_eq!(segments[0].x, 1);
         assert_eq!(segments[0].y, 2);
         assert_eq!(segments[0].text, "ab");
+        assert_eq!(segments[0].span, 2);
         assert_eq!(segments[1].x, 4);
         assert_eq!(segments[1].text, "c");
+        assert_eq!(segments[1].span, 1);
+    }
+
+    #[test]
+    fn diff_segments_preserve_column_span_for_wide_glyphs() {
+        let previous = TerminalFrame::from_lines(&["ab"]);
+        let next = TerminalFrame::from_lines(&["界"]);
+        let delta = FrameDelta::between(Some(&previous), &next);
+
+        let segments = diff_segments(&delta);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].x, 0);
+        assert_eq!(segments[0].text, "界");
+        assert_eq!(segments[0].span, 2);
+    }
+
+    #[test]
+    fn diff_segments_preserve_combining_graphemes() {
+        let previous = TerminalFrame::from_lines(&["ab"]);
+        let next = TerminalFrame::from_lines(&["e\u{301}b"]);
+        let delta = FrameDelta::between(Some(&previous), &next);
+
+        let segments = diff_segments(&delta);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].x, 0);
+        assert_eq!(segments[0].text, "e\u{301}");
+        assert_eq!(segments[0].span, 1);
+    }
+
+    #[test]
+    fn inline_presenter_moves_by_display_columns_for_wide_glyphs() {
+        let mut presenter = InlinePresenter::new(Vec::<u8>::new());
+        presenter.render_string("界a").expect("first render");
+        let first_len = presenter.writer.len();
+        presenter.render_string("界b").expect("second render");
+
+        let second_pass = String::from_utf8(presenter.writer[first_len..].to_vec()).unwrap();
+        assert!(
+            second_pass.contains("\x1b[2C"),
+            "expected two-column move in: {second_pass:?}"
+        );
+    }
+
+    #[test]
+    fn presenter_wraps_output_in_synchronized_update_sequences() {
+        let mut presenter = AnsiDiffPresenter::new(Vec::<u8>::new());
+        let frame = TerminalFrame::from_lines(&["abc"]);
+
+        presenter.present(&frame).expect("present");
+        let output = String::from_utf8(presenter.into_inner()).unwrap();
+
+        assert!(output.contains("\x1b[?2026h"));
+        assert!(output.contains("\x1b[?2026l"));
     }
 }

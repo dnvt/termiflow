@@ -499,6 +499,121 @@ fn render_with_feedback_keeps_complex_td_subgraph_titles_clean() {
 }
 
 #[test]
+fn render_with_feedback_keeps_horizontal_visual_nesting_semantic_layout_contract() {
+    fn node_overlaps_subgraph(
+        node: &termiflow::Node,
+        subgraph: &termiflow::graph::Subgraph,
+    ) -> bool {
+        let node_left = node.x;
+        let node_right = node.x + node.width.saturating_sub(1);
+        let node_top = node.y;
+        let node_bottom = node.y + node.height.saturating_sub(1);
+        let bounds = &subgraph.bounds;
+        let bounds_right = bounds.x + bounds.width;
+        let bounds_bottom = bounds.y + bounds.height;
+
+        node_left < bounds_right
+            && node_right >= bounds.x
+            && node_top < bounds_bottom
+            && node_bottom >= bounds.y
+    }
+
+    for fixture in [
+        "tests/fixtures/inputs/subgraph_complex_lr.md",
+        "tests/fixtures/inputs/subgraph_complex_rl.md",
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+        let parsed = termiflow::parse(&input, false).unwrap();
+        let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+        let outer = graph.get_subgraph("SG1").expect("service layer");
+        let inner = graph.get_subgraph("SG2").expect("data layer");
+        let user_service = graph.get_node("S1").expect("user service");
+        let order_service = graph.get_node("S2").expect("order service");
+        let response = graph.get_node("Response").expect("response");
+
+        assert!(
+            outer.bounds.contains(inner.bounds.x, inner.bounds.y)
+                && outer.bounds.contains(
+                    inner.bounds.x + inner.bounds.width.saturating_sub(1),
+                    inner.bounds.y + inner.bounds.height.saturating_sub(1)
+                ),
+            "expected SG2 to remain visually nested inside SG1 for {fixture}: outer={:?} inner={:?}",
+            outer.bounds,
+            inner.bounds
+        );
+        assert!(
+            outer.bounds.y < inner.bounds.y,
+            "expected horizontally nested titles to remain staggered for {fixture}: outer={:?} inner={:?}",
+            outer.bounds,
+            inner.bounds
+        );
+        assert!(
+            !node_overlaps_subgraph(user_service, inner) && !node_overlaps_subgraph(order_service, inner),
+            "expected SG2 to stay visually nested without swallowing SG1 sibling nodes for {fixture}: inner={:?} user_service=({}, {}, {}x{}) order_service=({}, {}, {}x{})",
+            inner.bounds,
+            user_service.x,
+            user_service.y,
+            user_service.width,
+            user_service.height,
+            order_service.x,
+            order_service.y,
+            order_service.width,
+            order_service.height
+        );
+        assert!(
+            !node_overlaps_subgraph(response, outer),
+            "expected Response Builder to stay outside SG1 for {fixture}: outer={:?} response=({}, {}, {}x{})",
+            outer.bounds,
+            response.x,
+            response.y,
+            response.width,
+            response.height
+        );
+
+        match graph.direction {
+            termiflow::graph::Direction::LR => {
+                let service_right = user_service
+                    .x
+                    .saturating_add(user_service.width)
+                    .max(order_service.x.saturating_add(order_service.width));
+                assert!(
+                    inner.bounds.x >= service_right + 1,
+                    "expected the nested child to sit after the service nodes in LR for {fixture}: inner={:?} service_right={service_right}",
+                    inner.bounds
+                );
+                assert!(
+                    response.x >= inner.bounds.x + inner.bounds.width + 1,
+                    "expected Response Builder to remain after the nested child in LR for {fixture}: inner={:?} response=({}, {}, {}x{})",
+                    inner.bounds,
+                    response.x,
+                    response.y,
+                    response.width,
+                    response.height
+                );
+            }
+            termiflow::graph::Direction::RL => {
+                let service_left = user_service.x.min(order_service.x);
+                assert!(
+                    inner.bounds.x + inner.bounds.width <= service_left,
+                    "expected the nested child to sit before the service nodes in RL for {fixture}: inner={:?} service_left={service_left}",
+                    inner.bounds
+                );
+                assert!(
+                    response.x + response.width <= inner.bounds.x,
+                    "expected Response Builder to remain before the nested child in RL for {fixture}: inner={:?} response=({}, {}, {}x{})",
+                    inner.bounds,
+                    response.x,
+                    response.y,
+                    response.width,
+                    response.height
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
 fn render_with_feedback_preserves_visually_nested_inner_subgraph_border_cells() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md").unwrap();
     let parsed = termiflow::parse(&input, false).unwrap();
@@ -553,6 +668,32 @@ fn render_with_feedback_keeps_nested_child_bottom_border_clean_after_fanin() {
 }
 
 #[test]
+fn render_with_feedback_keeps_nested_child_side_entry_visible_on_left_border() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md").unwrap();
+    let parsed = termiflow::parse(&input, false).unwrap();
+    let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+    let inner = graph.get_subgraph("SG2").expect("inner subgraph");
+
+    let outcome =
+        termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
+    let side_entry = ((inner.bounds.y + 1)
+        ..(inner.bounds.y + inner.bounds.height.saturating_sub(1)))
+        .filter_map(|y| outcome.semantic_frame.get(inner.bounds.x, y))
+        .find(|cell| cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening)
+        .expect("expected explicit side-entry portal on nested child left border");
+
+    assert!(
+        matches!(
+            side_entry.ch,
+            '-' | '─' | '━' | '┼' | '├' | '┤' | '+' | '╋' | '┣' | '┫'
+        ),
+        "expected nested child left border entry to stay visibly open, got '{}'\n{}",
+        side_entry.ch,
+        outcome.output
+    );
+}
+
+#[test]
 fn render_with_feedback_keeps_nested_child_fanin_spine_off_left_wall() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md").unwrap();
     let parsed = termiflow::parse(&input, false).unwrap();
@@ -573,6 +714,390 @@ fn render_with_feedback_keeps_nested_child_fanin_spine_off_left_wall() {
         "expected the nested child fan-in spine to stay off the left interior wall\n{}",
         outcome.output
     );
+}
+
+#[test]
+fn render_with_feedback_keeps_nested_td_external_entry_from_staircasing_across_ancestors() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_nested_td.md").unwrap();
+    let parsed = termiflow::parse(&input, false).unwrap();
+    let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+    let source = graph.get_node("B").expect("source node");
+    let deep = graph.get_subgraph("Deep").expect("deep subgraph");
+
+    let outcome =
+        termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
+    let start_y = source.bottom_y().saturating_add(1);
+    let end_y = deep.bounds.y.saturating_sub(1);
+
+    let horizontal_route_rows = (start_y..=end_y)
+        .filter(|&y| {
+            (0..outcome.semantic_frame.width).any(|x| {
+                outcome.semantic_frame.get(x, y).is_some_and(|cell| {
+                    matches!(
+                        cell.owner_kind,
+                        termiflow::render::semantic::CellOwnerKind::EdgeSegment
+                            | termiflow::render::semantic::CellOwnerKind::Junction
+                            | termiflow::render::semantic::CellOwnerKind::PortalOpening
+                    ) && matches!(
+                        cell.role,
+                        termiflow::render::semantic::CellRole::Horizontal
+                            | termiflow::render::semantic::CellRole::Corner
+                            | termiflow::render::semantic::CellRole::Junction
+                    )
+                })
+            })
+        })
+        .count();
+
+    assert_eq!(
+        horizontal_route_rows, 1,
+        "expected nested TD top-entry to use one shared horizontal jog before the straight descent\n{}",
+        outcome.output
+    );
+}
+
+#[test]
+fn render_with_feedback_keeps_horizontal_visual_nesting_side_entries_simple_on_borders() {
+    fn is_junctionish(ch: char) -> bool {
+        matches!(ch, '+' | '┼' | '├' | '┤' | '╋' | '┣' | '┫')
+    }
+    fn is_horizontal_opening(ch: char) -> bool {
+        matches!(ch, '-' | '─' | '━')
+    }
+
+    for (fixture, use_right_border) in [
+        ("tests/fixtures/inputs/subgraph_complex_lr.md", false),
+        ("tests/fixtures/inputs/subgraph_complex_rl.md", true),
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+        let parsed = termiflow::parse(&input, false).unwrap();
+        let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+        let inner = graph.get_subgraph("SG2").expect("inner subgraph");
+        let border_x = if use_right_border {
+            inner.bounds.x + inner.bounds.width.saturating_sub(1)
+        } else {
+            inner.bounds.x
+        };
+
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new().with_style(style),
+            )
+            .unwrap();
+            let portal = ((inner.bounds.y + 1)
+                ..(inner.bounds.y + inner.bounds.height.saturating_sub(1)))
+                .filter_map(|y| outcome.semantic_frame.get(border_x, y))
+                .find(|cell| {
+                    cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
+                        || is_horizontal_opening(cell.ch)
+                })
+                .expect("expected visible horizontal side-entry portal on nested child");
+
+            assert!(
+                is_horizontal_opening(portal.ch),
+                "expected the horizontal visual-nesting side-entry to stay a simple horizontal opening for {} in {:?}, got '{}'\n{}",
+                fixture,
+                style,
+                portal.ch,
+                outcome.output
+            );
+            assert!(
+                !is_junctionish(portal.ch),
+                "expected the horizontal visual-nesting side-entry to avoid junction glyphs for {} in {:?}, got '{}'\n{}",
+                fixture,
+                style,
+                portal.ch,
+                outcome.output
+            );
+        }
+    }
+}
+
+#[test]
+fn render_with_feedback_centers_horizontal_visual_nesting_fanin_exit_between_sources() {
+    fn is_horizontal_opening(ch: char) -> bool {
+        matches!(ch, '-' | '─' | '━')
+    }
+
+    for (fixture, merge_on_right_border) in [
+        ("tests/fixtures/inputs/subgraph_complex_lr.md", true),
+        ("tests/fixtures/inputs/subgraph_complex_rl.md", false),
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+        let parsed = termiflow::parse(&input, false).unwrap();
+        let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+        let inner = graph.get_subgraph("SG2").expect("inner subgraph");
+        let user_db = graph.get_node("D1").expect("user db");
+        let order_db = graph.get_node("D2").expect("order db");
+        let min_source_y = user_db.center_y().min(order_db.center_y());
+        let max_source_y = user_db.center_y().max(order_db.center_y());
+        let border_x = if merge_on_right_border {
+            inner.bounds.x + inner.bounds.width.saturating_sub(1)
+        } else {
+            inner.bounds.x
+        };
+        let outcome =
+            termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
+        let (portal_y, portal) = ((inner.bounds.y + 1)
+            ..(inner.bounds.y + inner.bounds.height.saturating_sub(1)))
+            .filter_map(|y| {
+                outcome
+                    .semantic_frame
+                    .get(border_x, y)
+                    .map(|cell| (y, cell))
+            })
+            .find(|(_, cell)| {
+                cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
+                    || is_horizontal_opening(cell.ch)
+            })
+            .expect("expected dedicated nested child exit portal on the fan-in border");
+
+        assert!(
+            portal_y > min_source_y && portal_y < max_source_y,
+            "expected the horizontal nested fan-in exit portal to stay centered between source rows for {}, got y={} with source rows {} and {}\n{}",
+            fixture,
+            portal_y,
+            min_source_y,
+            max_source_y,
+            outcome.output
+        );
+        assert!(
+            is_horizontal_opening(portal.ch),
+            "expected the centered merge portal to stay a simple opening for {}, got '{}'\n{}",
+            fixture,
+            portal.ch,
+            outcome.output
+        );
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected visually clean centered horizontal nested fan-in output for {}\n{}",
+            fixture,
+            outcome.output
+        );
+    }
+}
+
+#[test]
+fn render_with_feedback_uses_one_clean_horizontal_exit_portal_for_horizontal_fanin_pilot() {
+    fn is_horizontal_opening(ch: char) -> bool {
+        matches!(ch, '-' | '─' | '━')
+    }
+
+    for (fixture, use_right_border) in [
+        ("tests/fixtures/inputs/subgraph_complex_lr.md", true),
+        ("tests/fixtures/inputs/subgraph_complex_rl.md", false),
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+        let parsed = termiflow::parse(&input, false).unwrap();
+        let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+        let inner = graph.get_subgraph("SG2").expect("inner subgraph");
+        let border_x = if use_right_border {
+            inner.bounds.x + inner.bounds.width.saturating_sub(1)
+        } else {
+            inner.bounds.x
+        };
+
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let outcome = termiflow::render_canvas_with_feedback(
+                &graph,
+                &termiflow::Config {
+                    composite_style: termiflow::CompositeStyle::from_base(style),
+                    ..termiflow::Config::default()
+                },
+            )
+            .unwrap();
+
+            let used_side_portals: Vec<(usize, char)> = ((inner.bounds.y + 1)
+                ..(inner.bounds.y + inner.bounds.height.saturating_sub(1)))
+                .filter_map(|y| {
+                    outcome.semantic_frame.get(border_x, y).and_then(|cell| {
+                        (cell.owner_kind
+                            == termiflow::render::semantic::CellOwnerKind::PortalOpening
+                            || is_horizontal_opening(cell.ch))
+                        .then_some((y, cell.ch))
+                    })
+                })
+                .collect();
+
+            assert_eq!(
+                used_side_portals.len(),
+                1,
+                "expected exactly one used side-wall exit portal for {} in {:?}, got {:?}\n{}",
+                fixture,
+                style,
+                used_side_portals,
+                outcome.output
+            );
+            assert!(
+                is_horizontal_opening(used_side_portals[0].1),
+                "expected the pilot exit portal to stay a simple horizontal opening for {} in {:?}, got '{}'\n{}",
+                fixture,
+                style,
+                used_side_portals[0].1,
+                outcome.output
+            );
+        }
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_explicit_nested_titles_separate_from_parent_rows() {
+    let input = "graph TD\nA[API Gateway] --> B[User Service]\nsubgraph SL[Service Layer]\nB\nsubgraph DL[Data Layer]\nC[Order Service] --> D[(Order DB)]\nE[(User DB)]\nend\nB --> E\nD --> F[Response Builder]\nE --> F\nend";
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        let outcome = termiflow::render_with_feedback(
+            input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+
+        let lines: Vec<&str> = outcome.output.lines().collect();
+        let api_idx = lines
+            .iter()
+            .position(|line| line.contains("API Gateway"))
+            .expect("api row");
+        let service_idx = lines
+            .iter()
+            .position(|line| line.contains("Service Layer"))
+            .expect("service layer title row");
+        let user_idx = lines
+            .iter()
+            .position(|line| line.contains("User Service"))
+            .expect("user service row");
+        let data_idx = lines
+            .iter()
+            .position(|line| line.contains("Data Layer"))
+            .expect("data layer title row");
+        let response_idx = lines
+            .iter()
+            .position(|line| line.contains("Response Builder"))
+            .expect("response row");
+
+        assert!(
+            service_idx > api_idx,
+            "expected the service-layer title row to stay below the external API box for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert!(
+            data_idx > user_idx,
+            "expected the nested data-layer title row to stay below the parent's direct node row for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert!(
+            response_idx > data_idx,
+            "expected the parent-only response node to render below the nested child title row for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert!(
+            !lines[service_idx].contains("API Gateway"),
+            "expected the service-layer title row to stay free of API-box text for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert!(
+            !lines[data_idx].contains("User Service"),
+            "expected the data-layer title row to stay free of parent direct-node text for {:?}\n{}",
+            style,
+            outcome.output
+        );
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_parent_title_above_declared_nested_child_fanin() {
+    let input =
+        "graph TD\nT[Target]\nsubgraph P[Parent]\nsubgraph C[Child]\nS1[One]\nS2[Two]\nS3[Three]\nend\nend\nS1 --> T\nS2 --> T\nS3 --> T\n";
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        let outcome = termiflow::render_with_feedback(
+            input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+
+        assert!(!outcome
+            .critic_report
+            .findings
+            .iter()
+            .any(|finding| { finding.code == termiflow::FindingCode::SubgraphTitleCorrupted }));
+        let lines: Vec<&str> = outcome.output.lines().collect();
+        let parent_idx = lines
+            .iter()
+            .position(|line| line.contains("Parent"))
+            .expect("parent title row");
+        let child_idx = lines
+            .iter()
+            .position(|line| line.contains("Child"))
+            .expect("child title row");
+        assert!(
+            child_idx > parent_idx,
+            "expected the declared child title row to stay below the parent title row for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected visually clean parent-only nested fan-in output for {:?}\n{}",
+            style,
+            outcome.output
+        );
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_explicit_nested_horizontal_variants_clean() {
+    for direction in ["LR", "RL"] {
+        let input = format!(
+            "graph {direction}\nA[API Gateway] --> B[User Service]\nsubgraph SL[Service Layer]\nB\nsubgraph DL[Data Layer]\nC[Order Service] --> D[(Order DB)]\nE[(User DB)]\nend\nB --> E\nD --> F[Response Builder]\nE --> F\nend\n"
+        );
+
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new().with_style(style),
+            )
+            .unwrap();
+
+            assert!(!outcome.critic_report.findings.iter().any(|finding| {
+                matches!(
+                    finding.code,
+                    termiflow::FindingCode::ArrowTouchesSubgraphBorder
+                        | termiflow::FindingCode::ArrowWithoutVisibleShaft
+                        | termiflow::FindingCode::SubgraphTitleCorrupted
+                        | termiflow::FindingCode::RouteTopologyMismatch
+                )
+            }));
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "expected visually clean explicit nested horizontal output for {direction} in {:?}\n{}",
+                style,
+                outcome.output
+            );
+
+            let lines: Vec<&str> = outcome.output.lines().collect();
+            let parent_idx = lines
+                .iter()
+                .position(|line| line.contains("Service Layer"))
+                .expect("parent title row");
+            let child_idx = lines
+                .iter()
+                .position(|line| line.contains("Data Layer"))
+                .expect("child title row");
+            assert!(
+                child_idx > parent_idx,
+                "expected the explicit nested child title row to staircase below the parent title row for {direction} in {:?}\n{}",
+                style,
+                outcome.output
+            );
+        }
+    }
 }
 
 #[test]
@@ -616,6 +1141,271 @@ fn render_with_feedback_keeps_complex_bt_subgraph_connectors_clean() {
             style,
             outcome.output
         );
+        let corrupted_user_db = match style {
+            termiflow::BaseStyle::Ascii => "|  User DB| |",
+            termiflow::BaseStyle::Unicode => "│  User DB│ │",
+            _ => unreachable!(),
+        };
+        let clean_user_db = match style {
+            termiflow::BaseStyle::Ascii => "|  User DB  |",
+            termiflow::BaseStyle::Unicode => "│  User DB  │",
+            _ => unreachable!(),
+        };
+        assert!(
+            !outcome.output.contains(corrupted_user_db),
+            "expected the BT inner subgraph border not to bisect the User DB node for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert!(
+            outcome.output.contains(clean_user_db),
+            "expected the User DB node border to render cleanly for {:?}\n{}",
+            style,
+            outcome.output
+        );
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_declared_nested_bt_centered_boundary_groups_clean() {
+    let input =
+        "graph BT\nT[Target]\nsubgraph P[Parent]\nsubgraph C[Child]\nL[Left]\nM[Middle]\nR[Right]\nend\nS[Source]\nend\nS --> L\nS --> M\nS --> R\nL --> T\nM --> T\nR --> T\n";
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        let outcome = termiflow::render_with_feedback(
+            input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+
+        assert!(!outcome.critic_report.findings.iter().any(|finding| {
+            matches!(
+                finding.code,
+                termiflow::FindingCode::ArrowTouchesSubgraphBorder
+                    | termiflow::FindingCode::ArrowWithoutVisibleShaft
+                    | termiflow::FindingCode::SubgraphTitleCorrupted
+            )
+        }));
+        let lines: Vec<&str> = outcome.output.lines().collect();
+        let parent_idx = lines
+            .iter()
+            .position(|line| line.contains("Parent"))
+            .expect("parent title row");
+        let child_idx = lines
+            .iter()
+            .position(|line| line.contains("Child"))
+            .expect("child title row");
+        assert!(
+            parent_idx > child_idx,
+            "expected the declared BT parent title row to stay below the nested child title row for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected visually clean declared BT centered-boundary output for {:?}\n{}",
+            style,
+            outcome.output
+        );
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_nested_horizontal_subgraphs_clean() {
+    for fixture in [
+        "tests/fixtures/inputs/subgraph_nested_lr.md",
+        "tests/fixtures/inputs/subgraph_nested_rl.md",
+    ] {
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let input = std::fs::read_to_string(fixture).unwrap();
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new().with_style(style),
+            )
+            .unwrap();
+
+            assert!(
+                !outcome.critic_report.findings.iter().any(|finding| {
+                    matches!(
+                        finding.code,
+                        termiflow::FindingCode::RouteTopologyMismatch
+                            | termiflow::FindingCode::SubgraphTitleCorrupted
+                    )
+                }),
+                "expected clean nested horizontal subgraph borders/titles for {} in {:?}\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "expected visually clean nested horizontal output for {} in {:?}\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+
+            let lines: Vec<&str> = outcome.output.lines().collect();
+            let outer_idx = lines
+                .iter()
+                .position(|line| line.contains("Outer"))
+                .expect("outer title row");
+            let inner_idx = lines
+                .iter()
+                .position(|line| line.contains("Inner"))
+                .expect("inner title row");
+            let deep_idx = lines
+                .iter()
+                .position(|line| line.contains("Deep"))
+                .expect("deep title row");
+            assert!(
+                outer_idx < inner_idx && inner_idx < deep_idx,
+                "expected nested horizontal titles to stair-step by depth for {} in {:?}\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+        }
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_horizontal_visual_nesting_parity_clean() {
+    for fixture in [
+        "tests/fixtures/inputs/subgraph_complex_lr.md",
+        "tests/fixtures/inputs/subgraph_complex_rl.md",
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+        let parsed = termiflow::parse(&input, false).unwrap();
+        let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+        let outer = graph.get_subgraph("SG1").expect("service layer");
+        let inner = graph.get_subgraph("SG2").expect("data layer");
+        let user_service = graph.get_node("S1").expect("user service");
+        let order_service = graph.get_node("S2").expect("order service");
+        let response = graph.get_node("Response").expect("response");
+
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new().with_style(style),
+            )
+            .unwrap();
+
+            assert!(
+                !outcome.critic_report.findings.iter().any(|finding| {
+                    matches!(
+                        finding.code,
+                        termiflow::FindingCode::RouteTopologyMismatch
+                            | termiflow::FindingCode::SubgraphTitleCorrupted
+                            | termiflow::FindingCode::ArrowTouchesSubgraphBorder
+                    )
+                }),
+                "expected clean horizontal visual-nesting seams for {} in {:?}\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "expected visually clean horizontal visual-nesting parity output for {} in {:?}\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+
+            let lines: Vec<&str> = outcome.output.lines().collect();
+            let service_idx = lines
+                .iter()
+                .position(|line| line.contains("Service Layer"))
+                .expect("service title row");
+            let data_idx = lines
+                .iter()
+                .position(|line| line.contains("Data Layer"))
+                .expect("data title row");
+            assert!(
+                data_idx > service_idx,
+                "expected the visually nested horizontal child title row to sit below the outer title row for {} in {:?}\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+            assert!(
+                !inner.bounds.contains(user_service.x, user_service.y)
+                    && !inner.bounds.contains(order_service.x, order_service.y),
+                "expected the visually nested child to exclude service sibling nodes for {} in {:?}: inner={:?} user_service=({}, {}, {}x{}) order_service=({}, {}, {}x{})\n{}",
+                fixture,
+                style,
+                inner.bounds,
+                user_service.x,
+                user_service.y,
+                user_service.width,
+                user_service.height,
+                order_service.x,
+                order_service.y,
+                order_service.width,
+                order_service.height,
+                outcome.output
+            );
+            assert!(
+                !outer.bounds.contains(response.x, response.y),
+                "expected the visually nested outer subgraph to exclude Response Builder for {} in {:?}: outer={:?} response=({}, {}, {}x{})\n{}",
+                fixture,
+                style,
+                outer.bounds,
+                response.x,
+                response.y,
+                response.width,
+                response.height,
+                outcome.output
+            );
+        }
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_subgraph_complex_direction_matrix_clean() {
+    for fixture in [
+        "tests/fixtures/inputs/subgraph_complex_td.md",
+        "tests/fixtures/inputs/subgraph_complex_bt.md",
+        "tests/fixtures/inputs/subgraph_complex_lr.md",
+        "tests/fixtures/inputs/subgraph_complex_rl.md",
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new().with_style(style),
+            )
+            .unwrap();
+
+            assert!(
+                !outcome.critic_report.findings.iter().any(|finding| {
+                    matches!(
+                        finding.code,
+                        termiflow::FindingCode::RouteTopologyMismatch
+                            | termiflow::FindingCode::SubgraphTitleCorrupted
+                            | termiflow::FindingCode::ArrowTouchesSubgraphBorder
+                            | termiflow::FindingCode::ArrowWithoutVisibleShaft
+                    )
+                }),
+                "expected clean subgraph-complex directional connections for {} in {:?}\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "expected clean subgraph-complex direction matrix output for {} in {:?}\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+        }
     }
 }
 
@@ -887,6 +1677,34 @@ fn render_with_feedback_keeps_bt_titled_subgraph_entries_clear_of_title_row() {
 }
 
 #[test]
+fn render_with_feedback_keeps_bt_simple_fanout_source_below_title_row() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_fanout_bt.md").unwrap();
+
+    let outcome = termiflow::render_with_feedback(
+        &input,
+        termiflow::RenderOptions::new().with_style(termiflow::BaseStyle::Unicode),
+    )
+    .unwrap();
+
+    assert!(
+        outcome.output.contains("Request Router"),
+        "expected BT fanout source node to remain visible\n{}",
+        outcome.output
+    );
+    assert!(
+        !outcome.output.contains("Re[  Handler Group  ]"),
+        "expected BT fanout title row to stay uncorrupted\n{}",
+        outcome.output
+    );
+    assert_eq!(
+        outcome.critic_report.audit_summary().verdict,
+        termiflow::AuditVerdict::Clean,
+        "expected clean BT fanout routing\n{}",
+        outcome.output
+    );
+}
+
+#[test]
 fn render_with_feedback_keeps_lr_subgraph_fanins_clean() {
     let input = "graph LR\nsubgraph S [Sources]\n  S1[Source 1]\n  S2[Source 2]\n  S3[Source 3]\nend\nS1 --> Sink[Sink]\nS2 --> Sink\nS3 --> Sink\n";
 
@@ -1089,32 +1907,91 @@ fn render_matches_verified_collision_edge_along_border_lr_snapshots() {
     let input =
         std::fs::read_to_string("tests/fixtures/inputs/collision_edge_along_border_lr.md").unwrap();
 
-    for (style, must_contain, must_not_contain) in [
+    for (style, source_top, target_top, must_not_contain) in [
         (
             termiflow::BaseStyle::Unicode,
-            "┌──────┐        ┌─────┐",
+            "┌──────┐",
+            "┌─────┐",
             "┌──────│        ┌─────┐",
         ),
         (
             termiflow::BaseStyle::Ascii,
-            "+------+        +-----+",
+            "+------+",
+            "+-----+",
             "+------|        +-----+",
         ),
     ] {
-        let output =
-            termiflow::render(&input, termiflow::RenderOptions::new().with_style(style)).unwrap();
+        let outcome = termiflow::render_with_feedback(
+            &input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
 
         assert!(
-            output.contains(must_contain),
+            outcome.output.contains(source_top) && outcome.output.contains(target_top),
             "expected verified LR border-contact fixture to preserve node corners against the subgraph wall for {:?}\n{}",
             style,
-            output
+            outcome.output
         );
         assert!(
-            !output.contains(must_not_contain),
+            !outcome.output.contains(must_not_contain),
             "expected LR border-contact fixture to avoid clobbering box corners with a subgraph wall for {:?}\n{}",
             style,
-            output
+            outcome.output
+        );
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected verified LR border-contact fixture to stay visually clean for {:?}\n{}",
+            style,
+            outcome.output
+        );
+    }
+}
+
+#[test]
+fn render_matches_verified_collision_edge_along_border_rl_snapshots() {
+    let input =
+        std::fs::read_to_string("tests/fixtures/inputs/collision_edge_along_border_rl.md").unwrap();
+
+    for (style, source_top, target_top, must_not_contain) in [
+        (
+            termiflow::BaseStyle::Unicode,
+            "┌──────┐",
+            "┌─────┐",
+            "│ ┌─────┐        ┌──────┐",
+        ),
+        (
+            termiflow::BaseStyle::Ascii,
+            "+------+",
+            "+-----+",
+            "| +-----+        +------+",
+        ),
+    ] {
+        let outcome = termiflow::render_with_feedback(
+            &input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+
+        assert!(
+            outcome.output.contains(source_top) && outcome.output.contains(target_top),
+            "expected verified RL border-contact fixture to preserve node corners against the subgraph wall for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert!(
+            !outcome.output.contains(must_not_contain),
+            "expected RL border-contact fixture to avoid clobbering box corners with a subgraph wall for {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected verified RL border-contact fixture to stay visually clean for {:?}\n{}",
+            style,
+            outcome.output
         );
     }
 }
@@ -1127,13 +2004,13 @@ fn render_matches_verified_collision_sibling_subgraphs_lr_snapshots() {
     for (style, upper_crossing, lower_crossing) in [
         (
             termiflow::BaseStyle::Unicode,
-            "├─────┬────────────────┐",
-            "└────────────────────┼────→",
+            "┌──────→│  Node B  ├─────────────────────────┐",
+            "└────────────────────────────→│  Node C  ├───┘",
         ),
         (
             termiflow::BaseStyle::Ascii,
-            "+-----+----------------+",
-            "+--------------------+---->",
+            "+------>|  Node B  +-------------------------+",
+            "+---------------------------->|  Node C  +---+",
         ),
     ] {
         let output =
@@ -1153,18 +2030,36 @@ fn render_matches_verified_collision_parallel_cross_bt_snapshots() {
     let input =
         std::fs::read_to_string("tests/fixtures/inputs/collision_parallel_cross_bt.md").unwrap();
 
-    for (style, source_border_crossing) in [
-        (termiflow::BaseStyle::Unicode, "┏━━━━━┼━━━━━━━━━━━┼━━━━┓"),
-        (termiflow::BaseStyle::Ascii, "+-----+-----------+----+"),
+    for (style, target_crossing, source_crossing) in [
+        (
+            termiflow::BaseStyle::Unicode,
+            "┗[  Target  ]──│──────│────────┛",
+            "┏━━━━━━┼━━━━━━━━━━━│━━━━━┓",
+        ),
+        (
+            termiflow::BaseStyle::Ascii,
+            "+[  Target  ]--|------|--------+",
+            "+------+-------|---|-----+",
+        ),
     ] {
-        let output =
-            termiflow::render(&input, termiflow::RenderOptions::new().with_style(style)).unwrap();
+        let outcome = termiflow::render_with_feedback(
+            &input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
 
         assert!(
-            output.contains(source_border_crossing),
+            outcome.output.contains(target_crossing) && outcome.output.contains(source_crossing),
             "expected verified BT parallel-cross fixture to preserve shared border intersections for {:?}\n{}",
             style,
-            output
+            outcome.output
+        );
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected verified BT parallel-cross fixture to stay visually clean for {:?}\n{}",
+            style,
+            outcome.output
         );
     }
 }

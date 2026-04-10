@@ -38,6 +38,111 @@ fn rect_center_x(rect: Rect) -> usize {
     rect.x + rect.width / 2
 }
 
+fn subgraph_tree_rank_range(
+    graph: &Graph,
+    ranks: &HashMap<String, usize>,
+    subgraph_id: &str,
+) -> Option<(usize, usize)> {
+    if let Some(subgraph) = graph.get_subgraph(subgraph_id) {
+        let mut direct_min: Option<usize> = None;
+        let mut direct_max: Option<usize> = None;
+        for node_id in &subgraph.node_ids {
+            let Some(rank) = ranks.get(node_id) else {
+                continue;
+            };
+            direct_min = Some(direct_min.map_or(*rank, |current| current.min(*rank)));
+            direct_max = Some(direct_max.map_or(*rank, |current| current.max(*rank)));
+        }
+        if let (Some(min_rank), Some(max_rank)) = (direct_min, direct_max) {
+            return Some((min_rank, max_rank));
+        }
+    }
+
+    let mut min_rank: Option<usize> = None;
+    let mut max_rank: Option<usize> = None;
+
+    for (node_id, rank) in ranks {
+        if !graph.is_node_in_subgraph_tree(node_id, subgraph_id) {
+            continue;
+        }
+        min_rank = Some(min_rank.map_or(*rank, |current| current.min(*rank)));
+        max_rank = Some(max_rank.map_or(*rank, |current| current.max(*rank)));
+    }
+
+    Some((min_rank?, max_rank?))
+}
+
+fn subgraphs_have_declared_hierarchy(graph: &Graph, left_id: &str, right_id: &str) -> bool {
+    graph.is_subgraph_ancestor(left_id, right_id) || graph.is_subgraph_ancestor(right_id, left_id)
+}
+
+fn is_vertical_flow(direction: Direction) -> bool {
+    matches!(direction, Direction::TD | Direction::TB)
+}
+
+fn route_budgeted_subgraphs(
+    graph: &Graph,
+    visually_nested_children: &HashSet<String>,
+) -> Vec<String> {
+    let mut subgraph_ids: Vec<String> = visually_nested_children.iter().cloned().collect();
+    subgraph_ids.extend(
+        graph
+            .subgraphs
+            .iter()
+            .filter(|subgraph| subgraph.parent_id.is_some())
+            .map(|subgraph| subgraph.id.clone()),
+    );
+    subgraph_ids.sort();
+    subgraph_ids.dedup();
+    subgraph_ids
+}
+
+fn enforce_declared_nested_envelopes(
+    graph: &Graph,
+    subgraph_envelopes: &mut HashMap<String, SubgraphEnvelope>,
+) {
+    let mut nested_subgraphs: Vec<_> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.parent_id.is_some())
+        .collect();
+    nested_subgraphs.sort_by_key(|subgraph| {
+        let mut depth = 0usize;
+        let mut current = subgraph.parent_id.as_deref();
+        while let Some(parent_id) = current {
+            depth += 1;
+            current = graph
+                .get_subgraph(parent_id)
+                .and_then(|parent| parent.parent_id.as_deref());
+        }
+        std::cmp::Reverse(depth)
+    });
+
+    for subgraph in nested_subgraphs {
+        let Some(parent_id) = subgraph.parent_id.as_deref() else {
+            continue;
+        };
+        let Some(child_env) = subgraph_envelopes.get(&subgraph.id).cloned() else {
+            continue;
+        };
+        let Some(parent_env) = subgraph_envelopes.get_mut(parent_id) else {
+            continue;
+        };
+
+        let child_clearance = child_env.outer.inflate(1);
+        parent_env.inner = if parent_env.inner.is_empty() {
+            child_clearance
+        } else {
+            parent_env.inner.union(&child_clearance)
+        };
+        parent_env.outer = if parent_env.outer.is_empty() {
+            child_clearance
+        } else {
+            parent_env.outer.union(&child_clearance)
+        };
+    }
+}
+
 fn shift_nodes_from_rank_td(
     positions: &mut HashMap<String, Point>,
     node_rects: &mut HashMap<String, Rect>,
@@ -108,6 +213,82 @@ fn shift_nodes_in_subgraph_y(
     }
 }
 
+fn shift_nodes_in_subgraph_tree_y_signed(
+    graph: &Graph,
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    subgraph_id: &str,
+    delta_y: isize,
+) {
+    if delta_y == 0 {
+        return;
+    }
+    for (node_id, p) in positions.iter_mut() {
+        if !graph.is_node_in_subgraph_tree(node_id, subgraph_id) {
+            continue;
+        }
+        let next_y = if delta_y.is_negative() {
+            p.y.saturating_sub(delta_y.unsigned_abs())
+        } else {
+            p.y.saturating_add(delta_y as usize)
+        };
+        p.y = next_y;
+        if let Some(r) = node_rects.get_mut(node_id) {
+            r.y = next_y;
+        }
+    }
+}
+
+fn reserve_nested_horizontal_subgraph_headroom(
+    graph: &Graph,
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    gutter: usize,
+    canvas_height: &mut usize,
+) {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) || graph.subgraphs.is_empty() {
+        return;
+    }
+
+    if !graph
+        .subgraphs
+        .iter()
+        .any(|subgraph| subgraph.parent_id.is_some())
+    {
+        return;
+    }
+
+    // Declared nested LR/RL stacks can saturate at y=0 before successive titled
+    // envelopes have enough room to staircase their title rows. Recompute
+    // envelopes and add only the minimum extra headroom until every parent/child
+    // pair occupies a distinct top row.
+    for _ in 0..16 {
+        let envelopes = compute_envelopes(graph, node_rects, gutter);
+        let needs_shift = graph.subgraphs.iter().any(|subgraph| {
+            let Some(parent_id) = subgraph.parent_id.as_deref() else {
+                return false;
+            };
+            let (Some(parent_env), Some(child_env)) =
+                (envelopes.get(parent_id), envelopes.get(&subgraph.id))
+            else {
+                return false;
+            };
+            child_env.outer.y <= parent_env.outer.y
+        });
+        if !needs_shift {
+            break;
+        }
+
+        for point in positions.values_mut() {
+            point.y += 1;
+        }
+        for rect in node_rects.values_mut() {
+            rect.y += 1;
+        }
+        *canvas_height = canvas_height.saturating_add(1);
+    }
+}
+
 fn shift_nodes_in_subgraph_tree_x_signed(
     graph: &Graph,
     positions: &mut HashMap<String, Point>,
@@ -130,6 +311,254 @@ fn shift_nodes_in_subgraph_tree_x_signed(
         p.x = next_x;
         if let Some(r) = node_rects.get_mut(node_id) {
             r.x = next_x;
+        }
+    }
+}
+
+fn subgraph_depth_in_graph(graph: &Graph, subgraph_id: &str) -> usize {
+    let mut depth = 0usize;
+    let mut current = graph
+        .get_subgraph(subgraph_id)
+        .and_then(|subgraph| subgraph.parent_id.as_deref());
+    while let Some(parent_id) = current {
+        depth += 1;
+        current = graph
+            .get_subgraph(parent_id)
+            .and_then(|parent| parent.parent_id.as_deref());
+    }
+    depth
+}
+
+fn subgraph_has_cross_boundary_edges(graph: &Graph, subgraph_id: &str) -> bool {
+    graph.edges.iter().any(|edge| {
+        let from_in = graph.is_node_in_subgraph_tree(&edge.from, subgraph_id);
+        let to_in = graph.is_node_in_subgraph_tree(&edge.to, subgraph_id);
+        (from_in || to_in) && from_in != to_in
+    })
+}
+
+fn subgraph_is_top_level_leaf(graph: &Graph, subgraph_id: &str) -> bool {
+    let Some(subgraph) = graph.get_subgraph(subgraph_id) else {
+        return false;
+    };
+    subgraph.parent_id.is_none()
+        && !graph
+            .subgraphs
+            .iter()
+            .any(|candidate| candidate.parent_id.as_deref() == Some(subgraph_id))
+}
+
+fn subgraph_has_overlapping_foreign_nodes(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    subgraph_id: &str,
+    outer: Rect,
+) -> bool {
+    node_rects.iter().any(|(node_id, rect)| {
+        !graph.is_node_in_subgraph_tree(node_id, subgraph_id)
+            && rects_overlap_vertically(*rect, outer)
+            && rect.right() > outer.x
+            && rect.x < outer.right()
+    })
+}
+
+fn subgraph_can_rebalance_horizontal_content(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    subgraph_id: &str,
+    outer: Rect,
+) -> bool {
+    if !subgraph_has_cross_boundary_edges(graph, subgraph_id) {
+        return true;
+    }
+
+    subgraph_is_top_level_leaf(graph, subgraph_id)
+        && !subgraph_has_overlapping_foreign_nodes(graph, node_rects, subgraph_id, outer)
+}
+
+fn rebalance_titled_vertical_subgraph_content_x(
+    graph: &Graph,
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    gutter: usize,
+    canvas_width: &mut usize,
+) {
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) || graph.subgraphs.is_empty()
+    {
+        return;
+    }
+
+    let mut titled_subgraph_ids: Vec<String> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.title.is_some())
+        .map(|subgraph| subgraph.id.clone())
+        .collect();
+    titled_subgraph_ids
+        .sort_by_key(|subgraph_id| std::cmp::Reverse(subgraph_depth_in_graph(graph, subgraph_id)));
+
+    for _ in 0..16 {
+        let envelopes = compute_envelopes(graph, node_rects, gutter);
+        let Some((subgraph_id, delta_x)) = titled_subgraph_ids.iter().find_map(|subgraph_id| {
+            let env = envelopes.get(subgraph_id)?;
+            if !subgraph_can_rebalance_horizontal_content(graph, node_rects, subgraph_id, env.outer)
+            {
+                return None;
+            }
+            if env.outer.width <= 2 || env.inner.width >= env.outer.width.saturating_sub(2) {
+                return None;
+            }
+
+            let left_pad = env.inner.x.saturating_sub(env.outer.x.saturating_add(1));
+            let right_pad = env
+                .outer
+                .right()
+                .saturating_sub(env.inner.right().saturating_add(1));
+            if left_pad.abs_diff(right_pad) <= 1 {
+                return None;
+            }
+
+            let available_inner_width = env.outer.width.saturating_sub(2);
+            let target_inner_x = env
+                .outer
+                .x
+                .saturating_add(1)
+                .saturating_add((available_inner_width.saturating_sub(env.inner.width)) / 2);
+            let delta_x = target_inner_x as isize - env.inner.x as isize;
+            (delta_x != 0).then(|| (subgraph_id.clone(), delta_x))
+        }) else {
+            break;
+        };
+
+        shift_nodes_in_subgraph_tree_x_signed(graph, positions, node_rects, &subgraph_id, delta_x);
+
+        let max_right = node_rects
+            .values()
+            .map(|rect| rect.right())
+            .max()
+            .unwrap_or(*canvas_width);
+        *canvas_width = (*canvas_width).max(max_right);
+    }
+}
+
+fn rebalance_titled_vertical_subgraph_content_y(
+    graph: &Graph,
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    gutter: usize,
+    canvas_height: &mut usize,
+) {
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) || graph.subgraphs.is_empty()
+    {
+        return;
+    }
+
+    let mut titled_subgraph_ids: Vec<String> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.title.is_some())
+        .map(|subgraph| subgraph.id.clone())
+        .collect();
+    titled_subgraph_ids
+        .sort_by_key(|subgraph_id| std::cmp::Reverse(subgraph_depth_in_graph(graph, subgraph_id)));
+
+    for _ in 0..16 {
+        let envelopes = compute_envelopes(graph, node_rects, gutter);
+        let Some((subgraph_id, delta_y)) = titled_subgraph_ids.iter().find_map(|subgraph_id| {
+            if subgraph_has_cross_boundary_edges(graph, subgraph_id) {
+                return None;
+            }
+
+            let env = envelopes.get(subgraph_id)?;
+            if env.outer.height <= 2 || env.inner.height >= env.outer.height.saturating_sub(2) {
+                return None;
+            }
+
+            let top_pad = env.inner.y.saturating_sub(env.outer.y);
+            let bottom_pad = env.outer.bottom().saturating_sub(env.inner.bottom());
+            if top_pad.abs_diff(bottom_pad) <= 1 {
+                return None;
+            }
+
+            let target_inner_y = env
+                .outer
+                .y
+                .saturating_add((env.outer.height.saturating_sub(env.inner.height)) / 2);
+            let delta_y = target_inner_y as isize - env.inner.y as isize;
+            (delta_y != 0).then(|| (subgraph_id.clone(), delta_y))
+        }) else {
+            break;
+        };
+
+        shift_nodes_in_subgraph_tree_y_signed(graph, positions, node_rects, &subgraph_id, delta_y);
+
+        let max_bottom = node_rects
+            .values()
+            .map(|rect| rect.bottom())
+            .max()
+            .unwrap_or(*canvas_height);
+        *canvas_height = (*canvas_height).max(max_bottom);
+    }
+}
+
+fn shift_nodes_by_id_y(
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    node_shifts: &HashMap<String, usize>,
+) {
+    for (node_id, delta_y) in node_shifts {
+        if *delta_y == 0 {
+            continue;
+        }
+        if let Some(point) = positions.get_mut(node_id) {
+            point.y += *delta_y;
+        }
+        if let Some(rect) = node_rects.get_mut(node_id) {
+            rect.y += *delta_y;
+        }
+    }
+}
+
+fn shift_nodes_from_x(
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    min_x: usize,
+    delta_x: usize,
+) {
+    if delta_x == 0 {
+        return;
+    }
+    for (id, rect) in node_rects.iter_mut() {
+        if rect.x < min_x {
+            continue;
+        }
+        rect.x += delta_x;
+        if let Some(point) = positions.get_mut(id) {
+            point.x += delta_x;
+        }
+    }
+}
+
+fn shift_nodes_by_id_x(
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    node_shifts: &HashMap<String, usize>,
+) {
+    for (node_id, delta_x) in node_shifts {
+        if *delta_x == 0 {
+            continue;
+        }
+        if let Some(point) = positions.get_mut(node_id) {
+            point.x += *delta_x;
+        }
+        if let Some(rect) = node_rects.get_mut(node_id) {
+            rect.x += *delta_x;
         }
     }
 }
@@ -259,6 +688,254 @@ fn preferred_subgraph_center_x(
     }
 }
 
+fn nested_horizontal_follow_gap(config: &CoarseLayoutConfig) -> usize {
+    config.subgraph_gutter.saturating_add(2)
+}
+
+fn preferred_visual_nested_horizontal_left(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    parent_id: &str,
+    child_id: &str,
+    child_env: &SubgraphEnvelope,
+    direction: Direction,
+    gap: usize,
+) -> Option<usize> {
+    if !matches!(direction, Direction::LR | Direction::RL) {
+        return None;
+    }
+
+    let child_width = child_env.outer.width;
+    let mut target_left = child_env.outer.x;
+    let mut found_keepout = false;
+
+    for (node_id, node_rect) in node_rects {
+        if graph.is_node_in_subgraph_tree(node_id, child_id) {
+            continue;
+        }
+        if !graph.is_node_in_subgraph_tree(node_id, parent_id) {
+            continue;
+        }
+        if !rects_overlap_vertically(*node_rect, child_env.outer) {
+            continue;
+        }
+
+        match direction {
+            Direction::LR => {
+                let candidate = node_rect.right().saturating_add(gap);
+                if candidate > target_left {
+                    target_left = candidate;
+                    found_keepout = true;
+                }
+            }
+            Direction::RL => {
+                let candidate = node_rect.x.saturating_sub(child_width.saturating_add(gap));
+                if !found_keepout || candidate < target_left {
+                    target_left = candidate;
+                    found_keepout = true;
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    for edge in graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+        let from_inside = graph.is_node_in_subgraph_tree(&edge.from, child_id);
+        let to_inside = graph.is_node_in_subgraph_tree(&edge.to, child_id);
+        if from_inside == to_inside {
+            continue;
+        }
+
+        let external_node_id = if from_inside { &edge.to } else { &edge.from };
+        if graph.is_node_in_subgraph_tree(external_node_id, parent_id) {
+            continue;
+        }
+        let Some(external_rect) = node_rects.get(external_node_id).copied() else {
+            continue;
+        };
+        if !rects_overlap_vertically(external_rect, child_env.outer) {
+            continue;
+        }
+
+        match direction {
+            Direction::RL => {
+                let candidate = external_rect.right().saturating_add(gap);
+                if candidate > target_left {
+                    target_left = candidate;
+                    found_keepout = true;
+                }
+            }
+            Direction::LR => {}
+            _ => unreachable!(),
+        }
+    }
+
+    found_keepout.then_some(target_left)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preferred_declared_nested_horizontal_left(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    parent_id: &str,
+    child_id: &str,
+    parent_env: &SubgraphEnvelope,
+    child_env: &SubgraphEnvelope,
+    direction: Direction,
+    gap: usize,
+) -> Option<usize> {
+    if !matches!(direction, Direction::LR | Direction::RL) {
+        return None;
+    }
+
+    let parent_min_left = parent_env.outer.x.saturating_add(1);
+    let parent_max_left = parent_env
+        .outer
+        .right()
+        .saturating_sub(child_env.outer.width.saturating_add(1));
+    if parent_max_left < parent_min_left {
+        return None;
+    }
+
+    let mut min_left = parent_min_left;
+    let mut max_left = parent_max_left;
+    let child_center_x = rect_center_x(child_env.outer);
+
+    for edge in graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+        let from_inside = graph.is_node_in_subgraph_tree(&edge.from, child_id);
+        let to_inside = graph.is_node_in_subgraph_tree(&edge.to, child_id);
+        if from_inside == to_inside {
+            continue;
+        }
+
+        let external_node_id = if from_inside { &edge.to } else { &edge.from };
+        let Some(external_rect) = node_rects.get(external_node_id).copied() else {
+            continue;
+        };
+
+        if external_rect.right() <= child_env.outer.x {
+            min_left = min_left.max(external_rect.right().saturating_add(gap));
+        } else if external_rect.x >= child_env.outer.right() {
+            max_left = max_left.min(
+                external_rect
+                    .x
+                    .saturating_sub(child_env.outer.width.saturating_add(gap)),
+            );
+        }
+    }
+
+    for (node_id, node_rect) in node_rects {
+        if graph.is_node_in_subgraph_tree(node_id, child_id) {
+            continue;
+        }
+        if !graph.is_node_in_subgraph_tree(node_id, parent_id) {
+            continue;
+        }
+        if !rects_overlap_vertically(*node_rect, child_env.outer) {
+            continue;
+        }
+
+        if node_rect.right() <= child_env.outer.x {
+            min_left = min_left.max(node_rect.right().saturating_add(gap));
+        } else if node_rect.x >= child_env.outer.right() {
+            max_left = max_left.min(
+                node_rect
+                    .x
+                    .saturating_sub(child_env.outer.width.saturating_add(gap)),
+            );
+        } else if rect_center_x(*node_rect) <= child_center_x {
+            min_left = min_left.max(node_rect.right().saturating_add(gap));
+        } else {
+            max_left = max_left.min(
+                node_rect
+                    .x
+                    .saturating_sub(child_env.outer.width.saturating_add(gap)),
+            );
+        }
+    }
+
+    if max_left < min_left {
+        return None;
+    }
+
+    Some(match direction {
+        Direction::LR => min_left,
+        Direction::RL => max_left,
+        _ => unreachable!(),
+    })
+}
+
+fn is_horizontal_visual_nesting_candidate(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    parent_id: &str,
+    child_id: &str,
+    parent_env: &SubgraphEnvelope,
+    child_env: &SubgraphEnvelope,
+    gutter: usize,
+) -> bool {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) {
+        return false;
+    }
+    if subgraphs_have_declared_hierarchy(graph, parent_id, child_id) {
+        return false;
+    }
+
+    let cross_boundary_targets: HashSet<&str> = graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            !edge.is_back_edge
+                && graph.get_node_subgraph(&edge.from) == Some(parent_id)
+                && graph.get_node_subgraph(&edge.to) == Some(child_id)
+        })
+        .map(|edge| edge.to.as_str())
+        .collect();
+    if cross_boundary_targets.len() < 2 {
+        return false;
+    }
+
+    let child_has_external_outgoing = graph.edges.iter().any(|edge| {
+        !edge.is_back_edge
+            && graph.is_node_in_subgraph_tree(&edge.from, child_id)
+            && !graph.is_node_in_subgraph_tree(&edge.to, child_id)
+    });
+    if !child_has_external_outgoing {
+        return false;
+    }
+
+    let near_parent_flow_band = match graph.direction {
+        Direction::LR => {
+            child_env.outer.x
+                <= parent_env
+                    .outer
+                    .right()
+                    .saturating_add(gutter.saturating_add(2))
+        }
+        Direction::RL => {
+            child_env
+                .outer
+                .right()
+                .saturating_add(gutter.saturating_add(2))
+                >= parent_env.outer.x
+        }
+        _ => false,
+    };
+    if !near_parent_flow_band {
+        return false;
+    }
+
+    node_rects.iter().any(|(node_id, rect)| {
+        graph.get_node_subgraph(node_id) == Some(parent_id)
+            && rects_overlap_vertically(*rect, child_env.outer)
+            && match graph.direction {
+                Direction::LR => rect.x < child_env.outer.right(),
+                Direction::RL => rect.right() > child_env.outer.x,
+                _ => false,
+            }
+    })
+}
+
 fn outgoing_route_pressure_shift_x(
     graph: &Graph,
     node_rects: &HashMap<String, Rect>,
@@ -294,6 +971,138 @@ fn outgoing_route_pressure_shift_x(
 
     if source_span_center > target_center {
         source_span_center.saturating_sub(target_center).div_ceil(6)
+    } else {
+        0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InternalRouteSpanBudget {
+    pivot_center: usize,
+    shift_x: usize,
+}
+
+fn internal_route_span_budget_x(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    subgraph_id: &str,
+    min_horizontal_spacing: usize,
+) -> Option<InternalRouteSpanBudget> {
+    let subgraph = graph.get_subgraph(subgraph_id)?;
+    if !subgraph.has_parent() {
+        return None;
+    }
+
+    let mut outgoing_by_target: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut incoming_by_source: HashMap<&str, HashSet<&str>> = HashMap::new();
+
+    for edge in graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+        let from_inside = graph.is_node_in_subgraph_tree(&edge.from, subgraph_id);
+        let to_inside = graph.is_node_in_subgraph_tree(&edge.to, subgraph_id);
+        if from_inside == to_inside {
+            continue;
+        }
+        if from_inside {
+            outgoing_by_target
+                .entry(edge.to.as_str())
+                .or_default()
+                .insert(edge.from.as_str());
+        } else {
+            incoming_by_source
+                .entry(edge.from.as_str())
+                .or_default()
+                .insert(edge.to.as_str());
+        }
+    }
+
+    let mut best_budget: Option<InternalRouteSpanBudget> = None;
+    let desired_lane_gap = min_horizontal_spacing.saturating_add(4);
+
+    for (external_node_id, inside_node_ids) in
+        outgoing_by_target.iter().chain(incoming_by_source.iter())
+    {
+        if inside_node_ids.len() < 2 {
+            continue;
+        }
+        let Some(external_rect) = node_rects.get(*external_node_id).copied() else {
+            continue;
+        };
+        let external_center = rect_center_x(external_rect);
+
+        let mut centers = Vec::new();
+        for node_id in inside_node_ids {
+            let Some(node_rect) = node_rects.get(*node_id).copied() else {
+                continue;
+            };
+            centers.push(rect_center_x(node_rect));
+        }
+        if centers.len() < 2 {
+            continue;
+        }
+
+        let span_start = centers.iter().copied().min().unwrap_or(0);
+        let span_end = centers.iter().copied().max().unwrap_or(span_start);
+        if external_center < span_start || external_center > span_end {
+            continue;
+        }
+
+        let current_span = span_end.saturating_sub(span_start);
+        let desired_span = inside_node_ids
+            .len()
+            .saturating_sub(1)
+            .saturating_mul(desired_lane_gap);
+        let shift_x = desired_span.saturating_sub(current_span);
+        if shift_x == 0 {
+            continue;
+        }
+
+        let candidate = InternalRouteSpanBudget {
+            pivot_center: (span_start + span_end) / 2,
+            shift_x,
+        };
+        if best_budget.is_none_or(|existing| candidate.shift_x > existing.shift_x) {
+            best_budget = Some(candidate);
+        }
+    }
+
+    best_budget
+}
+
+fn widen_subgraph_for_internal_route_span(
+    graph: &Graph,
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    subgraph_id: &str,
+    min_horizontal_spacing: usize,
+) -> usize {
+    let Some(budget) =
+        internal_route_span_budget_x(graph, node_rects, subgraph_id, min_horizontal_spacing)
+    else {
+        return 0;
+    };
+
+    let mut shifted_any = false;
+    for node in &graph.nodes {
+        if !graph.is_node_in_subgraph_tree(&node.id, subgraph_id) {
+            continue;
+        }
+        let Some(node_rect) = node_rects.get(&node.id).copied() else {
+            continue;
+        };
+        if rect_center_x(node_rect) < budget.pivot_center {
+            continue;
+        }
+        if let Some(position) = positions.get_mut(&node.id) {
+            position.x += budget.shift_x;
+        }
+        if let Some(node_rect) = node_rects.get_mut(&node.id) {
+            node_rect.x += budget.shift_x;
+        }
+        shifted_any = true;
+    }
+
+    if shifted_any {
+        budget.shift_x
     } else {
         0
     }
@@ -546,12 +1355,8 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
 
             let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
             for sg in &input.graph.subgraphs {
-                let min_rank = sg
-                    .node_ids
-                    .iter()
-                    .filter_map(|id| placement.ranks.get(id))
-                    .copied()
-                    .min();
+                let min_rank = subgraph_tree_rank_range(input.graph, &placement.ranks, &sg.id)
+                    .map(|(min_rank, _)| min_rank);
                 if let Some(r) = min_rank {
                     subgraph_min_rank.insert(sg.id.as_str(), r);
                 }
@@ -633,12 +1438,8 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             // Compute minimum rank for each subgraph to determine "earlier" vs "later"
             let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
             for sg in &input.graph.subgraphs {
-                let min_rank = sg
-                    .node_ids
-                    .iter()
-                    .filter_map(|id| placement.ranks.get(id))
-                    .copied()
-                    .min();
+                let min_rank = subgraph_tree_rank_range(input.graph, &placement.ranks, &sg.id)
+                    .map(|(min_rank, _)| min_rank);
                 if let Some(r) = min_rank {
                     subgraph_min_rank.insert(sg.id.as_str(), r);
                 }
@@ -770,10 +1571,574 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         placement.canvas.height = max_y;
     }
 
+    reserve_nested_horizontal_subgraph_headroom(
+        input.graph,
+        &mut placement.positions,
+        &mut placement.node_rects,
+        config.subgraph_gutter,
+        &mut placement.canvas.height,
+    );
+
+    if matches!(input.graph.direction, Direction::LR | Direction::RL)
+        && !input.graph.subgraphs.is_empty()
+    {
+        for _ in 0..8 {
+            let envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            let mut required_env_shift: Option<(usize, usize)> = None;
+            let mut external_node_shifts: HashMap<String, usize> = HashMap::new();
+
+            for (subgraph_id, env) in &envelopes {
+                for edge in input.graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+                    let (Some(from_rect), Some(to_rect)) = (
+                        placement.node_rects.get(&edge.from),
+                        placement.node_rects.get(&edge.to),
+                    ) else {
+                        continue;
+                    };
+
+                    let from_inside_tree = input
+                        .graph
+                        .is_node_in_subgraph_tree(&edge.from, subgraph_id);
+                    let to_inside_tree =
+                        input.graph.is_node_in_subgraph_tree(&edge.to, subgraph_id);
+                    if from_inside_tree == to_inside_tree {
+                        continue;
+                    }
+
+                    let inside_rect = if from_inside_tree {
+                        *from_rect
+                    } else {
+                        *to_rect
+                    };
+                    if !rect_fully_inside(env.outer, inside_rect) {
+                        continue;
+                    }
+
+                    let external_rect = if from_inside_tree {
+                        *to_rect
+                    } else {
+                        *from_rect
+                    };
+                    let external_is_subgraph = if from_inside_tree {
+                        input.graph.get_node_subgraph(&edge.to).is_some()
+                    } else {
+                        input.graph.get_node_subgraph(&edge.from).is_some()
+                    };
+                    if external_is_subgraph {
+                        continue;
+                    }
+
+                    if external_rect.x < env.outer.x {
+                        let overlaps_left_wall = external_rect.right() > env.outer.x;
+                        if overlaps_left_wall {
+                            let required_env_x = external_rect.right().saturating_add(2);
+                            let threshold_x = env.outer.x;
+                            let delta_x = required_env_x - env.outer.x;
+                            match required_env_shift {
+                                Some((best_x, best_delta)) => {
+                                    if threshold_x < best_x
+                                        || (threshold_x == best_x && delta_x > best_delta)
+                                    {
+                                        required_env_shift = Some((threshold_x, delta_x));
+                                    }
+                                }
+                                None => required_env_shift = Some((threshold_x, delta_x)),
+                            }
+                        }
+                    } else {
+                        let overlaps_right_wall = external_rect.x < env.outer.right();
+                        if overlaps_right_wall {
+                            let required_external_x = env.outer.right().saturating_add(2);
+                            let external_node_id = if from_inside_tree {
+                                edge.to.clone()
+                            } else {
+                                edge.from.clone()
+                            };
+                            let delta_x = required_external_x - external_rect.x;
+                            external_node_shifts
+                                .entry(external_node_id)
+                                .and_modify(|existing| *existing = (*existing).max(delta_x))
+                                .or_insert(delta_x);
+                        }
+                    }
+                }
+            }
+
+            if required_env_shift.is_none() && external_node_shifts.is_empty() {
+                break;
+            }
+
+            if let Some((threshold_x, delta_x)) = required_env_shift {
+                shift_nodes_from_x(
+                    &mut placement.positions,
+                    &mut placement.node_rects,
+                    threshold_x,
+                    delta_x,
+                );
+            }
+            if !external_node_shifts.is_empty() {
+                shift_nodes_by_id_x(
+                    &mut placement.positions,
+                    &mut placement.node_rects,
+                    &external_node_shifts,
+                );
+            }
+
+            let max_right = placement
+                .node_rects
+                .values()
+                .map(|rect| rect.right())
+                .max()
+                .unwrap_or(placement.canvas.right());
+            placement.canvas.width = placement.canvas.width.max(max_right);
+        }
+    }
+
     // 3) Subgraph bounds + gutters.
     let mut subgraph_envelopes =
         compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
     adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+
+    if matches!(input.graph.direction, Direction::LR | Direction::RL)
+        && !subgraph_envelopes.is_empty()
+    {
+        for _ in 0..8 {
+            let mut required_shift_by_id: HashMap<String, usize> = HashMap::new();
+
+            for edge in input.graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+                let (Some(parent_id), Some(child_id)) = (
+                    input.graph.get_node_subgraph(&edge.from),
+                    input.graph.get_node_subgraph(&edge.to),
+                ) else {
+                    continue;
+                };
+                if parent_id == child_id {
+                    continue;
+                }
+                let (Some(parent_env), Some(child_env)) = (
+                    subgraph_envelopes.get(parent_id),
+                    subgraph_envelopes.get(child_id),
+                ) else {
+                    continue;
+                };
+                if !is_horizontal_visual_nesting_candidate(
+                    input.graph,
+                    &placement.node_rects,
+                    parent_id,
+                    child_id,
+                    parent_env,
+                    child_env,
+                    config.subgraph_gutter,
+                ) {
+                    continue;
+                }
+                if child_env.outer.y > parent_env.outer.y {
+                    continue;
+                }
+
+                let delta = parent_env.outer.y.saturating_add(1) - child_env.outer.y;
+                required_shift_by_id
+                    .entry(child_id.to_string())
+                    .and_modify(|existing| *existing = (*existing).max(delta))
+                    .or_insert(delta);
+            }
+
+            if required_shift_by_id.is_empty() {
+                break;
+            }
+
+            for (child_id, delta_y) in required_shift_by_id {
+                shift_nodes_in_subgraph_y(
+                    input.graph,
+                    &mut placement.positions,
+                    &mut placement.node_rects,
+                    &child_id,
+                    delta_y,
+                );
+            }
+
+            let max_bottom = placement
+                .node_rects
+                .values()
+                .map(|rect| rect.bottom())
+                .max()
+                .unwrap_or(placement.canvas.bottom());
+            placement.canvas.height = placement.canvas.height.max(max_bottom);
+
+            subgraph_envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
+
+        let gap = nested_horizontal_follow_gap(&config);
+        for _ in 0..8 {
+            let mut required_shift_by_id: HashMap<String, isize> = HashMap::new();
+
+            for edge in input.graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+                let (Some(parent_id), Some(child_id)) = (
+                    input.graph.get_node_subgraph(&edge.from),
+                    input.graph.get_node_subgraph(&edge.to),
+                ) else {
+                    continue;
+                };
+                if parent_id == child_id
+                    || subgraphs_have_declared_hierarchy(input.graph, parent_id, child_id)
+                {
+                    continue;
+                }
+                let (Some(parent_env), Some(child_env)) = (
+                    subgraph_envelopes.get(parent_id),
+                    subgraph_envelopes.get(child_id),
+                ) else {
+                    continue;
+                };
+                if !is_horizontal_visual_nesting_candidate(
+                    input.graph,
+                    &placement.node_rects,
+                    parent_id,
+                    child_id,
+                    parent_env,
+                    child_env,
+                    config.subgraph_gutter,
+                ) {
+                    continue;
+                }
+
+                let Some(target_left) = preferred_visual_nested_horizontal_left(
+                    input.graph,
+                    &placement.node_rects,
+                    parent_id,
+                    child_id,
+                    child_env,
+                    input.graph.direction,
+                    gap,
+                ) else {
+                    continue;
+                };
+
+                if target_left == child_env.outer.x {
+                    continue;
+                }
+
+                let delta = target_left as isize - child_env.outer.x as isize;
+                required_shift_by_id
+                    .entry(child_id.to_string())
+                    .and_modify(|existing| {
+                        if delta.abs() > existing.abs() {
+                            *existing = delta;
+                        }
+                    })
+                    .or_insert(delta);
+            }
+
+            let Some((subgraph_id, delta_x)) = required_shift_by_id
+                .iter()
+                .max_by_key(|(_, delta)| delta.abs())
+                .map(|(id, delta)| (id.clone(), *delta))
+            else {
+                break;
+            };
+
+            shift_nodes_in_subgraph_tree_x_signed(
+                input.graph,
+                &mut placement.positions,
+                &mut placement.node_rects,
+                &subgraph_id,
+                delta_x,
+            );
+
+            let max_right = placement
+                .node_rects
+                .values()
+                .map(|rect| rect.right())
+                .max()
+                .unwrap_or(placement.canvas.right());
+            placement.canvas.width = placement.canvas.width.max(max_right);
+
+            subgraph_envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
+
+        for _ in 0..8 {
+            let mut required_shift_by_id: HashMap<String, isize> = HashMap::new();
+
+            for child_subgraph in input
+                .graph
+                .subgraphs
+                .iter()
+                .filter(|subgraph| subgraph.parent_id.is_some())
+            {
+                let Some(parent_id) = child_subgraph.parent_id.as_deref() else {
+                    continue;
+                };
+                let (Some(parent_env), Some(child_env)) = (
+                    subgraph_envelopes.get(parent_id),
+                    subgraph_envelopes.get(&child_subgraph.id),
+                ) else {
+                    continue;
+                };
+                if !rect_fully_inside(parent_env.outer, child_env.outer) {
+                    continue;
+                }
+
+                let Some(target_left) = preferred_declared_nested_horizontal_left(
+                    input.graph,
+                    &placement.node_rects,
+                    parent_id,
+                    &child_subgraph.id,
+                    parent_env,
+                    child_env,
+                    input.graph.direction,
+                    gap,
+                ) else {
+                    continue;
+                };
+
+                if target_left == child_env.outer.x {
+                    continue;
+                }
+
+                let delta = target_left as isize - child_env.outer.x as isize;
+                required_shift_by_id
+                    .entry(child_subgraph.id.clone())
+                    .and_modify(|existing| {
+                        if delta.abs() > existing.abs() {
+                            *existing = delta;
+                        }
+                    })
+                    .or_insert(delta);
+            }
+
+            let Some((subgraph_id, delta_x)) = required_shift_by_id
+                .iter()
+                .max_by_key(|(_, delta)| delta.abs())
+                .map(|(id, delta)| (id.clone(), *delta))
+            else {
+                break;
+            };
+
+            shift_nodes_in_subgraph_tree_x_signed(
+                input.graph,
+                &mut placement.positions,
+                &mut placement.node_rects,
+                &subgraph_id,
+                delta_x,
+            );
+
+            let max_right = placement
+                .node_rects
+                .values()
+                .map(|rect| rect.right())
+                .max()
+                .unwrap_or(placement.canvas.right());
+            placement.canvas.width = placement.canvas.width.max(max_right);
+
+            subgraph_envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
+
+        if input.graph.direction == Direction::RL {
+            for _ in 0..8 {
+                let mut required_parent_shifts: HashMap<String, usize> = HashMap::new();
+
+                for edge in input.graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+                    let (Some(parent_id), Some(child_id)) = (
+                        input.graph.get_node_subgraph(&edge.from),
+                        input.graph.get_node_subgraph(&edge.to),
+                    ) else {
+                        continue;
+                    };
+                    if parent_id == child_id
+                        || subgraphs_have_declared_hierarchy(input.graph, parent_id, child_id)
+                    {
+                        continue;
+                    }
+                    let (Some(parent_env), Some(child_env)) = (
+                        subgraph_envelopes.get(parent_id),
+                        subgraph_envelopes.get(child_id),
+                    ) else {
+                        continue;
+                    };
+                    if !is_horizontal_visual_nesting_candidate(
+                        input.graph,
+                        &placement.node_rects,
+                        parent_id,
+                        child_id,
+                        parent_env,
+                        child_env,
+                        config.subgraph_gutter,
+                    ) {
+                        continue;
+                    }
+
+                    let required_parent_left = child_env.outer.right().saturating_add(gap);
+                    let mut max_delta = 0usize;
+                    for (node_id, node_rect) in &placement.node_rects {
+                        if input.graph.get_node_subgraph(node_id) != Some(parent_id) {
+                            continue;
+                        }
+                        if !rects_overlap_vertically(*node_rect, child_env.outer) {
+                            continue;
+                        }
+                        if node_rect.x < required_parent_left {
+                            max_delta = max_delta.max(required_parent_left - node_rect.x);
+                        }
+                    }
+                    if max_delta > 0 {
+                        required_parent_shifts
+                            .entry(parent_id.to_string())
+                            .and_modify(|existing| *existing = (*existing).max(max_delta))
+                            .or_insert(max_delta);
+                    }
+                }
+
+                if required_parent_shifts.is_empty() {
+                    break;
+                }
+
+                for (parent_id, delta_x) in required_parent_shifts {
+                    shift_nodes_in_subgraph(
+                        input.graph,
+                        &mut placement.positions,
+                        &mut placement.node_rects,
+                        &parent_id,
+                        delta_x,
+                    );
+                }
+
+                let max_right = placement
+                    .node_rects
+                    .values()
+                    .map(|rect| rect.right())
+                    .max()
+                    .unwrap_or(placement.canvas.right());
+                placement.canvas.width = placement.canvas.width.max(max_right);
+
+                subgraph_envelopes =
+                    compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+                adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+            }
+        }
+
+        for _ in 0..8 {
+            let envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            let mut required_env_shift: Option<(usize, usize)> = None;
+            let mut external_node_shifts: HashMap<String, usize> = HashMap::new();
+
+            for (subgraph_id, env) in &envelopes {
+                for edge in input.graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+                    let (Some(from_rect), Some(to_rect)) = (
+                        placement.node_rects.get(&edge.from),
+                        placement.node_rects.get(&edge.to),
+                    ) else {
+                        continue;
+                    };
+
+                    let from_inside_tree = input
+                        .graph
+                        .is_node_in_subgraph_tree(&edge.from, subgraph_id);
+                    let to_inside_tree =
+                        input.graph.is_node_in_subgraph_tree(&edge.to, subgraph_id);
+                    if from_inside_tree == to_inside_tree {
+                        continue;
+                    }
+
+                    let inside_rect = if from_inside_tree {
+                        *from_rect
+                    } else {
+                        *to_rect
+                    };
+                    if !rect_fully_inside(env.outer, inside_rect) {
+                        continue;
+                    }
+
+                    let external_rect = if from_inside_tree {
+                        *to_rect
+                    } else {
+                        *from_rect
+                    };
+                    let external_is_subgraph = if from_inside_tree {
+                        input.graph.get_node_subgraph(&edge.to).is_some()
+                    } else {
+                        input.graph.get_node_subgraph(&edge.from).is_some()
+                    };
+                    if external_is_subgraph {
+                        continue;
+                    }
+
+                    if external_rect.x < env.outer.x {
+                        let overlaps_left_wall = external_rect.right() > env.outer.x;
+                        if overlaps_left_wall {
+                            let required_env_x = external_rect.right().saturating_add(2);
+                            let threshold_x = env.outer.x;
+                            let delta_x = required_env_x - env.outer.x;
+                            match required_env_shift {
+                                Some((best_x, best_delta)) => {
+                                    if threshold_x < best_x
+                                        || (threshold_x == best_x && delta_x > best_delta)
+                                    {
+                                        required_env_shift = Some((threshold_x, delta_x));
+                                    }
+                                }
+                                None => required_env_shift = Some((threshold_x, delta_x)),
+                            }
+                        }
+                    } else {
+                        let overlaps_right_wall = external_rect.x < env.outer.right();
+                        if overlaps_right_wall {
+                            let required_external_x = env.outer.right().saturating_add(2);
+                            let external_node_id = if from_inside_tree {
+                                edge.to.clone()
+                            } else {
+                                edge.from.clone()
+                            };
+                            let delta_x = required_external_x - external_rect.x;
+                            external_node_shifts
+                                .entry(external_node_id)
+                                .and_modify(|existing| *existing = (*existing).max(delta_x))
+                                .or_insert(delta_x);
+                        }
+                    }
+                }
+            }
+
+            if required_env_shift.is_none() && external_node_shifts.is_empty() {
+                break;
+            }
+
+            if let Some((threshold_x, delta_x)) = required_env_shift {
+                shift_nodes_from_x(
+                    &mut placement.positions,
+                    &mut placement.node_rects,
+                    threshold_x,
+                    delta_x,
+                );
+            }
+            if !external_node_shifts.is_empty() {
+                shift_nodes_by_id_x(
+                    &mut placement.positions,
+                    &mut placement.node_rects,
+                    &external_node_shifts,
+                );
+            }
+
+            let max_right = placement
+                .node_rects
+                .values()
+                .map(|rect| rect.right())
+                .max()
+                .unwrap_or(placement.canvas.right());
+            placement.canvas.width = placement.canvas.width.max(max_right);
+
+            subgraph_envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
+    }
 
     let mut visually_nested_children: HashSet<String> = HashSet::new();
     if matches!(input.graph.direction, Direction::TD | Direction::TB)
@@ -787,6 +2152,9 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 continue;
             };
             if from_sg == to_sg {
+                continue;
+            }
+            if subgraphs_have_declared_hierarchy(input.graph, from_sg, to_sg) {
                 continue;
             }
             let (Some(parent), Some(child)) = (
@@ -825,7 +2193,9 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         }
 
         if !visually_nested_children.is_empty() {
-            for subgraph_id in visually_nested_children.iter() {
+            let mut visually_nested_ids: Vec<_> = visually_nested_children.iter().collect();
+            visually_nested_ids.sort();
+            for subgraph_id in visually_nested_ids {
                 repack_direct_subgraph_content_x(
                     input.graph,
                     &mut placement.positions,
@@ -841,12 +2211,22 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         }
     }
 
-    if matches!(input.graph.direction, Direction::TD | Direction::TB)
-        && !subgraph_envelopes.is_empty()
-    {
+    if is_vertical_flow(input.graph.direction) && !subgraph_envelopes.is_empty() {
+        let route_budgeted_subgraphs =
+            route_budgeted_subgraphs(input.graph, &visually_nested_children);
         for _ in 0..8 {
             let mut widened_any = false;
-            for subgraph_id in &visually_nested_children {
+            for subgraph_id in &route_budgeted_subgraphs {
+                if widen_subgraph_for_internal_route_span(
+                    input.graph,
+                    &mut placement.positions,
+                    &mut placement.node_rects,
+                    subgraph_id,
+                    config.min_horizontal_spacing,
+                ) > 0
+                {
+                    widened_any = true;
+                }
                 if widen_subgraph_for_outgoing_route_pressure(
                     input.graph,
                     &mut placement.positions,
@@ -1007,12 +2387,8 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
 
             let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
             for sg in &input.graph.subgraphs {
-                let min_rank = sg
-                    .node_ids
-                    .iter()
-                    .filter_map(|id| placement.ranks.get(id))
-                    .copied()
-                    .min();
+                let min_rank = subgraph_tree_rank_range(input.graph, &placement.ranks, &sg.id)
+                    .map(|(min_rank, _)| min_rank);
                 if let Some(r) = min_rank {
                     subgraph_min_rank.insert(sg.id.as_str(), r);
                 }
@@ -1027,6 +2403,47 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                         .entry((edge.from.clone(), to_sg.to_string()))
                         .or_default() += 1;
                 }
+            }
+
+            // Ensure declared parents keep a visible title/border band above nested children.
+            for child_subgraph in input
+                .graph
+                .subgraphs
+                .iter()
+                .filter(|subgraph| subgraph.parent_id.is_some())
+            {
+                let Some(parent_id) = child_subgraph.parent_id.as_deref() else {
+                    continue;
+                };
+                let (Some(parent_env), Some(child_env)) = (
+                    subgraph_envelopes.get(parent_id),
+                    subgraph_envelopes.get(&child_subgraph.id),
+                ) else {
+                    continue;
+                };
+                let Some(&shift_rank) = subgraph_min_rank.get(child_subgraph.id.as_str()) else {
+                    continue;
+                };
+
+                let parent_has_title = input
+                    .graph
+                    .get_subgraph(parent_id)
+                    .and_then(|subgraph| subgraph.title.as_ref())
+                    .is_some();
+                let required_child_top =
+                    parent_env
+                        .outer
+                        .y
+                        .saturating_add(if parent_has_title { 3 } else { 2 });
+                if child_env.outer.y >= required_child_top {
+                    continue;
+                }
+
+                let delta = required_child_top - child_env.outer.y;
+                required_shift_by_rank
+                    .entry(shift_rank)
+                    .and_modify(|existing| *existing = (*existing).max(delta))
+                    .or_insert(delta);
             }
 
             // Ensure enough clearance above a subgraph top border for incoming edges.
@@ -1185,12 +2602,8 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
 
             let mut subgraph_max_rank: HashMap<&str, usize> = HashMap::new();
             for sg in &input.graph.subgraphs {
-                let max_rank = sg
-                    .node_ids
-                    .iter()
-                    .filter_map(|id| placement.ranks.get(id))
-                    .copied()
-                    .max();
+                let max_rank = subgraph_tree_rank_range(input.graph, &placement.ranks, &sg.id)
+                    .map(|(_, max_rank)| max_rank);
                 if let Some(r) = max_rank {
                     subgraph_max_rank.insert(sg.id.as_str(), r);
                 }
@@ -1231,20 +2644,26 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             // external source node that feeds into content inside that envelope. In BT this
             // matters for both direct targets and visually nested parent envelopes; otherwise
             // an enlarged outer border can land on top of the lower source box.
-            for (_sg_id, env) in subgraph_envelopes.iter() {
+            for (sg_id, env) in subgraph_envelopes.iter() {
+                let Some(subgraph) = input.graph.get_subgraph(sg_id) else {
+                    continue;
+                };
+                if subgraph.parent_id.is_none() && subgraph.child_ids.is_empty() {
+                    continue;
+                }
                 for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
                     let Some(from_rect) = placement.node_rects.get(&edge.from) else {
                         continue;
                     };
-                    let Some(to_rect) = placement.node_rects.get(&edge.to) else {
-                        continue;
-                    };
-                    if rect_fully_inside(env.outer, *from_rect) {
+                    if input.graph.is_node_in_subgraph_tree(&edge.from, sg_id) {
                         continue;
                     }
-                    if !rect_fully_inside(env.outer, *to_rect) {
+                    if !input.graph.is_node_in_subgraph_tree(&edge.to, sg_id) {
                         continue;
-                    };
+                    }
+                    if !rect_fully_inside(env.outer, *from_rect) {
+                        continue;
+                    }
                     // The source node must start at least one row below the outer envelope
                     // bottom so there is room for the routing connector between them.
                     let required_source_y = env.outer.bottom().saturating_add(1);
@@ -1326,6 +2745,83 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
             adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
         }
+
+        let mut incoming_into_subgraph_from: HashMap<(String, String), usize> = HashMap::new();
+        for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+            let (_, enter_subgraphs) = input.graph.edge_boundary_crossings(&edge.from, &edge.to);
+            for to_sg in enter_subgraphs {
+                *incoming_into_subgraph_from
+                    .entry((edge.from.clone(), to_sg.to_string()))
+                    .or_default() += 1;
+            }
+        }
+
+        let mut source_shifts: HashMap<String, usize> = HashMap::new();
+        for (subgraph_id, env) in subgraph_envelopes.iter() {
+            let has_title = input
+                .graph
+                .get_subgraph(subgraph_id)
+                .and_then(|subgraph| subgraph.title.as_ref())
+                .is_some();
+            let contains_child_envelope = subgraph_envelopes.iter().any(|(other_id, other_env)| {
+                other_id != subgraph_id && rect_fully_inside(env.outer, other_env.outer)
+            });
+            if !contains_child_envelope && !has_title {
+                continue;
+            }
+            let required_source_y = env.outer.bottom().saturating_add(1);
+            for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
+                let (Some(from_rect), Some(to_rect)) = (
+                    placement.node_rects.get(&edge.from),
+                    placement.node_rects.get(&edge.to),
+                ) else {
+                    continue;
+                };
+                if rect_fully_inside(env.outer, *from_rect)
+                    || !rect_fully_inside(env.outer, *to_rect)
+                {
+                    continue;
+                }
+                if input.graph.get_node_subgraph(&edge.from).is_some() {
+                    continue;
+                }
+                if !contains_child_envelope
+                    && incoming_into_subgraph_from
+                        .get(&(edge.from.clone(), subgraph_id.clone()))
+                        .copied()
+                        .unwrap_or(1)
+                        <= 1
+                {
+                    continue;
+                }
+                let overlaps_envelope_horizontally =
+                    from_rect.x < env.outer.right() && env.outer.x < from_rect.right();
+                if !overlaps_envelope_horizontally || from_rect.y >= required_source_y {
+                    continue;
+                }
+
+                let delta = required_source_y - from_rect.y;
+                source_shifts
+                    .entry(edge.from.clone())
+                    .and_modify(|existing| *existing = (*existing).max(delta))
+                    .or_insert(delta);
+            }
+        }
+
+        if !source_shifts.is_empty() {
+            shift_nodes_by_id_y(
+                &mut placement.positions,
+                &mut placement.node_rects,
+                &source_shifts,
+            );
+            let max_bottom = placement
+                .node_rects
+                .values()
+                .map(|r| r.bottom())
+                .max()
+                .unwrap_or(placement.canvas.bottom());
+            placement.canvas.height = placement.canvas.height.max(max_bottom);
+        }
     }
 
     // Warn about overlapping (but not nested) subgraphs that couldn't be resolved.
@@ -1353,6 +2849,27 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             }
         }
     }
+
+    rebalance_titled_vertical_subgraph_content_x(
+        input.graph,
+        &mut placement.positions,
+        &mut placement.node_rects,
+        config.subgraph_gutter,
+        &mut placement.canvas.width,
+    );
+    rebalance_titled_vertical_subgraph_content_y(
+        input.graph,
+        &mut placement.positions,
+        &mut placement.node_rects,
+        config.subgraph_gutter,
+        &mut placement.canvas.height,
+    );
+    subgraph_envelopes =
+        compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+    adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+
+    enforce_declared_nested_envelopes(input.graph, &mut subgraph_envelopes);
+    adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
 
     // 4) Occupancy grid seeded with node padding and subgraph gutters (with carved portals).
     let t_grid = std::time::Instant::now();
@@ -1401,9 +2918,20 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         *outgoing_counts.entry(edge.from.as_str()).or_default() += 1;
         *incoming_counts.entry(edge.to.as_str()).or_default() += 1;
     }
+    route_selective_horizontal_cross_subgraph_fanin_groups(
+        input.graph,
+        &placement.node_rects,
+        &subgraph_envelopes,
+        &incoming_counts,
+        &mut routes,
+        &mut grid,
+    );
     for (edge_idx, edge) in input.graph.edges.iter().enumerate() {
         if edge.is_back_edge {
             // Skip routing here; back-edges are handled by the cycle renderer.
+            continue;
+        }
+        if routes.contains_key(&edge_idx) {
             continue;
         }
 
@@ -1717,14 +3245,11 @@ fn adjust_portal_slots_for_title(envelopes: &mut HashMap<String, SubgraphEnvelop
             continue;
         };
 
-        let title_fmt = format!("[  {}  ]", title);
-        let len = title_fmt.chars().count();
-        if len == 0 || env.outer.width == 0 {
+        let Some((start, end)) =
+            crate::graph::subgraph_title_span(env.outer.x, env.outer.width, title, graph.direction)
+        else {
             continue;
-        }
-
-        let start = env.outer.x + env.outer.width.saturating_sub(len) / 2;
-        let end = start + len.saturating_sub(1);
+        };
         let min_x = env.outer.x.saturating_add(1);
         let max_x = env.outer.right().saturating_sub(2);
         if max_x < min_x {
@@ -2300,6 +3825,8 @@ fn assign_layers(graph: &Graph) -> Vec<Vec<usize>> {
         }
     }
 
+    promote_nested_child_root_ranks(graph, &index_map, &adj, &order, &mut rank);
+
     let mut by_rank: HashMap<usize, Vec<usize>> = HashMap::new();
     for (idx, r) in rank.iter().enumerate() {
         by_rank.entry(*r).or_default().push(idx);
@@ -2314,6 +3841,83 @@ fn assign_layers(graph: &Graph) -> Vec<Vec<usize>> {
     }
 
     layers
+}
+
+fn promote_nested_child_root_ranks(
+    graph: &Graph,
+    index_map: &HashMap<&str, usize>,
+    adj: &[Vec<usize>],
+    order: &[usize],
+    rank: &mut [usize],
+) {
+    let mut nested_subgraphs: Vec<_> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.parent_id.is_some())
+        .collect();
+    nested_subgraphs.sort_by_key(|subgraph| subgraph.parent_id.clone());
+
+    let mut promoted = false;
+
+    for subgraph in nested_subgraphs {
+        let Some(parent_id) = subgraph.parent_id.as_deref() else {
+            continue;
+        };
+        let Some(parent) = graph.get_subgraph(parent_id) else {
+            continue;
+        };
+
+        let Some(parent_direct_max_rank) = parent
+            .node_ids
+            .iter()
+            .filter_map(|node_id| index_map.get(node_id.as_str()).copied())
+            .map(|idx| rank[idx])
+            .max()
+        else {
+            continue;
+        };
+
+        let minimum_child_rank = parent_direct_max_rank.saturating_add(1);
+        for child_root_idx in nested_child_root_indices(graph, index_map, &subgraph.id) {
+            if rank[child_root_idx] < minimum_child_rank {
+                rank[child_root_idx] = minimum_child_rank;
+                promoted = true;
+            }
+        }
+    }
+
+    if !promoted {
+        return;
+    }
+
+    for &from_idx in order {
+        for &to_idx in &adj[from_idx] {
+            let next_rank = rank[from_idx].saturating_add(1);
+            if rank[to_idx] < next_rank {
+                rank[to_idx] = next_rank;
+            }
+        }
+    }
+}
+
+fn nested_child_root_indices(
+    graph: &Graph,
+    index_map: &HashMap<&str, usize>,
+    subgraph_id: &str,
+) -> Vec<usize> {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| graph.is_node_in_subgraph_tree(&node.id, subgraph_id))
+        .filter(|node| {
+            !graph.edges.iter().any(|edge| {
+                !edge.is_back_edge
+                    && edge.to == node.id
+                    && graph.is_node_in_subgraph_tree(&edge.from, subgraph_id)
+            })
+        })
+        .filter_map(|node| index_map.get(node.id.as_str()).copied())
+        .collect()
 }
 
 fn node_extent_primary(node: &crate::graph::Node, coords: &OrientedCoords) -> usize {
@@ -3002,6 +4606,202 @@ fn portal_point(bounds: &SubgraphEnvelope, how: PortalUse, direction: Direction)
                 bounds.outer.y + bounds.outer.height / 2,
             );
             Some(Point::new(bounds.outer.x, y))
+        }
+    }
+}
+
+fn push_route_leg(route: &mut EdgeRoute, from: Point, to: Point) {
+    if from != to {
+        route.push_segment(from, to);
+    }
+}
+
+fn build_horizontal_cross_subgraph_fanin_route(
+    start: Point,
+    portal: Point,
+    arrow: Point,
+    direction: Direction,
+    inner_lane_x: usize,
+    outer_lane_x: usize,
+) -> EdgeRoute {
+    let mut route = EdgeRoute::new();
+    let mut cursor = start;
+
+    let source_lane = Point::new(inner_lane_x, cursor.y);
+    push_route_leg(&mut route, cursor, source_lane);
+    cursor = source_lane;
+
+    let merge_lane = Point::new(inner_lane_x, portal.y);
+    push_route_leg(&mut route, cursor, merge_lane);
+    cursor = merge_lane;
+
+    push_route_leg(&mut route, cursor, portal);
+    cursor = portal;
+
+    if portal.y == arrow.y {
+        push_route_leg(&mut route, cursor, arrow);
+        return route;
+    }
+
+    let outside_lane = Point::new(outer_lane_x, portal.y);
+    push_route_leg(&mut route, cursor, outside_lane);
+
+    let outside_turn = Point::new(outer_lane_x, arrow.y);
+    push_route_leg(&mut route, outside_lane, outside_turn);
+
+    match direction {
+        Direction::LR | Direction::RL => push_route_leg(&mut route, outside_turn, arrow),
+        _ => unreachable!(),
+    }
+
+    route
+}
+
+fn route_selective_horizontal_cross_subgraph_fanin_groups(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    subgraph_envelopes: &HashMap<String, SubgraphEnvelope>,
+    incoming_counts: &HashMap<&str, usize>,
+    routes: &mut HashMap<usize, EdgeRoute>,
+    grid: &mut OccupancyGrid,
+) {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) {
+        return;
+    }
+
+    let mut grouped_by_target: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+        if edge.is_back_edge || edge.label.is_some() {
+            continue;
+        }
+        if incoming_counts.get(edge.to.as_str()).copied().unwrap_or(0) < 2 {
+            continue;
+        }
+        grouped_by_target
+            .entry(edge.to.as_str())
+            .or_default()
+            .push(edge_idx);
+    }
+
+    for (target_id, edge_indices) in grouped_by_target {
+        let Some(target) = graph.get_node(target_id) else {
+            continue;
+        };
+        let Some(first_edge) = edge_indices
+            .first()
+            .and_then(|edge_idx| graph.edges.get(*edge_idx))
+        else {
+            continue;
+        };
+        let Some(source_sg_id) = graph.get_node_subgraph(&first_edge.from) else {
+            continue;
+        };
+        if graph.get_node_subgraph(target_id) == Some(source_sg_id) {
+            continue;
+        }
+
+        let Some(env) = subgraph_envelopes.get(source_sg_id) else {
+            continue;
+        };
+        let Some(portal) = portal_point(env, PortalUse::Exit, graph.direction) else {
+            continue;
+        };
+
+        let target_rect = node_rects
+            .get(target_id)
+            .copied()
+            .unwrap_or_else(|| Rect::new(target.x, target.y, target.width, target.height));
+        let arrow = edge_entry_point(target_rect, graph.direction);
+
+        let mut starts = Vec::new();
+        let mut all_from_same_subgraph = true;
+        for edge_idx in &edge_indices {
+            let Some(edge) = graph.edges.get(*edge_idx) else {
+                all_from_same_subgraph = false;
+                break;
+            };
+            if graph.get_node_subgraph(&edge.from) != Some(source_sg_id)
+                || !graph.edge_crosses_subgraph_boundary(&edge.from, &edge.to)
+            {
+                all_from_same_subgraph = false;
+                break;
+            }
+            let Some(source) = graph.get_node(&edge.from) else {
+                all_from_same_subgraph = false;
+                break;
+            };
+            let source_rect = node_rects
+                .get(edge.from.as_str())
+                .copied()
+                .unwrap_or_else(|| Rect::new(source.x, source.y, source.width, source.height));
+            starts.push((*edge_idx, edge_exit_point(source_rect, graph.direction)));
+        }
+        if !all_from_same_subgraph || starts.len() < 2 {
+            continue;
+        }
+
+        let min_source_y = starts
+            .iter()
+            .map(|(_, start)| start.y)
+            .min()
+            .unwrap_or(portal.y);
+        let max_source_y = starts
+            .iter()
+            .map(|(_, start)| start.y)
+            .max()
+            .unwrap_or(portal.y);
+        if portal.y <= min_source_y || portal.y >= max_source_y {
+            continue;
+        }
+
+        let Some((inner_lane_x, outer_lane_x)) = (match graph.direction {
+            Direction::LR => {
+                let max_exit_x = starts
+                    .iter()
+                    .map(|(_, start)| start.x)
+                    .max()
+                    .unwrap_or(portal.x);
+                let desired_inner_lane_x = max_exit_x.saturating_add(1);
+                let inner_lane_x = desired_inner_lane_x
+                    .min(portal.x.saturating_sub(2))
+                    .max(max_exit_x);
+                let outer_lane_x = arrow.x.saturating_sub(1);
+                (inner_lane_x < portal.x && outer_lane_x > portal.x)
+                    .then_some((inner_lane_x, outer_lane_x))
+            }
+            Direction::RL => {
+                let min_exit_x = starts
+                    .iter()
+                    .map(|(_, start)| start.x)
+                    .min()
+                    .unwrap_or(portal.x);
+                let desired_inner_lane_x = min_exit_x.saturating_sub(1);
+                let inner_lane_x = desired_inner_lane_x
+                    .max(portal.x.saturating_add(2))
+                    .min(min_exit_x);
+                let outer_lane_x = arrow.x.saturating_add(1);
+                (inner_lane_x > portal.x && outer_lane_x < portal.x)
+                    .then_some((inner_lane_x, outer_lane_x))
+            }
+            _ => None,
+        }) else {
+            continue;
+        };
+
+        for (edge_idx, start) in starts {
+            let route = build_horizontal_cross_subgraph_fanin_route(
+                start,
+                portal,
+                arrow,
+                graph.direction,
+                inner_lane_x,
+                outer_lane_x,
+            );
+            if route.segments.is_empty() {
+                continue;
+            }
+            grid.mark_path(&route);
+            routes.insert(edge_idx, route);
         }
     }
 }
@@ -3770,6 +5570,203 @@ mod tests {
     }
 
     #[test]
+    fn explicit_nested_child_roots_follow_parent_direct_rank() {
+        let input = "graph TD\nA[API Gateway] --> B[User Service]\nsubgraph SL[Service Layer]\nB\nsubgraph DL[Data Layer]\nC[Order Service] --> D[(Order DB)]\nE[(User DB)]\nend\nB --> E\nD --> F[Response Builder]\nE --> F\nend";
+        let parsed = parse(input, false).expect("parse");
+        let graph =
+            apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default()).expect("layout");
+
+        let service = graph.get_subgraph("SL").expect("service layer");
+        let data = graph.get_subgraph("DL").expect("data layer");
+        let user_service = graph.get_node("B").expect("user service");
+        let order_service = graph.get_node("C").expect("order service");
+        let response_builder = graph.get_node("F").expect("response builder");
+
+        assert!(
+            order_service.rank > user_service.rank,
+            "expected true nested child roots to be promoted after the parent's direct node: child_rank={} parent_rank={}",
+            order_service.rank,
+            user_service.rank
+        );
+        assert!(
+            service.bounds.contains(data.bounds.x, data.bounds.y)
+                && service.bounds.contains(
+                    data.bounds.x + data.bounds.width.saturating_sub(1),
+                    data.bounds.y + data.bounds.height.saturating_sub(1)
+                ),
+            "expected the declared parent envelope to fully contain the nested child envelope: parent={:?} child={:?}",
+            service.bounds,
+            data.bounds
+        );
+        assert!(
+            order_service.y > user_service.y + user_service.height,
+            "expected the true nested child content to start below the parent's direct node content: order_service=({}, {}, {}x{}) user_service=({}, {}, {}x{}) data={:?}",
+            order_service.x,
+            order_service.y,
+            order_service.width,
+            order_service.height,
+            user_service.x,
+            user_service.y,
+            user_service.width,
+            user_service.height,
+            data.bounds
+        );
+        assert!(
+            data.bounds.y >= user_service.y + user_service.height + 1,
+            "expected the nested child border/title band to stay below the parent's direct node band: data={:?} user_service=({}, {}, {}x{})",
+            data.bounds,
+            user_service.x,
+            user_service.y,
+            user_service.width,
+            user_service.height,
+        );
+        assert!(
+            !data.bounds.contains(response_builder.x, response_builder.y)
+                && !data.bounds.contains(
+                    response_builder.x + response_builder.width.saturating_sub(1),
+                    response_builder.y + response_builder.height.saturating_sub(1)
+                ),
+            "expected the nested child envelope to exclude the parent's direct response node: data={:?} response_builder=({}, {}, {}x{})",
+            data.bounds,
+            response_builder.x,
+            response_builder.y,
+            response_builder.width,
+            response_builder.height,
+        );
+    }
+
+    #[test]
+    fn explicit_nested_horizontal_children_stay_contained_and_ordered_by_flow() {
+        for (direction, data_precedes_response) in [(Direction::LR, true), (Direction::RL, false)] {
+            let input = format!(
+                "graph {direction:?}\nA[API Gateway] --> B[User Service]\nsubgraph SL[Service Layer]\nB\nsubgraph DL[Data Layer]\nC[Order Service] --> D[(Order DB)]\nE[(User DB)]\nend\nB --> E\nD --> F[Response Builder]\nE --> F\nend"
+            );
+            let parsed = parse(&input, false).expect("parse");
+            let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+                .expect("layout");
+
+            let service = graph.get_subgraph("SL").expect("service layer");
+            let data = graph.get_subgraph("DL").expect("data layer");
+            let user_service = graph.get_node("B").expect("user service");
+            let response_builder = graph.get_node("F").expect("response builder");
+
+            assert!(
+                service.bounds.contains(data.bounds.x, data.bounds.y)
+                    && service.bounds.contains(
+                        data.bounds.x + data.bounds.width.saturating_sub(1),
+                        data.bounds.y + data.bounds.height.saturating_sub(1)
+                    ),
+                "expected the declared parent envelope to fully contain the nested child envelope in {direction:?}: parent={:?} child={:?}",
+                service.bounds,
+                data.bounds,
+            );
+            assert!(
+                data.bounds.y > service.bounds.y,
+                "expected the nested child title row to staircase below the parent title row in {direction:?}: parent={:?} child={:?}",
+                service.bounds,
+                data.bounds,
+            );
+            assert!(
+                !data.bounds.contains(response_builder.x, response_builder.y)
+                    && !data.bounds.contains(
+                        response_builder.x + response_builder.width.saturating_sub(1),
+                        response_builder.y + response_builder.height.saturating_sub(1)
+                    ),
+                "expected the nested child envelope to exclude the parent-only response node in {direction:?}: child={:?} response_builder=({}, {}, {}x{})",
+                data.bounds,
+                response_builder.x,
+                response_builder.y,
+                response_builder.width,
+                response_builder.height,
+            );
+
+            if data_precedes_response {
+                let gap_to_user_service = data
+                    .bounds
+                    .x
+                    .saturating_sub(user_service.x.saturating_add(user_service.width));
+                let gap_to_response = response_builder
+                    .x
+                    .saturating_sub(data.bounds.x.saturating_add(data.bounds.width));
+                assert!(
+                    data.bounds.x >= user_service.x + user_service.width + 1,
+                    "expected the nested child to remain after the parent's direct node along LR flow: child={:?} user_service=({}, {}, {}x{})",
+                    data.bounds,
+                    user_service.x,
+                    user_service.y,
+                    user_service.width,
+                    user_service.height,
+                );
+                assert!(
+                    response_builder.x >= data.bounds.x + data.bounds.width + 1,
+                    "expected the parent-only response node to remain after the nested child along LR flow: child={:?} response_builder=({}, {}, {}x{})",
+                    data.bounds,
+                    response_builder.x,
+                    response_builder.y,
+                    response_builder.width,
+                    response_builder.height,
+                );
+                assert!(
+                    gap_to_user_service <= gap_to_response.saturating_add(2),
+                    "expected the nested child to stay at least as close to the upstream parent-direct node as to the downstream parent-only response node in LR: child={:?} user_service=({}, {}, {}x{}) response_builder=({}, {}, {}x{}) gaps=({}, {})",
+                    data.bounds,
+                    user_service.x,
+                    user_service.y,
+                    user_service.width,
+                    user_service.height,
+                    response_builder.x,
+                    response_builder.y,
+                    response_builder.width,
+                    response_builder.height,
+                    gap_to_user_service,
+                    gap_to_response,
+                );
+            } else {
+                let gap_to_user_service = user_service
+                    .x
+                    .saturating_sub(data.bounds.x.saturating_add(data.bounds.width));
+                let gap_to_response = data
+                    .bounds
+                    .x
+                    .saturating_sub(response_builder.x.saturating_add(response_builder.width));
+                assert!(
+                    data.bounds.x + data.bounds.width <= user_service.x,
+                    "expected the nested child to remain before the parent's direct node along RL flow: child={:?} user_service=({}, {}, {}x{})",
+                    data.bounds,
+                    user_service.x,
+                    user_service.y,
+                    user_service.width,
+                    user_service.height,
+                );
+                assert!(
+                    response_builder.x + response_builder.width <= data.bounds.x,
+                    "expected the parent-only response node to remain before the nested child along RL flow: child={:?} response_builder=({}, {}, {}x{})",
+                    data.bounds,
+                    response_builder.x,
+                    response_builder.y,
+                    response_builder.width,
+                    response_builder.height,
+                );
+                assert!(
+                    gap_to_user_service <= gap_to_response.saturating_add(2),
+                    "expected the nested child to stay at least as close to the upstream parent-direct node as to the downstream parent-only response node in RL: child={:?} user_service=({}, {}, {}x{}) response_builder=({}, {}, {}x{}) gaps=({}, {})",
+                    data.bounds,
+                    user_service.x,
+                    user_service.y,
+                    user_service.width,
+                    user_service.height,
+                    response_builder.x,
+                    response_builder.y,
+                    response_builder.width,
+                    response_builder.height,
+                    gap_to_user_service,
+                    gap_to_response,
+                );
+            }
+        }
+    }
+
+    #[test]
     fn visually_nested_subgraph_gets_clearance_from_overlapping_parent_nodes() {
         let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md")
             .expect("read fixture");
@@ -3824,24 +5821,169 @@ mod tests {
             inner.bounds
         );
         assert!(
-            outer.bounds.width < 55,
-            "expected parent-local packing to avoid the previous over-stretched parent width: outer={:?}",
+            outer.bounds.width <= 56,
+            "expected parent-local packing to stay bounded even with balanced frame padding: outer={:?}",
             outer.bounds
         );
     }
 
     #[test]
-    fn widen_route_pressure_shifts_right_partition_not_just_outgoing_sources() {
+    fn visually_nested_horizontal_siblings_preserve_semantic_sibling_separation() {
+        for fixture in [
+            "tests/fixtures/inputs/subgraph_complex_lr.md",
+            "tests/fixtures/inputs/subgraph_complex_rl.md",
+        ] {
+            let input = std::fs::read_to_string(fixture).expect("read fixture");
+            let parsed = parse(&input, false).expect("parse");
+            let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+                .expect("layout");
+
+            let outer = graph.get_subgraph("SG1").expect("service layer");
+            let inner = graph.get_subgraph("SG2").expect("data layer");
+            let user_service = graph.get_node("S1").expect("user service");
+            let order_service = graph.get_node("S2").expect("order service");
+            let response = graph.get_node("Response").expect("response");
+
+            let overlaps = |node: &Node, bounds: &crate::graph::Rectangle| {
+                let node_left = node.x;
+                let node_right = node.x + node.width.saturating_sub(1);
+                let node_top = node.y;
+                let node_bottom = node.y + node.height.saturating_sub(1);
+                let bounds_right = bounds.x + bounds.width;
+                let bounds_bottom = bounds.y + bounds.height;
+
+                node_left < bounds_right
+                    && node_right >= bounds.x
+                    && node_top < bounds_bottom
+                    && node_bottom >= bounds.y
+            };
+
+            assert!(
+                outer.bounds.contains(inner.bounds.x, inner.bounds.y)
+                    && outer.bounds.contains(
+                        inner.bounds.x + inner.bounds.width.saturating_sub(1),
+                        inner.bounds.y + inner.bounds.height.saturating_sub(1)
+                    ),
+                "expected SG2 to become visually nested inside SG1 for {fixture}: outer={:?} inner={:?}",
+                outer.bounds,
+                inner.bounds
+            );
+            assert!(
+                outer.bounds.y < inner.bounds.y,
+                "expected visually nested horizontal titles to stair-step for {fixture}: outer={:?} inner={:?}",
+                outer.bounds,
+                inner.bounds
+            );
+            assert!(
+                !overlaps(user_service, &inner.bounds) && !overlaps(order_service, &inner.bounds),
+                "expected SG2 to stay visually nested without swallowing SG1 sibling nodes for {fixture}: inner={:?} user_service=({}, {}, {}x{}) order_service=({}, {}, {}x{})",
+                inner.bounds,
+                user_service.x,
+                user_service.y,
+                user_service.width,
+                user_service.height,
+                order_service.x,
+                order_service.y,
+                order_service.width,
+                order_service.height
+            );
+            assert!(
+                !outer.bounds.contains(response.x, response.y)
+                    && !outer.bounds.contains(
+                        response.x + response.width.saturating_sub(1),
+                        response.y + response.height.saturating_sub(1)
+                    ),
+                "expected Response Builder to stay outside the visually nested outer subgraph for {fixture}: outer={:?} response=({}, {}, {}x{})",
+                outer.bounds,
+                response.x,
+                response.y,
+                response.width,
+                response.height
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_nested_child_route_budget_adds_horizontal_border_clearance() {
+        let input = "graph TD\nA[API Gateway]\nsubgraph SG1[Service Layer]\nS1[User Service]\nS2[Order Service]\nsubgraph SG2[Data Layer]\nD1[(User DB)]\nD2[(Order DB)]\nend\nResponse[Response Builder]\nS1 --> S2\nS1 --> D1\nS2 --> D2\nD1 --> Response\nD2 --> Response\nend\nA --> S1\n";
+        let parsed = parse(input, false).expect("parse");
+        let graph =
+            apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default()).expect("layout");
+
+        let child = graph.get_subgraph("SG2").expect("data layer");
+        let user_db = graph.get_node("D1").expect("user db");
+        let order_db = graph.get_node("D2").expect("order db");
+
+        let left_margin = user_db.x.saturating_sub(child.bounds.x);
+        let right_margin = child
+            .bounds
+            .x
+            .saturating_add(child.bounds.width)
+            .saturating_sub(order_db.x.saturating_add(order_db.width));
+
+        assert!(
+            left_margin >= 3,
+            "expected nested child route budgeting to reserve at least three columns between the left border and the first child node: child={:?} user_db=({}, {}, {}x{})",
+            child.bounds,
+            user_db.x,
+            user_db.y,
+            user_db.width,
+            user_db.height,
+        );
+        assert!(
+            right_margin >= 3,
+            "expected nested child route budgeting to reserve at least three columns between the right border and the last child node: child={:?} order_db=({}, {}, {}x{})",
+            child.bounds,
+            order_db.x,
+            order_db.y,
+            order_db.width,
+            order_db.height,
+        );
+    }
+
+    #[test]
+    fn route_budgeted_subgraphs_include_declared_nested_children() {
+        let mut graph = Graph::new();
+        graph.add_subgraph(Subgraph::new("parent", Some("Parent".to_string())));
+
+        let mut child = Subgraph::new("child", Some("Child".to_string()));
+        child.parent_id = Some("parent".to_string());
+        graph.add_subgraph(child);
+        graph
+            .get_subgraph_mut("parent")
+            .expect("parent")
+            .add_child("child");
+
+        let budgeted = route_budgeted_subgraphs(&graph, &HashSet::new());
+
+        assert_eq!(
+            budgeted,
+            vec!["child".to_string()],
+            "expected declared nested children to participate in internal route budgeting"
+        );
+    }
+
+    #[test]
+    fn declared_nested_child_route_pressure_shifts_right_partition_not_just_outgoing_sources() {
         let mut graph = Graph::new();
         graph.add_node(Node::new("left", "Left"));
         graph.add_node(Node::new("right", "Right"));
         graph.add_node(Node::new("sibling", "Sibling"));
         graph.add_node(Node::new("ext_a", "ExtA"));
         graph.add_node(Node::new("ext_b", "ExtB"));
-        graph.add_subgraph(Subgraph::new("sg", Some("SG".to_string())));
-        graph.associate_node_with_subgraph("left", "sg");
-        graph.associate_node_with_subgraph("right", "sg");
-        graph.associate_node_with_subgraph("sibling", "sg");
+        graph.add_subgraph(Subgraph::new("parent", Some("Parent".to_string())));
+
+        let mut child = Subgraph::new("child", Some("Child".to_string()));
+        child.parent_id = Some("parent".to_string());
+        graph.add_subgraph(child);
+        graph
+            .get_subgraph_mut("parent")
+            .expect("parent")
+            .add_child("child");
+
+        graph.associate_node_with_subgraph("left", "child");
+        graph.associate_node_with_subgraph("right", "child");
+        graph.associate_node_with_subgraph("sibling", "child");
         graph.add_edge(Edge::new("left", "ext_a"));
         graph.add_edge(Edge::new("right", "ext_b"));
 
@@ -3864,10 +6006,13 @@ mod tests {
             &graph,
             &mut positions,
             &mut node_rects,
-            "sg",
+            "child",
         );
 
-        assert!(shift > 0, "expected route pressure to widen the child span");
+        assert!(
+            shift > 0,
+            "expected route pressure to widen the declared nested child span"
+        );
         assert_eq!(
             positions.get("left").expect("left").x,
             8,
@@ -3883,6 +6028,262 @@ mod tests {
             24 + shift,
             "non-source sibling on the right partition should shift with the widened subtree"
         );
+    }
+
+    #[test]
+    fn internal_route_span_budget_detects_centered_nested_fanin() {
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("left", "L"));
+        graph.add_node(Node::new("middle", "M"));
+        graph.add_node(Node::new("right", "R"));
+        graph.add_node(Node::new("target", "T"));
+        graph.add_subgraph(Subgraph::new("parent", Some("Parent".to_string())));
+
+        let mut child = Subgraph::new("child", Some("Child".to_string()));
+        child.parent_id = Some("parent".to_string());
+        graph.add_subgraph(child);
+        graph
+            .get_subgraph_mut("parent")
+            .expect("parent")
+            .add_child("child");
+
+        graph.associate_node_with_subgraph("left", "child");
+        graph.associate_node_with_subgraph("middle", "child");
+        graph.associate_node_with_subgraph("right", "child");
+
+        graph.add_edge(Edge::new("left", "target"));
+        graph.add_edge(Edge::new("middle", "target"));
+        graph.add_edge(Edge::new("right", "target"));
+
+        let node_rects = HashMap::from([
+            ("left".to_string(), Rect::new(8, 0, 5, 3)),
+            ("middle".to_string(), Rect::new(14, 0, 5, 3)),
+            ("right".to_string(), Rect::new(20, 0, 5, 3)),
+            ("target".to_string(), Rect::new(14, 8, 5, 3)),
+        ]);
+
+        let budget = internal_route_span_budget_x(
+            &graph,
+            &node_rects,
+            "child",
+            CoarseLayoutConfig::default().min_horizontal_spacing,
+        )
+        .expect("centered fan-in should need span budget");
+
+        assert_eq!(
+            budget.shift_x, 4,
+            "expected centered nested fan-in to widen beyond the coarse node span"
+        );
+        assert_eq!(budget.pivot_center, 16);
+    }
+
+    #[test]
+    fn widen_subgraph_for_internal_route_span_shifts_centered_nested_fanout_partition() {
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("source", "Source"));
+        graph.add_node(Node::new("left", "L"));
+        graph.add_node(Node::new("middle", "M"));
+        graph.add_node(Node::new("right", "R"));
+        graph.add_subgraph(Subgraph::new("parent", Some("Parent".to_string())));
+
+        let mut child = Subgraph::new("child", Some("Child".to_string()));
+        child.parent_id = Some("parent".to_string());
+        graph.add_subgraph(child);
+        graph
+            .get_subgraph_mut("parent")
+            .expect("parent")
+            .add_child("child");
+
+        graph.associate_node_with_subgraph("left", "child");
+        graph.associate_node_with_subgraph("middle", "child");
+        graph.associate_node_with_subgraph("right", "child");
+
+        graph.add_edge(Edge::new("source", "left"));
+        graph.add_edge(Edge::new("source", "middle"));
+        graph.add_edge(Edge::new("source", "right"));
+
+        let mut positions = HashMap::from([
+            ("source".to_string(), Point::new(14, 8)),
+            ("left".to_string(), Point::new(8, 0)),
+            ("middle".to_string(), Point::new(14, 0)),
+            ("right".to_string(), Point::new(20, 0)),
+        ]);
+        let mut node_rects = HashMap::from([
+            ("source".to_string(), Rect::new(14, 8, 5, 3)),
+            ("left".to_string(), Rect::new(8, 0, 5, 3)),
+            ("middle".to_string(), Rect::new(14, 0, 5, 3)),
+            ("right".to_string(), Rect::new(20, 0, 5, 3)),
+        ]);
+
+        let shift = widen_subgraph_for_internal_route_span(
+            &graph,
+            &mut positions,
+            &mut node_rects,
+            "child",
+            CoarseLayoutConfig::default().min_horizontal_spacing,
+        );
+
+        assert_eq!(
+            shift, 4,
+            "expected centered nested fan-out to claim extra span"
+        );
+        assert_eq!(
+            positions.get("left").expect("left").x,
+            8,
+            "left partition should stay anchored"
+        );
+        assert_eq!(
+            positions.get("middle").expect("middle").x,
+            18,
+            "middle target should shift with the widened right partition"
+        );
+        assert_eq!(
+            positions.get("right").expect("right").x,
+            24,
+            "right target should shift with the widened right partition"
+        );
+    }
+
+    #[test]
+    fn nested_horizontal_subgraphs_keep_distinct_title_rows() {
+        let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_nested_lr.md")
+            .expect("read fixture");
+        let parsed = parse(&input, false).expect("parse");
+        let graph =
+            apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default()).expect("layout");
+
+        let outer = graph.get_subgraph("Outer").expect("outer subgraph");
+        let inner = graph.get_subgraph("Inner").expect("inner subgraph");
+        let deep = graph.get_subgraph("Deep").expect("deep subgraph");
+
+        assert!(
+            outer.bounds.y < inner.bounds.y,
+            "expected nested LR outer title row to stay above the inner title row: outer={:?} inner={:?}",
+            outer.bounds,
+            inner.bounds
+        );
+        assert!(
+            inner.bounds.y < deep.bounds.y,
+            "expected nested LR inner title row to stay above the deep title row: inner={:?} deep={:?}",
+            inner.bounds,
+            deep.bounds
+        );
+    }
+
+    #[test]
+    fn titled_vertical_subgraph_balances_left_and_right_inner_padding() {
+        let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_basic_td.md")
+            .expect("read fixture");
+        let parsed = parse(&input, false).expect("parse");
+        let graph =
+            apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default()).expect("layout");
+
+        let subgraph = graph.get_subgraph("SG").expect("subgraph");
+        let left_pad = subgraph
+            .inner_bounds
+            .x
+            .saturating_sub(subgraph.bounds.x.saturating_add(1));
+        let right_pad = subgraph
+            .bounds
+            .x
+            .saturating_add(subgraph.bounds.width.saturating_sub(1))
+            .saturating_sub(subgraph.inner_bounds.x + subgraph.inner_bounds.width);
+
+        assert!(
+            left_pad.abs_diff(right_pad) <= 1,
+            "expected titled TD subgraph content to be horizontally centered inside the final frame: bounds={:?} inner={:?} pads=({}, {})",
+            subgraph.bounds,
+            subgraph.inner_bounds,
+            left_pad,
+            right_pad,
+        );
+    }
+
+    #[test]
+    fn titled_vertical_subgraph_balances_top_and_bottom_inner_padding() {
+        let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_basic_td.md")
+            .expect("read fixture");
+        let parsed = parse(&input, false).expect("parse");
+        let graph =
+            apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default()).expect("layout");
+
+        let subgraph = graph.get_subgraph("SG").expect("subgraph");
+        let top_pad = subgraph.inner_bounds.y.saturating_sub(subgraph.bounds.y);
+        let bottom_pad = subgraph
+            .bounds
+            .y
+            .saturating_add(subgraph.bounds.height.saturating_sub(1))
+            .saturating_sub(subgraph.inner_bounds.y + subgraph.inner_bounds.height);
+
+        assert!(
+            top_pad.abs_diff(bottom_pad) <= 1,
+            "expected titled TD subgraph content to be vertically centered inside the final frame: bounds={:?} inner={:?} pads=({}, {})",
+            subgraph.bounds,
+            subgraph.inner_bounds,
+            top_pad,
+            bottom_pad,
+        );
+    }
+
+    #[test]
+    fn titled_bt_subgraph_balances_top_and_bottom_inner_padding() {
+        let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_basic_bt.md")
+            .expect("read fixture");
+        let parsed = parse(&input, false).expect("parse");
+        let graph =
+            apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default()).expect("layout");
+
+        let subgraph = graph.get_subgraph("SG").expect("subgraph");
+        let top_pad = subgraph.inner_bounds.y.saturating_sub(subgraph.bounds.y);
+        let bottom_pad = subgraph
+            .bounds
+            .y
+            .saturating_add(subgraph.bounds.height.saturating_sub(1))
+            .saturating_sub(subgraph.inner_bounds.y + subgraph.inner_bounds.height);
+
+        assert!(
+            top_pad.abs_diff(bottom_pad) <= 1,
+            "expected titled BT subgraph content to be vertically centered inside the final frame: bounds={:?} inner={:?} pads=({}, {})",
+            subgraph.bounds,
+            subgraph.inner_bounds,
+            top_pad,
+            bottom_pad,
+        );
+    }
+
+    #[test]
+    fn titled_vertical_leaf_subgraphs_with_single_external_trunks_balance_horizontal_padding() {
+        for fixture_path in [
+            "tests/fixtures/inputs/subgraph_direct_td.md",
+            "tests/fixtures/inputs/subgraph_direct_bt.md",
+        ] {
+            let input = std::fs::read_to_string(fixture_path).expect("read fixture");
+            let parsed = parse(&input, false).expect("parse");
+            let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+                .expect("layout");
+
+            for subgraph_id in ["SG1", "SG2"] {
+                let subgraph = graph.get_subgraph(subgraph_id).expect("subgraph");
+                let left_pad = subgraph
+                    .inner_bounds
+                    .x
+                    .saturating_sub(subgraph.bounds.x.saturating_add(1));
+                let right_pad = subgraph
+                    .bounds
+                    .x
+                    .saturating_add(subgraph.bounds.width.saturating_sub(1))
+                    .saturating_sub(subgraph.inner_bounds.x + subgraph.inner_bounds.width);
+
+                assert!(
+                    left_pad.abs_diff(right_pad) <= 1,
+                    "expected titled leaf subgraph {subgraph_id} in {fixture_path} to stay horizontally balanced even with a single external trunk: bounds={:?} inner={:?} pads=({}, {})",
+                    subgraph.bounds,
+                    subgraph.inner_bounds,
+                    left_pad,
+                    right_pad,
+                );
+            }
+        }
     }
 
     #[test]
