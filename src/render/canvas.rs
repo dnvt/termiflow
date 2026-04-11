@@ -32,6 +32,11 @@ pub fn is_arrow(c: char) -> bool {
     )
 }
 
+/// Dedicated portal crossing marker for the active style.
+pub fn is_portal_marker(c: char, style: &StyleChars) -> bool {
+    c == style.portal_pierce
+}
+
 /// Corner characters for the given style
 pub fn is_corner(c: char, s: &StyleChars) -> bool {
     c == s.corner_dr || c == s.corner_dl || c == s.corner_ur || c == s.corner_ul
@@ -399,6 +404,7 @@ impl Canvas {
                             | CellRole::Corner
                             | CellRole::Junction
                             | CellRole::ArrowTip
+                            | CellRole::Portal
                     )
                 {
                     preserved.push((x, y, meta.clone()));
@@ -518,7 +524,11 @@ fn infer_role(c: char) -> CellRole {
 }
 
 fn infer_owned_meta(c: char, owner_kind: CellOwnerKind, owner_id: &str, z_index: u8) -> CellMeta {
-    let role = infer_role(c);
+    let role = if owner_kind == CellOwnerKind::PortalOpening {
+        CellRole::Portal
+    } else {
+        infer_role(c)
+    };
     let final_owner_kind = match (owner_kind, role) {
         (CellOwnerKind::CycleEdge, CellRole::ArrowTip) => CellOwnerKind::CycleEdge,
         (_, CellRole::ArrowTip) => CellOwnerKind::ArrowHead,

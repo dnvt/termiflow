@@ -86,7 +86,7 @@ pub struct Cli {
     #[arg(short, long, value_name = "STYLE")]
     pub style: Option<String>,
 
-    /// Deprecated compatibility flag; ANSI title inversion is the default in TTY print mode
+    /// Deprecated compatibility flag; opt in to ANSI title inversion in TTY print mode
     #[arg(long, hide = true)]
     pub ansi_title_invert: bool,
 
@@ -353,7 +353,7 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     // border row.
     use std::io::Write;
     let mut stdout = std::io::stdout();
-    let output = printable_output(&rendered, stdout.is_terminal());
+    let output = printable_output(&rendered, cli.ansi_title_invert && stdout.is_terminal());
     write!(stdout, "{output}")?;
     if cli.audit && !output.ends_with('\n') {
         writeln!(stdout)?;
@@ -572,8 +572,8 @@ struct PreparedRender {
     outcome: RenderOutcome,
 }
 
-fn printable_output(rendered: &PreparedRender, stdout_is_tty: bool) -> String {
-    if stdout_is_tty {
+fn printable_output(rendered: &PreparedRender, invert_titles: bool) -> String {
+    if invert_titles {
         invert_subgraph_titles_ansi(&rendered.outcome.output, &rendered.graph)
     } else {
         rendered.outcome.output.clone()
@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn printable_output_inverts_titles_by_default_for_tty_print_mode() {
+    fn printable_output_preserves_raw_titles_by_default() {
         use termiflow::graph::Subgraph;
 
         let mut graph = Graph::new();
@@ -1232,11 +1232,11 @@ mod tests {
             },
         };
 
-        let tty_output = printable_output(&rendered, true);
-        let piped_output = printable_output(&rendered, false);
+        let default_output = printable_output(&rendered, false);
+        let inverted_output = printable_output(&rendered, true);
 
-        assert!(tty_output.contains("\u{1b}[7m   My Group   \u{1b}[0m"));
-        assert_eq!(piped_output, rendered.outcome.output);
+        assert_eq!(default_output, rendered.outcome.output);
+        assert!(inverted_output.contains("\u{1b}[7m   My Group   \u{1b}[0m"));
     }
 
     #[test]

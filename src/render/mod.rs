@@ -700,6 +700,7 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         &chars,
         subgraph_chars,
     );
+    finalize_dedicated_portal_markers(&mut canvas, graph, &portal_slots, &chars);
     refresh_provenance(
         &mut canvas,
         graph,
@@ -708,6 +709,16 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         graph.direction,
         &edge_label_placements,
     );
+    if stabilize_routing_topology(&mut canvas, &chars) {
+        refresh_provenance(
+            &mut canvas,
+            graph,
+            &chars,
+            &portal_slots,
+            graph.direction,
+            &edge_label_placements,
+        );
+    }
     let semantic_frame = SemanticFrame::from_canvas(&canvas);
     let critic_report = analyze(graph, &semantic_frame, graph.direction, &chars);
     if debug_critic {
@@ -730,6 +741,30 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         layout_attempts: 1,
         layout_repairs_applied: 0,
     })
+}
+
+pub(crate) fn stamp_portal_opening(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    chars: &crate::style::StyleChars,
+    owner_id: &str,
+    z_index: u8,
+) {
+    if x >= canvas.width || y >= canvas.height || is_textual(canvas.get(x, y)) {
+        return;
+    }
+    if is_node_owned_cell(canvas, x, y) {
+        return;
+    }
+    canvas.set_owned(
+        x,
+        y,
+        chars.portal_pierce,
+        semantic::CellOwnerKind::PortalOpening,
+        owner_id,
+        z_index,
+    );
 }
 
 fn pad_string(input: &str, pad: usize) -> String {
@@ -1716,14 +1751,7 @@ fn finalize_horizontal_side_portals(
         if x >= canvas.width || y >= canvas.height || is_node_owned_cell(canvas, x, y) {
             return;
         }
-        canvas.set_owned(
-            x,
-            y,
-            chars.edge_h,
-            semantic::CellOwnerKind::PortalOpening,
-            "final_side_portal",
-            4,
-        );
+        stamp_portal_opening(canvas, x, y, chars, "final_side_portal", 4);
     };
 
     let is_horizontalish = |c: char| {
@@ -1816,6 +1844,150 @@ fn finalize_horizontal_side_portals(
                 }
             }
         }
+    }
+}
+
+fn finalize_dedicated_portal_markers(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    slots: &HashMap<String, PortalSlots>,
+    chars: &crate::style::StyleChars,
+) {
+    let is_route_neighbor = |x: usize, y: usize, canvas: &Canvas| {
+        canvas.get_meta(x, y).is_some_and(|meta| {
+            matches!(
+                meta.owner_kind,
+                CellOwnerKind::EdgeSegment
+                    | CellOwnerKind::CycleEdge
+                    | CellOwnerKind::ArrowHead
+                    | CellOwnerKind::Junction
+                    | CellOwnerKind::PortalOpening
+            )
+        }) || canvas::is_arrow(canvas.get(x, y))
+    };
+
+    let border_cell_is_route = |x: usize, y: usize, canvas: &Canvas| {
+        canvas.get_meta(x, y).is_some_and(|meta| {
+            matches!(
+                meta.owner_kind,
+                CellOwnerKind::EdgeSegment
+                    | CellOwnerKind::CycleEdge
+                    | CellOwnerKind::ArrowHead
+                    | CellOwnerKind::Junction
+                    | CellOwnerKind::PortalOpening
+            )
+        }) || canvas::is_arrow(canvas.get(x, y))
+    };
+
+    let slot_has_route_neighbor = |x: usize, y: usize, canvas: &Canvas| {
+        y.checked_sub(1)
+            .is_some_and(|yy| is_route_neighbor(x, yy, canvas))
+            || (y + 1 < canvas.height && is_route_neighbor(x, y + 1, canvas))
+            || x.checked_sub(1)
+                .is_some_and(|xx| is_route_neighbor(xx, y, canvas))
+            || (x + 1 < canvas.width && is_route_neighbor(x + 1, y, canvas))
+    };
+
+    let horizontal_border_is_used = |x: usize, y: usize, canvas: &Canvas| {
+        let up = y
+            .checked_sub(1)
+            .is_some_and(|yy| is_route_neighbor(x, yy, canvas));
+        let down = y + 1 < canvas.height && is_route_neighbor(x, y + 1, canvas);
+        let left = x
+            .checked_sub(1)
+            .is_some_and(|xx| is_route_neighbor(xx, y, canvas));
+        let right = x + 1 < canvas.width && is_route_neighbor(x + 1, y, canvas);
+
+        (up || down) && ((up && down) || left || right || border_cell_is_route(x, y, canvas))
+    };
+
+    let mut markers: Vec<(usize, usize, String)> = Vec::new();
+    let mut push_marker = |x: usize, y: usize, owner_id: &str| {
+        if markers.iter().any(|(mx, my, _)| *mx == x && *my == y) {
+            return;
+        }
+        markers.push((x, y, owner_id.to_string()));
+    };
+
+    for y in 0..canvas.height {
+        for x in 0..canvas.width {
+            let Some(meta) = canvas.get_meta(x, y) else {
+                continue;
+            };
+            if meta.owner_kind == CellOwnerKind::PortalOpening
+                && slot_has_route_neighbor(x, y, canvas)
+            {
+                push_marker(x, y, meta.owner_id.as_deref().unwrap_or("portal"));
+            }
+        }
+    }
+
+    for subgraph in &graph.subgraphs {
+        let bounds = &subgraph.bounds;
+        if !bounds.is_valid() {
+            continue;
+        }
+        let title_y = subgraph_title_y(bounds, graph.direction);
+        let title_span = subgraph
+            .title
+            .as_deref()
+            .and_then(|title| title_span(bounds, title, graph.direction));
+        let is_title_protected_cell = |x: usize, y: usize| {
+            y == title_y && title_span.is_some_and(|(start, end)| x >= start && x < end)
+        };
+
+        if let Some(portals) = slots.get(&subgraph.id) {
+            for &x in &portals.top {
+                let px = clamp_horizontal(bounds, x);
+                if !is_title_protected_cell(px, bounds.y)
+                    && slot_has_route_neighbor(px, bounds.y, canvas)
+                {
+                    push_marker(px, bounds.y, &subgraph.id);
+                }
+            }
+            let bottom_y = bounds.y + bounds.height.saturating_sub(1);
+            for &x in &portals.bottom {
+                let px = clamp_horizontal(bounds, x);
+                if !is_title_protected_cell(px, bottom_y)
+                    && slot_has_route_neighbor(px, bottom_y, canvas)
+                {
+                    push_marker(px, bottom_y, &subgraph.id);
+                }
+            }
+            for &y in &portals.left {
+                let py = clamp_vertical(bounds, y);
+                if slot_has_route_neighbor(bounds.x, py, canvas) {
+                    push_marker(bounds.x, py, &subgraph.id);
+                }
+            }
+            let right_x = bounds.x + bounds.width.saturating_sub(1);
+            for &y in &portals.right {
+                let py = clamp_vertical(bounds, y);
+                if slot_has_route_neighbor(right_x, py, canvas) {
+                    push_marker(right_x, py, &subgraph.id);
+                }
+            }
+        }
+
+        if bounds.width >= 3 {
+            let top_y = bounds.y;
+            let bottom_y = bounds.y + bounds.height.saturating_sub(1);
+            for x in (bounds.x + 1)..(bounds.x + bounds.width.saturating_sub(1)) {
+                if !is_title_protected_cell(x, top_y) && horizontal_border_is_used(x, top_y, canvas)
+                {
+                    push_marker(x, top_y, &subgraph.id);
+                }
+                if !is_title_protected_cell(x, bottom_y)
+                    && horizontal_border_is_used(x, bottom_y, canvas)
+                {
+                    push_marker(x, bottom_y, &subgraph.id);
+                }
+            }
+        }
+    }
+
+    for (x, y, owner_id) in markers {
+        stamp_portal_opening(canvas, x, y, chars, &owner_id, 4);
     }
 }
 
@@ -1976,14 +2148,7 @@ fn restore_subgraph_borders(
                     || is_horizontalish(left)
                     || is_horizontalish(right)
                 {
-                    canvas.set_owned(
-                        left_x,
-                        y,
-                        chars.edge_h,
-                        semantic::CellOwnerKind::PortalOpening,
-                        "side_portal_band",
-                        4,
-                    );
+                    stamp_portal_opening(canvas, left_x, y, chars, "side_portal_band", 4);
                     continue;
                 }
             }
@@ -2018,14 +2183,7 @@ fn restore_subgraph_borders(
                     || is_horizontalish(left)
                     || is_horizontalish(right)
                 {
-                    canvas.set_owned(
-                        right_x,
-                        y,
-                        chars.edge_h,
-                        semantic::CellOwnerKind::PortalOpening,
-                        "side_portal_band",
-                        4,
-                    );
+                    stamp_portal_opening(canvas, right_x, y, chars, "side_portal_band", 4);
                     continue;
                 }
             }
@@ -3125,14 +3283,14 @@ mod tests {
         let output = render(&graph, &config).expect("render td portal");
         let portal_y = graph.get_subgraph("sg").map(|sg| sg.bounds.y).unwrap_or(0);
         let portal_x = graph.get_node("B").map(|n| n.center_x()).unwrap_or(0);
-        // With titled subgraphs we intentionally avoid drawing on the title row;
-        // the "pierce" should appear just inside the container.
-        let glyph = char_at(&output, portal_x, portal_y.saturating_add(1)).unwrap_or(' ');
-        let is_pierced = matches!(glyph, '│' | '┬' | '┴' | '┼');
+        let glyph = char_at(&output, portal_x, portal_y).unwrap_or(' ');
+        let is_pierced = glyph
+            == CompositeStyle::from_base(BaseStyle::Unicode)
+                .to_style_chars(BaseStyle::Unicode)
+                .portal_pierce;
         assert!(
             is_pierced,
-            "expected vertical pierce just inside at ({portal_x},{}), got '{glyph}'\n{output}",
-            portal_y.saturating_add(1)
+            "expected dedicated portal marker on top border at ({portal_x},{portal_y}), got '{glyph}'\n{output}",
         );
     }
 
@@ -3183,12 +3341,17 @@ mod tests {
         let sg = graph.get_subgraph("sg").expect("subgraph");
         let glyph = ((sg.bounds.y + 1)..(sg.bounds.y + sg.bounds.height.saturating_sub(1)))
             .filter_map(|y| char_at(&output, portal_x, y))
-            .find(|glyph| matches!(glyph, '─' | '━'))
+            .find(|glyph| {
+                *glyph
+                    == CompositeStyle::from_base(BaseStyle::Unicode)
+                        .to_style_chars(BaseStyle::Unicode)
+                        .portal_pierce
+            })
             .unwrap_or(' ');
         let is_pierced = glyph != ' ';
         assert!(
             is_pierced,
-            "expected clean horizontal side-wall opening somewhere on left border x={portal_x}, got '{glyph}'\n{output}"
+            "expected dedicated portal marker somewhere on left border x={portal_x}, got '{glyph}'\n{output}"
         );
     }
 

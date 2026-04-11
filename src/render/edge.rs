@@ -11,7 +11,7 @@ use crate::style::StyleChars;
 use super::canvas::Canvas;
 use super::provenance::edge_owner_id;
 use super::semantic::CellOwnerKind;
-use super::{is_textual, subgraph_title_y, title_span};
+use super::{is_textual, stamp_portal_opening, subgraph_title_y, title_span};
 
 const ROUTE_Z_INDEX: u8 = 5;
 
@@ -1647,14 +1647,7 @@ fn route_convergent_from_subgraph_bt(
         // leave it alone.  A plain │ through the subgraph border is correct here;
         // the degree-mismatch stabilizer would otherwise upgrade it to ┼.
         if merge_x < canvas.width && !is_textual(canvas.get(merge_x, top_y)) {
-            canvas.set_owned(
-                merge_x,
-                top_y,
-                style.edge_v,
-                CellOwnerKind::PortalOpening,
-                "merge_portal",
-                ROUTE_Z_INDEX,
-            );
+            stamp_portal_opening(canvas, merge_x, top_y, style, "merge_portal", ROUTE_Z_INDEX);
         }
     }
 
@@ -1914,11 +1907,11 @@ fn route_convergent_from_subgraph_lr(
         && merge_y < canvas.height
         && !is_textual(canvas.get(border_x, merge_y))
     {
-        canvas.set_owned(
+        stamp_portal_opening(
+            canvas,
             border_x,
             merge_y,
-            style.edge_h,
-            CellOwnerKind::PortalOpening,
+            style,
             "merge_portal",
             ROUTE_Z_INDEX,
         );
@@ -3098,11 +3091,11 @@ fn route_cross_subgraph_td(
         for x in (stem_start_x + 1)..target_left_border {
             set_route_edge_char(canvas, x, entry_y, style.edge_h, style, owner);
         }
-        canvas.set_owned(
+        stamp_portal_opening(
+            canvas,
             target_left_border,
             entry_y,
-            style.edge_h,
-            CellOwnerKind::PortalOpening,
+            style,
             "side_entry_portal",
             ROUTE_Z_INDEX,
         );
@@ -3164,11 +3157,11 @@ fn route_cross_subgraph_td(
         for x in (target_right_border + 1)..stem_start_x {
             set_route_edge_char(canvas, x, entry_y, style.edge_h, style, owner);
         }
-        canvas.set_owned(
+        stamp_portal_opening(
+            canvas,
             target_right_border,
             entry_y,
-            style.edge_h,
-            CellOwnerKind::PortalOpening,
+            style,
             "side_entry_portal",
             ROUTE_Z_INDEX,
         );

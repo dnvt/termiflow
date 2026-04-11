@@ -92,6 +92,9 @@ pub struct StyleChars {
     // End markers (--o / --x)
     pub circle_end: char,
     pub cross_end: char,
+
+    // Dedicated subgraph portal crossing marker
+    pub portal_pierce: char,
 }
 
 impl BaseStyle {
@@ -269,6 +272,7 @@ impl CompositeStyle {
             // End marker components (from arrow style)
             circle_end: arrow_chars.circle_end,
             cross_end: arrow_chars.cross_end,
+            portal_pierce: arrow_chars.circle_end,
         }
     }
 
@@ -310,6 +314,7 @@ pub static ASCII_CHARS: StyleChars = StyleChars {
     dotted_v: ':',
     circle_end: 'o',
     cross_end: 'x',
+    portal_pierce: 'o',
 };
 
 pub static UNICODE_CHARS: StyleChars = StyleChars {
@@ -340,6 +345,7 @@ pub static UNICODE_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
+    portal_pierce: '○',
 };
 
 pub static DOUBLE_CHARS: StyleChars = StyleChars {
@@ -370,6 +376,7 @@ pub static DOUBLE_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
+    portal_pierce: '○',
 };
 
 pub static ROUNDED_CHARS: StyleChars = StyleChars {
@@ -400,6 +407,7 @@ pub static ROUNDED_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
+    portal_pierce: '○',
 };
 
 pub static HEAVY_CHARS: StyleChars = StyleChars {
@@ -430,6 +438,7 @@ pub static HEAVY_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
+    portal_pierce: '○',
 };
 
 pub static DOTS_CHARS: StyleChars = StyleChars {
@@ -460,6 +469,7 @@ pub static DOTS_CHARS: StyleChars = StyleChars {
     dotted_v: ':',
     circle_end: '○',
     cross_end: '✕',
+    portal_pierce: '○',
 };
 
 pub static PLUS_CHARS: StyleChars = StyleChars {
@@ -490,6 +500,7 @@ pub static PLUS_CHARS: StyleChars = StyleChars {
     dotted_v: ':',
     circle_end: 'o',
     cross_end: 'x',
+    portal_pierce: 'o',
 };
 
 pub static STARS_CHARS: StyleChars = StyleChars {
@@ -520,6 +531,7 @@ pub static STARS_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
+    portal_pierce: '○',
 };
 
 pub static BLOCKS_CHARS: StyleChars = StyleChars {
@@ -550,6 +562,7 @@ pub static BLOCKS_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
+    portal_pierce: '○',
 };
 
 /// Truncate label to fit within max display columns

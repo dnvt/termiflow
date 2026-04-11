@@ -58,15 +58,15 @@ Current declared support:
 - Nested `subgraph ... end` containers are supported in `TD`, `LR`, `BT`, and
   `RL`.
 - Parent/child containment, title headroom, portal allocation, and clean
-  side-wall openings are all part of the active renderer contract.
+  boundary pierce markers are all part of the active renderer contract.
 
 Border-crossing rule:
 
 - Borders are portal boundaries, not merge or branch targets.
-- `TD` / `TB` / `BT`: a real top/bottom pierce may look like a crossing on the
-  border row.
-- `LR` / `RL`: a side-wall pierce must stay a clean horizontal opening rather
-  than turning into a junction glyph on the border column.
+- Used portal crossings render with one dedicated pierce marker rather than
+  borrowing border-line, tee, or cross glyphs.
+- The marker is `o` in ASCII-oriented styles and `○` in Unicode-oriented
+  styles.
 
 ---
 

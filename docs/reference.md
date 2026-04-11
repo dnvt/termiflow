@@ -12,6 +12,8 @@
 - `--tui`: alternate-screen live preview with auto-reload, panning, and findings overlay. Partial first-beta mode: raw-mode input, wheel scrolling, and some fullscreen keybindings depend on the terminal emulator.
 - `--watch`: primary-screen watch mode with low-flicker inline redraw in normal scrollback. This is the safer live-preview mode when you want normal scrollback and fewer fullscreen-emulator surprises.
 - `--print [FILE]`: explicit print mode (optional file argument; `-` means stdin).
+- Print mode preserves the renderer's raw text output. It does not apply a
+  separate TTY-only title transformation by default.
 
 ## Common Flags
 
@@ -79,28 +81,27 @@ Supported patterns:
 - Subgraph borders are portal boundaries, not merge or branch targets.
 - Edge topology must live inside or outside the subgraph; the border is only the
   pierce point between those route segments.
-- `TD` / `TB` / `BT`: a vertical shaft crossing a horizontal border may render
-  as a crossing or tee when that border row is truly intersected.
-- `LR` / `RL`: a horizontal shaft crossing a vertical border should stay a clean
-  horizontal portal opening, not a junction glyph on the side wall.
+- All used portal crossings render with a dedicated pierce marker:
+  `o` in ASCII-oriented styles and `○` in Unicode-oriented styles.
+- The pierce marker is not a junction glyph. It marks the boundary crossing
+  while the real route topology remains inside or outside the subgraph.
 - Edges never semantically "point to another edge". If a border cell looks like
-  a crossing, that is only the visual portal glyph for the routed shaft.
+  special, that is only the portal marker, not an edge-to-edge merge.
 
 Directional matrix:
 
 | Flow | Border Crossed | Allowed Border Glyph Behavior | Reject |
 |------|----------------|-------------------------------|--------|
-| `TD` / `TB` | top border | vertical shaft may pierce just under the title band; a true border-row intersection may read as `│`, `┬`, `┴`, or `┼` depending real degree | merge bars or arrows living on the title row |
-| `BT` | bottom border | vertical shaft may pierce just above the bottom title/border row; a true border-row intersection may read as `│`, `┬`, `┴`, or `┼` depending real degree | merge bars or arrows living on the protected title span |
-| `LR` | left/right border | border cell must resolve to a plain horizontal opening (`─` / `-` / style equivalent) | `├`, `┤`, `┼`, `+`, or any side-wall merge glyph |
-| `RL` | left/right border | same as `LR`; the wall is only a portal opening | `├`, `┤`, `┼`, `+`, or any side-wall merge glyph |
+| `TD` / `TB` | top border | border cell resolves to the dedicated pierce marker on a title-safe slot | merge bars, arrows, or junction glyphs living on the title row |
+| `BT` | bottom border | border cell resolves to the dedicated pierce marker on a protected bottom slot | merge bars, arrows, or junction glyphs living on the protected title span |
+| `LR` | left/right border | side wall resolves to the dedicated pierce marker at the used portal row | `├`, `┤`, `┼`, `+`, or any side-wall merge glyph |
+| `RL` | left/right border | same as `LR`; the wall shows the same dedicated pierce marker | `├`, `┤`, `┼`, `+`, or any side-wall merge glyph |
 
 Practical rule:
 
-- If the route is crossing a top/bottom border, the border row may visually
-  participate in the topology.
-- If the route is crossing a left/right border, the wall must stay a clean hole
-  and the topology must be on one side or the other, never on the wall itself.
+- Every used portal crossing gets the same dedicated marker on the border.
+- The border marker is visual only; the actual merge, branch, or turn belongs
+  on one side of the border, never in the border cell itself.
 
 ## Current Gaps And Caveats
 

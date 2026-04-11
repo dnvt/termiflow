@@ -152,18 +152,19 @@ synchronized update markers. Targeted layout, render-feedback, and TUI tests
 cover those slices and are green in the current worktree. The horizontal
 display-consistency child slice is now also closed: `LR`/`RL` visually nested
 sibling subgraphs preserve semantic separation from parent-only and downstream
-nodes, and their side-entry seams render as clean portal openings instead of
-junction corruption. The subgraph-crossing contract is now explicit as well:
-borders are portal boundaries, not merge targets; `TD`/`BT` may show true
-crossings on pierced top/bottom borders, while `LR`/`RL` side-wall pierces
-must stay clean horizontal openings rather than junction-like border merges.
+nodes, and their side-entry seams render with the dedicated portal marker
+instead of junction corruption. The subgraph-crossing contract is now explicit
+as well: borders are portal boundaries, not merge targets, and every used
+border crossing now resolves to the dedicated pierce marker instead of
+borrowing tee/cross/line glyphs from route topology.
 The measured-quality track is now stronger too: the curated visual-audit suite
 explicitly includes the route-dense `subgraph_complex_{lr,rl}` fixtures and the
 LR/RL sibling-subgraph collision pair, Criterion now includes a
 `route_dense_subgraphs` group built from the complex subgraph family across
 orientations, and the critic has an explicit oracle for the side-wall contract
-so junction-like LR/RL border merges are rejected while clean portal openings
-remain accepted. The final text/terminal exactness slice is now complete too:
+so junction-like LR/RL border merges are rejected while dedicated portal
+markers remain accepted. The final text/terminal exactness slice is now
+complete too:
 node-label measurement, hard wrapping, preview/status wrapping, and edge-label
 truncation now share grapheme-safe display-column helpers instead of mixing
 byte, char, and width-based loops, and the curated audit now explicitly covers

@@ -178,10 +178,10 @@ Cross-subgraph routing contract:
 - Subgraph borders are portal boundaries only. Merge bars, branch spans, and
   other topology must terminate inside or outside the subgraph, not on the
   border itself.
-- The renderer may draw a border cell with a crossing-style glyph only when the
-  routed shaft truly intersects that border row or column as a portal.
-- For `LR` / `RL`, side-wall pierces should read as clean horizontal portal
-  openings rather than junction-like side-wall merges.
+- Used border crossings render with one dedicated pierce marker rather than
+  borrowing line, tee, or cross glyphs from route topology.
+- The dedicated marker is `o` in ASCII-oriented styles and `○` in
+  Unicode-oriented styles.
 - Edges do not target other edges. Any crossing-looking border cell is a visual
   artifact of the portal, not an edge-to-edge semantic connection.
 
@@ -189,9 +189,9 @@ Directional validation matrix:
 
 | Direction family | Crossing surface | Expected border behavior | Invalid behavior |
 |------------------|------------------|--------------------------|------------------|
-| `TD` / `TB` | top border | vertical shaft may intersect the border row or pass just below the title band; crossing/tee glyphs are acceptable only when the real route degree warrants them | title-row corruption, arrows resting on foreign borders, merge spans living on the title row |
-| `BT` | bottom border | vertical shaft may intersect the bottom border row or pass just above the protected bottom title span | bottom-title corruption, arrows resting on the protected border span |
-| `LR` / `RL` | side wall | border cell must remain a plain horizontal portal opening; the merge or branch must be either inside or outside the container | side-wall `├` / `┤` / `┼` / `+` style junctions, or arrows terminating on the wall |
+| `TD` / `TB` | top border | border cell resolves to the dedicated pierce marker on a title-safe slot | title-row corruption, arrows resting on foreign borders, merge spans or junction glyphs living on the title row |
+| `BT` | bottom border | border cell resolves to the dedicated pierce marker on a protected bottom slot | bottom-title corruption, arrows resting on the protected border span, or junction glyphs on the border |
+| `LR` / `RL` | side wall | border cell resolves to the dedicated pierce marker; the merge or branch must be either inside or outside the container | side-wall `├` / `┤` / `┼` / `+` style junctions, or arrows terminating on the wall |
 
 ### 3.3 Character Selection Rules
 

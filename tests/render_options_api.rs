@@ -655,9 +655,15 @@ fn render_with_feedback_keeps_nested_child_bottom_border_clean_after_fanin() {
     let outcome =
         termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
     let bottom_y = inner.bounds.y + inner.bounds.height.saturating_sub(1);
+    let portal_marker = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
+        .to_style_chars(termiflow::BaseStyle::Unicode)
+        .portal_pierce;
     let edge_owned_cells = (inner.bounds.x..inner.bounds.x + inner.bounds.width)
         .filter_map(|x| outcome.semantic_frame.get(x, bottom_y))
-        .filter(|cell| cell.owner_kind == termiflow::render::semantic::CellOwnerKind::EdgeSegment)
+        .filter(|cell| {
+            cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
+                && cell.ch == portal_marker
+        })
         .count();
 
     assert_eq!(
@@ -676,6 +682,9 @@ fn render_with_feedback_keeps_nested_child_side_entry_visible_on_left_border() {
 
     let outcome =
         termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
+    let portal_marker = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
+        .to_style_chars(termiflow::BaseStyle::Unicode)
+        .portal_pierce;
     let side_entry = ((inner.bounds.y + 1)
         ..(inner.bounds.y + inner.bounds.height.saturating_sub(1)))
         .filter_map(|y| outcome.semantic_frame.get(inner.bounds.x, y))
@@ -683,10 +692,7 @@ fn render_with_feedback_keeps_nested_child_side_entry_visible_on_left_border() {
         .expect("expected explicit side-entry portal on nested child left border");
 
     assert!(
-        matches!(
-            side_entry.ch,
-            '-' | '─' | '━' | '┼' | '├' | '┤' | '+' | '╋' | '┣' | '┫'
-        ),
+        side_entry.ch == portal_marker,
         "expected nested child left border entry to stay visibly open, got '{}'\n{}",
         side_entry.ch,
         outcome.output
@@ -761,9 +767,6 @@ fn render_with_feedback_keeps_horizontal_visual_nesting_side_entries_simple_on_b
     fn is_junctionish(ch: char) -> bool {
         matches!(ch, '+' | '┼' | '├' | '┤' | '╋' | '┣' | '┫')
     }
-    fn is_horizontal_opening(ch: char) -> bool {
-        matches!(ch, '-' | '─' | '━')
-    }
 
     for (fixture, use_right_border) in [
         ("tests/fixtures/inputs/subgraph_complex_lr.md", false),
@@ -780,6 +783,9 @@ fn render_with_feedback_keeps_horizontal_visual_nesting_side_entries_simple_on_b
         };
 
         for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let portal_marker = termiflow::CompositeStyle::from_base(style)
+                .to_style_chars(style)
+                .portal_pierce;
             let outcome = termiflow::render_with_feedback(
                 &input,
                 termiflow::RenderOptions::new().with_style(style),
@@ -790,13 +796,13 @@ fn render_with_feedback_keeps_horizontal_visual_nesting_side_entries_simple_on_b
                 .filter_map(|y| outcome.semantic_frame.get(border_x, y))
                 .find(|cell| {
                     cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
-                        || is_horizontal_opening(cell.ch)
+                        || cell.ch == portal_marker
                 })
-                .expect("expected visible horizontal side-entry portal on nested child");
+                .expect("expected visible dedicated side-entry portal on nested child");
 
             assert!(
-                is_horizontal_opening(portal.ch),
-                "expected the horizontal visual-nesting side-entry to stay a simple horizontal opening for {} in {:?}, got '{}'\n{}",
+                portal.ch == portal_marker,
+                "expected the horizontal visual-nesting side-entry to use the dedicated portal marker for {} in {:?}, got '{}'\n{}",
                 fixture,
                 style,
                 portal.ch,
@@ -816,10 +822,6 @@ fn render_with_feedback_keeps_horizontal_visual_nesting_side_entries_simple_on_b
 
 #[test]
 fn render_with_feedback_centers_horizontal_visual_nesting_fanin_exit_between_sources() {
-    fn is_horizontal_opening(ch: char) -> bool {
-        matches!(ch, '-' | '─' | '━')
-    }
-
     for (fixture, merge_on_right_border) in [
         ("tests/fixtures/inputs/subgraph_complex_lr.md", true),
         ("tests/fixtures/inputs/subgraph_complex_rl.md", false),
@@ -837,6 +839,9 @@ fn render_with_feedback_centers_horizontal_visual_nesting_fanin_exit_between_sou
         } else {
             inner.bounds.x
         };
+        let portal_marker = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
+            .to_style_chars(termiflow::BaseStyle::Unicode)
+            .portal_pierce;
         let outcome =
             termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
         let (portal_y, portal) = ((inner.bounds.y + 1)
@@ -849,7 +854,7 @@ fn render_with_feedback_centers_horizontal_visual_nesting_fanin_exit_between_sou
             })
             .find(|(_, cell)| {
                 cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
-                    || is_horizontal_opening(cell.ch)
+                    || cell.ch == portal_marker
             })
             .expect("expected dedicated nested child exit portal on the fan-in border");
 
@@ -863,8 +868,8 @@ fn render_with_feedback_centers_horizontal_visual_nesting_fanin_exit_between_sou
             outcome.output
         );
         assert!(
-            is_horizontal_opening(portal.ch),
-            "expected the centered merge portal to stay a simple opening for {}, got '{}'\n{}",
+            portal.ch == portal_marker,
+            "expected the centered merge portal to use the dedicated portal marker for {}, got '{}'\n{}",
             fixture,
             portal.ch,
             outcome.output
@@ -881,10 +886,6 @@ fn render_with_feedback_centers_horizontal_visual_nesting_fanin_exit_between_sou
 
 #[test]
 fn render_with_feedback_uses_one_clean_horizontal_exit_portal_for_horizontal_fanin_pilot() {
-    fn is_horizontal_opening(ch: char) -> bool {
-        matches!(ch, '-' | '─' | '━')
-    }
-
     for (fixture, use_right_border) in [
         ("tests/fixtures/inputs/subgraph_complex_lr.md", true),
         ("tests/fixtures/inputs/subgraph_complex_rl.md", false),
@@ -900,6 +901,9 @@ fn render_with_feedback_uses_one_clean_horizontal_exit_portal_for_horizontal_fan
         };
 
         for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let portal_marker = termiflow::CompositeStyle::from_base(style)
+                .to_style_chars(style)
+                .portal_pierce;
             let outcome = termiflow::render_canvas_with_feedback(
                 &graph,
                 &termiflow::Config {
@@ -915,8 +919,8 @@ fn render_with_feedback_uses_one_clean_horizontal_exit_portal_for_horizontal_fan
                     outcome.semantic_frame.get(border_x, y).and_then(|cell| {
                         (cell.owner_kind
                             == termiflow::render::semantic::CellOwnerKind::PortalOpening
-                            || is_horizontal_opening(cell.ch))
-                        .then_some((y, cell.ch))
+                            || cell.ch == portal_marker)
+                            .then_some((y, cell.ch))
                     })
                 })
                 .collect();
@@ -931,8 +935,8 @@ fn render_with_feedback_uses_one_clean_horizontal_exit_portal_for_horizontal_fan
                 outcome.output
             );
             assert!(
-                is_horizontal_opening(used_side_portals[0].1),
-                "expected the pilot exit portal to stay a simple horizontal opening for {} in {:?}, got '{}'\n{}",
+                used_side_portals[0].1 == portal_marker,
+                "expected the pilot exit portal to use the dedicated portal marker for {} in {:?}, got '{}'\n{}",
                 fixture,
                 style,
                 used_side_portals[0].1,
@@ -1367,6 +1371,26 @@ fn render_with_feedback_keeps_horizontal_visual_nesting_parity_clean() {
 
 #[test]
 fn render_with_feedback_keeps_subgraph_complex_direction_matrix_clean() {
+    fn is_route_neighbor(
+        frame: &termiflow::render::semantic::SemanticFrame,
+        x: usize,
+        y: usize,
+    ) -> bool {
+        frame.get(x, y).is_some_and(|cell| {
+            matches!(
+                cell.owner_kind,
+                termiflow::render::semantic::CellOwnerKind::EdgeSegment
+                    | termiflow::render::semantic::CellOwnerKind::CycleEdge
+                    | termiflow::render::semantic::CellOwnerKind::ArrowHead
+                    | termiflow::render::semantic::CellOwnerKind::Junction
+                    | termiflow::render::semantic::CellOwnerKind::PortalOpening
+            ) || matches!(
+                cell.ch,
+                'v' | '^' | '<' | '>' | '↓' | '↑' | '←' | '→' | '▼' | '▲' | '◀' | '▶'
+            )
+        })
+    }
+
     for fixture in [
         "tests/fixtures/inputs/subgraph_complex_td.md",
         "tests/fixtures/inputs/subgraph_complex_bt.md",
@@ -1376,6 +1400,9 @@ fn render_with_feedback_keeps_subgraph_complex_direction_matrix_clean() {
         let input = std::fs::read_to_string(fixture).unwrap();
 
         for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let portal_marker = termiflow::CompositeStyle::from_base(style)
+                .to_style_chars(style)
+                .portal_pierce;
             let outcome = termiflow::render_with_feedback(
                 &input,
                 termiflow::RenderOptions::new().with_style(style),
@@ -1401,6 +1428,31 @@ fn render_with_feedback_keeps_subgraph_complex_direction_matrix_clean() {
                 outcome.critic_report.audit_summary().verdict,
                 termiflow::AuditVerdict::Clean,
                 "expected clean subgraph-complex direction matrix output for {} in {:?}\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+
+            let frame = &outcome.semantic_frame;
+            let visible_used_portals: Vec<char> = (0..frame.height)
+                .flat_map(|y| {
+                    (0..frame.width).filter_map(move |x| {
+                        let cell = frame.get(x, y)?;
+                        (cell.owner_kind
+                            == termiflow::render::semantic::CellOwnerKind::PortalOpening
+                            && cell.ch == portal_marker
+                            && ((y > 0 && is_route_neighbor(frame, x, y - 1))
+                                || (y + 1 < frame.height && is_route_neighbor(frame, x, y + 1))
+                                || (x > 0 && is_route_neighbor(frame, x - 1, y))
+                                || (x + 1 < frame.width && is_route_neighbor(frame, x + 1, y))))
+                        .then_some(cell.ch)
+                    })
+                })
+                .collect();
+
+            assert!(
+                !visible_used_portals.is_empty(),
+                "expected at least one used portal in {} in {:?}\n{}",
                 fixture,
                 style,
                 outcome.output
@@ -2004,13 +2056,13 @@ fn render_matches_verified_collision_sibling_subgraphs_lr_snapshots() {
     for (style, upper_crossing, lower_crossing) in [
         (
             termiflow::BaseStyle::Unicode,
-            "┌──────→│  Node B  ├─────────────────────────┐",
-            "└────────────────────────────→│  Node C  ├───┘",
+            "│  Node B  ├───○───○",
+            "└──────────────────────○───○─→│  Node C  ├───┘",
         ),
         (
             termiflow::BaseStyle::Ascii,
-            "+------>|  Node B  +-------------------------+",
-            "+---------------------------->|  Node C  +---+",
+            "|  Node B  +---o---o",
+            "+----------------------o---o->|  Node C  +---+",
         ),
     ] {
         let output =
@@ -2033,13 +2085,13 @@ fn render_matches_verified_collision_parallel_cross_bt_snapshots() {
     for (style, target_crossing, source_crossing) in [
         (
             termiflow::BaseStyle::Unicode,
-            "┗[  Target  ]──│──────│────────┛",
-            "┏━━━━━━┼━━━━━━━━━━━│━━━━━┓",
+            "┗[  Target  ]○○○─────○○────────┛",
+            "┏━━━━━━○○━━━━━○○━━━○○━━━━┓",
         ),
         (
             termiflow::BaseStyle::Ascii,
-            "+[  Target  ]--|------|--------+",
-            "+------+-------|---|-----+",
+            "+[  Target  ]ooo-----oo--------+",
+            "+------oo-----oo---oo----+",
         ),
     ] {
         let outcome = termiflow::render_with_feedback(
