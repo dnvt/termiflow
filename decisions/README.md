@@ -11,7 +11,7 @@ Naming: `DEC-NNN-title.md`
 
 **Status:** Proposed | Decided | Deferred | Superseded
 **Date:** YYYY-MM-DD
-**Decider:** who
+**Decider:** maintainer(s)
 **Context:** why this decision is needed
 **Decision:** what was chosen and why
 **Consequences:** what changes, deferred, or becomes riskier

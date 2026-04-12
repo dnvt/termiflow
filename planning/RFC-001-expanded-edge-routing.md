@@ -278,7 +278,7 @@ Styles already correct:
 4. Verify ASCII and Unicode variants
 
 ### Phase 5: Documentation
-**Files**: `README.md`, `CLAUDE.md`, `docs/README.md`
+**Files**: `README.md`, `AGENTS.md`, `docs/README.md`
 
 1. Update example outputs in docs
 2. Document the visual structure

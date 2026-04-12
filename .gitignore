@@ -19,16 +19,20 @@ Thumbs.db
 # Local render artifacts
 /artifacts/
 
-# AI guidance docs (local only)
+# Optional model-specific local notes
 AGENT.md
 CLAUDE.md
 
-# Maestro / AI workflow state (local only)
+# Local AI/editor state
+.claude/settings.local.json
 .claude/settings.json
 .claude/state/
+
+# Optional local Maestro runtime
 .maestro
-.maestro-project/
 maestro.toml
+
+# Local working context
 context/
 analysis/research-pulse/
 analysis/ingest/

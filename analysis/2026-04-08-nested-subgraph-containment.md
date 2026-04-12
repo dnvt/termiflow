@@ -130,7 +130,7 @@ Cons:
 
 `/maestro:plan` completed in parallel as a draft backlog plan:
 
-- [planning/NESTED_SUBGRAPH_SUPPORT.md](../planning/NESTED_SUBGRAPH_SUPPORT.md)
+- [`planning/NESTED_SUBGRAPH_SUPPORT.md`](../planning/NESTED_SUBGRAPH_SUPPORT.md)
 
 ## Follow-Up Note
 
