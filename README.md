@@ -103,17 +103,27 @@ $ printf 'graph LR\n    subgraph CI\n        A[Push]-->B[Lint]-->C[Test]\n    en
 - **Live preview** - `--watch` for low-flicker inline redraws in normal scrollback; `--tui` for partial alternate-screen panning/reload/findings
 - **Visual audit + repair** - `--audit`, `--optimize-render`, render/layout repair passes, and critic output for polishing difficult ASCII
 
-## Installation (from source)
+## Installation
+
+### Homebrew (macOS and Linux — no Rust required)
+
+```bash
+brew install dnvt/termiflow/termiflow
+```
+
+### crates.io
+
+```bash
+cargo install termiflow
+```
+
+### From source
 
 ```bash
 cargo install --path .
 ```
 
-This installs both `termiflow` and `tw` (a short alias). To install only `termiflow`:
-
-```bash
-cargo install --path . --bin termiflow
-```
+All three options install both `termiflow` and `tw`.
 
 ## Quickstart
 
