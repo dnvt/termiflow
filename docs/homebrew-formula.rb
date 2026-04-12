@@ -21,22 +21,22 @@ class Termiflow < Formula
   on_macos do
     on_arm do
       url "https://github.com/dnvt/termiflow/releases/download/v#{version}/termiflow-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "PLACEHOLDER_aarch64_apple_darwin"
+      sha256 "b06de3dfb424b0a5b54d1fd391f2912a2b3e0e3960888ddd4cc83c7934c012e0"
     end
     on_intel do
       url "https://github.com/dnvt/termiflow/releases/download/v#{version}/termiflow-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "PLACEHOLDER_x86_64_apple_darwin"
+      sha256 "8cfb7e679b5527e03ea6b040b4dd5a6277904daa65af945769eaa69a42a9af8a"
     end
   end
 
   on_linux do
     on_arm do
       url "https://github.com/dnvt/termiflow/releases/download/v#{version}/termiflow-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "PLACEHOLDER_aarch64_unknown_linux_gnu"
+      sha256 "f97dafce21c347b65239e971d2bdce94615f73226f16c896feda1479e26858f0"
     end
     on_intel do
       url "https://github.com/dnvt/termiflow/releases/download/v#{version}/termiflow-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "PLACEHOLDER_x86_64_unknown_linux_gnu"
+      sha256 "1c305561f3d7a5a842b6fd000efe73c88ef630b5ade55ebc9cc87b52cc0fbf7e"
     end
   end
 
