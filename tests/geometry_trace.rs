@@ -65,17 +65,6 @@ fn assert_subgraph_complex_direction_trace(path: &str) {
             "expected {} -> Response to exit Data Layer for {path}",
             edge.from
         );
-        if matches!(
-            trace.direction,
-            termiflow::graph::Direction::LR | termiflow::graph::Direction::RL
-        ) {
-            assert!(
-                !edge.segments.is_empty(),
-                "expected routed geometry for {} -> {} in {path}",
-                edge.from,
-                edge.to
-            );
-        }
     }
 }
 

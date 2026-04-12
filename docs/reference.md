@@ -12,8 +12,8 @@
 - `--tui`: alternate-screen live preview with auto-reload, panning, and findings overlay. Partial first-beta mode: raw-mode input, wheel scrolling, and some fullscreen keybindings depend on the terminal emulator.
 - `--watch`: primary-screen watch mode with low-flicker inline redraw in normal scrollback. This is the safer live-preview mode when you want normal scrollback and fewer fullscreen-emulator surprises.
 - `--print [FILE]`: explicit print mode (optional file argument; `-` means stdin).
-- Print mode preserves the renderer's raw text output. It does not apply a
-  separate TTY-only title transformation by default.
+- In TTY print mode, subgraph titles use the ANSI reverse-video treatment by
+  default. Redirected or piped output stays raw text.
 
 ## Common Flags
 

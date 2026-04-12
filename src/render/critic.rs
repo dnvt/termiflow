@@ -1427,10 +1427,14 @@ fn find_chain_too_cramped_lr(graph: &Graph, chars: &StyleChars) -> Vec<CriticFin
         let Some(to) = graph.get_node(&edge.to) else {
             continue;
         };
-        let gap = if graph.direction == Direction::LR {
-            to.x.saturating_sub(from.x + from.width)
+        let from_right = from.x.saturating_add(from.width);
+        let to_right = to.x.saturating_add(to.width);
+        let gap = if from_right <= to.x {
+            to.x.saturating_sub(from_right)
+        } else if to_right <= from.x {
+            from.x.saturating_sub(to_right)
         } else {
-            from.x.saturating_sub(to.x + to.width)
+            0
         };
         if gap < min_gap {
             findings.push(CriticFinding {
@@ -1777,28 +1781,37 @@ mod tests {
     fn analyze_reports_subgraph_title_corruption() {
         let mut graph = Graph::new();
         let mut subgraph = Subgraph::new("sg", Some("Svc".to_string()));
+        let corrupted_title = "─vc";
+        let width = crate::graph::subgraph_title_text("Svc").chars().count() + 4;
         subgraph.bounds = Rectangle {
             x: 0,
             y: 0,
-            width: 11,
+            width,
             height: 3,
         };
         graph.add_subgraph(subgraph);
 
+        let title_y = subgraph_title_y(
+            &graph.get_subgraph("sg").expect("subgraph").bounds,
+            Direction::TD,
+        );
+        let start_x = crate::graph::subgraph_title_start_x(0, width, "Svc", Direction::TD)
+            .expect("title start");
+        let mut cells = vec![CellMeta::default(); width * 3];
+        for (offset, ch) in corrupted_title.chars().enumerate() {
+            cells[title_y * width + start_x + offset] = CellMeta {
+                ch,
+                owner_kind: CellOwnerKind::SubgraphTitle,
+                owner_id: Some("sg".to_string()),
+                role: CellRole::Text,
+                z_index: 2,
+            };
+        }
+
         let frame = SemanticFrame {
-            width: 11,
+            width,
             height: 3,
-            cells: "[  ─vc  ]  "
-                .chars()
-                .map(|ch| CellMeta {
-                    ch,
-                    owner_kind: CellOwnerKind::SubgraphTitle,
-                    owner_id: Some("sg".to_string()),
-                    role: CellRole::Text,
-                    z_index: 2,
-                })
-                .chain(std::iter::repeat_n(CellMeta::default(), 22))
-                .collect(),
+            cells,
         };
 
         let report = analyze(&graph, &frame, Direction::TD, &unicode_chars());
@@ -1812,35 +1825,37 @@ mod tests {
     fn analyze_does_not_report_subgraph_title_corruption_for_title_text_with_v() {
         let mut graph = Graph::new();
         let mut subgraph = Subgraph::new("sg", Some("Service".to_string()));
-        let title_fmt = "[  Service  ]";
+        let title_fmt = crate::graph::subgraph_title_text("Service");
+        let width = title_fmt.chars().count() + 4;
         subgraph.bounds = Rectangle {
             x: 0,
             y: 0,
-            width: title_fmt.chars().count().max(3),
+            width,
             height: 3,
         };
         graph.add_subgraph(subgraph);
 
-        let title_row: Vec<CellMeta> = title_fmt
-            .chars()
-            .map(|ch| CellMeta {
+        let title_y = subgraph_title_y(
+            &graph.get_subgraph("sg").expect("subgraph").bounds,
+            Direction::TD,
+        );
+        let start_x = crate::graph::subgraph_title_start_x(0, width, "Service", Direction::TD)
+            .expect("title start");
+        let mut cells = vec![CellMeta::default(); width * 3];
+        for (offset, ch) in title_fmt.chars().enumerate() {
+            cells[title_y * width + start_x + offset] = CellMeta {
                 ch,
                 owner_kind: CellOwnerKind::SubgraphTitle,
                 owner_id: Some("sg".to_string()),
                 role: CellRole::Text,
                 z_index: 2,
-            })
-            .collect();
+            };
+        }
+
         let frame = SemanticFrame {
-            width: title_fmt.chars().count(),
+            width,
             height: 3,
-            cells: title_row
-                .into_iter()
-                .chain(std::iter::repeat_n(
-                    CellMeta::default(),
-                    title_fmt.chars().count() * 2,
-                ))
-                .collect(),
+            cells,
         };
 
         let report = analyze(&graph, &frame, Direction::TD, &unicode_chars());
@@ -2418,5 +2433,40 @@ mod tests {
             .findings
             .iter()
             .any(|finding| finding.code == FindingCode::BranchCrowding));
+    }
+
+    #[test]
+    fn analyze_does_not_report_chain_too_cramped_for_visibly_separated_rl_nodes() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::RL;
+
+        let mut source = Node::new("D1", "User DB");
+        source.x = 30;
+        source.y = 9;
+        source.width = 13;
+
+        let mut target = Node::new("Response", "Response Builder");
+        target.x = 49;
+        target.y = 7;
+        target.width = 22;
+
+        graph.add_node(source);
+        graph.add_node(target);
+        graph.add_edge(crate::graph::Edge::new("D1", "Response"));
+
+        let report = analyze(
+            &graph,
+            &SemanticFrame::default(),
+            Direction::RL,
+            &unicode_chars(),
+        );
+
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.code == FindingCode::ChainTooCrampedLR),
+            "expected RL spacing heuristic to honor physical box separation instead of logical edge order: {report:?}"
+        );
     }
 }

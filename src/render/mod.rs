@@ -68,6 +68,7 @@ use std::collections::{HashMap, HashSet};
 pub struct RenderOutcome {
     pub output: String,
     pub semantic_frame: SemanticFrame,
+    pub display_semantic_frame: SemanticFrame,
     pub critic_report: critic::CriticReport,
     pub warnings: Vec<String>,
     pub optimized: bool,
@@ -92,6 +93,7 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         return Ok(RenderOutcome {
             output: String::new(),
             semantic_frame: SemanticFrame::default(),
+            display_semantic_frame: SemanticFrame::default(),
             critic_report: critic::CriticReport {
                 score: 0,
                 findings: Vec::new(),
@@ -719,7 +721,24 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
             &edge_label_placements,
         );
     }
+
+    // The final topology stabilization can canonicalize visually detected
+    // LR/RL side-wall pierces back into junctions when those pierces are not
+    // represented in the semantic portal slot set. Re-stamp dedicated portal
+    // openings after that pass so the emitted frame preserves clean border
+    // pierces in the final canvas.
+    finalize_horizontal_side_portals(
+        &mut canvas,
+        graph,
+        &portal_slots,
+        graph.direction,
+        &chars,
+        subgraph_chars,
+    );
+    finalize_dedicated_portal_markers(&mut canvas, graph, &portal_slots, &chars);
+
     let semantic_frame = SemanticFrame::from_canvas(&canvas);
+    let display_semantic_frame = semantic_frame.crop_and_pad(config.crop, config.pad);
     let critic_report = analyze(graph, &semantic_frame, graph.direction, &chars);
     if debug_critic {
         emit_debug_report(&critic_report);
@@ -734,6 +753,7 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
     Ok(RenderOutcome {
         output,
         semantic_frame,
+        display_semantic_frame,
         critic_report,
         warnings: graph.warnings.clone(),
         optimized: optimize_render,
@@ -1420,8 +1440,6 @@ fn carve_subgraph_portals_on_canvas(
             let px = clamp_horizontal(bounds, x);
             let top_candidates = if matches!(direction, Direction::BT) {
                 vec![top_y]
-            } else if sg.title.is_some() {
-                vec![top_y.saturating_add(1)]
             } else {
                 vec![top_y, top_y.saturating_add(1)]
             };
@@ -1429,7 +1447,15 @@ fn carve_subgraph_portals_on_canvas(
         }
         for x in sorted_slot_positions(&portals.bottom) {
             let px = clamp_horizontal(bounds, x);
-            carve_vertical_slot(canvas, px, &[bottom_y, bottom_y.saturating_sub(1)]);
+            carve_vertical_slot(
+                canvas,
+                px,
+                &[
+                    bottom_y,
+                    bottom_y.saturating_sub(1),
+                    bottom_y.saturating_sub(2),
+                ],
+            );
         }
         for y in sorted_slot_positions(&portals.left) {
             let py = clamp_vertical(bounds, y);
@@ -1494,7 +1520,7 @@ fn reinforce_subgraph_portals(
 
                 for x in top_slots {
                     let px = clamp_horizontal(bounds, x);
-                    let ty = top_y.saturating_add(1);
+                    let ty = top_y;
                     let above = if ty > 0 { canvas.get(px, ty - 1) } else { ' ' };
                     let below = if ty + 1 < canvas.height {
                         canvas.get(px, ty + 1)
@@ -1534,9 +1560,9 @@ fn reinforce_subgraph_portals(
                 }
             }
             Direction::BT => {
-                // BT titles now live on the bottom border row. Keep portal holes on the
-                // physical borders, but nudge them out of corners/title spans so routing
-                // enters cleanly without punching through border text.
+                // BT titles now live on the bottom interior row. Keep portal holes on the
+                // physical borders, but nudge them out of corners/title-safe spans so routing
+                // enters cleanly without punching through label text.
                 let inner_min_x = left_x.saturating_add(1);
                 let inner_max_x = right_x.saturating_sub(1).max(inner_min_x);
                 let is_in_title_text = |x: usize| -> bool {
@@ -1613,8 +1639,8 @@ fn reinforce_subgraph_portals(
                         let has_below = is_verticalish(below, chars, subgraph_chars);
                         let used = has_above || has_below;
                         if used {
-                            // The BT bottom border is also the title row. Treat border pierces
-                            // as clean vertical holes so junctions stay off the title row.
+                            // Treat BT bottom-border pierces as clean vertical holes so
+                            // junctions stay off the bottom edge.
                             canvas.set(px, bottom_y, chars.edge_v);
                         } else {
                             canvas.set(px, bottom_y, subgraph_chars.h);
@@ -1901,13 +1927,19 @@ fn finalize_dedicated_portal_markers(
         (up || down) && ((up && down) || left || right || border_cell_is_route(x, y, canvas))
     };
 
-    let mut markers: Vec<(usize, usize, String)> = Vec::new();
-    let mut push_marker = |x: usize, y: usize, owner_id: &str| {
+    fn push_unique_marker(
+        markers: &mut Vec<(usize, usize, String)>,
+        x: usize,
+        y: usize,
+        owner_id: &str,
+    ) {
         if markers.iter().any(|(mx, my, _)| *mx == x && *my == y) {
             return;
         }
         markers.push((x, y, owner_id.to_string()));
-    };
+    }
+
+    let mut markers: Vec<(usize, usize, String)> = Vec::new();
 
     for y in 0..canvas.height {
         for x in 0..canvas.width {
@@ -1917,7 +1949,12 @@ fn finalize_dedicated_portal_markers(
             if meta.owner_kind == CellOwnerKind::PortalOpening
                 && slot_has_route_neighbor(x, y, canvas)
             {
-                push_marker(x, y, meta.owner_id.as_deref().unwrap_or("portal"));
+                push_unique_marker(
+                    &mut markers,
+                    x,
+                    y,
+                    meta.owner_id.as_deref().unwrap_or("portal"),
+                );
             }
         }
     }
@@ -1942,7 +1979,7 @@ fn finalize_dedicated_portal_markers(
                 if !is_title_protected_cell(px, bounds.y)
                     && slot_has_route_neighbor(px, bounds.y, canvas)
                 {
-                    push_marker(px, bounds.y, &subgraph.id);
+                    push_unique_marker(&mut markers, px, bounds.y, &subgraph.id);
                 }
             }
             let bottom_y = bounds.y + bounds.height.saturating_sub(1);
@@ -1951,36 +1988,89 @@ fn finalize_dedicated_portal_markers(
                 if !is_title_protected_cell(px, bottom_y)
                     && slot_has_route_neighbor(px, bottom_y, canvas)
                 {
-                    push_marker(px, bottom_y, &subgraph.id);
+                    push_unique_marker(&mut markers, px, bottom_y, &subgraph.id);
                 }
             }
             for &y in &portals.left {
                 let py = clamp_vertical(bounds, y);
                 if slot_has_route_neighbor(bounds.x, py, canvas) {
-                    push_marker(bounds.x, py, &subgraph.id);
+                    push_unique_marker(&mut markers, bounds.x, py, &subgraph.id);
                 }
             }
             let right_x = bounds.x + bounds.width.saturating_sub(1);
             for &y in &portals.right {
                 let py = clamp_vertical(bounds, y);
                 if slot_has_route_neighbor(right_x, py, canvas) {
-                    push_marker(right_x, py, &subgraph.id);
+                    push_unique_marker(&mut markers, right_x, py, &subgraph.id);
+                }
+            }
+
+            if bounds.width >= 3 {
+                let top_scan_y = bounds.y;
+                let bottom_scan_y = bounds.y + bounds.height.saturating_sub(1);
+                for (scan_y, preferred_slots) in
+                    [(top_scan_y, &portals.top), (bottom_scan_y, &portals.bottom)]
+                {
+                    let mut x = bounds.x + 1;
+                    let scan_end = bounds.x + bounds.width.saturating_sub(1);
+                    while x < scan_end {
+                        if is_title_protected_cell(x, scan_y)
+                            || !horizontal_border_is_used(x, scan_y, canvas)
+                        {
+                            x += 1;
+                            continue;
+                        }
+
+                        let run_start = x;
+                        let mut run_end = x;
+                        while run_end + 1 < scan_end
+                            && !is_title_protected_cell(run_end + 1, scan_y)
+                            && horizontal_border_is_used(run_end + 1, scan_y, canvas)
+                        {
+                            run_end += 1;
+                        }
+
+                        let has_marker_in_run = markers
+                            .iter()
+                            .any(|(mx, my, _)| *my == scan_y && *mx >= run_start && *mx <= run_end);
+                        if !has_marker_in_run {
+                            let midpoint = run_start + (run_end - run_start) / 2;
+                            let marker_x = preferred_slots
+                                .iter()
+                                .copied()
+                                .find(|slot_x| {
+                                    let px = clamp_horizontal(bounds, *slot_x);
+                                    px >= run_start && px <= run_end
+                                })
+                                .map(|slot_x| clamp_horizontal(bounds, slot_x))
+                                .unwrap_or(midpoint);
+                            push_unique_marker(&mut markers, marker_x, scan_y, &subgraph.id);
+                        }
+
+                        x = run_end + 1;
+                    }
                 }
             }
         }
 
-        if bounds.width >= 3 {
-            let top_y = bounds.y;
+        if matches!(graph.direction, Direction::LR | Direction::RL) && bounds.height >= 3 {
             let bottom_y = bounds.y + bounds.height.saturating_sub(1);
-            for x in (bounds.x + 1)..(bounds.x + bounds.width.saturating_sub(1)) {
-                if !is_title_protected_cell(x, top_y) && horizontal_border_is_used(x, top_y, canvas)
-                {
-                    push_marker(x, top_y, &subgraph.id);
-                }
-                if !is_title_protected_cell(x, bottom_y)
-                    && horizontal_border_is_used(x, bottom_y, canvas)
-                {
-                    push_marker(x, bottom_y, &subgraph.id);
+            for y in bounds.y.saturating_add(1)..bottom_y {
+                for border_x in [bounds.x, bounds.x + bounds.width.saturating_sub(1)] {
+                    if border_x >= canvas.width
+                        || y >= canvas.height
+                        || is_node_owned_cell(canvas, border_x, y)
+                    {
+                        continue;
+                    }
+                    let left_route = border_x
+                        .checked_sub(1)
+                        .is_some_and(|xx| is_route_neighbor(xx, y, canvas));
+                    let right_route =
+                        border_x + 1 < canvas.width && is_route_neighbor(border_x + 1, y, canvas);
+                    if left_route || right_route {
+                        push_unique_marker(&mut markers, border_x, y, &subgraph.id);
+                    }
                 }
             }
         }
@@ -2001,6 +2091,12 @@ fn restore_subgraph_borders(
 ) {
     let is_horizontalish = |c: char| {
         canvas::is_horizontal(c, chars)
+            || canvas::is_junction(c, chars)
+            || canvas::is_junction(c, subgraph_chars)
+            || canvas::is_arrow(c)
+    };
+    let is_verticalish = |c: char| {
+        canvas::is_vertical(c, chars)
             || canvas::is_junction(c, chars)
             || canvas::is_junction(c, subgraph_chars)
             || canvas::is_arrow(c)
@@ -2054,12 +2150,6 @@ fn restore_subgraph_borders(
             })
             .unwrap_or_default();
 
-        let title_span = subgraph
-            .title
-            .as_deref()
-            .and_then(|title| title_span(bounds, title, direction));
-        let top_portals_on_border = matches!(direction, Direction::BT) || subgraph.title.is_none();
-
         if left_x < canvas.width
             && top_y < canvas.height
             && !is_node_owned_cell(canvas, left_x, top_y)
@@ -2093,12 +2183,10 @@ fn restore_subgraph_borders(
             if x >= canvas.width {
                 continue;
             }
-            if title_span
-                .is_some_and(|(start, end)| top_y < canvas.height && x >= start && x <= end)
-            {
-                continue;
-            }
-            if top_portals_on_border && top_slots.contains(&x) {
+            let top_slot_is_used = top_slots.contains(&x)
+                && ((top_y > 0 && is_verticalish(canvas.get(x, top_y - 1)))
+                    || (top_y + 1 < canvas.height && is_verticalish(canvas.get(x, top_y + 1))));
+            if top_slot_is_used {
                 continue;
             }
             if top_y < canvas.height
@@ -2107,7 +2195,11 @@ fn restore_subgraph_borders(
             {
                 canvas.set(x, top_y, subgraph_chars.h);
             }
-            if bottom_slots.contains(&x) {
+            let bottom_slot_is_used = bottom_slots.contains(&x)
+                && ((bottom_y > 0 && is_verticalish(canvas.get(x, bottom_y - 1)))
+                    || (bottom_y + 1 < canvas.height
+                        && is_verticalish(canvas.get(x, bottom_y + 1))));
+            if bottom_slot_is_used {
                 continue;
             }
             let bottom_existing = canvas.get(x, bottom_y);
@@ -3353,6 +3445,60 @@ mod tests {
             is_pierced,
             "expected dedicated portal marker somewhere on left border x={portal_x}, got '{glyph}'\n{output}"
         );
+    }
+
+    #[test]
+    fn td_top_portals_outside_the_title_span_keep_a_visible_stem() {
+        let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md")
+            .expect("read fixture");
+        let parsed = crate::parser::parse(&input, false).expect("parse");
+        let graph = crate::layout::apply_coarse_layout(
+            parsed.graph,
+            None,
+            crate::layout::CoarseLayoutConfig::default(),
+        )
+        .expect("layout");
+
+        let node_rects = crate::portals::node_rects_from_graph(&graph);
+        let portal_slots =
+            crate::portals::collect_portal_slots(&graph, &node_rects, graph.direction);
+        let data_layer = graph.get_subgraph("SG2").expect("data layer");
+        let title_y = subgraph_title_y(&data_layer.bounds, graph.direction);
+        let title_span = title_span(
+            &data_layer.bounds,
+            data_layer.title.as_deref().expect("title"),
+            graph.direction,
+        )
+        .expect("title span");
+
+        let config = Config::builder()
+            .style(CompositeStyle::from_base(BaseStyle::Unicode))
+            .crop(false)
+            .build(&crate::parser::ParseConfig::default());
+        let output = render(&graph, &config).expect("render td portals");
+
+        let top_slots = portal_slots
+            .get("SG2")
+            .expect("SG2 portal slots")
+            .top
+            .iter()
+            .copied()
+            .filter(|x| *x < title_span.0 || *x > title_span.1)
+            .collect::<Vec<_>>();
+        assert!(
+            !top_slots.is_empty(),
+            "expected at least one SG2 top portal outside the title span: slots={:?} title_span={:?}",
+            portal_slots.get("SG2"),
+            title_span,
+        );
+
+        for x in top_slots {
+            let glyph = char_at(&output, x, title_y).unwrap_or(' ');
+            assert_ne!(
+                glyph, ' ',
+                "expected a visible stem directly below the top portal outside the title span at ({x},{title_y}), got blank\n{output}",
+            );
+        }
     }
 
     #[test]

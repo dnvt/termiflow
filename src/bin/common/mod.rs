@@ -11,8 +11,9 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 // Use the termiflow library
+use termiflow::render::semantic::{CellOwnerKind, SemanticFrame};
 use termiflow::{
-    display_profile::{display_width, split_text_to_width_chunks},
+    display_profile::{display_width, graphemes, split_text_to_width_chunks},
     layout_and_render_with_feedback, measure, parse, CanvasBudget, CompositeStyle, Config,
     DiagramMetrics, ParseResult, ScalingMode, SpacingConfig, SpacingMode,
 };
@@ -86,7 +87,7 @@ pub struct Cli {
     #[arg(short, long, value_name = "STYLE")]
     pub style: Option<String>,
 
-    /// Deprecated compatibility flag; opt in to ANSI title inversion in TTY print mode
+    /// Deprecated compatibility flag; ANSI title inversion is the default in TTY print mode
     #[arg(long, hide = true)]
     pub ansi_title_invert: bool,
 
@@ -353,7 +354,7 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     // border row.
     use std::io::Write;
     let mut stdout = std::io::stdout();
-    let output = printable_output(&rendered, cli.ansi_title_invert && stdout.is_terminal());
+    let output = printable_output(&rendered, stdout.is_terminal());
     write!(stdout, "{output}")?;
     if cli.audit && !output.ends_with('\n') {
         writeln!(stdout)?;
@@ -572,85 +573,79 @@ struct PreparedRender {
     outcome: RenderOutcome,
 }
 
+const ANSI_INVERT_ON: &str = "\u{1b}[7m";
+const ANSI_RESET: &str = "\u{1b}[0m";
+
 fn printable_output(rendered: &PreparedRender, invert_titles: bool) -> String {
     if invert_titles {
-        invert_subgraph_titles_ansi(&rendered.outcome.output, &rendered.graph)
+        invert_subgraph_titles_ansi(
+            &rendered.outcome.output,
+            &rendered.outcome.display_semantic_frame,
+        )
     } else {
         rendered.outcome.output.clone()
     }
 }
 
-fn invert_subgraph_titles_ansi(output: &str, graph: &termiflow::Graph) -> String {
-    let mut title_tokens = std::collections::BTreeSet::new();
-    for subgraph in &graph.subgraphs {
-        if let Some(title) = subgraph.title.as_deref() {
-            title_tokens.insert((format!("[  {title}  ]"), format_inverted_title(title)));
-        }
-    }
-
-    if title_tokens.is_empty() {
+fn invert_subgraph_titles_ansi(output: &str, semantic_frame: &SemanticFrame) -> String {
+    if semantic_frame.width == 0 || semantic_frame.height == 0 {
         return output.to_string();
     }
 
-    let mut title_tokens: Vec<(String, String)> = title_tokens.into_iter().collect();
-    title_tokens.sort_by(|left, right| {
-        right
-            .0
-            .chars()
-            .count()
-            .cmp(&left.0.chars().count())
-            .then_with(|| left.0.cmp(&right.0))
-    });
-
     output
         .split('\n')
-        .map(|line| invert_titles_in_line(line, &title_tokens))
+        .enumerate()
+        .map(|(y, line)| invert_titles_in_line(line, y, semantic_frame))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn format_inverted_title(title: &str) -> String {
-    format!("\u{1b}[7m   {title}   \u{1b}[0m")
-}
-
-fn invert_titles_in_line(line: &str, title_tokens: &[(String, String)]) -> String {
-    let mut raw_matches: Vec<(usize, usize, usize)> = Vec::new();
-    for (priority, token) in title_tokens.iter().enumerate() {
-        for (start, _) in line.match_indices(&token.0) {
-            raw_matches.push((start, start + token.0.len(), priority));
-        }
-    }
-
-    if raw_matches.is_empty() {
+fn invert_titles_in_line(line: &str, y: usize, semantic_frame: &SemanticFrame) -> String {
+    if y >= semantic_frame.height {
         return line.to_string();
     }
 
-    raw_matches.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| left.2.cmp(&right.2))
-            .then_with(|| (right.1 - right.0).cmp(&(left.1 - left.0)))
-    });
+    let mut styled = String::with_capacity(line.len() + 32);
+    let mut display_x = 0usize;
+    let mut in_title_run = false;
 
-    let mut accepted: Vec<(usize, usize, usize)> = Vec::new();
-    let mut last_end = 0usize;
-    for (start, end, token_idx) in raw_matches {
-        if start < last_end {
-            continue;
+    for grapheme in graphemes(line) {
+        let width = display_width(grapheme);
+        let is_title = if width == 0 {
+            in_title_run
+        } else {
+            grapheme_overlaps_title_cells(semantic_frame, y, display_x, width)
+        };
+
+        if is_title && !in_title_run {
+            styled.push_str(ANSI_INVERT_ON);
+        } else if !is_title && in_title_run {
+            styled.push_str(ANSI_RESET);
         }
-        accepted.push((start, end, token_idx));
-        last_end = end;
+
+        styled.push_str(grapheme);
+        in_title_run = is_title;
+        display_x += width;
     }
 
-    let mut styled = String::with_capacity(line.len() + accepted.len() * 16);
-    let mut cursor = 0usize;
-    for (start, end, token_idx) in accepted {
-        styled.push_str(&line[cursor..start]);
-        styled.push_str(&title_tokens[token_idx].1);
-        cursor = end;
+    if in_title_run {
+        styled.push_str(ANSI_RESET);
     }
-    styled.push_str(&line[cursor..]);
+
     styled
+}
+
+fn grapheme_overlaps_title_cells(
+    semantic_frame: &SemanticFrame,
+    y: usize,
+    start_x: usize,
+    width: usize,
+) -> bool {
+    (start_x..start_x.saturating_add(width)).any(|x| {
+        semantic_frame
+            .get(x, y)
+            .is_some_and(|meta| meta.owner_kind == CellOwnerKind::SubgraphTitle)
+    })
 }
 
 fn emit_audit_summary(outcome: &RenderOutcome) {
@@ -744,7 +739,13 @@ fn build_watch_frame(
         rendered.graph.warnings.len(),
         file_label,
     );
-    build_inline_frame(&rendered.outcome.output, &status)
+    let mut frame = build_inline_frame(&rendered.outcome.output, &status);
+    apply_inverted_titles_to_tui_frame(
+        &mut frame,
+        &rendered.outcome.display_semantic_frame,
+        Viewport::default(),
+    );
+    frame
 }
 
 fn build_watch_error_frame(path: &std::path::Path, message: &str) -> termiflow::TerminalFrame {
@@ -884,7 +885,12 @@ fn build_tui_frame(
                 &viewport_indicator,
             );
 
-            let frame = build_preview_frame(&content, &status, terminal_size, *viewport);
+            let mut frame = build_preview_frame(&content, &status, terminal_size, *viewport);
+            apply_inverted_titles_to_tui_frame(
+                &mut frame,
+                &rendered.outcome.display_semantic_frame,
+                *viewport,
+            );
             (frame, content, report)
         }
         Err(err) => {
@@ -892,6 +898,76 @@ fn build_tui_frame(
             let msg = format!("termiflow: render error\n\n{err}\n");
             let frame = build_preview_frame(&msg, "q quit | r retry", terminal_size, *viewport);
             (frame, msg, CriticReport::default())
+        }
+    }
+}
+
+fn apply_inverted_titles_to_tui_frame(
+    frame: &mut termiflow::TerminalFrame,
+    semantic_frame: &SemanticFrame,
+    viewport: Viewport,
+) {
+    if frame.width == 0 || frame.height == 0 {
+        return;
+    }
+
+    let visible_content_height = frame.height.saturating_sub(1);
+    if visible_content_height == 0 {
+        return;
+    }
+
+    let viewport_left = usize::from(viewport.offset_x);
+    let viewport_top = usize::from(viewport.offset_y);
+    let viewport_right = viewport_left + usize::from(frame.width).saturating_sub(1);
+    let viewport_bottom = viewport_top + usize::from(visible_content_height).saturating_sub(1);
+
+    for absolute_y in viewport_top..=viewport_bottom {
+        let local_y = (absolute_y - viewport_top) as u16;
+        if local_y >= visible_content_height {
+            continue;
+        }
+
+        let mut absolute_x = viewport_left;
+        while absolute_x <= viewport_right {
+            let is_title = semantic_frame
+                .get(absolute_x, absolute_y)
+                .is_some_and(|meta| meta.owner_kind == CellOwnerKind::SubgraphTitle);
+            if !is_title {
+                absolute_x = absolute_x.saturating_add(1);
+                continue;
+            }
+
+            let run_start = absolute_x;
+            let mut run_end = absolute_x;
+            while run_end < viewport_right
+                && semantic_frame
+                    .get(run_end.saturating_add(1), absolute_y)
+                    .is_some_and(|meta| meta.owner_kind == CellOwnerKind::SubgraphTitle)
+            {
+                run_end = run_end.saturating_add(1);
+            }
+
+            let start_local_x = (run_start - viewport_left) as u16;
+            let end_local_x = (run_end - viewport_left) as u16;
+            let start_idx =
+                usize::from(local_y) * usize::from(frame.width) + usize::from(start_local_x);
+            let end_idx =
+                usize::from(local_y) * usize::from(frame.width) + usize::from(end_local_x);
+
+            if start_idx == end_idx {
+                if let Some(cell) = frame.cells.get_mut(start_idx) {
+                    cell.wrap_ansi(ANSI_INVERT_ON, ANSI_RESET);
+                }
+            } else {
+                if let Some(cell) = frame.cells.get_mut(start_idx) {
+                    cell.prefix_ansi(ANSI_INVERT_ON);
+                }
+                if let Some(cell) = frame.cells.get_mut(end_idx) {
+                    cell.suffix_ansi(ANSI_RESET);
+                }
+            }
+
+            absolute_x = run_end.saturating_add(1);
         }
     }
 }
@@ -1053,7 +1129,8 @@ mod tests {
     use super::*;
     use clap::{CommandFactory, Parser};
     use termiflow::{
-        render::semantic::SemanticFrame, CriticFinding, FindingCode, Graph, RenderOutcome,
+        render::semantic::{CellMeta, CellOwnerKind, CellRole, SemanticFrame},
+        CriticFinding, FindingCode, Graph, RenderOutcome,
     };
 
     #[test]
@@ -1165,6 +1242,7 @@ mod tests {
             outcome: RenderOutcome {
                 output: "+---+\n| A |\n+---+".to_string(),
                 semantic_frame: SemanticFrame::default(),
+                display_semantic_frame: SemanticFrame::default(),
                 critic_report: CriticReport::default(),
                 warnings: Vec::new(),
                 optimized: false,
@@ -1190,39 +1268,52 @@ mod tests {
     }
 
     #[test]
-    fn invert_subgraph_titles_ansi_wraps_title_tokens() {
-        use termiflow::graph::Subgraph;
+    fn build_watch_frame_inverts_subgraph_titles() {
+        let title = "Service";
+        let title_token = termiflow::graph::subgraph_title_text(title);
+        let width = title_token.chars().count() + 6;
+        let content = format!(
+            "┏{}┓\n┃  {}  ┃\n┗{}┛",
+            "━".repeat(width.saturating_sub(2)),
+            title_token,
+            "━".repeat(width.saturating_sub(2))
+        );
 
         let mut graph = Graph::new();
-        graph
-            .subgraphs
-            .push(Subgraph::new("service", Some("Service Layer".to_string())));
-        graph
-            .subgraphs
-            .push(Subgraph::new("data", Some("Data Layer".to_string())));
+        graph.direction = termiflow::graph::Direction::TD;
+        let mut subgraph = termiflow::graph::Subgraph::new("service", Some(title.to_string()));
+        subgraph.bounds = termiflow::graph::Rectangle::new(0, 0, width, 3);
+        graph.add_subgraph(subgraph);
 
-        let output = "┏━━[  Service Layer  ]━━┓ ┏━━[  Data Layer  ]━━┓";
-        let styled = invert_subgraph_titles_ansi(output, &graph);
+        let title_y = termiflow::graph::subgraph_title_row(0, 3, termiflow::graph::Direction::TD);
+        let title_x = termiflow::graph::subgraph_title_start_x(
+            0,
+            width,
+            title,
+            termiflow::graph::Direction::TD,
+        )
+        .expect("title start");
+        let mut semantic_frame = SemanticFrame {
+            width,
+            height: 3,
+            cells: vec![CellMeta::default(); width * 3],
+        };
+        for (offset, ch) in title_token.chars().enumerate() {
+            semantic_frame.cells[title_y * width + title_x + offset] = CellMeta {
+                ch,
+                owner_kind: CellOwnerKind::SubgraphTitle,
+                owner_id: Some("service".to_string()),
+                role: CellRole::Text,
+                z_index: 2,
+            };
+        }
 
-        assert!(styled.contains("\u{1b}[7m   Service Layer   \u{1b}[0m"));
-        assert!(styled.contains("\u{1b}[7m   Data Layer   \u{1b}[0m"));
-        assert!(!styled.contains("[  Service Layer  ]"));
-        assert!(!styled.contains("[  Data Layer  ]"));
-    }
-
-    #[test]
-    fn printable_output_preserves_raw_titles_by_default() {
-        use termiflow::graph::Subgraph;
-
-        let mut graph = Graph::new();
-        graph
-            .subgraphs
-            .push(Subgraph::new("group", Some("My Group".to_string())));
         let rendered = PreparedRender {
             graph,
             outcome: RenderOutcome {
-                output: "┏━━[  My Group  ]━━┓".to_string(),
-                semantic_frame: SemanticFrame::default(),
+                output: content,
+                display_semantic_frame: semantic_frame.clone(),
+                semantic_frame,
                 critic_report: CriticReport::default(),
                 warnings: Vec::new(),
                 optimized: false,
@@ -1232,11 +1323,269 @@ mod tests {
             },
         };
 
-        let default_output = printable_output(&rendered, false);
-        let inverted_output = printable_output(&rendered, true);
+        let frame = build_watch_frame(std::path::Path::new("diagram.md"), &rendered);
 
-        assert_eq!(default_output, rendered.outcome.output);
-        assert!(inverted_output.contains("\u{1b}[7m   My Group   \u{1b}[0m"));
+        let first_title_cell = frame
+            .get(title_x as u16, title_y as u16)
+            .expect("first title cell");
+        assert!(first_title_cell.text().contains(ANSI_INVERT_ON));
+
+        let last_title_cell = frame
+            .get(
+                (title_x + title_token.chars().count().saturating_sub(1)) as u16,
+                title_y as u16,
+            )
+            .expect("last title cell");
+        assert!(last_title_cell.text().contains(ANSI_RESET));
+
+        let border_cell = frame.get(0, title_y as u16).expect("border cell");
+        assert!(!border_cell.text().contains(ANSI_INVERT_ON));
+    }
+
+    #[test]
+    fn apply_inverted_titles_to_tui_frame_respects_viewport_crop() {
+        let title = "Service";
+        let title_token = termiflow::graph::subgraph_title_text(title);
+        let width = title_token.chars().count() + 6;
+        let content = format!(
+            "┏{}┓\n┃  {}  ┃\n┗{}┛",
+            "━".repeat(width.saturating_sub(2)),
+            title_token,
+            "━".repeat(width.saturating_sub(2))
+        );
+
+        let title_y = termiflow::graph::subgraph_title_row(0, 3, termiflow::graph::Direction::TD);
+        let title_x = termiflow::graph::subgraph_title_start_x(
+            0,
+            width,
+            title,
+            termiflow::graph::Direction::TD,
+        )
+        .expect("title start");
+        let mut semantic_frame = SemanticFrame {
+            width,
+            height: 3,
+            cells: vec![CellMeta::default(); width * 3],
+        };
+        for (offset, ch) in title_token.chars().enumerate() {
+            semantic_frame.cells[title_y * width + title_x + offset] = CellMeta {
+                ch,
+                owner_kind: CellOwnerKind::SubgraphTitle,
+                owner_id: Some("service".to_string()),
+                role: CellRole::Text,
+                z_index: 2,
+            };
+        }
+
+        let viewport = Viewport {
+            offset_x: 3,
+            offset_y: 0,
+        };
+        let mut frame = build_preview_frame(&content, "status", (8, 3), viewport);
+        apply_inverted_titles_to_tui_frame(&mut frame, &semantic_frame, viewport);
+
+        let first_visible_title_cell = frame.get(0, 1).expect("cropped title cell");
+        assert!(first_visible_title_cell.text().contains(ANSI_INVERT_ON));
+
+        let reset_seen = (0..frame.width)
+            .filter_map(|x| frame.get(x, 1))
+            .any(|cell| cell.text().contains(ANSI_RESET));
+        assert!(
+            reset_seen,
+            "cropped title should still close the invert span"
+        );
+
+        let status_cell = frame.get(0, frame.height - 1).expect("status cell");
+        assert!(!status_cell.text().contains(ANSI_INVERT_ON));
+    }
+
+    #[test]
+    fn invert_subgraph_titles_ansi_wraps_title_tokens() {
+        let service_title = termiflow::graph::subgraph_title_text("Service Layer");
+        let data_title = termiflow::graph::subgraph_title_text("Data Layer");
+        let output = format!("xx{service_title}yy{data_title}zz");
+        let width = output.chars().count();
+        let service_start = 2usize;
+        let data_start = service_start + service_title.chars().count() + 2;
+
+        let mut semantic_frame = SemanticFrame {
+            width,
+            height: 1,
+            cells: vec![CellMeta::default(); width],
+        };
+
+        for (offset, ch) in service_title.chars().enumerate() {
+            semantic_frame.cells[service_start + offset] = CellMeta {
+                ch,
+                owner_kind: CellOwnerKind::SubgraphTitle,
+                owner_id: Some("service".to_string()),
+                role: CellRole::Text,
+                z_index: 2,
+            };
+        }
+        for (offset, ch) in data_title.chars().enumerate() {
+            semantic_frame.cells[data_start + offset] = CellMeta {
+                ch,
+                owner_kind: CellOwnerKind::SubgraphTitle,
+                owner_id: Some("data".to_string()),
+                role: CellRole::Text,
+                z_index: 2,
+            };
+        }
+
+        let styled = invert_subgraph_titles_ansi(&output, &semantic_frame);
+
+        assert!(styled.contains(&format!("{ANSI_INVERT_ON}{service_title}{ANSI_RESET}")));
+        assert!(styled.contains(&format!("{ANSI_INVERT_ON}{data_title}{ANSI_RESET}")));
+        assert!(styled.contains("xx"));
+        assert!(styled.contains("yy"));
+        assert!(styled.contains("zz"));
+    }
+
+    #[test]
+    fn invert_subgraph_titles_ansi_only_styles_semantic_title_cells() {
+        let title_token = termiflow::graph::subgraph_title_text("Data Layer");
+        let output = format!("node:{title_token}|title:{title_token}");
+        let width = output.chars().count();
+        let title_start =
+            "node:".chars().count() + title_token.chars().count() + "|title:".chars().count();
+
+        let mut semantic_frame = SemanticFrame {
+            width,
+            height: 1,
+            cells: vec![CellMeta::default(); width],
+        };
+        for (offset, ch) in title_token.chars().enumerate() {
+            semantic_frame.cells[title_start + offset] = CellMeta {
+                ch,
+                owner_kind: CellOwnerKind::SubgraphTitle,
+                owner_id: Some("data".to_string()),
+                role: CellRole::Text,
+                z_index: 2,
+            };
+        }
+
+        let styled = invert_subgraph_titles_ansi(&output, &semantic_frame);
+        let expected =
+            format!("node:{title_token}|title:{ANSI_INVERT_ON}{title_token}{ANSI_RESET}");
+        assert_eq!(styled, expected);
+    }
+
+    #[test]
+    fn printable_output_inverts_titles_by_default_for_tty_print_mode() {
+        let title_token = termiflow::graph::subgraph_title_text("My Group");
+        let output = format!("┏━━{title_token}━━┓");
+        let width = output.chars().count();
+        let title_start = "┏━━".chars().count();
+        let rendered = PreparedRender {
+            graph: Graph::new(),
+            outcome: RenderOutcome {
+                output,
+                semantic_frame: {
+                    let mut semantic_frame = SemanticFrame {
+                        width,
+                        height: 1,
+                        cells: vec![CellMeta::default(); width],
+                    };
+                    for (offset, ch) in title_token.chars().enumerate() {
+                        semantic_frame.cells[title_start + offset] = CellMeta {
+                            ch,
+                            owner_kind: CellOwnerKind::SubgraphTitle,
+                            owner_id: Some("group".to_string()),
+                            role: CellRole::Text,
+                            z_index: 2,
+                        };
+                    }
+                    semantic_frame
+                },
+                display_semantic_frame: {
+                    let mut semantic_frame = SemanticFrame {
+                        width,
+                        height: 1,
+                        cells: vec![CellMeta::default(); width],
+                    };
+                    for (offset, ch) in title_token.chars().enumerate() {
+                        semantic_frame.cells[title_start + offset] = CellMeta {
+                            ch,
+                            owner_kind: CellOwnerKind::SubgraphTitle,
+                            owner_id: Some("group".to_string()),
+                            role: CellRole::Text,
+                            z_index: 2,
+                        };
+                    }
+                    semantic_frame
+                },
+                critic_report: CriticReport::default(),
+                warnings: Vec::new(),
+                optimized: false,
+                repair_passes: 0,
+                layout_attempts: 1,
+                layout_repairs_applied: 0,
+            },
+        };
+
+        let tty_output = printable_output(&rendered, true);
+        let piped_output = printable_output(&rendered, false);
+
+        assert!(tty_output.contains(&format!("{ANSI_INVERT_ON}{title_token}{ANSI_RESET}")));
+        assert_eq!(piped_output, rendered.outcome.output);
+    }
+
+    #[test]
+    fn printable_output_uses_display_aligned_semantic_frame() {
+        let title_token = termiflow::graph::subgraph_title_text("Data Layer");
+        let output = title_token.clone();
+
+        let mut raw_semantic_frame = SemanticFrame {
+            width: title_token.chars().count() + 4,
+            height: 1,
+            cells: vec![CellMeta::default(); title_token.chars().count() + 4],
+        };
+        for (offset, ch) in title_token.chars().enumerate() {
+            raw_semantic_frame.cells[2 + offset] = CellMeta {
+                ch,
+                owner_kind: CellOwnerKind::SubgraphTitle,
+                owner_id: Some("group".to_string()),
+                role: CellRole::Text,
+                z_index: 2,
+            };
+        }
+
+        let mut display_semantic_frame = SemanticFrame {
+            width: title_token.chars().count(),
+            height: 1,
+            cells: vec![CellMeta::default(); title_token.chars().count()],
+        };
+        for (offset, ch) in title_token.chars().enumerate() {
+            display_semantic_frame.cells[offset] = CellMeta {
+                ch,
+                owner_kind: CellOwnerKind::SubgraphTitle,
+                owner_id: Some("group".to_string()),
+                role: CellRole::Text,
+                z_index: 2,
+            };
+        }
+
+        let rendered = PreparedRender {
+            graph: Graph::new(),
+            outcome: RenderOutcome {
+                output: output.clone(),
+                semantic_frame: raw_semantic_frame,
+                display_semantic_frame,
+                critic_report: CriticReport::default(),
+                warnings: Vec::new(),
+                optimized: false,
+                repair_passes: 0,
+                layout_attempts: 1,
+                layout_repairs_applied: 0,
+            },
+        };
+
+        let tty_output = printable_output(&rendered, true);
+        assert_eq!(
+            tty_output,
+            format!("{ANSI_INVERT_ON}{title_token}{ANSI_RESET}")
+        );
     }
 
     #[test]

@@ -35,6 +35,407 @@ fn rects_overlap_vertically(a: Rect, b: Rect) -> bool {
     a.y < b.bottom() && b.y < a.bottom()
 }
 
+fn rects_overlap_horizontally(a: Rect, b: Rect) -> bool {
+    a.x < b.right() && b.x < a.right()
+}
+
+fn centered_outer_with_width(outer: Rect, width: usize) -> Rect {
+    if width <= outer.width {
+        return outer;
+    }
+
+    let extra = width - outer.width;
+    let left_extra = extra / 2;
+    Rect::new(
+        outer.x.saturating_sub(left_extra),
+        outer.y,
+        width,
+        outer.height,
+    )
+}
+
+fn centered_outer_with_height(outer: Rect, height: usize) -> Rect {
+    if height <= outer.height {
+        return outer;
+    }
+
+    let extra = height - outer.height;
+    let top_extra = extra / 2;
+    Rect::new(
+        outer.x,
+        outer.y.saturating_sub(top_extra),
+        outer.width,
+        height,
+    )
+}
+
+fn inner_horizontal_pad_delta(env: &SubgraphEnvelope, outer: Rect) -> usize {
+    let left_pad = env.inner.x.saturating_sub(outer.x.saturating_add(1));
+    let right_pad = outer
+        .right()
+        .saturating_sub(1)
+        .saturating_sub(env.inner.right());
+    left_pad.abs_diff(right_pad)
+}
+
+fn inner_vertical_pad_delta(env: &SubgraphEnvelope, outer: Rect) -> usize {
+    let top_pad = env.inner.y.saturating_sub(outer.y);
+    let bottom_pad = outer
+        .y
+        .saturating_add(outer.height.saturating_sub(1))
+        .saturating_sub(env.inner.y.saturating_add(env.inner.height));
+    top_pad.abs_diff(bottom_pad)
+}
+
+#[allow(dead_code)]
+fn candidate_introduces_foreign_node_overlap(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    subgraph_id: &str,
+    current: Rect,
+    candidate: Rect,
+) -> bool {
+    node_rects.iter().any(|(node_id, rect)| {
+        !graph.is_node_in_subgraph_tree(node_id, subgraph_id)
+            && rects_overlap_vertically(*rect, candidate)
+            && rects_overlap_horizontally(*rect, candidate)
+            && !(rects_overlap_vertically(*rect, current)
+                && rects_overlap_horizontally(*rect, current))
+    })
+}
+
+fn top_level_connected_subgraph_components<'a>(graph: &'a Graph) -> Vec<Vec<&'a str>> {
+    let top_level_ids: Vec<&str> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.parent_id.is_none())
+        .map(|subgraph| subgraph.id.as_str())
+        .collect();
+    if top_level_ids.len() < 2 {
+        return Vec::new();
+    }
+
+    let top_level_set: HashSet<&str> = top_level_ids.iter().copied().collect();
+    let mut adjacency: HashMap<&str, HashSet<&str>> = top_level_ids
+        .iter()
+        .copied()
+        .map(|id| (id, HashSet::new()))
+        .collect();
+
+    for edge in graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+        let Some(from_sg) = graph.get_node_subgraph(&edge.from) else {
+            continue;
+        };
+        let Some(to_sg) = graph.get_node_subgraph(&edge.to) else {
+            continue;
+        };
+        if from_sg == to_sg || !top_level_set.contains(from_sg) || !top_level_set.contains(to_sg) {
+            continue;
+        }
+
+        adjacency.entry(from_sg).or_default().insert(to_sg);
+        adjacency.entry(to_sg).or_default().insert(from_sg);
+    }
+
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut components = Vec::new();
+    for &start_id in &top_level_ids {
+        if !visited.insert(start_id) {
+            continue;
+        }
+
+        let mut stack = vec![start_id];
+        let mut component = Vec::new();
+        while let Some(current) = stack.pop() {
+            component.push(current);
+            if let Some(neighbors) = adjacency.get(current) {
+                for &next in neighbors {
+                    if visited.insert(next) {
+                        stack.push(next);
+                    }
+                }
+            }
+        }
+
+        if component.len() < 2 {
+            continue;
+        }
+
+        components.push(component);
+    }
+
+    components
+}
+
+fn harmonize_stacked_vertical_top_level_sibling_widths(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    envelopes: &mut HashMap<String, SubgraphEnvelope>,
+) {
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) {
+        return;
+    }
+
+    let components = top_level_connected_subgraph_components(graph);
+    for component in components {
+        let mut ordered: Vec<(&str, Rect)> = component
+            .iter()
+            .filter_map(|id| envelopes.get(*id).map(|env| (*id, env.outer)))
+            .collect();
+        if ordered.len() < 2 {
+            continue;
+        }
+
+        ordered.sort_by_key(|(_, outer)| outer.y);
+        let is_stacked_column = ordered.windows(2).all(|pair| {
+            let upper = pair[0].1;
+            let lower = pair[1].1;
+            !rects_overlap_vertically(upper, lower) && rects_overlap_horizontally(upper, lower)
+        });
+        if !is_stacked_column {
+            continue;
+        }
+
+        let min_width = ordered
+            .iter()
+            .map(|(_, outer)| outer.width)
+            .min()
+            .unwrap_or(0);
+        let target_left = ordered.iter().map(|(_, outer)| outer.x).min().unwrap_or(0);
+        let target_right = ordered
+            .iter()
+            .map(|(_, outer)| outer.right())
+            .max()
+            .unwrap_or(target_left);
+        let target_width = target_right.saturating_sub(target_left);
+        let width_spread = target_width.saturating_sub(min_width);
+        if width_spread == 0 || width_spread > 12 {
+            continue;
+        }
+
+        let mut normalized: Vec<(&str, Rect)> = Vec::with_capacity(ordered.len());
+        for (subgraph_id, outer) in &ordered {
+            let mut best_outer = *outer;
+            let mut candidate_width = target_width;
+            while candidate_width > outer.width {
+                let candidate = centered_outer_with_width(*outer, candidate_width);
+                if !candidate_introduces_foreign_node_overlap(
+                    graph,
+                    node_rects,
+                    subgraph_id,
+                    *outer,
+                    candidate,
+                ) {
+                    best_outer = candidate;
+                    break;
+                }
+                candidate_width = candidate_width.saturating_sub(1);
+            }
+            normalized.push((*subgraph_id, best_outer));
+        }
+
+        let shared_left = normalized
+            .iter()
+            .map(|(_, outer)| outer.x)
+            .min()
+            .unwrap_or(0);
+        let shared_right = normalized
+            .iter()
+            .map(|(_, outer)| outer.right())
+            .max()
+            .unwrap_or(shared_left);
+        let shared_width = shared_right.saturating_sub(shared_left);
+
+        for (subgraph_id, normalized_outer) in normalized {
+            let Some(env) = envelopes.get_mut(subgraph_id) else {
+                continue;
+            };
+
+            let current_outer = normalized_outer;
+            let aligned_outer =
+                if current_outer.x == shared_left && current_outer.width == shared_width {
+                    current_outer
+                } else {
+                    let candidate = Rect::new(
+                        shared_left,
+                        current_outer.y,
+                        shared_width,
+                        current_outer.height,
+                    );
+                    let candidate_delta = inner_horizontal_pad_delta(env, candidate);
+                    if !candidate_introduces_foreign_node_overlap(
+                        graph,
+                        node_rects,
+                        subgraph_id,
+                        current_outer,
+                        candidate,
+                    ) && candidate_delta <= 1
+                    {
+                        candidate
+                    } else {
+                        current_outer
+                    }
+                };
+
+            env.outer = aligned_outer;
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn harmonize_stacked_vertical_top_level_sibling_heights(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    envelopes: &mut HashMap<String, SubgraphEnvelope>,
+) {
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) {
+        return;
+    }
+
+    const MAX_HEIGHT_SPREAD: usize = 2;
+
+    for component in top_level_connected_subgraph_components(graph) {
+        let mut ordered: Vec<(&str, Rect)> = component
+            .iter()
+            .filter_map(|id| envelopes.get(*id).map(|env| (*id, env.outer)))
+            .collect();
+        if ordered.len() < 2 {
+            continue;
+        }
+
+        ordered.sort_by_key(|(_, outer)| outer.y);
+        let is_stacked_column = ordered.windows(2).all(|pair| {
+            let upper = pair[0].1;
+            let lower = pair[1].1;
+            !rects_overlap_vertically(upper, lower) && rects_overlap_horizontally(upper, lower)
+        });
+        if !is_stacked_column {
+            continue;
+        }
+
+        let min_height = ordered
+            .iter()
+            .map(|(_, outer)| outer.height)
+            .min()
+            .unwrap_or(0);
+        let target_height = ordered
+            .iter()
+            .map(|(_, outer)| outer.height)
+            .max()
+            .unwrap_or(min_height);
+        let height_spread = target_height.saturating_sub(min_height);
+        if height_spread == 0 || height_spread > MAX_HEIGHT_SPREAD {
+            continue;
+        }
+
+        for (subgraph_id, outer) in ordered {
+            if outer.height >= target_height {
+                continue;
+            }
+
+            let Some(env) = envelopes.get_mut(subgraph_id) else {
+                continue;
+            };
+            let current_delta = inner_vertical_pad_delta(env, outer);
+            let candidate = centered_outer_with_height(outer, target_height);
+            if !candidate_introduces_foreign_node_overlap(
+                graph,
+                node_rects,
+                subgraph_id,
+                outer,
+                candidate,
+            ) && inner_vertical_pad_delta(env, candidate) <= current_delta
+            {
+                env.outer = candidate;
+            }
+        }
+    }
+}
+
+fn harmonize_side_by_side_horizontal_top_level_sibling_heights(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    envelopes: &mut HashMap<String, SubgraphEnvelope>,
+) {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) {
+        return;
+    }
+
+    const MAX_HEIGHT_SPREAD: usize = 4;
+
+    for component in top_level_connected_subgraph_components(graph) {
+        let mut ordered: Vec<(&str, Rect, Rect)> = component
+            .iter()
+            .filter_map(|id| envelopes.get(*id).map(|env| (*id, env.outer, env.inner)))
+            .collect();
+        if ordered.len() < 2 {
+            continue;
+        }
+
+        ordered.sort_by_key(|(_, outer, _)| outer.x);
+        let is_side_by_side_row = ordered.windows(2).all(|pair| {
+            let left_outer = pair[0].1;
+            let right_outer = pair[1].1;
+            let left_inner = pair[0].2;
+            let right_inner = pair[1].2;
+
+            let outer_separate = !rects_overlap_horizontally(left_outer, right_outer);
+            let inner_separate = !rects_overlap_horizontally(left_inner, right_inner);
+
+            rects_overlap_vertically(left_outer, right_outer) && (outer_separate || inner_separate)
+        });
+        if !is_side_by_side_row {
+            continue;
+        }
+
+        let min_height = ordered
+            .iter()
+            .map(|(_, outer, _)| outer.height)
+            .min()
+            .unwrap_or(0);
+        let shared_top = ordered
+            .iter()
+            .map(|(_, outer, _)| outer.y)
+            .min()
+            .unwrap_or(0);
+        let shared_bottom = ordered
+            .iter()
+            .map(|(_, outer, _)| outer.bottom())
+            .max()
+            .unwrap_or(shared_top);
+        let shared_height = shared_bottom.saturating_sub(shared_top);
+        let height_spread = shared_height.saturating_sub(min_height);
+        if height_spread == 0 || height_spread > MAX_HEIGHT_SPREAD {
+            continue;
+        }
+
+        for (subgraph_id, outer, _) in ordered {
+            let Some(env) = envelopes.get_mut(subgraph_id) else {
+                continue;
+            };
+            let candidate = Rect::new(outer.x, shared_top, outer.width, shared_height);
+            if candidate == outer {
+                continue;
+            }
+            if !candidate_introduces_foreign_node_overlap(
+                graph,
+                node_rects,
+                subgraph_id,
+                outer,
+                candidate,
+            ) {
+                env.outer = candidate;
+            }
+        }
+    }
+}
+
 fn is_horizontal_visual_nesting_candidate(
     graph: &Graph,
     node_rects: &HashMap<String, Rect>,
@@ -346,6 +747,9 @@ pub fn compute_envelopes(
         }
     }
 
+    harmonize_stacked_vertical_top_level_sibling_widths(graph, node_rects, &mut envelopes);
+    harmonize_side_by_side_horizontal_top_level_sibling_heights(graph, node_rects, &mut envelopes);
+
     // Populate portals after envelopes are defined so we can clamp coordinates.
     let current_bounds: HashMap<String, Rect> = envelopes
         .iter()
@@ -514,21 +918,25 @@ fn build_envelope(
         }
     }
 
-    let mut top_hard_pad = if has_title {
-        // Title lives on the border row; keep one empty row below it by default.
+    let title_on_bottom = has_title && matches!(graph.direction, Direction::BT);
+    let title_on_top = has_title && !title_on_bottom;
+
+    let mut top_hard_pad = if title_on_top {
+        // Titles now live on the first interior row. Reserve the title row plus
+        // one clear row beneath it before content begins.
         //
         // Special-case: when a single external source fans out into multiple targets
         // inside this titled subgraph, we need extra internal rows to draw a trunk,
         // split bar, drops, and arrowheads without colliding with the title row.
         let is_fanout_entry = incoming_cross_count > 1 && incoming_outside_sources.len() == 1;
         if is_fanout_entry {
-            5
+            6
         } else if incoming_cross_count > 0
             && matches!(graph.direction, Direction::TD | Direction::TB)
         {
-            3
+            4
         } else {
-            2
+            3
         }
     } else if has_external_edges {
         if incoming_cross_count > 0 {
@@ -548,9 +956,9 @@ fn build_envelope(
         top_hard_pad = top_hard_pad.max(gutter.saturating_add(2));
     }
 
-    let mut bottom_hard_pad = 1;
+    let mut bottom_hard_pad = if title_on_bottom { 3 } else { 1 };
     if matches!(graph.direction, Direction::BT) && incoming_cross_count > 0 {
-        bottom_hard_pad = bottom_hard_pad.max(if has_title { 3 } else { 2 });
+        bottom_hard_pad = bottom_hard_pad.max(if has_title { 4 } else { 2 });
     }
 
     let inner = content.inflate(inner_pad);
@@ -563,8 +971,16 @@ fn build_envelope(
         0
     };
     bottom_hard_pad = bottom_hard_pad.max(min_bottom_pad);
-    if has_outgoing && outgoing_cross_count > 1 {
-        bottom_hard_pad = bottom_hard_pad.max(gutter.saturating_add(2));
+    if matches!(graph.direction, Direction::TD | Direction::TB)
+        && has_outgoing
+        && outgoing_cross_count > 1
+    {
+        let extra_exit_clearance = if subgraph.has_parent() {
+            gutter.saturating_add(2)
+        } else {
+            gutter.saturating_add(1)
+        };
+        bottom_hard_pad = bottom_hard_pad.max(extra_exit_clearance);
     }
 
     let mut bottom_max_pad: Option<usize> = None;
@@ -631,14 +1047,16 @@ fn build_envelope(
     } else {
         3
     };
-    let vertical_pad_target = vertical_balance_floor
-        .max(top_hard_pad)
-        .max(bottom_hard_pad);
     let side_pad = horizontal_pad_target;
-    let top_pad = vertical_pad_target;
-    let mut bottom_pad = vertical_pad_target;
+    let mut top_pad = vertical_balance_floor.max(top_hard_pad);
+    let mut bottom_pad = vertical_balance_floor.max(bottom_hard_pad);
     if let Some(max_bottom_pad) = bottom_max_pad {
         bottom_pad = bottom_pad.min(max_bottom_pad);
+    }
+    if top_pad > bottom_pad.saturating_add(1) {
+        top_pad = bottom_pad.saturating_add(1);
+    } else if bottom_pad > top_pad.saturating_add(1) {
+        bottom_pad = top_pad.saturating_add(1);
     }
 
     let outer = Rect::new(
@@ -671,6 +1089,7 @@ fn collect_portal_slots_with_bounds(
 ) -> HashMap<String, PortalSlots> {
     let mut slots: HashMap<String, PortalSlots> = HashMap::new();
     let mut shared_td_fanout_top_slots: HashMap<(String, String), usize> = HashMap::new();
+    let mut shared_td_fanin_bottom_slots: HashMap<(String, String), usize> = HashMap::new();
     let mut shared_horizontal_fanin_side_slots: HashMap<(String, String), usize> = HashMap::new();
 
     let shift_x_out_of_title = |sg_id: &str, desired_x: usize| -> usize {
@@ -772,7 +1191,11 @@ fn collect_portal_slots_with_bounds(
 
     if matches!(direction, Direction::TD | Direction::TB) {
         let mut grouped_targets: HashMap<(String, String), Vec<usize>> = HashMap::new();
+        let mut grouped_sources: HashMap<(String, String), Vec<usize>> = HashMap::new();
         for edge in &graph.edges {
+            let Some(from) = graph.get_node(&edge.from) else {
+                continue;
+            };
             let Some(to) = graph.get_node(&edge.to) else {
                 continue;
             };
@@ -782,6 +1205,14 @@ fn collect_portal_slots_with_bounds(
                     .entry((edge.from.clone(), target_sg_id.to_string()))
                     .or_default()
                     .push(node_center_x(node_rects, &edge.to, to));
+            }
+
+            let (exit_subgraphs, _) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+            for source_sg_id in exit_subgraphs {
+                grouped_sources
+                    .entry((edge.to.clone(), source_sg_id.to_string()))
+                    .or_default()
+                    .push(node_center_x(node_rects, &edge.from, from));
             }
         }
 
@@ -803,6 +1234,34 @@ fn collect_portal_slots_with_bounds(
                 (from_id, sg_id),
                 portal_center.clamp(min_target_x, max_target_x),
             );
+        }
+
+        for ((to_id, sg_id), source_xs) in grouped_sources {
+            if source_xs.len() < 2 {
+                continue;
+            }
+            let Some(bounds) = current_subgraph_bounds(graph, current_bounds, &sg_id) else {
+                continue;
+            };
+            if bounds.is_empty() {
+                continue;
+            }
+            let Some(target) = graph.get_node(&to_id) else {
+                continue;
+            };
+
+            let min_source_x = source_xs.iter().copied().min().unwrap_or(bounds.x);
+            let max_source_x = source_xs.iter().copied().max().unwrap_or(bounds.x);
+            let target_center_x = node_center_x(node_rects, &to_id, target);
+            let inset = if bounds.width >= 9 { 1 } else { 0 };
+            let min_x = bounds.x.saturating_add(inset);
+            let max_x = bounds
+                .x
+                .saturating_add(bounds.width.saturating_sub(inset + 1));
+            let shared_x = target_center_x
+                .clamp(min_source_x, max_source_x)
+                .clamp(min_x, max_x.max(min_x));
+            shared_td_fanin_bottom_slots.insert((to_id, sg_id), shared_x);
         }
     } else if matches!(direction, Direction::LR | Direction::RL) {
         let mut grouped_sources: HashMap<(String, String), Vec<usize>> = HashMap::new();
@@ -958,11 +1417,15 @@ fn collect_portal_slots_with_bounds(
                     if suppress_exit {
                         continue;
                     }
+                    let slot_x = shared_td_fanin_bottom_slots
+                        .get(&(edge.to.clone(), id.to_string()))
+                        .copied()
+                        .unwrap_or_else(|| node_center_x(node_rects, &edge.from, from));
                     slots
                         .entry(id.to_string())
                         .or_default()
                         .bottom
-                        .insert(node_center_x(node_rects, &edge.from, from));
+                        .insert(slot_x);
                 }
             }
             Direction::BT => {
@@ -1151,6 +1614,49 @@ mod tests {
             1,
             "shared TD fanout should reserve one top entry slot, got {:?}",
             portals.top
+        );
+    }
+
+    #[test]
+    fn portal_slots_collapse_shared_td_fanin_exit_to_single_bottom_slot() {
+        let mut g = Graph::new();
+        g.direction = Direction::TD;
+        g.nodes.push(Node::new("d1", "User DB"));
+        g.nodes.push(Node::new("d2", "Order DB"));
+        g.nodes.push(Node::new("rsp", "Response"));
+        g.edges.push(Edge::new("d1", "rsp"));
+        g.edges.push(Edge::new("d2", "rsp"));
+
+        let mut sg = Subgraph::new("sg", Some("Data Layer".into()));
+        sg.add_node("d1");
+        sg.add_node("d2");
+        sg.bounds = crate::graph::Rectangle::new(0, 10, 41, 15);
+        g.add_subgraph(sg);
+        g.associate_node_with_subgraph("d1", "sg");
+        g.associate_node_with_subgraph("d2", "sg");
+
+        g.get_node_mut("d1").unwrap().x = 24;
+        g.get_node_mut("d1").unwrap().y = 14;
+        g.get_node_mut("d1").unwrap().width = 13;
+        g.get_node_mut("d1").unwrap().height = 3;
+        g.get_node_mut("d2").unwrap().x = 4;
+        g.get_node_mut("d2").unwrap().y = 20;
+        g.get_node_mut("d2").unwrap().width = 14;
+        g.get_node_mut("d2").unwrap().height = 3;
+        g.get_node_mut("rsp").unwrap().x = 10;
+        g.get_node_mut("rsp").unwrap().y = 28;
+        g.get_node_mut("rsp").unwrap().width = 22;
+        g.get_node_mut("rsp").unwrap().height = 3;
+
+        let node_rects = node_rects_from_graph(&g);
+        let slots = collect_portal_slots(&g, &node_rects, g.direction);
+        let portals = slots.get("sg").expect("slots for sg");
+
+        assert_eq!(
+            portals.bottom.len(),
+            1,
+            "shared TD fanin should reserve one bottom exit slot, got {:?}",
+            portals.bottom
         );
     }
 

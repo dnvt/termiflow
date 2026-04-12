@@ -103,6 +103,75 @@ impl SemanticFrame {
         self.cells.get(y * self.width + x)
     }
 
+    pub fn crop_and_pad(&self, crop: bool, pad: usize) -> Self {
+        if self.width == 0 || self.height == 0 {
+            return Self::default();
+        }
+
+        let (min_x, max_x, min_y, max_y) = if crop {
+            let mut found = false;
+            let mut min_x = self.width;
+            let mut max_x = 0usize;
+            let mut min_y = self.height;
+            let mut max_y = 0usize;
+
+            for y in 0..self.height {
+                for x in 0..self.width {
+                    let Some(cell) = self.get(x, y) else {
+                        continue;
+                    };
+                    if cell.ch == ' ' {
+                        continue;
+                    }
+                    found = true;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+
+            if !found {
+                return Self::default();
+            }
+
+            (min_x, max_x, min_y, max_y)
+        } else {
+            (
+                0,
+                self.width.saturating_sub(1),
+                0,
+                self.height.saturating_sub(1),
+            )
+        };
+
+        let source_width = max_x.saturating_sub(min_x).saturating_add(1);
+        let source_height = max_y.saturating_sub(min_y).saturating_add(1);
+        let target_width = source_width.saturating_add(pad);
+        let target_height = source_height.saturating_add(pad.saturating_mul(2));
+        let mut cells = vec![CellMeta::default(); target_width.saturating_mul(target_height)];
+
+        for source_y in min_y..=max_y {
+            for source_x in min_x..=max_x {
+                let Some(cell) = self.get(source_x, source_y).cloned() else {
+                    continue;
+                };
+                let target_x = source_x.saturating_sub(min_x).saturating_add(pad);
+                let target_y = source_y.saturating_sub(min_y).saturating_add(pad);
+                let idx = target_y * target_width + target_x;
+                if let Some(slot) = cells.get_mut(idx) {
+                    *slot = cell;
+                }
+            }
+        }
+
+        Self {
+            width: target_width,
+            height: target_height,
+            cells,
+        }
+    }
+
     pub fn non_space_cell_count(&self) -> usize {
         self.cells.iter().filter(|cell| cell.ch != ' ').count()
     }

@@ -41,6 +41,27 @@ impl FrameCell {
     pub fn text(&self) -> &str {
         &self.text
     }
+
+    pub fn wrap_ansi(&mut self, prefix: &str, suffix: &str) {
+        if is_continuation_cell(self.ch) || self.text.is_empty() {
+            return;
+        }
+        self.text = format!("{prefix}{}{suffix}", self.text);
+    }
+
+    pub fn prefix_ansi(&mut self, prefix: &str) {
+        if is_continuation_cell(self.ch) || self.text.is_empty() {
+            return;
+        }
+        self.text = format!("{prefix}{}", self.text);
+    }
+
+    pub fn suffix_ansi(&mut self, suffix: &str) {
+        if is_continuation_cell(self.ch) || self.text.is_empty() {
+            return;
+        }
+        self.text.push_str(suffix);
+    }
 }
 
 impl Default for FrameCell {

@@ -597,7 +597,7 @@ mod tests {
             Direction::TD
         ));
         let rendered = canvas.to_string_cropped(0);
-        assert!(rendered.contains("[  Flow  ]"));
+        assert!(rendered.contains("Flow"));
     }
 
     #[test]
@@ -620,6 +620,6 @@ mod tests {
             Direction::BT
         ));
         let rendered = canvas.to_string_cropped(0);
-        assert!(rendered.contains("[  Flow  ]"));
+        assert!(rendered.contains("Flow"));
     }
 }

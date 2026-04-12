@@ -1108,6 +1108,7 @@ mod tests {
         RenderOutcome {
             output: String::new(),
             semantic_frame: render::semantic::SemanticFrame::default(),
+            display_semantic_frame: render::semantic::SemanticFrame::default(),
             critic_report: CriticReport {
                 score: findings.iter().map(|finding| finding.penalty).sum(),
                 findings,

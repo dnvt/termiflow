@@ -2777,7 +2777,13 @@ fn is_subgraph_title_cell(graph: &Graph, x: usize, y: usize) -> bool {
             return false;
         }
         let title_y = subgraph_title_y(&sg.bounds, graph.direction);
-        y == title_y && x >= sg.bounds.x && x < sg.bounds.x.saturating_add(sg.bounds.width)
+        let Some(title) = sg.title.as_deref() else {
+            return false;
+        };
+        let Some((start_x, end_x)) = title_span(&sg.bounds, title, graph.direction) else {
+            return false;
+        };
+        y == title_y && x >= start_x && x <= end_x
     })
 }
 
@@ -2948,6 +2954,20 @@ fn smallest_visual_container<'a>(
         .min_by_key(|candidate| candidate.bounds.width * candidate.bounds.height)
 }
 
+fn td_title_safe_entry_y(subgraph: &crate::graph::Subgraph) -> usize {
+    let min_inside = subgraph.bounds.y.saturating_add(1);
+    let max_inside = subgraph
+        .bounds
+        .y
+        .saturating_add(subgraph.bounds.height.saturating_sub(2));
+    let desired = if subgraph.has_title() {
+        subgraph.bounds.y.saturating_add(3)
+    } else {
+        min_inside
+    };
+    desired.clamp(min_inside, max_inside)
+}
+
 #[allow(dead_code, clippy::too_many_arguments)]
 fn route_cross_subgraph_td(
     from: &Node,
@@ -2988,12 +3008,20 @@ fn route_cross_subgraph_td(
         let (_, enter_subgraphs) = graph.edge_boundary_crossings(&from.id, &to.id);
         let mut current_x = stem_start_x;
         let mut current_y = stem_start_y;
+        let final_entry_x = preferred_portal_x(
+            &sg.bounds,
+            sg.title.as_deref(),
+            arrow_x,
+            canvas,
+            graph.direction,
+            true,
+        );
         let shared_entry_x = enter_subgraphs
             .iter()
             .rev()
             .filter_map(|ancestor_id| graph.get_subgraph(ancestor_id))
-            .filter(|ancestor_sg| ancestor_sg.id != sg_id && ancestor_sg.bounds.is_valid())
-            .fold(stem_start_x, |entry_x, ancestor_sg| {
+            .filter(|ancestor_sg| ancestor_sg.bounds.is_valid())
+            .fold(final_entry_x, |entry_x, ancestor_sg| {
                 nearest_title_safe_x(
                     &ancestor_sg.bounds,
                     ancestor_sg.title.as_deref(),
@@ -3016,13 +3044,12 @@ fn route_cross_subgraph_td(
                 }
             }
 
-            let entry_x = if *ancestor_id == sg_id {
-                let min_x = ancestor_sg.bounds.x.saturating_add(1);
-                let max_x = ancestor_sg.bounds.x + ancestor_sg.bounds.width.saturating_sub(2);
-                arrow_x.clamp(min_x, max_x)
-            } else {
-                shared_entry_x
-            };
+            let entry_x = nearest_title_safe_x(
+                &ancestor_sg.bounds,
+                ancestor_sg.title.as_deref(),
+                shared_entry_x,
+                graph.direction,
+            );
 
             if entry_x != current_x && outside_y < canvas.height {
                 let start_corner = if entry_x > current_x {
@@ -3050,19 +3077,62 @@ fn route_cross_subgraph_td(
             }
 
             current_x = entry_x;
-            current_y = ancestor_sg.bounds.y.saturating_add(1);
+            current_y = ancestor_sg.bounds.y.saturating_add(1).min(
+                ancestor_sg
+                    .bounds
+                    .y
+                    .saturating_add(ancestor_sg.bounds.height.saturating_sub(2)),
+            );
         }
 
-        if arrow_y >= current_y && current_y < canvas.height {
-            for y in current_y..=arrow_y {
+        let bridge_y = td_title_safe_entry_y(sg).max(current_y).min(arrow_y);
+        if bridge_y >= current_y && current_y < canvas.height {
+            for y in current_y..=bridge_y {
                 set_route_edge_char(canvas, current_x, y, style.edge_v, style, owner);
+            }
+        }
+
+        if current_x != arrow_x {
+            let start_corner = if arrow_x > current_x {
+                style.corner_ul
+            } else {
+                style.corner_ur
+            };
+            set_route_edge_char(canvas, current_x, bridge_y, start_corner, style, owner);
+
+            let (hx0, hx1) = if arrow_x > current_x {
+                (current_x.saturating_add(1), arrow_x.saturating_sub(1))
+            } else {
+                (arrow_x.saturating_add(1), current_x.saturating_sub(1))
+            };
+            for x in hx0..=hx1 {
+                if is_subgraph_title_cell(graph, x, bridge_y) {
+                    continue;
+                }
+                set_route_edge_char(canvas, x, bridge_y, style.edge_h, style, owner);
+            }
+
+            let end_corner = if arrow_x > current_x {
+                style.corner_dr
+            } else {
+                style.corner_dl
+            };
+            set_route_edge_char(canvas, arrow_x, bridge_y, end_corner, style, owner);
+        }
+
+        if arrow_y > bridge_y && arrow_x < canvas.width {
+            for y in bridge_y.saturating_add(1)..=arrow_y {
+                if is_subgraph_title_cell(graph, arrow_x, y) {
+                    continue;
+                }
+                set_route_edge_char(canvas, arrow_x, y, style.edge_v, style, owner);
             }
         }
 
         if debug_timing {
             eprintln!(
-                "  cross-subgraph enter-under-title {} -> {} at x={} border_y={}",
-                from.id, to.id, current_x, sg.bounds.y
+                "  cross-subgraph enter-under-title {} -> {} portal_x={} bridge_y={} border_y={}",
+                from.id, to.id, current_x, bridge_y, sg.bounds.y
             );
         }
 
@@ -3256,7 +3326,7 @@ fn route_cross_subgraph_td(
 
     let portal_y = arrow_y
         .saturating_sub(1)
-        .max(sg.bounds.y.saturating_add(1))
+        .max(td_title_safe_entry_y(sg))
         .max(cursor_y.saturating_add(1))
         .min(arrow_y);
     if debug_timing {

@@ -170,9 +170,9 @@ impl Rectangle {
     }
 }
 
-/// Rendered subgraph title token, including surrounding Mermaid-style brackets.
+/// Rendered subgraph title text.
 pub fn subgraph_title_text(title: &str) -> String {
-    format!("[  {}  ]", title)
+    format!(" {title} ")
 }
 
 /// Display width of the rendered subgraph title token.
@@ -180,16 +180,16 @@ pub fn subgraph_title_len(title: &str) -> usize {
     subgraph_title_text(title).chars().count()
 }
 
-/// Border row that carries the subgraph title for the given orientation.
+/// Interior row that carries the subgraph title for the given orientation.
 pub fn subgraph_title_row(top_y: usize, height: usize, direction: Direction) -> usize {
     if matches!(direction, Direction::BT) {
-        top_y + height.saturating_sub(1)
+        top_y + height.saturating_sub(2)
     } else {
-        top_y
+        top_y.saturating_add(1)
     }
 }
 
-/// Horizontal title origin inside a subgraph border for the given orientation.
+/// Horizontal title origin inside a subgraph container for the given orientation.
 ///
 /// Titles are anchored to the leading edge of the subgraph based on direction:
 /// TD/TB/LR anchor left, RL anchors right, and BT anchors bottom-left.
@@ -200,17 +200,17 @@ pub fn subgraph_title_start_x(
     direction: Direction,
 ) -> Option<usize> {
     let len = subgraph_title_len(title);
-    if len == 0 || len > width.saturating_sub(2) {
+    if len == 0 || len > width.saturating_sub(4) {
         return None;
     }
 
     Some(match direction {
-        Direction::RL => left_x + width.saturating_sub(len + 1),
-        Direction::TD | Direction::TB | Direction::LR | Direction::BT => left_x.saturating_add(1),
+        Direction::RL => left_x + width.saturating_sub(len + 2),
+        Direction::TD | Direction::TB | Direction::LR | Direction::BT => left_x.saturating_add(2),
     })
 }
 
-/// Inclusive x-span of the rendered title token inside the subgraph border.
+/// Inclusive x-span of the rendered title token inside the subgraph container.
 pub fn subgraph_title_span(
     left_x: usize,
     width: usize,

@@ -288,7 +288,7 @@ fn subgraph_title_stays_clean_for_entry_edge_td() {
     cmd.arg("tests/fixtures/inputs/subgraph_single_td.md")
         .assert()
         .success()
-        .stdout(predicate::str::contains("[  Container  ]"))
+        .stdout(predicate::str::contains("Container"))
         .stdout(predicate::str::contains("┼").not());
 }
 
@@ -343,7 +343,7 @@ fn subgraph_complex_td_title_stays_clean() {
 }
 
 #[test]
-fn subgraph_fanin_bt_title_renders_on_bottom_edge() {
+fn subgraph_fanin_bt_title_renders_on_bottom_interior_row() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     let assert = cmd
         .arg("tests/fixtures/inputs/subgraph_fanin_bt.md")
@@ -359,8 +359,14 @@ fn subgraph_fanin_bt_title_renders_on_bottom_edge() {
 
     assert_eq!(
         title_idx,
-        lines.len().saturating_sub(1),
-        "expected BT subgraph title on the bottom border row, got:\n{}",
+        lines.len().saturating_sub(2),
+        "expected BT subgraph title on the bottom interior row, got:\n{}",
+        output
+    );
+    let bottom_border = lines.last().copied().unwrap_or_default();
+    assert!(
+        !bottom_border.contains("Data Sources"),
+        "expected BT bottom border to remain separate from the title row, got:\n{}",
         output
     );
 }

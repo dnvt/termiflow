@@ -787,8 +787,8 @@ mod tests {
         let mut c = mk_canvas(20, 5);
         let r = Rectangle::new(0, 0, 20, 5);
         draw_subgraph(&mut c, &r, Some("Grp"), &ASCII_CHARS, Direction::TD);
-        let row: String = (0..20).map(|x| c.get(x, 0)).collect();
-        assert!(row.contains("[  Grp  ]"), "title not found in row: {row:?}");
+        let row: String = (0..20).map(|x| c.get(x, 1)).collect();
+        assert!(row.contains("Grp"), "title not found in row: {row:?}");
     }
 
     #[test]
