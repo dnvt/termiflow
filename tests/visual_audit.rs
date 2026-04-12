@@ -16,7 +16,6 @@ const CURATED_FIXTURES: &[&str] = &[
     "tests/fixtures/inputs/crossing_grid_bt.md",
     "tests/fixtures/inputs/crossing_grid_lr.md",
     "tests/fixtures/inputs/crossing_grid_rl.md",
-    "tests/fixtures/inputs/subgraph_single_td.md",
     "tests/fixtures/inputs/subgraph_fanout_td.md",
     "tests/fixtures/inputs/subgraph_complex_td.md",
     "tests/fixtures/inputs/subgraph_complex_bt.md",

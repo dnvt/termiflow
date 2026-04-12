@@ -3085,7 +3085,10 @@ fn route_cross_subgraph_td(
             );
         }
 
-        let bridge_y = td_title_safe_entry_y(sg).max(current_y).min(arrow_y);
+        let mut bridge_y = td_title_safe_entry_y(sg).max(current_y).min(arrow_y);
+        if current_x != arrow_x && arrow_y > current_y {
+            bridge_y = bridge_y.min(arrow_y.saturating_sub(1)).max(current_y);
+        }
         if bridge_y >= current_y && current_y < canvas.height {
             for y in current_y..=bridge_y {
                 set_route_edge_char(canvas, current_x, y, style.edge_v, style, owner);

@@ -984,6 +984,9 @@ fn arrow_uses_subgraph_border_pierce(
     let Some(cell) = behind else {
         return false;
     };
+    if cell.owner_kind == CellOwnerKind::PortalOpening {
+        return true;
+    }
     if cell.owner_kind != CellOwnerKind::SubgraphBorder {
         return false;
     }
@@ -1058,7 +1061,9 @@ fn find_arrow_touching_subgraph_borders(
                 }
                 let on_border =
                     x == subgraph.bounds.x || x == max_x || y == subgraph.bounds.y || y == max_y;
-                if on_border && !is_compact_horizontal_portal_arrow(frame, x, y, cell.ch, subgraph)
+                if on_border
+                    && !is_compact_horizontal_portal_arrow(frame, x, y, cell.ch, subgraph)
+                    && !arrow_uses_subgraph_border_pierce(frame, x, y, cell.ch)
                 {
                     findings.push(CriticFinding {
                         code: FindingCode::ArrowTouchesSubgraphBorder,
