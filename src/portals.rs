@@ -104,7 +104,7 @@ fn candidate_introduces_foreign_node_overlap(
     })
 }
 
-fn top_level_connected_subgraph_components<'a>(graph: &'a Graph) -> Vec<Vec<&'a str>> {
+fn top_level_connected_subgraph_components(graph: &Graph) -> Vec<Vec<&str>> {
     let top_level_ids: Vec<&str> = graph
         .subgraphs
         .iter()

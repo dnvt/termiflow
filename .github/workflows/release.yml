@@ -17,7 +17,7 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -59,11 +59,12 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          BINARY_DIR="target/${{ matrix.target }}/release"
+          STAGING=$(mktemp -d)
+          cp target/${{ matrix.target }}/release/termiflow "$STAGING/"
+          cp target/${{ matrix.target }}/release/tw "$STAGING/"
+          cp LICENSE README.md "$STAGING/"
           ARCHIVE="termiflow-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
-          tar -czf "$ARCHIVE" \
-            -C "$BINARY_DIR" termiflow tw \
-            LICENSE README.md
+          tar -czf "$ARCHIVE" -C "$STAGING" termiflow tw LICENSE README.md
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
