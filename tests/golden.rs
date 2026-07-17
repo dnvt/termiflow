@@ -10,10 +10,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
-/// Run termiflow with given args and return (stdout, stderr)
-fn run_termiflow(args: &[&str]) -> (String, String) {
+/// Run termiflow with given args and return its status and streams.
+fn run_termiflow(args: &[&str]) -> (ExitStatus, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_termiflow"))
         .args(args)
         .output()
@@ -21,7 +21,7 @@ fn run_termiflow(args: &[&str]) -> (String, String) {
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (stdout, stderr)
+    (output.status, stdout, stderr)
 }
 
 fn list_inputs() -> Vec<PathBuf> {
@@ -60,7 +60,7 @@ fn run_golden_for_style(style: &str) {
             .file_stem()
             .and_then(|s| s.to_str())
             .expect("invalid fixture filename");
-        let (stdout, stderr) = run_termiflow(&[
+        let (status, stdout, stderr) = run_termiflow(&[
             "--print",
             "--style",
             style,
@@ -70,6 +70,12 @@ fn run_golden_for_style(style: &str) {
         let expected_path = expected_path(base, style);
         let expected = fs::read_to_string(&expected_path)
             .unwrap_or_else(|_| panic!("missing expected fixture: {}", expected_path.display()));
+
+        assert_eq!(
+            status.success(),
+            !is_error_fixture(base),
+            "unexpected process status for {base}.md ({style}): {status}"
+        );
 
         let stdout = normalize_trailing_newline(&stdout);
         let stderr = normalize_trailing_newline(&stderr);

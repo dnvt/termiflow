@@ -2050,7 +2050,7 @@ mod tests {
 
         // Place an edge label cell inside the node bounding box (x=3, y=1).
         let mut cells = vec![CellMeta::default(); 7 * 3];
-        cells[1 * 7 + 3] = CellMeta {
+        cells[7 + 3] = CellMeta {
             ch: 'X',
             owner_kind: CellOwnerKind::EdgeLabel,
             owner_id: Some("edge:0:A->B".to_string()),

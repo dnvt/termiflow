@@ -3260,6 +3260,124 @@ fn overlaps_reserved_subgraph_cells(graph: &Graph, start_x: usize, y: usize, wid
     })
 }
 
+/// Draw an edge label for convergent edges (multiple sources to one target).
+/// Labels are placed on the branch's outer side before the merge point so they
+/// do not crowd the shared junction corridor.
+#[allow(clippy::too_many_arguments)]
+fn draw_convergent_edge_label(
+    canvas: &mut Canvas,
+    from: &Node,
+    to: &Node,
+    label: &str,
+    direction: Direction,
+    config: &Config,
+    edge_idx: usize,
+    edge: &crate::graph::Edge,
+) -> Option<EdgeLabelPlacement> {
+    use cycle::{center_x, center_y};
+
+    // Use slightly shorter limit for convergent labels to avoid crowding at merge points
+    let convergent_limit = config.max_edge_label_width.saturating_sub(2).max(8);
+    let display_label = format_edge_label_with_limit(label, convergent_limit);
+    let label_width = display_width(&display_label);
+    let owner_id = edge_owner_id(edge_idx, edge);
+    let mut cells = Vec::new();
+
+    match direction {
+        Direction::TD | Direction::TB => {
+            // Place label on vertical line from source, before merge point
+            let src_x = center_x(from);
+            let target_x = center_x(to);
+            let stem_start_y = from.bottom_y();
+            // Place label just below the source box on the vertical stem
+            let label_y = stem_start_y + 1;
+
+            // Move the label away from the shared merge corridor when the source
+            // approaches the target from the left or right.
+            let label_start_x = if src_x + 1 < target_x {
+                src_x.saturating_sub(label_width)
+            } else if src_x > target_x + 1 {
+                src_x.saturating_add(2)
+            } else {
+                src_x.saturating_sub(label_width / 2)
+            };
+
+            let mut x_pos = label_start_x;
+            for c in display_label.chars() {
+                if x_pos < canvas.width && label_y < canvas.height {
+                    canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
+                }
+                x_pos += display_char_width(c);
+            }
+        }
+        Direction::BT => {
+            let src_x = center_x(from);
+            let stem_start_y = from.y.saturating_sub(1);
+            let label_y = stem_start_y.saturating_sub(1);
+
+            let label_start_x = src_x.saturating_sub(label_width / 2);
+            let mut x_pos = label_start_x;
+            for c in display_label.chars() {
+                if x_pos < canvas.width && label_y < canvas.height {
+                    canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
+                }
+                x_pos += display_char_width(c);
+            }
+        }
+        Direction::LR => {
+            // Place label on horizontal line from source, before merge
+            let src_y = center_y(from);
+            let stem_start_x = from.x + from.width;
+            let label_x = stem_start_x + 1;
+            // Place label above the edge line
+            let label_y = src_y.saturating_sub(1);
+
+            let mut x_pos = label_x;
+            for c in display_label.chars() {
+                if x_pos < canvas.width && label_y < canvas.height {
+                    canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
+                }
+                x_pos += display_char_width(c);
+            }
+        }
+        Direction::RL => {
+            let src_y = center_y(from);
+            let stem_start_x = from.x.saturating_sub(1);
+            let label_x = stem_start_x.saturating_sub(label_width);
+            let label_y = src_y.saturating_sub(1);
+
+            let mut x_pos = label_x;
+            for c in display_label.chars() {
+                if x_pos < canvas.width && label_y < canvas.height {
+                    canvas.set(x_pos, label_y, c);
+                    record_label_cell(&mut cells, x_pos, label_y);
+                }
+                x_pos += display_char_width(c);
+            }
+        }
+    }
+
+    build_label_placement(owner_id, cells)
+}
+
+fn record_label_cell(cells: &mut Vec<(usize, usize)>, x: usize, y: usize) {
+    cells.push((x, y));
+}
+
+fn build_label_placement(
+    owner_id: String,
+    cells: Vec<(usize, usize)>,
+) -> Option<EdgeLabelPlacement> {
+    if cells.is_empty() {
+        None
+    } else {
+        Some(EdgeLabelPlacement { owner_id, cells })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3543,123 +3661,5 @@ mod tests {
             label_row != top,
             "expected label not to overwrite subgraph top border (row {top}), got label at row {label_row}:\n{output}"
         );
-    }
-}
-
-/// Draw an edge label for convergent edges (multiple sources to one target).
-/// Labels are placed on the branch's outer side before the merge point so they
-/// do not crowd the shared junction corridor.
-#[allow(clippy::too_many_arguments)]
-fn draw_convergent_edge_label(
-    canvas: &mut Canvas,
-    from: &Node,
-    to: &Node,
-    label: &str,
-    direction: Direction,
-    config: &Config,
-    edge_idx: usize,
-    edge: &crate::graph::Edge,
-) -> Option<EdgeLabelPlacement> {
-    use cycle::{center_x, center_y};
-
-    // Use slightly shorter limit for convergent labels to avoid crowding at merge points
-    let convergent_limit = config.max_edge_label_width.saturating_sub(2).max(8);
-    let display_label = format_edge_label_with_limit(label, convergent_limit);
-    let label_width = display_width(&display_label);
-    let owner_id = edge_owner_id(edge_idx, edge);
-    let mut cells = Vec::new();
-
-    match direction {
-        Direction::TD | Direction::TB => {
-            // Place label on vertical line from source, before merge point
-            let src_x = center_x(from);
-            let target_x = center_x(to);
-            let stem_start_y = from.bottom_y();
-            // Place label just below the source box on the vertical stem
-            let label_y = stem_start_y + 1;
-
-            // Move the label away from the shared merge corridor when the source
-            // approaches the target from the left or right.
-            let label_start_x = if src_x + 1 < target_x {
-                src_x.saturating_sub(label_width)
-            } else if src_x > target_x + 1 {
-                src_x.saturating_add(2)
-            } else {
-                src_x.saturating_sub(label_width / 2)
-            };
-
-            let mut x_pos = label_start_x;
-            for c in display_label.chars() {
-                if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
-                }
-                x_pos += display_char_width(c);
-            }
-        }
-        Direction::BT => {
-            let src_x = center_x(from);
-            let stem_start_y = from.y.saturating_sub(1);
-            let label_y = stem_start_y.saturating_sub(1);
-
-            let label_start_x = src_x.saturating_sub(label_width / 2);
-            let mut x_pos = label_start_x;
-            for c in display_label.chars() {
-                if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
-                }
-                x_pos += display_char_width(c);
-            }
-        }
-        Direction::LR => {
-            // Place label on horizontal line from source, before merge
-            let src_y = center_y(from);
-            let stem_start_x = from.x + from.width;
-            let label_x = stem_start_x + 1;
-            // Place label above the edge line
-            let label_y = src_y.saturating_sub(1);
-
-            let mut x_pos = label_x;
-            for c in display_label.chars() {
-                if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
-                }
-                x_pos += display_char_width(c);
-            }
-        }
-        Direction::RL => {
-            let src_y = center_y(from);
-            let stem_start_x = from.x.saturating_sub(1);
-            let label_x = stem_start_x.saturating_sub(label_width);
-            let label_y = src_y.saturating_sub(1);
-
-            let mut x_pos = label_x;
-            for c in display_label.chars() {
-                if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
-                }
-                x_pos += display_char_width(c);
-            }
-        }
-    }
-
-    build_label_placement(owner_id, cells)
-}
-
-fn record_label_cell(cells: &mut Vec<(usize, usize)>, x: usize, y: usize) {
-    cells.push((x, y));
-}
-
-fn build_label_placement(
-    owner_id: String,
-    cells: Vec<(usize, usize)>,
-) -> Option<EdgeLabelPlacement> {
-    if cells.is_empty() {
-        None
-    } else {
-        Some(EdgeLabelPlacement { owner_id, cells })
     }
 }

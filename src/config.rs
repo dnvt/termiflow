@@ -393,9 +393,11 @@ mod tests {
 
     #[test]
     fn parse_config_applies_wrap_and_max_lines() {
-        let mut pc = ParseConfig::default();
-        pc.wrap_labels = Some(true);
-        pc.max_label_lines = Some(3);
+        let pc = ParseConfig {
+            wrap_labels: Some(true),
+            max_label_lines: Some(3),
+            ..Default::default()
+        };
 
         let cfg = Config::from_parse_config(&pc);
         assert!(cfg.wrap_labels);
@@ -404,8 +406,10 @@ mod tests {
 
     #[test]
     fn parse_config_applies_spacing_mode() {
-        let mut pc = ParseConfig::default();
-        pc.spacing_mode = Some(SpacingMode::Compact);
+        let pc = ParseConfig {
+            spacing_mode: Some(SpacingMode::Compact),
+            ..Default::default()
+        };
 
         let cfg = Config::from_parse_config(&pc);
         let compact = SpacingConfig::compact();
@@ -415,11 +419,13 @@ mod tests {
 
     #[test]
     fn parse_config_applies_render_feedback_settings() {
-        let mut pc = ParseConfig::default();
-        pc.optimize_render = Some(true);
-        pc.render_repair_passes = Some(4);
-        pc.layout_repair_passes = Some(3);
-        pc.debug_critic = Some(true);
+        let pc = ParseConfig {
+            optimize_render: Some(true),
+            render_repair_passes: Some(4),
+            layout_repair_passes: Some(3),
+            debug_critic: Some(true),
+            ..Default::default()
+        };
 
         let cfg = Config::from_parse_config(&pc);
         assert!(cfg.optimize_render);

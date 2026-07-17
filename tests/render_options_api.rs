@@ -2128,13 +2128,13 @@ fn render_matches_verified_collision_sibling_subgraphs_lr_snapshots() {
     for (style, upper_crossing, lower_crossing) in [
         (
             termiflow::BaseStyle::Unicode,
-            "│  Node B  ├───○───○",
-            "└──────────────────────○───○─→│  Node C  ├───┘",
+            "│  Node B  ├───┼───┼",
+            "└──────────────────────┼───┼─→│  Node C  ├───┘",
         ),
         (
             termiflow::BaseStyle::Ascii,
-            "|  Node B  +---o---o",
-            "+----------------------o---o->|  Node C  +---+",
+            "|  Node B  +---+---+",
+            "+----------------------+---+->|  Node C  +---+",
         ),
     ] {
         let output =
@@ -2157,13 +2157,13 @@ fn render_matches_verified_collision_parallel_cross_bt_snapshots() {
     for (style, target_crossing, source_crossing) in [
         (
             termiflow::BaseStyle::Unicode,
-            "┗━━━━━━━━━━━○━━━━━━━━━○━━━━━━━━┛",
-            "┏━━━━━━━━━○━━━━━━━━━━━○━━━━━━━━┓",
+            "┗━━━━━━━━━━━┼━━━━━━━━━┼━━━━━━━━┛",
+            "┏━━━━━━━━━┼━━━━━━━━━━━┼━━━━━━━━┓",
         ),
         (
             termiflow::BaseStyle::Ascii,
-            "+-----------o---------o--------+",
-            "+---------o-----------o--------+",
+            "+-----------+---------+--------+",
+            "+---------+-----------+--------+",
         ),
     ] {
         let outcome = termiflow::render_with_feedback(

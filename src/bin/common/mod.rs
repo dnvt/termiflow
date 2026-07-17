@@ -511,15 +511,13 @@ fn run_tui_mode(cli: &Cli) -> Result<()> {
                         }
                         dirty = true;
                     }
-                    KeyCode::End | KeyCode::Char('G') => {
-                        if !findings_mode {
-                            viewport_user_controlled = true;
-                            let content_lines = last_content.lines().count() as u16;
-                            let viewport_lines = terminal_size.1.saturating_sub(1);
-                            viewport.offset_y = content_lines.saturating_sub(viewport_lines);
-                            viewport.offset_x = 0;
-                            dirty = true;
-                        }
+                    KeyCode::End | KeyCode::Char('G') if !findings_mode => {
+                        viewport_user_controlled = true;
+                        let content_lines = last_content.lines().count() as u16;
+                        let viewport_lines = terminal_size.1.saturating_sub(1);
+                        viewport.offset_y = content_lines.saturating_sub(viewport_lines);
+                        viewport.offset_x = 0;
+                        dirty = true;
                     }
                     _ => {}
                 },

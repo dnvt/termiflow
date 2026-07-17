@@ -29,13 +29,16 @@ Regenerate them after intentional rendering changes.
 
 ## Test Inventory
 
-- All non-error fixtures exist in **all four directions** (TD, LR, BT, RL).
+- Most non-error fixture families exist in **all four directions** (TD, LR, BT,
+  RL). `warn_classDef_td` and `warn_malformed_td` are intentionally TD-only
+  warning fixtures.
 - Error fixtures omit the direction suffix and are validated against stderr output.
 
 ## Test Counts
 
-- **101 input files** (100 directional + 1 error)
-- **202 expected outputs** (ascii + unicode per input)
+- **237 input files** (232 clean successes, 2 successes with warnings, 3
+  expected errors)
+- **474 expected outputs** (ASCII + Unicode per input)
 - **4 directions tested**: TD, LR, BT, RL
 
 ## Regenerating Expected Outputs

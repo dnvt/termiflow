@@ -293,10 +293,12 @@ mod tests {
         n.width = 12; // inner width = 8
         g.nodes.push(n);
 
-        let mut cfg = Config::default();
-        cfg.wrap_labels = true;
-        cfg.max_label_lines = 3;
-        cfg.max_label_width = 8;
+        let cfg = Config {
+            wrap_labels: true,
+            max_label_lines: 3,
+            max_label_width: 8,
+            ..Default::default()
+        };
 
         measure_graph(&mut g, &cfg);
         assert_eq!(g.nodes[0].label_lines.len(), 3);
@@ -322,10 +324,12 @@ mod tests {
         n.width = 60;
         g.nodes.push(n);
 
-        let mut cfg = Config::default();
-        cfg.wrap_labels = true;
-        cfg.max_label_lines = 10;
-        cfg.max_label_width = 20;
+        let cfg = Config {
+            wrap_labels: true,
+            max_label_lines: 10,
+            max_label_width: 20,
+            ..Default::default()
+        };
 
         measure_graph(&mut g, &cfg);
         assert!(g.nodes[0].label_lines.len() >= 2);
@@ -338,10 +342,12 @@ mod tests {
         let mut g = Graph::new();
         g.nodes.push(Node::new("A", "short line<br>tiny"));
 
-        let mut cfg = Config::default();
-        cfg.wrap_labels = true;
-        cfg.max_label_lines = 10;
-        cfg.max_label_width = 80;
+        let cfg = Config {
+            wrap_labels: true,
+            max_label_lines: 10,
+            max_label_width: 80,
+            ..Default::default()
+        };
 
         measure_graph(&mut g, &cfg);
         assert!(g.nodes[0].label_lines.len() >= 2);
@@ -356,16 +362,20 @@ mod tests {
         let mut g = Graph::new();
         g.nodes.push(Node::new("A", "this is a longer label"));
 
-        let mut cfg = Config::default();
-        cfg.max_label_width = 10;
+        let cfg = Config {
+            max_label_width: 10,
+            ..Default::default()
+        };
 
         measure_graph(&mut g, &cfg);
         let w10 = g.nodes[0].width;
 
         let mut g2 = Graph::new();
         g2.nodes.push(Node::new("A", "this is a longer label"));
-        let mut cfg2 = Config::default();
-        cfg2.max_label_width = 20;
+        let cfg2 = Config {
+            max_label_width: 20,
+            ..Default::default()
+        };
         measure_graph(&mut g2, &cfg2);
         let w20 = g2.nodes[0].width;
 
@@ -380,10 +390,12 @@ mod tests {
             "one two three four five six seven eight nine",
         ));
 
-        let mut cfg = Config::default();
-        cfg.wrap_labels = true;
-        cfg.max_label_width = 6;
-        cfg.max_label_lines = 2;
+        let cfg = Config {
+            wrap_labels: true,
+            max_label_width: 6,
+            max_label_lines: 2,
+            ..Default::default()
+        };
 
         measure_graph(&mut g, &cfg);
         assert_eq!(g.nodes[0].label_lines.len(), 2);

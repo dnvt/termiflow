@@ -272,7 +272,7 @@ impl CompositeStyle {
             // End marker components (from arrow style)
             circle_end: arrow_chars.circle_end,
             cross_end: arrow_chars.cross_end,
-            portal_pierce: arrow_chars.circle_end,
+            portal_pierce: arrow_chars.cross,
         }
     }
 
@@ -314,7 +314,7 @@ pub static ASCII_CHARS: StyleChars = StyleChars {
     dotted_v: ':',
     circle_end: 'o',
     cross_end: 'x',
-    portal_pierce: 'o',
+    portal_pierce: '+',
 };
 
 pub static UNICODE_CHARS: StyleChars = StyleChars {
@@ -345,7 +345,7 @@ pub static UNICODE_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '○',
+    portal_pierce: '┼',
 };
 
 pub static DOUBLE_CHARS: StyleChars = StyleChars {
@@ -376,7 +376,7 @@ pub static DOUBLE_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '○',
+    portal_pierce: '╬',
 };
 
 pub static ROUNDED_CHARS: StyleChars = StyleChars {
@@ -407,7 +407,7 @@ pub static ROUNDED_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '○',
+    portal_pierce: '┼',
 };
 
 pub static HEAVY_CHARS: StyleChars = StyleChars {
@@ -438,7 +438,7 @@ pub static HEAVY_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '○',
+    portal_pierce: '╋',
 };
 
 pub static DOTS_CHARS: StyleChars = StyleChars {
@@ -469,7 +469,7 @@ pub static DOTS_CHARS: StyleChars = StyleChars {
     dotted_v: ':',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '○',
+    portal_pierce: '┼',
 };
 
 pub static PLUS_CHARS: StyleChars = StyleChars {
@@ -500,7 +500,7 @@ pub static PLUS_CHARS: StyleChars = StyleChars {
     dotted_v: ':',
     circle_end: 'o',
     cross_end: 'x',
-    portal_pierce: 'o',
+    portal_pierce: '+',
 };
 
 pub static STARS_CHARS: StyleChars = StyleChars {
@@ -531,7 +531,7 @@ pub static STARS_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '○',
+    portal_pierce: '┼',
 };
 
 pub static BLOCKS_CHARS: StyleChars = StyleChars {
@@ -562,7 +562,7 @@ pub static BLOCKS_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '○',
+    portal_pierce: '┼',
 };
 
 /// Truncate label to fit within max display columns
@@ -678,10 +678,12 @@ mod tests {
 
     #[test]
     fn test_composite_style_to_style_chars() {
-        let mut composite = CompositeStyle::default();
-        composite.corner = Some(BaseStyle::Dots);
-        composite.border = Some(BaseStyle::Heavy);
-        composite.arrow = Some(BaseStyle::Heavy);
+        let composite = CompositeStyle {
+            corner: Some(BaseStyle::Dots),
+            border: Some(BaseStyle::Heavy),
+            arrow: Some(BaseStyle::Heavy),
+            ..Default::default()
+        };
 
         let chars = composite.to_style_chars(BaseStyle::Unicode);
 

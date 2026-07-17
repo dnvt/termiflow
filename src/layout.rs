@@ -1570,7 +1570,8 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             let envelopes =
                 compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
 
-            let sg_ids: Vec<&String> = envelopes.keys().collect();
+            let mut sg_ids: Vec<&String> = envelopes.keys().collect();
+            sg_ids.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
             for i in 0..sg_ids.len() {
                 for j in (i + 1)..sg_ids.len() {
                     let env1 = &envelopes[sg_ids[i]];
@@ -1619,7 +1620,11 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
 
             let Some((late_id, delta_x)) = required_shift_by_id
                 .iter()
-                .max_by_key(|(_, delta)| *delta)
+                .max_by(|(left_id, left_delta), (right_id, right_delta)| {
+                    left_delta
+                        .cmp(right_delta)
+                        .then_with(|| right_id.cmp(left_id))
+                })
                 .map(|(id, delta)| (id.clone(), *delta))
             else {
                 break;
@@ -1657,7 +1662,8 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             }
 
             // Check all sibling pairs for vertical overlap
-            let sg_ids: Vec<&String> = envelopes.keys().collect();
+            let mut sg_ids: Vec<&String> = envelopes.keys().collect();
+            sg_ids.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
             for i in 0..sg_ids.len() {
                 for j in (i + 1)..sg_ids.len() {
                     let env1 = &envelopes[sg_ids[i]];
@@ -1713,7 +1719,11 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
 
             let Some((sg_id, delta)) = shifts
                 .iter()
-                .max_by_key(|(_, d)| *d)
+                .max_by(|(left_id, left_delta), (right_id, right_delta)| {
+                    left_delta
+                        .cmp(right_delta)
+                        .then_with(|| right_id.cmp(left_id))
+                })
                 .map(|(id, d)| (id.clone(), *d))
             else {
                 break;
@@ -5436,7 +5446,7 @@ mod tests {
             prior_positions: None,
         };
         let output = layout(input, CoarseLayoutConfig::default()).expect("layout");
-        assert!(output.subgraph_envelopes.get("sg1").is_some());
+        assert!(output.subgraph_envelopes.contains_key("sg1"));
         // Routing may be deferred to the renderer for some shapes; layout should still succeed.
     }
 
@@ -5576,7 +5586,7 @@ mod tests {
             data.bounds
         );
         assert!(
-            data.bounds.y >= user_service.y + user_service.height + 1,
+            data.bounds.y > user_service.y + user_service.height,
             "expected the nested child border/title band to stay below the parent's direct node band: data={:?} user_service=({}, {}, {}x{})",
             data.bounds,
             user_service.x,
@@ -5653,7 +5663,7 @@ mod tests {
                     .x
                     .saturating_sub(data.bounds.x.saturating_add(data.bounds.width));
                 assert!(
-                    data.bounds.x >= user_service.x + user_service.width + 1,
+                    data.bounds.x > user_service.x + user_service.width,
                     "expected the nested child to remain after the parent's direct node along LR flow: child={:?} user_service=({}, {}, {}x{})",
                     data.bounds,
                     user_service.x,
@@ -5662,7 +5672,7 @@ mod tests {
                     user_service.height,
                 );
                 assert!(
-                    response_builder.x >= data.bounds.x + data.bounds.width + 1,
+                    response_builder.x > data.bounds.x + data.bounds.width,
                     "expected the parent-only response node to remain after the nested child along LR flow: child={:?} response_builder=({}, {}, {}x{})",
                     data.bounds,
                     response_builder.x,
@@ -5755,13 +5765,13 @@ mod tests {
             data.bounds
         );
         assert!(
-            data.bounds.y >= service.bounds.y + service.bounds.height + 1,
+            data.bounds.y > service.bounds.y + service.bounds.height,
             "expected the sibling Data Layer to stay below the Service Layer in TD: service={:?} data={:?}",
             service.bounds,
             data.bounds
         );
         assert!(
-            response.y >= data.bounds.y + data.bounds.height + 1,
+            response.y > data.bounds.y + data.bounds.height,
             "expected Response Builder to remain below the sibling Data Layer in TD: data={:?} response=({}, {}, {}x{})",
             data.bounds,
             response.x,

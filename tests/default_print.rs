@@ -289,7 +289,7 @@ fn subgraph_title_stays_clean_for_entry_edge_td() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Container"))
-        .stdout(predicate::str::contains("┼").not());
+        .stdout(predicate::str::contains("┼"));
 }
 
 #[test]

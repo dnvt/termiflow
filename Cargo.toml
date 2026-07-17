@@ -29,6 +29,7 @@ exclude = [
     "MEMORY.md",
     "tests/fixtures/",
     "tests/visual_audit.rs",
+    "tests/visual_audit_runner.rs",
     "benches/",
     "scripts/",
     "docs/",
