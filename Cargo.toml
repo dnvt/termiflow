@@ -1,6 +1,6 @@
 [package]
 name = "termiflow"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Terminal-native Mermaid flowchart renderer — jq for diagrams"
 license = "MIT"
@@ -13,6 +13,7 @@ rust-version = "1.87"
 default-run = "termiflow"
 exclude = [
     ".claude/",
+    ".agents/",
     ".maestro/",
     ".maestro-project/",
     ".helix/",
