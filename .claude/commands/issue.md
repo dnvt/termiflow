@@ -1,1 +1,0 @@
-/Users/fdenavaut/Developer/Work/Frame/plugins/community/knowledge/commands/issue.md

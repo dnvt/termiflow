@@ -11,7 +11,7 @@ env:
 
 jobs:
   check:
-    name: Format, Clippy, Tests
+    name: Format, Clippy, Tests, Docs
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -23,6 +23,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Enforce Rust/Bash-only repository automation
+        run: test -z "$(rg --files -g '*.py' -g '*.rb' || true)"
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -39,16 +42,83 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --all-targets --all-features
+
+      - name: cargo test --doc
+        run: cargo test --doc --all-features
+
+      - name: cargo doc
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
       - name: golden fixtures
         run: cargo test --features golden
 
       - name: cargo build --release
         run: cargo build --release
+
+      - name: package contents
+        shell: bash
+        run: |
+          files="$(cargo package --allow-dirty --list)"
+          printf '%s\n' "$files"
+          if printf '%s\n' "$files" | grep -Eq '(^|/)(\.claude|\.agents|\.maestro|\.maestro-project|\.helix|analysis|planning|decisions)(/|$)|^(AGENTS\.md|DEMO\.ts)$|^src/(qa/|bin/termiflow_qa\.rs$)'; then
+            echo "internal workflow or repository-only QA files leaked into the package" >&2
+            exit 1
+          fi
+
+      - name: publish dry run
+        run: cargo publish --dry-run --allow-dirty
+
+      - name: visual evidence smoke
+        run: |
+          scripts/visual_audit.sh \
+            --styles ascii \
+            --modes default \
+            --out "$RUNNER_TEMP/termiflow-visual-smoke"
+
+  visual:
+    name: Full visual evidence matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build renderer
+        run: cargo build --bin termiflow
+
+      - name: Run visual evidence matrix
+        run: |
+          scripts/visual_audit.sh \
+            --binary target/debug/termiflow \
+            --styles ascii,unicode \
+            --modes default,optimized \
+            --out "$RUNNER_TEMP/termiflow-visual-full"
+
+      - name: Validate visual quality baseline
+        run: |
+          scripts/visual_validate.sh \
+            --packet "$RUNNER_TEMP/termiflow-visual-full" \
+            --baseline tests/fixtures/quality_baseline.json \
+            --strict-quality
+
+  msrv:
+    name: MSRV (Rust 1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@1.88
+
+      - name: cargo test on MSRV
+        run: cargo test --all-targets --all-features
 
   deny:
     name: Dependency Audit
@@ -57,10 +127,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny --version 0.19.9 --locked
 
       - name: cargo deny check
-        # Skips 'advisories' until cargo-deny supports CVSS 4.0 format
-        # (cargo-deny 0.18.3 fails to parse RUSTSEC advisories using CVSS:4.0).
-        # Track: https://github.com/EmbarkStudios/cargo-deny/issues
-        run: cargo deny check licenses bans sources
+        run: cargo deny check advisories bans licenses sources

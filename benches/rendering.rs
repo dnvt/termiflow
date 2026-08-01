@@ -1,4 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 use termiflow::{render, BaseStyle, RenderOptions};
 
 fn simple_diagram() -> &'static str {
@@ -39,6 +40,19 @@ fn large_branching_diagram() -> &'static str {
     B6 --> C3
     B7 --> C4[End 4]
     B8 --> C4"
+}
+
+fn indexed_scheduling_diagram() -> &'static str {
+    "graph TD
+    Root[Root] --> A[Auth]
+    Root --> B[API]
+    Root --> C[Queue]
+    A --> D[Database]
+    B --> D
+    B --> E[Cache]
+    C --> E
+    D --> F[Output]
+    E --> F"
 }
 
 fn subgraph_complex_td_fixture() -> &'static str {
@@ -82,6 +96,13 @@ fn benchmark_complex_render(c: &mut Criterion) {
 fn benchmark_large_branching(c: &mut Criterion) {
     let input = large_branching_diagram();
     c.bench_function("render_large_branching", |b| {
+        b.iter(|| render(black_box(input), RenderOptions::default()))
+    });
+}
+
+fn benchmark_indexed_render_scheduling(c: &mut Criterion) {
+    let input = indexed_scheduling_diagram();
+    c.bench_function("pipeline_indexed_edge_scheduling", |b| {
         b.iter(|| render(black_box(input), RenderOptions::default()))
     });
 }
@@ -186,6 +207,7 @@ criterion_group!(
     benchmark_simple_render,
     benchmark_complex_render,
     benchmark_large_branching,
+    benchmark_indexed_render_scheduling,
     benchmark_different_orientations,
     benchmark_different_styles,
     benchmark_route_dense_subgraphs

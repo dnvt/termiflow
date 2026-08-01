@@ -5,10 +5,10 @@
 Render Mermaid flowcharts as ASCII/Unicode diagrams in your terminal without a
 browser.
 
-Current status: print mode and primary-screen watch mode (`--watch`) are ready
-for the first public beta. Alternate-screen live preview (`--tui`) works today,
-but it remains a partial mode whose input and scroll behavior depends on the
-terminal emulator.
+Current status: TermiFlow v0.1.1 is a focused public-beta release. Print mode
+and primary-screen watch mode (`--watch`) are the stable workflow; alternate-
+screen live preview (`--tui`) is available but remains partial because input and
+scroll behavior depends on the terminal emulator.
 
 ## Examples
 
@@ -111,10 +111,20 @@ $ printf 'graph LR\n    subgraph CI\n        A[Push]-->B[Lint]-->C[Test]\n    en
 brew install dnvt/termiflow/termiflow
 ```
 
+The Homebrew formula is maintained in the external `dnvt/homebrew-termiflow`
+tap; this repository keeps installation instructions only.
+
 ### crates.io
 
 ```bash
 cargo install termiflow
+```
+
+The registry release and GitHub tags may publish on different schedules. To
+install the version from this repository instead:
+
+```bash
+cargo install --git https://github.com/dnvt/termiflow --tag v0.1.1
 ```
 
 ### From source
@@ -181,6 +191,15 @@ tw --strict diagram.md
 
 - Pipelines (Terraform/Docker Compose/npm → Mermaid → TermiFlow): `docs/pipelines.md`
 - CLI + syntax reference (flags, config, supported syntax): `docs/reference.md`
+- Contributing: `CONTRIBUTING.md`
+- Security policy: `SECURITY.md`
+
+## Development
+
+The repository’s required checks are documented in `CONTRIBUTING.md`. The
+repository includes deterministic golden fixtures, visual audit tooling, and
+quality-baseline checks so rendering changes can be reviewed reproducibly; see
+`tests/fixtures/README.md` for the contributor workflow.
 
 ## License
 

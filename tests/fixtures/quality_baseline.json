@@ -1,0 +1,37 @@
+{
+  "schema": "termiflow.quality_baseline.v1",
+  "identity": {
+    "source_commit": "93eb93f",
+    "cargo_lock_sha256": "c9ff6f0235323cfadcf8857a0491c30b7e1f43f890c43f43aef9337e473bd7e1",
+    "display_profile": "terminal-grid-v1",
+    "styles": ["ascii", "unicode"],
+    "modes": ["default", "optimized"]
+  },
+  "exception_policy": {
+    "owner": "rendering-baseline",
+    "expires": "2026-09-01",
+    "hypothesis": "existing stable baseline finding; review the frame and add a focused regression",
+    "next_command": "scripts/review_visual_packet.sh --next --record"
+  },
+  "exception_fields": ["fixture", "style", "mode", "layer", "code", "message"],
+  "exceptions": [
+    {"fixture": "junction_quad_bt", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 7 cell(s)"},
+    {"fixture": "junction_quad_bt", "styles": ["ascii", "unicode"], "modes": ["optimized"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 2 cell(s)"},
+    {"fixture": "junction_quad_lr", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 2 cell(s)"},
+    {"fixture": "junction_quad_rl", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 2 cell(s)"},
+    {"fixture": "junction_quad_td", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 7 cell(s)"},
+    {"fixture": "junction_quad_td", "styles": ["ascii", "unicode"], "modes": ["optimized"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 2 cell(s)"},
+    {"fixture": "scale_dense_bt", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 13 cell(s)"},
+    {"fixture": "scale_dense_lr", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 3 cell(s)"},
+    {"fixture": "scale_dense_rl", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 3 cell(s)"},
+    {"fixture": "scale_dense_td", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 13 cell(s)"}
+  ],
+  "forbidden_codes": [
+    "ArrowWithoutVisibleShaft",
+    "ArrowTouchesNodeBorder",
+    "ArrowTouchesSubgraphBorder",
+    "RouteCrossesNodeInterior",
+    "EmptyRenderedFrame",
+    "CanvasClipped"
+  ]
+}

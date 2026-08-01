@@ -11,4 +11,3 @@ Docs here stay short and user-focused.
 - Render overview: `render-overview.md`
 - Edge overview: `edge-overview.md`
 - Canvas overview: `canvas-overview.md`
-- Historical/demo material: `hackweek-reveal.md`

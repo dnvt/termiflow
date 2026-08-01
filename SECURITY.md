@@ -3,7 +3,8 @@
 ## Supported Versions
 
 TermiFlow is currently in public beta (0.1.x). Security fixes are applied to
-the latest release only.
+the latest released 0.1.x version. Please include the affected TermiFlow
+version and toolchain when reporting a vulnerability.
 
 ## Reporting a Vulnerability
 
@@ -15,6 +16,10 @@ or by emailing the maintainer directly (see GitHub profile for contact).
 
 We aim to acknowledge reports within 72 hours and to provide a fix or mitigation
 timeline within 14 days.
+
+Please do not include secrets, private diagrams, credentials, or other
+sensitive inputs in public issues. If a reproducer contains sensitive data,
+attach a minimized private example through the advisory process.
 
 ## Scope
 

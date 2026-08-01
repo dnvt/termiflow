@@ -1,4 +1,0 @@
-language: rust
-framework: rust
-plugin: core
-vapor: false

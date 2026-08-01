@@ -17,6 +17,8 @@
 
 ## Common Flags
 
+- `--file`, `-f`: read the input from the specified file (equivalent to the
+  positional file argument).
 - `--style`, `-s`: base style (`ascii`, `unicode`, `double`, `rounded`, `heavy`, `dots`, `plus`, `stars`, `blocks`) or composite (e.g. `corner:dots,border:heavy`).
 - `--max-label`: label width budget in columns (default 20). Affects truncation and box sizing.
 - `--max-edge-label`: edge-label width budget in columns (default 20).
@@ -24,7 +26,9 @@
 - `--max-lines`: max label lines when wrapping is enabled (default 1).
 - `--crop` / `--no-crop`: crop empty margins around output (default on).
 - `--pad N`: add padding (spaces/lines) around output (default 0).
-- `--compact`: use a tighter layout spacing (less whitespace).
+- `--spacing`: choose `compact`, `default`, or `spacious` layout spacing.
+- `--compact`: legacy alias for `--spacing=compact`; deprecated.
+- `--scaling`: choose `auto` or `fixed` canvas scaling (default `auto`).
 - `--fit-terminal`: constrain the canvas to current terminal dimensions.
 - `--optimize-render`: enable bounded render/layout repair after the initial draw.
 - `--render-repair-passes N`: max render repair passes when optimization is enabled.

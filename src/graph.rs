@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use serde::Serialize;
+
 use crate::geom::EdgeRoute;
 use crate::style::BOX_HEIGHT;
 
@@ -319,7 +321,7 @@ pub struct Graph {
 }
 
 /// Graph direction (from Mermaid `graph TD/LR/TB/BT`)
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub enum Direction {
     #[default]
     TD, // Top-down (same as TB)
