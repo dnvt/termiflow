@@ -1,0 +1,142 @@
+{
+  "schema": "termiflow.fixture_spec.v1",
+  "spec_version": 1,
+  "cases": [
+    {
+      "id": "subgraph_narrow_canary",
+      "family": "subgraph-boundary",
+      "semantic": {
+        "nodes": ["A", "B", "C"],
+        "edges": [
+          {"from": "B", "to": "A"},
+          {"from": "A", "to": "C"}
+        ],
+        "subgraphs": [
+          {"id": "X", "members": ["A"]}
+        ],
+        "labels": {"A": "A", "B": "In", "C": "Out"}
+      },
+      "homologs": ["subgraph_narrow_canary", "subgraph_narrow_holdout"],
+      "variants": [
+        {
+          "id": "subgraph_narrow_td",
+          "direction": "TD",
+          "source": "graph TD\nsubgraph X [X]\n    A[A]\nend\nB[In] --> A\nA --> C[Out]\n",
+          "input_path": "tests/fixtures/inputs/subgraph_narrow_td.md",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "none",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P2", "class": "border_portal_contact", "region": "subgraph boundary"}
+          ]
+        },
+        {
+          "id": "subgraph_narrow_lr",
+          "direction": "LR",
+          "source": "graph LR\nsubgraph X [X]\n    A[A]\nend\nB[In] --> A\nA --> C[Out]\n",
+          "input_path": "tests/fixtures/inputs/subgraph_narrow_lr.md",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "none",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P2", "class": "missing_arrow_shaft", "region": "horizontal boundary route"}
+          ]
+        },
+        {
+          "id": "subgraph_narrow_bt",
+          "direction": "BT",
+          "source": "graph BT\nsubgraph X [X]\n    A[A]\nend\nB[In] --> A\nA --> C[Out]\n",
+          "input_path": "tests/fixtures/inputs/subgraph_narrow_bt.md",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "none",
+          "review_targets": [
+            {"dimension": "containment", "severity_floor": "P2", "class": "border_portal_contact", "region": "bottom title boundary"}
+          ]
+        },
+        {
+          "id": "subgraph_narrow_rl",
+          "direction": "RL",
+          "source": "graph RL\nsubgraph X [X]\n    A[A]\nend\nB[In] --> A\nA --> C[Out]\n",
+          "input_path": "tests/fixtures/inputs/subgraph_narrow_rl.md",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "none",
+          "review_targets": [
+            {"dimension": "readability", "severity_floor": "P2", "class": "spacing", "region": "mirrored boundary route"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "subgraph_narrow_holdout",
+      "family": "subgraph-boundary",
+      "semantic": {
+        "nodes": ["A", "B", "C"],
+        "edges": [
+          {"from": "B", "to": "A"},
+          {"from": "A", "to": "C"}
+        ],
+        "subgraphs": [
+          {"id": "X", "members": ["A"]}
+        ],
+        "labels": {"A": "A", "B": "In", "C": "Out"}
+      },
+      "homologs": ["subgraph_narrow_canary", "subgraph_narrow_holdout"],
+      "variants": [
+        {
+          "id": "subgraph_narrow_holdout_td",
+          "direction": "TD",
+          "source": "graph TD\nsubgraph X [X]\n    A[A]\nend\nB[In] --> A\nA --> C[Out]\n",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "evaluator_owned",
+          "review_targets": [
+            {"dimension": "containment", "severity_floor": "P1", "class": "illegal_overwrite", "region": "evaluator boundary holdout"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "warn_classdef_canary",
+      "family": "unsupported-style-warning",
+      "semantic": {
+        "nodes": ["A", "B"],
+        "edges": [{"from": "A", "to": "B"}],
+        "subgraphs": [],
+        "labels": {"A": "Start", "B": "End"}
+      },
+      "homologs": ["warn_classdef_canary"],
+      "variants": [
+        {
+          "id": "warn_classdef_canary_td",
+          "direction": "TD",
+          "source": "graph TD\n    A[Start]:::highlight --> B[End]\n    classDef highlight fill:#f00\n",
+          "input_path": "tests/fixtures/inputs/warn_classDef_td.md",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "warning",
+          "stderr_policy": "warning",
+          "stderr_contains": ["Mermaid classes not supported"],
+          "holdout": "shared",
+          "review_targets": []
+        }
+      ]
+    }
+  ]
+}

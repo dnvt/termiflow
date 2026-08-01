@@ -9,25 +9,14 @@ homepage = "https://github.com/dnvt/termiflow"
 documentation = "https://github.com/dnvt/termiflow/blob/main/docs/reference.md"
 keywords = ["mermaid", "diagram", "terminal", "cli", "ascii"]
 categories = ["command-line-utilities", "visualization"]
-rust-version = "1.87"
+rust-version = "1.88"
 default-run = "termiflow"
 exclude = [
-    ".claude/",
-    ".agents/",
-    ".maestro/",
-    ".maestro-project/",
-    ".helix/",
-    "context/",
-    "planning/",
-    "analysis/",
-    "inbox/",
-    "decisions/",
     "artifacts/",
-    "maestro.toml",
-    "maestro.toml.example",
-    "DEMO.ts",
-    "AGENTS.md",
-    "MEMORY.md",
+    ".github/",
+    ".gitignore",
+    "src/bin/termiflow_qa.rs",
+    "src/qa/",
     "tests/fixtures/",
     "tests/visual_audit.rs",
     "tests/visual_audit_runner.rs",
@@ -45,8 +34,22 @@ path = "src/bin/termiflow.rs"
 name = "tw"
 path = "src/bin/tw.rs"
 
+[[bin]]
+name = "termiflow-qa"
+path = "src/bin/termiflow_qa.rs"
+required-features = ["qa"]
+
+[[bin]]
+name = "cargo-metadata-to-graph"
+path = "src/bin/cargo_metadata_to_graph.rs"
+
+[[bin]]
+name = "graph-to-mermaid"
+path = "src/bin/graph_to_mermaid.rs"
+
 [features]
 golden = []
+qa = []
 
 [dependencies]
 ratatui = "0.30"
@@ -61,11 +64,12 @@ lazy_static = "1.5"
 unicode-segmentation = "1.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "rendering"

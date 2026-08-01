@@ -2,10 +2,11 @@
 
 use crate::geom::Segment;
 use crate::graph::{Direction, Graph, Rectangle};
+use serde::Serialize;
 
 use super::provenance::edge_owner_id;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RectTrace {
     pub x: usize,
     pub y: usize,
@@ -13,7 +14,7 @@ pub struct RectTrace {
     pub height: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NodeTrace {
     pub id: String,
     pub x: usize,
@@ -24,7 +25,7 @@ pub struct NodeTrace {
     pub subgraph_chain: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SubgraphTrace {
     pub id: String,
     pub title: Option<String>,
@@ -35,19 +36,19 @@ pub struct SubgraphTrace {
     pub inner_bounds: RectTrace,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SegmentAxis {
     Horizontal,
     Vertical,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct PointTrace {
     pub x: usize,
     pub y: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SegmentTrace {
     pub from: PointTrace,
     pub to: PointTrace,
@@ -55,7 +56,7 @@ pub struct SegmentTrace {
     pub length: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EdgeTrace {
     pub owner_id: String,
     pub from: String,
@@ -66,7 +67,7 @@ pub struct EdgeTrace {
     pub segments: Vec<SegmentTrace>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GeometryTrace {
     pub direction: Direction,
     pub nodes: Vec<NodeTrace>,

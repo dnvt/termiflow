@@ -77,7 +77,7 @@ impl CrossingMinimizer {
     ///
     /// # Arguments
     /// * `graph` - The graph being laid out
-    /// * `layers` - Mutable reference to layer assignments (Vec<Vec<usize>> where each inner vec
+    /// * `layers` - Mutable reference to layer assignments (`Vec<Vec<usize>>` where each inner vec
     ///   contains node indices for that layer)
     ///
     /// # Returns

@@ -1,6 +1,5 @@
 # Build artifacts
 /target
-Cargo.lock
 
 # IDE
 .idea/
@@ -18,24 +17,3 @@ Thumbs.db
 
 # Local render artifacts
 /artifacts/
-
-# Optional model-specific local notes
-AGENT.md
-CLAUDE.md
-
-# Local AI/editor state
-.claude/settings.local.json
-.claude/settings.json
-.claude/state/
-
-# Optional local Maestro runtime
-.maestro
-maestro.toml
-
-# Local working context
-context/
-analysis/research-pulse/
-analysis/ingest/
-inbox/
-MEMORY.md
-learning/

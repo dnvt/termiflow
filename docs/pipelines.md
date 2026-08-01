@@ -13,10 +13,10 @@ EOF
 
 ## Demo: JSON Graph → Mermaid → TermiFlow
 
-This is fully local (no external tools beyond Python 3).
+This is fully local and uses the Rust binaries shipped by this repository.
 
 ```bash
-python3 examples/graph_to_mermaid.py examples/inputs/microservices_graph.json \
+cargo run --quiet --bin graph-to-mermaid -- examples/inputs/microservices_graph.json \
   | tw --wrap --max-lines 3
 ```
 
@@ -26,8 +26,8 @@ Fully local (requires Rust + Cargo).
 
 ```bash
 cargo metadata --format-version 1 \
-  | python3 examples/cargo_metadata_to_graph.py --direction LR \
-  | python3 examples/graph_to_mermaid.py \
+  | cargo run --quiet --bin cargo-metadata-to-graph -- --direction LR \
+  | cargo run --quiet --bin graph-to-mermaid \
   | tw --wrap --max-lines 3
 ```
 

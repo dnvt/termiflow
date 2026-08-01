@@ -1,0 +1,1700 @@
+{
+  "schema": "termiflow.fixture_metadata.v1",
+  "fixtures": [
+    {
+      "name": "collision_edge_along_border_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_edge_along_border_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_edge_along_border_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_edge_along_border_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_edge_corner_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_edge_corner_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_edge_corner_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_edge_corner_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_parallel_cross_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_parallel_cross_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_parallel_cross_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_parallel_cross_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_parallel_edges_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_parallel_edges_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_parallel_edges_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_parallel_edges_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_subgraphs_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_subgraphs_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_subgraphs_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_subgraphs_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_tight_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_tight_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_tight_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_tight_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_triple_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_triple_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_triple_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "collision_sibling_triple_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "config_style_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "config_style_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "config_style_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "config_style_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "converge_cascade_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "converge_cascade_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "converge_cascade_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "converge_cascade_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "converge_deep_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "converge_deep_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "converge_deep_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "converge_deep_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "crossing_grid_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "crossing_grid_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "crossing_grid_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "crossing_grid_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "cycle_long_bt",
+      "kind": "warning",
+      "direction": "BT",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_long_lr",
+      "kind": "warning",
+      "direction": "LR",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_long_rl",
+      "kind": "warning",
+      "direction": "RL",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_long_td",
+      "kind": "warning",
+      "direction": "TD",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_nested_bt",
+      "kind": "warning",
+      "direction": "BT",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_nested_lr",
+      "kind": "warning",
+      "direction": "LR",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_nested_rl",
+      "kind": "warning",
+      "direction": "RL",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_nested_td",
+      "kind": "warning",
+      "direction": "TD",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_selfloop_bt",
+      "kind": "warning",
+      "direction": "BT",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_selfloop_lr",
+      "kind": "warning",
+      "direction": "LR",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_selfloop_rl",
+      "kind": "warning",
+      "direction": "RL",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_selfloop_td",
+      "kind": "warning",
+      "direction": "TD",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_simple_bt",
+      "kind": "warning",
+      "direction": "BT",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_simple_lr",
+      "kind": "warning",
+      "direction": "LR",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_simple_rl",
+      "kind": "warning",
+      "direction": "RL",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "cycle_simple_td",
+      "kind": "warning",
+      "direction": "TD",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Cycle detected, rendering back-edges in gutter"
+      ]
+    },
+    {
+      "name": "diverge_wide_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "diverge_wide_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "diverge_wide_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "diverge_wide_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_branch_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_branch_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_branch_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_branch_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_complex_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_complex_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_complex_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_complex_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_converge_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_converge_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_converge_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_converge_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_kinds_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_kinds_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_kinds_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "edge_kinds_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "error_empty",
+      "kind": "expected_error",
+      "direction": "none",
+      "stderr_policy": "error",
+      "stderr_contains": []
+    },
+    {
+      "name": "error_no_direction",
+      "kind": "expected_error",
+      "direction": "none",
+      "stderr_policy": "error",
+      "stderr_contains": []
+    },
+    {
+      "name": "error_sequence",
+      "kind": "expected_error",
+      "direction": "none",
+      "stderr_policy": "error",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_branch_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_branch_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_branch_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_branch_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_chain_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_chain_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_chain_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_chain_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_simple_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_simple_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_simple_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_simple_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_corners_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_corners_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_corners_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_corners_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_mixed_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_mixed_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_mixed_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_mixed_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_quad_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_quad_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_quad_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_quad_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_triple_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_triple_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_triple_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "junction_triple_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_basic_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_basic_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_basic_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_basic_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_edge_long_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_edge_long_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_edge_long_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_edge_long_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_junction_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_junction_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_junction_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_junction_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_long_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_long_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_long_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_long_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_wrap_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_wrap_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_wrap_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "label_wrap_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "parse_forward_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "parse_forward_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "parse_forward_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "parse_forward_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "scale_dense_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "scale_dense_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "scale_dense_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "scale_dense_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "scale_sparse_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "scale_sparse_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "scale_sparse_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "scale_sparse_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_all_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_all_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_all_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_all_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_database_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_database_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_database_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_database_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_double_circle_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_double_circle_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_double_circle_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "shape_double_circle_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "spacing_compact_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "spacing_compact_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "spacing_compact_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "spacing_compact_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "spacing_spacious_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "spacing_spacious_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "spacing_spacious_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "spacing_spacious_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "style_composite_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "style_composite_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "style_composite_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "style_composite_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_basic_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_basic_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_basic_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_basic_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_chain_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_chain_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_chain_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_chain_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_complex_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_complex_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_complex_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_complex_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_direct_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_direct_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_direct_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_direct_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_fanin_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_fanin_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_fanin_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_fanin_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_fanout_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_fanout_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_fanout_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_fanout_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_internal_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_internal_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_internal_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_internal_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_labels_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_labels_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_labels_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_labels_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_multi_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_multi_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_multi_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_multi_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_narrow_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_narrow_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_narrow_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_narrow_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_nested_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_nested_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_nested_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_nested_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_outside_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_outside_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_outside_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_outside_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_parallel_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_parallel_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_parallel_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_parallel_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_shapes_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_shapes_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_shapes_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_shapes_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_single_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_single_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_single_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "subgraph_single_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "unicode_cjk_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "unicode_cjk_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "unicode_cjk_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "unicode_cjk_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "unicode_emoji_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "unicode_emoji_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "unicode_emoji_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "unicode_emoji_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "warn_classDef_td",
+      "kind": "warning",
+      "direction": "TD",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "Mermaid classes not supported"
+      ]
+    },
+    {
+      "name": "warn_malformed_td",
+      "kind": "warning",
+      "direction": "TD",
+      "stderr_policy": "warning",
+      "stderr_contains": [
+        "warning:"
+      ]
+    }
+  ]
+}
