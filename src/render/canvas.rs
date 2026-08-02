@@ -12,14 +12,28 @@ use super::semantic::{CellMeta, CellOwnerKind, CellRole};
 // Character Classification
 // ============================================================================
 
-/// Horizontal line characters across all supported styles
-pub fn is_horizontal(c: char, _style: &StyleChars) -> bool {
-    matches!(c, '-' | '─' | '═' | '━' | '█')
+/// Horizontal line characters across all supported styles.
+///
+/// The style-specific fields cover custom fallback shafts (for example `=`
+/// and `.` in ASCII Thick/Dotted routes); the explicit variants keep this
+/// predicate useful for canvases that combine multiple route styles.
+pub fn is_horizontal(c: char, style: &StyleChars) -> bool {
+    matches!(
+        c,
+        '-' | '=' | '.' | '─' | '═' | '━' | '╌' | '╴' | '╶' | '╸' | '╺' | '█'
+    ) || c == style.edge_h
+        || c == style.back_h
+        || c == style.dotted_h
 }
 
-/// Vertical line characters across all supported styles
-pub fn is_vertical(c: char, _style: &StyleChars) -> bool {
-    matches!(c, '|' | ':' | '│' | '║' | '┃' | '█')
+/// Vertical line characters across all supported styles.
+pub fn is_vertical(c: char, style: &StyleChars) -> bool {
+    matches!(
+        c,
+        '|' | ':' | '│' | '║' | '┃' | '╎' | '┆' | '┊' | '┋' | '╏' | '█'
+    ) || c == style.edge_v
+        || c == style.back_v
+        || c == style.dotted_v
 }
 
 /// Arrow characters (endpoints - never overwritten)
@@ -604,6 +618,7 @@ mod tests {
         assert!(is_horizontal('─', &s));
         assert!(is_horizontal('═', &s));
         assert!(is_horizontal('━', &s));
+        assert!(is_horizontal('╌', &s));
         assert!(!is_horizontal('│', &s));
         assert!(!is_horizontal('a', &s));
     }
@@ -614,8 +629,19 @@ mod tests {
         assert!(is_vertical('│', &s));
         assert!(is_vertical('║', &s));
         assert!(is_vertical('┃', &s));
+        assert!(is_vertical('╎', &s));
         assert!(!is_vertical('─', &s));
         assert!(!is_vertical('a', &s));
+    }
+
+    #[test]
+    fn test_is_styled_ascii_route_shaft() {
+        let mut s = ascii_chars();
+        s.edge_h = '=';
+        s.dotted_h = '.';
+        assert!(is_horizontal('=', &s));
+        assert!(is_horizontal('.', &s));
+        assert!(is_vertical(':', &s));
     }
 
     #[test]

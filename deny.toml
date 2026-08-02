@@ -1,4 +1,4 @@
-# cargo-deny 0.19.x configuration
+# cargo-deny 0.20.x configuration
 # Run: cargo deny check
 
 [graph]

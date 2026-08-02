@@ -283,13 +283,21 @@ fn wrap_prefers_code_delimiters_over_mid_word_splits() {
 }
 
 #[test]
-fn subgraph_title_stays_clean_for_entry_edge_td() {
+fn subgraph_title_uses_side_aware_entry_portal_td() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
-    cmd.arg("tests/fixtures/inputs/subgraph_single_td.md")
+    let assert = cmd
+        .arg("tests/fixtures/inputs/subgraph_single_td.md")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Container"))
-        .stdout(predicate::str::contains("┼"));
+        .stdout(predicate::str::contains("Container"));
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        output
+            .lines()
+            .any(|line| line.contains("━━━━━━━━━━━━━━│━━━━━━")),
+        "expected a side-aware vertical portal shaft on the container top border, got:\n{output}"
+    );
 }
 
 #[test]

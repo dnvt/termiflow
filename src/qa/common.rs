@@ -61,7 +61,18 @@ pub fn parse_csv(value: &str, allowed: &[&str], label: &str) -> Result<Vec<Strin
 pub fn sha256_bytes(value: &[u8]) -> String {
     let mut digest = Sha256::new();
     digest.update(value);
-    format!("{:x}", digest.finalize())
+    encode_hex(digest.finalize())
+}
+
+fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut rendered = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        rendered.push(HEX[(byte >> 4) as usize] as char);
+        rendered.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    rendered
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
@@ -435,7 +446,7 @@ pub fn case_id(input: &[u8], fixture: &str, style: &str, mode: &str) -> String {
     digest.update(style.as_bytes());
     digest.update([0]);
     digest.update(mode.as_bytes());
-    format!("{:x}", digest.finalize())
+    encode_hex(digest.finalize())
 }
 
 pub fn dimensions(stdout: &[u8]) -> Value {
@@ -638,7 +649,7 @@ pub fn deterministic_digest(stage: &Path) -> Result<(String, String)> {
         digest.update(&content);
         digest.update([0]);
     }
-    Ok((format!("{:x}", digest.finalize()), listing))
+    Ok((encode_hex(digest.finalize()), listing))
 }
 
 pub fn now_label() -> String {

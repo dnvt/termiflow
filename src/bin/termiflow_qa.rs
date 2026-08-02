@@ -54,6 +54,9 @@ struct GoldenArgs {
     /// Required change intent when approving.
     #[arg(long)]
     intent: Option<String>,
+    /// Versioned schema manifest produced by `schema --emit-manifest`.
+    #[arg(long, conflicts_with_all = ["metadata", "input_root", "styles"])]
+    manifest: Option<PathBuf>,
     /// Prebuilt renderer executable; skips Cargo discovery.
     #[arg(long)]
     binary: Option<PathBuf>,
@@ -93,6 +96,9 @@ struct ReviewArgs {
     /// Validate and append one decision JSON object.
     #[arg(long)]
     record: Option<PathBuf>,
+    /// Append conservative structural pre-screen decisions for clean rows.
+    #[arg(long, conflicts_with_all = ["next", "record", "validate"])]
+    prescreen_clean: bool,
     /// Require one valid decision for every selected reviewable row.
     #[arg(long)]
     validate: bool,
@@ -162,6 +168,7 @@ fn main() -> Result<()> {
                 check: args.check,
                 approve: args.approve,
                 intent: args.intent,
+                manifest: args.manifest,
                 binary: args.binary,
                 input_root: args.input_root,
                 metadata: args.metadata,
@@ -182,6 +189,7 @@ fn main() -> Result<()> {
             reviewer: args.reviewer,
             next: args.next,
             record: args.record,
+            prescreen_clean: args.prescreen_clean,
             validate: args.validate,
         }),
         Command::Schema(args) => qa::spec::run(qa::spec::SpecArgs {

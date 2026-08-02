@@ -17,6 +17,7 @@ use crate::style::StyleChars;
 enum SceneIntentMode {
     ReplaceOwned,
     ResolveEdgeOverlap,
+    ResolveEdgeOverlapInferred,
 }
 
 /// A typed request to project one semantic scene cell.
@@ -68,15 +69,52 @@ impl SceneIntent {
         role: CellRole,
         z_index: u8,
     ) -> Self {
+        Self::edge_owned(
+            x,
+            y,
+            glyph,
+            CellOwnerKind::EdgeSegment,
+            owner_id,
+            role,
+            z_index,
+        )
+    }
+
+    /// Create an edge-style intent with an explicit semantic owner.
+    pub(crate) fn edge_owned(
+        x: usize,
+        y: usize,
+        glyph: char,
+        owner_kind: CellOwnerKind,
+        owner_id: impl Into<String>,
+        role: CellRole,
+        z_index: u8,
+    ) -> Self {
+        Self {
+            x,
+            y,
+            glyph,
+            owner_kind,
+            owner_id: owner_id.into(),
+            role,
+            z_index,
+            mode: SceneIntentMode::ResolveEdgeOverlap,
+            sequence: 0,
+        }
+    }
+
+    /// Create an edge intent that delegates both overlap and metadata
+    /// inference to Canvas's legacy edge-write path.
+    pub(crate) fn edge_inferred(x: usize, y: usize, glyph: char) -> Self {
         Self {
             x,
             y,
             glyph,
             owner_kind: CellOwnerKind::EdgeSegment,
-            owner_id: owner_id.into(),
-            role,
-            z_index,
-            mode: SceneIntentMode::ResolveEdgeOverlap,
+            owner_id: String::new(),
+            role: CellRole::Unknown,
+            z_index: 0,
+            mode: SceneIntentMode::ResolveEdgeOverlapInferred,
             sequence: 0,
         }
     }
@@ -145,6 +183,9 @@ impl Scene {
                     &intent.owner_id,
                     intent.z_index,
                 ),
+                SceneIntentMode::ResolveEdgeOverlapInferred => {
+                    canvas.set_edge_char(intent.x, intent.y, intent.glyph, chars)
+                }
             }
             report.applied += 1;
         }
@@ -249,5 +290,68 @@ mod tests {
         assert_eq!(report.applied, 1);
         assert_eq!(meta.owner_id.as_deref(), Some("edge:0"));
         assert_eq!(meta.role, CellRole::ArrowTip);
+    }
+
+    #[test]
+    fn edge_owned_preserves_overlap_and_records_junction_provenance() {
+        let style = chars();
+        let mut canvas = Canvas::new(3, 3);
+        canvas.set_owned(
+            1,
+            1,
+            style.edge_v,
+            CellOwnerKind::EdgeSegment,
+            "edge:old",
+            5,
+        );
+        let mut scene = Scene::new();
+        scene.push(SceneIntent::edge_owned(
+            1,
+            1,
+            style.edge_h,
+            CellOwnerKind::Junction,
+            "junction:A",
+            CellRole::Junction,
+            5,
+        ));
+
+        let report = scene.resolve(&mut canvas, &style);
+        let meta = canvas.get_meta(1, 1).expect("junction metadata");
+
+        assert_eq!(report.applied, 1);
+        assert_eq!(canvas.get(1, 1), style.cross);
+        assert_eq!(meta.owner_kind, CellOwnerKind::Junction);
+        assert_eq!(meta.owner_id.as_deref(), Some("junction:A"));
+        assert_eq!(meta.z_index, 5);
+    }
+
+    #[test]
+    fn empty_scene_is_a_noop() {
+        let mut scene = Scene::new();
+        let mut canvas = Canvas::new(1, 1);
+
+        assert_eq!(
+            scene.resolve(&mut canvas, &chars()),
+            SceneResolveReport::default()
+        );
+        assert_eq!(canvas.get(0, 0), ' ');
+    }
+
+    #[test]
+    fn inferred_edge_intents_keep_canvas_metadata_inferred() {
+        let style = chars();
+        let mut canvas = Canvas::new(3, 3);
+        canvas.set_edge_char(1, 1, style.edge_v, &style);
+        let mut scene = Scene::new();
+        scene.push(SceneIntent::edge_inferred(1, 1, style.edge_h));
+
+        let report = scene.resolve(&mut canvas, &style);
+        let meta = canvas.get_meta(1, 1).expect("inferred metadata");
+
+        assert_eq!(report.applied, 1);
+        assert_eq!(canvas.get(1, 1), style.cross);
+        assert_eq!(meta.owner_id, None);
+        assert_eq!(meta.z_index, 0);
+        assert_eq!(meta.owner_kind, CellOwnerKind::Junction);
     }
 }

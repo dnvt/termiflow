@@ -32,7 +32,9 @@ cargo package --allow-dirty --list
 scripts/regenerate_golden.sh --check
 scripts/visual_audit.sh --styles ascii --modes default
 scripts/visual_validate.sh --packet PATH --strict-quality
+scripts/review_visual_packet.sh --packet PATH --decisions PATH --prescreen-clean
 scripts/review_visual_packet.sh --packet PATH --decisions PATH --next
+scripts/review_visual_packet.sh --packet PATH --decisions PATH --next --include-structural
 scripts/review_visual_packet.sh --packet PATH --decisions PATH --validate
 ```
 
@@ -61,9 +63,15 @@ contracts, evidence integrity, and exact drift against the checked-in quality
 baseline. Review individual frames with `review_visual_packet.sh` before
 changing that baseline. The review command emits exactly one frame per `--next`
 call; record the observation, evidence hash, hypothesis, falsifier, related
-fixtures, and next command before requesting the next frame. A layout-repair
-budget warning is intentionally a strict-gate failure until that one-frame
-review happens.
+fixtures, and next command before requesting the next frame. `--prescreen-clean`
+records only machine structural coverage; warnings, critic findings, and
+visual concerns still require perceptual review. Include fallback routes in a
+full pass when routing changes are in scope. Use
+`--include-structural` for a deliberate full perceptual pass. The reusable
+agent procedure is documented in
+[`skills/termiflow-visual-review/SKILL.md`](skills/termiflow-visual-review/SKILL.md).
+A layout-repair budget warning is intentionally a strict-gate failure until
+that one-frame review happens.
 
 Repository automation is intentionally limited to Rust and Bash. Do not add
 Ruby or Python source files, generated helpers, or runtime requirements.

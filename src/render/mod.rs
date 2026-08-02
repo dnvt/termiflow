@@ -77,7 +77,8 @@ use repair::{
     optimize_canvas, stabilize_arrow_shafts, stabilize_degree_mismatches, stabilize_junction_cells,
     stabilize_routing_topology, stabilize_straight_segments,
 };
-use semantic::SemanticFrame;
+use scene::{Scene, SceneIntent};
+use semantic::{CellOwnerKind, CellRole, SemanticFrame};
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
@@ -448,6 +449,7 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
 
     // Draw junction characters AFTER boxes so ports stay visible (boxes overwrite edges).
     // Shows where edges exit source boxes for all orientations (including edges with precomputed routes).
+    let mut source_junction_records = Vec::new();
     for &source_id in &source_ids {
         let Some(from) = graph_index.node_by_name(source_id) else {
             continue;
@@ -517,7 +519,14 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         }
 
         if junction_x < canvas.width && junction_y < canvas.height {
-            canvas.set_edge_char(junction_x, junction_y, junction_char, &chars);
+            let mut source_junction_scene = Scene::new();
+            source_junction_scene.push(SceneIntent::edge_inferred(
+                junction_x,
+                junction_y,
+                junction_char,
+            ));
+            source_junction_scene.resolve(&mut canvas, &chars);
+            source_junction_records.push((junction_x, junction_y, format!("junction:{source_id}")));
         }
     }
 
@@ -738,6 +747,26 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
     );
     finalize_dedicated_portal_markers(&mut canvas, graph, &portal_slots, &chars);
 
+    let mut source_junction_ownership_scene = Scene::new();
+    for (x, y, owner_id) in source_junction_records {
+        let glyph = canvas.get(x, y);
+        let Some(meta) = canvas.get_meta(x, y) else {
+            continue;
+        };
+        if canvas::is_junction(glyph, &chars) && meta.owner_id.is_none() && meta.z_index == 0 {
+            source_junction_ownership_scene.push(SceneIntent::owned(
+                x,
+                y,
+                glyph,
+                CellOwnerKind::Junction,
+                owner_id,
+                CellRole::Junction,
+                5,
+            ));
+        }
+    }
+    source_junction_ownership_scene.resolve(&mut canvas, &chars);
+
     let semantic_frame = SemanticFrame::from_canvas(&canvas);
     let display_semantic_frame = semantic_frame.crop_and_pad(config.crop, config.pad);
     let critic_report = analyze(graph, &semantic_frame, graph.direction, &chars);
@@ -881,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_subgraph_edge_pierces_border_td() {
+    fn cross_subgraph_edge_uses_side_aware_top_border_portal_td() {
         let mut graph = Graph::new();
         graph.direction = Direction::TD;
 
@@ -923,13 +952,13 @@ mod tests {
         let portal_y = graph.get_subgraph("sg").map(|sg| sg.bounds.y).unwrap_or(0);
         let portal_x = graph.get_node("B").map(|n| n.center_x()).unwrap_or(0);
         let glyph = char_at(&output, portal_x, portal_y).unwrap_or(' ');
-        let is_pierced = glyph
+        let portal_shaft = glyph
             == CompositeStyle::from_base(BaseStyle::Unicode)
                 .to_style_chars(BaseStyle::Unicode)
-                .portal_pierce;
+                .edge_v;
         assert!(
-            is_pierced,
-            "expected dedicated portal marker on top border at ({portal_x},{portal_y}), got '{glyph}'\n{output}",
+            portal_shaft,
+            "expected side-aware portal shaft on top border at ({portal_x},{portal_y}), got '{glyph}'\n{output}",
         );
     }
 

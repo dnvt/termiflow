@@ -130,6 +130,126 @@ fn routes_cross_subgraph_boundaries() {
 }
 
 #[test]
+fn bt_nested_external_target_stays_above_root_envelope() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_nested_bt.md")
+        .expect("read nested BT fixture");
+    let parsed = parse(&input, false).expect("parse nested BT fixture");
+    let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+        .expect("layout nested BT fixture");
+
+    let outer = graph.get_subgraph("Outer").expect("outer subgraph");
+    let node = graph.get_node("A").expect("nested node");
+    let input_node = graph.get_node("B").expect("input node");
+    let output_node = graph.get_node("C").expect("output node");
+
+    assert_eq!(graph.get_node_subgraph("C"), None);
+    assert!(
+        output_node.bottom_y() < outer.bounds.y,
+        "top-level BT target must stay above the root envelope with a clear row: output=({}, {}, {}x{}) outer={:?}",
+        output_node.x,
+        output_node.y,
+        output_node.width,
+        output_node.height,
+        outer.bounds
+    );
+    assert!(
+        outer.bounds.contains(node.x, node.y)
+            && outer.bounds.contains(
+                node.x + node.width.saturating_sub(1),
+                node.y + node.height.saturating_sub(1)
+            ),
+        "nested node must remain inside the root envelope: node=({}, {}, {}x{}) outer={:?}",
+        node.x,
+        node.y,
+        node.width,
+        node.height,
+        outer.bounds
+    );
+    assert_eq!(graph.get_node_subgraph("B"), None);
+    assert!(
+        input_node.y >= outer.bounds.y + outer.bounds.height,
+        "top-level BT source must remain below the root envelope: input=({}, {}, {}x{}) outer={:?}",
+        input_node.x,
+        input_node.y,
+        input_node.width,
+        input_node.height,
+        outer.bounds
+    );
+}
+
+#[test]
+fn td_nested_external_target_stays_below_root_envelope() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_nested_td.md")
+        .expect("read nested TD fixture");
+    let parsed = parse(&input, false).expect("parse nested TD fixture");
+    let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+        .expect("layout nested TD fixture");
+
+    let outer = graph.get_subgraph("Outer").expect("outer subgraph");
+    let node = graph.get_node("A").expect("nested node");
+    let input_node = graph.get_node("B").expect("input node");
+    let output_node = graph.get_node("C").expect("output node");
+
+    assert_eq!(graph.get_node_subgraph("C"), None);
+    assert!(
+        output_node.y > outer.bounds.y + outer.bounds.height,
+        "top-level TD target must stay below the root envelope with a clear row: output=({}, {}, {}x{}) outer={:?}",
+        output_node.x,
+        output_node.y,
+        output_node.width,
+        output_node.height,
+        outer.bounds
+    );
+    assert!(
+        outer.bounds.contains(node.x, node.y)
+            && outer.bounds.contains(
+                node.x + node.width.saturating_sub(1),
+                node.y + node.height.saturating_sub(1)
+            ),
+        "nested node must remain inside the root envelope: node=({}, {}, {}x{}) outer={:?}",
+        node.x,
+        node.y,
+        node.width,
+        node.height,
+        outer.bounds
+    );
+    assert_eq!(graph.get_node_subgraph("B"), None);
+    assert!(
+        input_node.bottom_y() < outer.bounds.y,
+        "top-level TD source must remain above the root envelope: input=({}, {}, {}x{}) outer={:?}",
+        input_node.x,
+        input_node.y,
+        input_node.width,
+        input_node.height,
+        outer.bounds
+    );
+}
+
+#[test]
+fn bt_titled_root_sources_clear_the_bottom_border() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/collision_edge_along_border_bt.md")
+        .expect("read BT border fixture");
+    let parsed = parse(&input, false).expect("parse BT border fixture");
+    let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+        .expect("layout BT border fixture");
+
+    let group = graph.get_subgraph("SG").expect("target group");
+    for source_id in ["X1", "X2", "X3"] {
+        let source = graph.get_node(source_id).expect("external source");
+        assert_eq!(graph.get_node_subgraph(source_id), None);
+        assert!(
+            source.y > group.bounds.y + group.bounds.height,
+            "external source must clear the titled root bottom border: source={source_id} rect=({}, {}, {}x{}) group={:?}",
+            source.x,
+            source.y,
+            source.width,
+            source.height,
+            group.bounds
+        );
+    }
+}
+
+#[test]
 fn nested_service_data_sample_populates_envelopes_and_portals() {
     let input = "graph TD\nA[API Gateway] --> B[User Service]\nsubgraph SL[Service Layer]\nB\nsubgraph DL[Data Layer]\nC[Order Service] --> D[(Order DB)]\nE[(User DB)]\nend\nB --> E\nD --> F[Response Builder]\nE --> F\nend";
     let parsed = parse(input, false).expect("parse");

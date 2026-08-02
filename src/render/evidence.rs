@@ -271,6 +271,16 @@ fn is_route_glyph(ch: char) -> bool {
             | '╬'
             | '━'
             | '┃'
+            | '╌'
+            | '╎'
+            | '┄'
+            | '┈'
+            | '┅'
+            | '┉'
+            | '┆'
+            | '┊'
+            | '┋'
+            | '╏'
             | '╋'
     )
 }
@@ -407,6 +417,22 @@ mod tests {
         let report = raw_frame_report(&Graph::new(), &frame);
         assert_eq!(report.shaftless_arrowheads.len(), 1);
         assert!(report.errors[0].contains("shaft"));
+    }
+
+    #[test]
+    fn raw_report_accepts_unicode_dotted_shaft_before_arrow() {
+        let frame = SemanticFrame {
+            width: 2,
+            height: 1,
+            cells: vec![
+                cell('╌', CellRole::Horizontal, CellOwnerKind::EdgeSegment),
+                cell('→', CellRole::ArrowTip, CellOwnerKind::ArrowHead),
+            ],
+        };
+
+        let report = raw_frame_report(&Graph::new(), &frame);
+        assert!(report.shaftless_arrowheads.is_empty());
+        assert!(report.errors.is_empty());
     }
 
     #[test]

@@ -45,6 +45,31 @@ fn run_check(path: &Path) -> std::process::Output {
         .expect("run termiflow-qa schema check")
 }
 
+fn emit_manifest(label: &str) -> PathBuf {
+    let path = temp_path(label);
+    let output = qa_command()
+        .args(["schema", "--spec", spec_path(), "--emit-manifest"])
+        .arg(&path)
+        .output()
+        .expect("run schema manifest generation");
+    assert!(
+        output.status.success(),
+        "manifest generation failed: {output:?}"
+    );
+    path
+}
+
+fn run_manifest(manifest: &Path, report: Option<&Path>) -> std::process::Output {
+    let mut command = qa_command();
+    command.args(["golden", "--manifest"]).arg(manifest);
+    if let Some(report) = report {
+        command.args(["--check", "--report"]).arg(report);
+    } else {
+        command.arg("--check");
+    }
+    command.output().expect("run manifest golden check")
+}
+
 #[test]
 fn canonical_canary_checks_and_manifest_is_reproducible() {
     let check = qa_command()
@@ -158,4 +183,136 @@ fn evaluator_holdout_is_not_emitted_as_a_reviewable_row() {
         .all(|row| row["holdout"] != "evaluator_owned"));
     assert_eq!(manifest["holdouts"].as_array().expect("holdouts").len(), 1);
     fs::remove_file(path).expect("remove holdout manifest");
+}
+
+#[test]
+fn manifest_golden_bridge_checks_canary_and_negative_contract() {
+    let manifest_path = emit_manifest("golden-bridge-manifest");
+    let report_path = temp_path("golden-bridge-report");
+    let output = run_manifest(&manifest_path, Some(&report_path));
+    assert!(output.status.success(), "golden bridge failed: {output:?}");
+    let report: Value =
+        serde_json::from_slice(&fs::read(&report_path).expect("read golden bridge report"))
+            .expect("parse golden bridge report");
+    assert_eq!(report["schema"], "termiflow.golden_manifest_update.v1");
+    assert_eq!(report["eligible_rows"], 8);
+    assert_eq!(report["candidate_count"], 8);
+    assert_eq!(report["changed_candidate_count"], 0);
+    assert_eq!(
+        report["negative_results"]
+            .as_array()
+            .expect("negative results")
+            .len(),
+        4
+    );
+    assert_eq!(report["holdout_variant_count"], 1);
+    fs::remove_file(manifest_path).expect("remove manifest");
+    fs::remove_file(report_path).expect("remove report");
+}
+
+#[test]
+fn manifest_golden_report_is_reproducible() {
+    let manifest_path = emit_manifest("deterministic-golden-manifest");
+    let first_report = temp_path("deterministic-golden-report-a");
+    let second_report = temp_path("deterministic-golden-report-b");
+    let first = run_manifest(&manifest_path, Some(&first_report));
+    let second = run_manifest(&manifest_path, Some(&second_report));
+    assert!(
+        first.status.success(),
+        "first golden bridge failed: {first:?}"
+    );
+    assert!(
+        second.status.success(),
+        "second golden bridge failed: {second:?}"
+    );
+    assert_eq!(
+        fs::read(&first_report).expect("read first report"),
+        fs::read(&second_report).expect("read second report")
+    );
+    fs::remove_file(manifest_path).expect("remove manifest");
+    fs::remove_file(first_report).expect("remove first report");
+    fs::remove_file(second_report).expect("remove second report");
+}
+
+#[test]
+fn missing_golden_stem_fails_closed() {
+    let path = write_mutated_spec("missing-golden-stem", |value| {
+        value["cases"][0]["variants"][0]
+            .as_object_mut()
+            .expect("variant object")
+            .remove("golden_stem");
+    });
+    let output = run_check(&path);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("golden_stem"));
+    fs::remove_file(path).expect("remove mutated spec");
+}
+
+#[test]
+fn manifest_source_hash_mismatch_fails_before_render() {
+    let source_manifest = emit_manifest("source-mismatch-source");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&source_manifest).expect("read manifest"))
+            .expect("parse manifest");
+    manifest["rows"][0]["source"] = Value::String("graph TD\nA[changed] --> B\n".to_owned());
+    let mutated_manifest = temp_path("source-mismatch-mutated");
+    fs::write(
+        &mutated_manifest,
+        serde_json::to_vec_pretty(&manifest).expect("serialize mutated manifest"),
+    )
+    .expect("write mutated manifest");
+    let output = run_manifest(&mutated_manifest, None);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("source hash mismatch"));
+    fs::remove_file(source_manifest).expect("remove source manifest");
+    fs::remove_file(mutated_manifest).expect("remove mutated manifest");
+}
+
+#[test]
+fn manifest_unknown_field_fails_closed() {
+    let source_manifest = emit_manifest("unknown-manifest-source");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&source_manifest).expect("read manifest"))
+            .expect("parse manifest");
+    manifest["unexpected"] = Value::Bool(true);
+    let mutated_manifest = temp_path("unknown-manifest-mutated");
+    fs::write(
+        &mutated_manifest,
+        serde_json::to_vec_pretty(&manifest).expect("serialize mutated manifest"),
+    )
+    .expect("write mutated manifest");
+    let output = run_manifest(&mutated_manifest, None);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown field"));
+    fs::remove_file(source_manifest).expect("remove source manifest");
+    fs::remove_file(mutated_manifest).expect("remove mutated manifest");
+}
+
+#[test]
+fn manifest_golden_check_never_writes_changed_target() {
+    let source_manifest = emit_manifest("no-write-source");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&source_manifest).expect("read manifest"))
+            .expect("parse manifest");
+    let target = Path::new("tests/fixtures/expected/subgraph_narrow_bt_new.ascii.txt");
+    assert!(!target.exists());
+    manifest["rows"]
+        .as_array_mut()
+        .expect("manifest rows")
+        .iter_mut()
+        .find(|row| row["golden"].is_object())
+        .expect("golden row")["golden"]["path"] =
+        Value::String(target.to_string_lossy().replace('\\', "/"));
+    let mutated_manifest = temp_path("no-write-mutated");
+    fs::write(
+        &mutated_manifest,
+        serde_json::to_vec_pretty(&manifest).expect("serialize mutated manifest"),
+    )
+    .expect("write mutated manifest");
+    let output = run_manifest(&mutated_manifest, None);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("does not match golden_stem"));
+    assert!(!target.exists(), "check mode wrote a golden target");
+    fs::remove_file(source_manifest).expect("remove source manifest");
+    fs::remove_file(mutated_manifest).expect("remove mutated manifest");
 }

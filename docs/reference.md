@@ -85,10 +85,13 @@ Supported patterns:
 - Subgraph borders are portal boundaries, not merge or branch targets.
 - Edge topology must live inside or outside the subgraph; the border is only the
   pierce point between those route segments.
-- All used portal crossings render with a dedicated pierce marker:
-  `o` in ASCII-oriented styles and `○` in Unicode-oriented styles.
-- The pierce marker is not a junction glyph. It marks the boundary crossing
-  while the real route topology remains inside or outside the subgraph.
+- All used portal crossings retain `CellOwnerKind::PortalOpening` semantics.
+  Top/bottom crossings render as the route-perpendicular shaft glyph on the
+  border; left/right crossings render with the configured dedicated
+  `portal_pierce` marker.
+- A top/bottom shaft or side-wall pierce marker is not a junction glyph. It
+  marks the boundary crossing while the real route topology remains inside or
+  outside the subgraph.
 - Edges never semantically "point to another edge". If a border cell looks like
   special, that is only the portal marker, not an edge-to-edge merge.
 
@@ -96,16 +99,18 @@ Directional matrix:
 
 | Flow | Border Crossed | Allowed Border Glyph Behavior | Reject |
 |------|----------------|-------------------------------|--------|
-| `TD` / `TB` | top border | border cell resolves to the dedicated pierce marker on a title-safe slot | merge bars, arrows, or junction glyphs living on the title row |
-| `BT` | bottom border | border cell resolves to the dedicated pierce marker on a protected bottom slot | merge bars, arrows, or junction glyphs living on the protected title span |
+| `TD` / `TB` | top/bottom border | used border cell resolves to the route-perpendicular shaft on a title-safe slot | merge bars, arrows, or junction glyphs living on the title row |
+| `BT` | top/bottom border | used border cell resolves to the route-perpendicular shaft on a protected slot | merge bars, arrows, or junction glyphs living on the protected title span |
 | `LR` | left/right border | side wall resolves to the dedicated pierce marker at the used portal row | `├`, `┤`, `┼`, `+`, or any side-wall merge glyph |
 | `RL` | left/right border | same as `LR`; the wall shows the same dedicated pierce marker | `├`, `┤`, `┼`, `+`, or any side-wall merge glyph |
 
 Practical rule:
 
-- Every used portal crossing gets the same dedicated marker on the border.
-- The border marker is visual only; the actual merge, branch, or turn belongs
-  on one side of the border, never in the border cell itself.
+- Every used portal crossing gets one `PortalOpening` cell on the border. The
+  marker shape is side-aware: top/bottom uses the route shaft, while left/right
+  uses `portal_pierce`.
+- The border cell is visual-only; the actual merge, branch, or turn belongs on
+  one side of the border, never in the border cell itself.
 
 ## Current Gaps And Caveats
 

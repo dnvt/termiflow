@@ -49,7 +49,9 @@ struct ValidatedVariant {
     id: String,
     direction: String,
     input_path: Option<String>,
+    source: String,
     source_sha256: String,
+    golden_stem: Option<String>,
     styles: Vec<String>,
     modes: Vec<String>,
     kind: String,
@@ -148,11 +150,21 @@ fn validate(root: &Path, document: &Value) -> Result<ValidatedSpec> {
     let mut directions = BTreeSet::new();
     let mut styles = BTreeSet::new();
     let mut modes = BTreeSet::new();
+    let mut golden_stems = BTreeSet::new();
     let mut reviewable_rows = 0;
     let mut negative_cases = 0;
     let mut holdout_variants = 0;
     for case in &cases {
         for variant in &case.variants {
+            if variant.kind == "success" && variant.holdout != "evaluator_owned" {
+                let stem = variant
+                    .golden_stem
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("variant {} is missing golden_stem", variant.id))?;
+                if !golden_stems.insert(stem) {
+                    bail!("duplicate golden_stem: {stem}");
+                }
+            }
             if variant.holdout == "evaluator_owned" {
                 holdout_variants += 1;
                 continue;
@@ -344,6 +356,7 @@ fn validate_variant(
             "direction",
             "source",
             "input_path",
+            "golden_stem",
             "styles",
             "modes",
             "kind",
@@ -412,13 +425,32 @@ fn validate_variant(
     if !HOLDOUTS.contains(&holdout.as_str()) {
         bail!("variant {id} has unsupported holdout class {holdout}");
     }
+    let golden_stem = fields
+        .get("golden_stem")
+        .map(|value| {
+            let stem = value
+                .as_str()
+                .filter(|stem| !stem.trim().is_empty())
+                .ok_or_else(|| anyhow!("variant {id} golden_stem must be a non-empty string"))?;
+            identifier(stem.to_owned(), &format!("variant {id} golden_stem"))
+        })
+        .transpose()?;
+    if kind == "success" && holdout != "evaluator_owned" && golden_stem.is_none() {
+        bail!("success variant {id} must declare golden_stem");
+    }
+    if kind != "success" && golden_stem.is_some() {
+        bail!("negative variant {id} must not declare golden_stem");
+    }
     let review_targets = validate_review_targets(fields, &id, kind == "success")?;
+    let source_sha256 = common::sha256_bytes(source.as_bytes());
 
     Ok(ValidatedVariant {
         id,
         direction,
-        source_sha256: common::sha256_bytes(source.as_bytes()),
+        source,
+        source_sha256,
         input_path,
+        golden_stem,
         styles,
         modes,
         kind,
@@ -481,6 +513,7 @@ fn build_manifest(spec: &ValidatedSpec, spec_sha256: &str) -> Result<Value> {
                     "case_id": case.id,
                     "variant_id": variant.id,
                     "direction": variant.direction,
+                    "source_sha256": variant.source_sha256,
                 }));
                 continue;
             }
@@ -492,12 +525,29 @@ fn build_manifest(spec: &ValidatedSpec, spec_sha256: &str) -> Result<Value> {
                     "kind": variant.kind,
                     "stderr_policy": variant.stderr_policy,
                     "stderr_contains": variant.stderr_contains,
+                    "source": variant.source,
                     "source_sha256": variant.source_sha256,
+                    "input_path": variant.input_path,
+                    "styles": variant.styles,
+                    "modes": variant.modes,
                 }));
                 continue;
             }
             for style in &variant.styles {
                 for mode in &variant.modes {
+                    let golden =
+                        if mode == "default" && matches!(style.as_str(), "ascii" | "unicode") {
+                            json!({
+                                "mode": "default",
+                                "path": format!(
+                                    "tests/fixtures/expected/{}.{}.txt",
+                                    variant.golden_stem.as_deref().unwrap_or_default(),
+                                    style
+                                ),
+                            })
+                        } else {
+                            Value::Null
+                        };
                     rows.push(json!({
                         "case_id": case.id,
                         "family": case.family,
@@ -505,8 +555,12 @@ fn build_manifest(spec: &ValidatedSpec, spec_sha256: &str) -> Result<Value> {
                         "direction": variant.direction,
                         "style": style,
                         "mode": mode,
+                        "kind": variant.kind,
+                        "source": variant.source,
                         "source_sha256": variant.source_sha256,
                         "input_path": variant.input_path,
+                        "golden_stem": variant.golden_stem,
+                        "golden": golden,
                         "holdout": variant.holdout,
                         "homologs": case.homologs,
                         "semantic": case.semantic,
@@ -627,10 +681,14 @@ fn non_empty_string(object: &Map<String, Value>, key: &str, label: &str) -> Resu
 
 fn required_id(object: &Map<String, Value>, key: &str, label: &str) -> Result<String> {
     let value = non_empty_string(object, key, label)?;
+    identifier(value, &format!("{label} {key}"))
+}
+
+fn identifier(value: String, label: &str) -> Result<String> {
     if value.chars().any(|character| {
         !(character.is_ascii_alphanumeric() || character == '_' || character == '-')
     }) {
-        bail!("{label} {key} must contain only ASCII letters, numbers, '_' or '-'");
+        bail!("{label} must contain only ASCII letters, numbers, '_' or '-'");
     }
     Ok(value)
 }

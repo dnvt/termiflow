@@ -1,11 +1,11 @@
 [package]
 name = "termiflow"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
-description = "Terminal-native Mermaid flowchart renderer — jq for diagrams"
+description = "Terminal-native Mermaid flowchart renderer."
 license = "MIT"
 repository = "https://github.com/dnvt/termiflow"
-homepage = "https://github.com/dnvt/termiflow"
+homepage = "https://termiflow.dnvt.me"
 documentation = "https://github.com/dnvt/termiflow/blob/main/docs/reference.md"
 keywords = ["mermaid", "diagram", "terminal", "cli", "ascii"]
 categories = ["command-line-utilities", "visualization"]
@@ -23,7 +23,18 @@ exclude = [
     "benches/",
     "scripts/",
     "docs/",
+    "skills/",
     "deny.toml",
+    ".maestro/",
+    ".maestro.toml",
+    ".maestro-project/",
+    ".claude/",
+    ".agents/",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "plugins/*/.codex-plugin/",
+    "plugins/*/skills/",
+    "plugins/*/AGENTS.md",
 ]
 
 [[bin]]
@@ -47,29 +58,33 @@ path = "src/bin/cargo_metadata_to_graph.rs"
 name = "graph-to-mermaid"
 path = "src/bin/graph_to_mermaid.rs"
 
+[[test]]
+name = "qa_schema"
+required-features = ["qa"]
+
 [features]
 golden = []
 qa = []
 
 [dependencies]
-ratatui = "0.30"
-crossterm = "0.29"
-clap = { version = "4", features = ["derive"] }
-regex = "1"
-anyhow = "1.0"
-dirs = "6"
-toml = "1"
-unicode-width = "0.2"
-lazy_static = "1.5"
-unicode-segmentation = "1.13"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+clap = { version = "4.6.5", features = ["derive"] }
+regex = "1.13.1"
+anyhow = "1.0.104"
+dirs = "6.0.0"
+toml = "1.1.4"
+unicode-width = "0.2.2"
+lazy_static = "1.5.0"
+unicode-segmentation = "1.13.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
 
 [dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
-criterion = "0.8"
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+criterion = "0.8.2"
 
 [[bench]]
 name = "rendering"
