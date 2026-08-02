@@ -323,7 +323,7 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
 
     // Print any warnings to stderr (parser + layout)
     for warning in &rendered.graph.warnings {
-        eprintln!("{}", warning);
+        eprintln!("{warning}");
     }
 
     if debug_routes {
@@ -716,10 +716,7 @@ fn build_viewport_indicator(content: &str, viewport: Viewport) -> String {
         viewport.offset_x.saturating_add(1).min(content_width)
     };
 
-    format!(
-        "line {}/{} | col {}/{}",
-        visible_line, content_lines, visible_col, content_width
-    )
+    format!("line {visible_line}/{content_lines} | col {visible_col}/{content_width}")
 }
 
 fn build_watch_status(report: &CriticReport, warning_count: usize, file_label: &str) -> String {

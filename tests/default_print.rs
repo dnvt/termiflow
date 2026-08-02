@@ -59,13 +59,11 @@ fn audit_flag_keeps_diagram_output_newline_terminated() {
 
     assert!(
         stdout.ends_with('\n'),
-        "expected audit-print stdout to end with newline, got:\n{}",
-        stdout
+        "expected audit-print stdout to end with newline, got:\n{stdout}"
     );
     assert!(
         last_line.starts_with('+') || last_line.starts_with('\\'),
-        "expected the diagram border to remain the last stdout line, got:\n{}",
-        stdout
+        "expected the diagram border to remain the last stdout line, got:\n{stdout}"
     );
 }
 
@@ -81,8 +79,7 @@ fn output_is_cropped_by_default() {
     let first_nonempty = output.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     assert!(
         !first_nonempty.starts_with(' '),
-        "expected cropped output (no leading margin), got:\n{}",
-        output
+        "expected cropped output (no leading margin), got:\n{output}"
     );
 }
 
@@ -114,9 +111,7 @@ fn compact_flag_produces_tighter_output() {
 
     assert!(
         compact_s.lines().count() <= normal_s.lines().count(),
-        "expected compact output to be no taller than normal\nnormal:\n{}\ncompact:\n{}",
-        normal_s,
-        compact_s
+        "expected compact output to be no taller than normal\nnormal:\n{normal_s}\ncompact:\n{compact_s}"
     );
 }
 
@@ -145,13 +140,11 @@ fn wrap_flag_renders_multiline_boxes() {
         .collect();
     assert!(
         label_lines.len() >= 2 && label_lines[0] != label_lines[1],
-        "expected wrapped label on multiple lines, got:\n{}",
-        output
+        "expected wrapped label on multiple lines, got:\n{output}"
     );
     assert!(
         !output.contains("..."),
-        "expected wrap (not ellipsis truncation), got:\n{}",
-        output
+        "expected wrap (not ellipsis truncation), got:\n{output}"
     );
 }
 
@@ -167,8 +160,7 @@ fn directive_style_applies_without_cli_override() {
     let first_line = output.lines().next().unwrap_or("");
     assert!(
         first_line.starts_with('+'),
-        "expected ascii border from in-file directive, got:\n{}",
-        output
+        "expected ascii border from in-file directive, got:\n{output}"
     );
 }
 
@@ -183,13 +175,11 @@ fn directive_max_label_applies_without_cli_override() {
     let output = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
         !output.contains("abcdefghij"),
-        "expected in-file max_label directive to truncate, got:\n{}",
-        output
+        "expected in-file max_label directive to truncate, got:\n{output}"
     );
     assert!(
         output.contains("..."),
-        "expected truncated output with ellipsis, got:\n{}",
-        output
+        "expected truncated output with ellipsis, got:\n{output}"
     );
 }
 
@@ -213,13 +203,11 @@ fn directive_wrap_applies_without_cli_override() {
 
     assert!(
         label_lines.len() >= 2 && label_lines[0] != label_lines[1],
-        "expected wrapped label from in-file directives, got:\n{}",
-        output
+        "expected wrapped label from in-file directives, got:\n{output}"
     );
     assert!(
         !output.contains("..."),
-        "expected wrap (not ellipsis truncation), got:\n{}",
-        output
+        "expected wrap (not ellipsis truncation), got:\n{output}"
     );
 }
 
@@ -239,13 +227,11 @@ fn classdef_warning_does_not_render_bogus_node() {
     assert!(stdout.contains("End"));
     assert!(
         !stdout.contains("highlight"),
-        "expected classDef to be ignored during rendering, got:\n{}",
-        stdout
+        "expected classDef to be ignored during rendering, got:\n{stdout}"
     );
     assert!(
         stderr.contains("Mermaid classes not supported"),
-        "expected classDef warning, got:\n{}",
-        stderr
+        "expected classDef warning, got:\n{stderr}"
     );
 }
 
@@ -261,24 +247,20 @@ fn wrap_prefers_code_delimiters_over_mid_word_splits() {
     let output = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
         output.contains("route_convergent_") || output.contains("route_convergent"),
-        "expected delimiter-aware wrapping, got:\n{}",
-        output
+        "expected delimiter-aware wrapping, got:\n{output}"
     );
     assert!(
         !output.contains("route_convergent_edg"),
-        "expected to avoid mid-word splits, got:\n{}",
-        output
+        "expected to avoid mid-word splits, got:\n{output}"
     );
     assert!(
         output.contains("Canvas::")
             && (output.contains("set_edge_char") || output.contains("set_edge_")),
-        "expected delimiter-aware wrapping for `Canvas::set_edge_char`, got:\n{}",
-        output
+        "expected delimiter-aware wrapping for `Canvas::set_edge_char`, got:\n{output}"
     );
     assert!(
         !output.contains("set_edge_cha"),
-        "expected to avoid mid-word splits, got:\n{}",
-        output
+        "expected to avoid mid-word splits, got:\n{output}"
     );
 }
 
@@ -325,8 +307,7 @@ fn subgraph_fanout_td_title_stays_clean() {
         .unwrap_or_default();
     assert!(
         !title_row.contains('┼'),
-        "expected no edge to pierce the title row, got:\n{}",
-        output
+        "expected no edge to pierce the title row, got:\n{output}"
     );
 }
 
@@ -345,8 +326,7 @@ fn subgraph_complex_td_title_stays_clean() {
         .unwrap_or_default();
     assert!(
         !title_row.contains('┼'),
-        "expected no edge to pierce the title row, got:\n{}",
-        output
+        "expected no edge to pierce the title row, got:\n{output}"
     );
 }
 
@@ -368,13 +348,11 @@ fn subgraph_fanin_bt_title_renders_on_bottom_interior_row() {
     assert_eq!(
         title_idx,
         lines.len().saturating_sub(2),
-        "expected BT subgraph title on the bottom interior row, got:\n{}",
-        output
+        "expected BT subgraph title on the bottom interior row, got:\n{output}"
     );
     let bottom_border = lines.last().copied().unwrap_or_default();
     assert!(
         !bottom_border.contains("Data Sources"),
-        "expected BT bottom border to remain separate from the title row, got:\n{}",
-        output
+        "expected BT bottom border to remain separate from the title row, got:\n{output}"
     );
 }

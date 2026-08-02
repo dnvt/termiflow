@@ -533,7 +533,7 @@ fn expand_baseline(
                     message.clone(),
                 );
                 if !expected.insert(signature.clone()) {
-                    bail!("duplicate expanded baseline exception: {:?}", signature);
+                    bail!("duplicate expanded baseline exception: {signature:?}");
                 }
             }
         }

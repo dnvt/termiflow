@@ -566,7 +566,7 @@ impl std::fmt::Display for Canvas {
             .map(|row| row.iter().collect::<String>().trim_end().to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        write!(f, "{}", output)
+        write!(f, "{output}")
     }
 }
 
@@ -857,7 +857,7 @@ mod tests {
         canvas.set(0, 0, 'A');
         canvas.set(2, 1, 'B');
 
-        let output = format!("{}", canvas);
+        let output = format!("{canvas}");
         let lines: Vec<&str> = output.lines().collect();
 
         assert_eq!(lines[0], "A"); // Trimmed from "A         "

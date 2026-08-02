@@ -168,10 +168,7 @@ impl CompositeStyle {
                 style.subgraph = Some(border_style);
             } else if !s.is_empty() {
                 // Invalid style name - warn and use default
-                eprintln!(
-                    "termiflow: warning: Unknown style '{}', using default (unicode)",
-                    s
-                );
+                eprintln!("termiflow: warning: Unknown style '{s}', using default (unicode)");
             }
             return style;
         }
@@ -201,8 +198,7 @@ impl CompositeStyle {
                     "back_edge" => style.back = border_style,
                     unknown => {
                         eprintln!(
-                            "termiflow: warning: Unknown style component '{}', ignoring",
-                            unknown
+                            "termiflow: warning: Unknown style component '{unknown}', ignoring"
                         );
                     }
                 }

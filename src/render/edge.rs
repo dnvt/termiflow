@@ -358,10 +358,7 @@ pub fn route_divergent_edges(
         }
 
         if debug_timing {
-            eprintln!(
-                "  single target centers ({},{}) -> ({},{})",
-                src_x, src_y, arrow_x, arrow_y
-            );
+            eprintln!("  single target centers ({src_x},{src_y}) -> ({arrow_x},{arrow_y})");
         }
 
         let src_secondary = coords.secondary_coord(src_x, src_y);

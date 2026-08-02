@@ -385,9 +385,7 @@ pub fn load_metadata(
         .collect();
     if !missing.is_empty() || !unexpected.is_empty() {
         bail!(
-            "fixture metadata/input mismatch; missing metadata: {:?}; metadata without input: {:?}",
-            missing,
-            unexpected
+            "fixture metadata/input mismatch; missing metadata: {missing:?}; metadata without input: {unexpected:?}"
         );
     }
     Ok((metadata, raw))

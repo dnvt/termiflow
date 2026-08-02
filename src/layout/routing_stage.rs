@@ -114,7 +114,7 @@ pub(super) fn route_stage(
         // owns the junction, so skip pre-routing here.
         if in_degree > 1 {
             if debug_timing {
-                eprintln!("  skip edge {} due to convergent routing", edge_idx);
+                eprintln!("  skip edge {edge_idx} due to convergent routing");
             }
             continue;
         }
@@ -122,7 +122,7 @@ pub(super) fn route_stage(
         // Fan-outs look best when the renderer owns the shared junction.
         if out_degree > 1 {
             if debug_timing {
-                eprintln!("  skip edge {} fan-out handled in renderer", edge_idx);
+                eprintln!("  skip edge {edge_idx} fan-out handled in renderer");
             }
             continue;
         }
@@ -131,7 +131,7 @@ pub(super) fn route_stage(
         // can sit on clean junctions instead of fighting precomputed paths.
         if edge.label.is_some() && (out_degree > 1 || in_degree > 1) {
             if debug_timing {
-                eprintln!("  skip edge {} labeled fan-out/fan-in", edge_idx);
+                eprintln!("  skip edge {edge_idx} labeled fan-out/fan-in");
             }
             continue;
         }
@@ -142,7 +142,7 @@ pub(super) fn route_stage(
         // they can share junctions cleanly instead of overlapping pre-routed lanes.
         if crosses_subgraph && (out_degree > 1 || in_degree > 1) {
             if debug_timing {
-                eprintln!("  skip edge {} cross-subgraph fan routing", edge_idx);
+                eprintln!("  skip edge {edge_idx} cross-subgraph fan routing");
             }
             continue;
         }
@@ -195,7 +195,7 @@ pub(super) fn route_stage(
             ) {
                 grid.mark_path(&route);
                 if debug_timing {
-                    eprintln!("  lane route stored for edge {}", edge_idx);
+                    eprintln!("  lane route stored for edge {edge_idx}");
                 }
                 routes.insert(edge_idx, route);
                 continue;

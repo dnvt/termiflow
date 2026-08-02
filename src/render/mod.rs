@@ -258,7 +258,7 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
     }
 
     if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
-        eprintln!("render: sources_with_edges {:?}", sources_with_edges);
+        eprintln!("render: sources_with_edges {sources_with_edges:?}");
     }
 
     // Identify convergent labeled edges (those going to targets with multiple sources)
@@ -602,7 +602,7 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
         eprintln!("  Input 7/8 -> Process 4 area (y=2-6, x=100-130):");
         for y in 2..=6 {
             let row: String = (100..=130).map(|x| canvas.get(x, y)).collect();
-            eprintln!("  y={}: [{}]", y, row);
+            eprintln!("  y={y}: [{row}]");
         }
         // Mark positions: A7 center=108, A8 center=125, P4 center=101
         let markers: String = (100..=130)
@@ -614,7 +614,7 @@ pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutc
                 }
             })
             .collect();
-        eprintln!("  pos: [{}] (^=101,108,125)", markers);
+        eprintln!("  pos: [{markers}] (^=101,108,125)");
     }
 
     let optimize_render =
@@ -841,8 +841,7 @@ mod tests {
         // Unicode back edges use dotted style, ensure we see a back-edge glyph sequence.
         assert!(
             output.contains("⋯") || output.contains("┄") || output.contains('─'),
-            "expected back-edge route to render with visible glyphs, got:\n{}",
-            output
+            "expected back-edge route to render with visible glyphs, got:\n{output}"
         );
     }
 

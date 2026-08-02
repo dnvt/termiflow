@@ -240,7 +240,7 @@ fn draw_boxlike(
         if row_y < y + 1 || row_y >= bottom_y {
             continue;
         }
-        let padded_label = format!(" {:^w$} ", line, w = label_area_width);
+        let padded_label = format!(" {line:^label_area_width$} ");
         for (i, c) in padded_label
             .chars()
             .take(width.saturating_sub(2))
@@ -455,7 +455,7 @@ fn draw_double_circle(
     canvas.set(x + 1, y + 1, '(');
     // content area is width - 6: 2 for "((" and 2 for "))" and 1 space each side
     let content_width = width.saturating_sub(6);
-    let padded_label = format!(" {:^width$} ", label, width = content_width);
+    let padded_label = format!(" {label:^content_width$} ");
     for (i, c) in padded_label.chars().take(width - 4).enumerate() {
         canvas.set(x + 2 + i, y + 1, c);
     }

@@ -490,10 +490,10 @@ pub(super) fn place_nodes(
 
     if std::env::var("DEBUG_FANIN").is_ok() {
         if let Some(rect) = node_rects.get("Merge") {
-            eprintln!("post-balance Merge rect {:?}", rect);
+            eprintln!("post-balance Merge rect {rect:?}");
         }
         if let Some(rect) = node_rects.get("S1") {
-            eprintln!("post-balance S1 rect {:?}", rect);
+            eprintln!("post-balance S1 rect {rect:?}");
         }
     }
 
@@ -502,7 +502,7 @@ pub(super) fn place_nodes(
     let min_y = node_rects.values().map(|r| r.y).min().unwrap_or(0);
 
     if std::env::var("DEBUG_FANIN").is_ok() {
-        eprintln!("normalize min_x={} min_y={}", min_x, min_y);
+        eprintln!("normalize min_x={min_x} min_y={min_y}");
     }
 
     if min_x > 0 || min_y > 0 {
@@ -529,10 +529,10 @@ pub(super) fn place_nodes(
 
     if std::env::var("DEBUG_FANIN").is_ok() {
         if let Some(rect) = node_rects.get("Merge") {
-            eprintln!("post-normalize Merge rect {:?}", rect);
+            eprintln!("post-normalize Merge rect {rect:?}");
         }
         if let Some(rect) = node_rects.get("S1") {
-            eprintln!("post-normalize S1 rect {:?}", rect);
+            eprintln!("post-normalize S1 rect {rect:?}");
         }
     }
 

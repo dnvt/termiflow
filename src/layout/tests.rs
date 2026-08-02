@@ -122,8 +122,7 @@ fn routes_cross_subgraph_boundaries() {
         if let Some(route) = graph.edge_routes.get(&edge_idx) {
             assert!(
                 !route.segments.is_empty(),
-                "route {} should have segments",
-                edge_idx
+                "route {edge_idx} should have segments"
             );
         }
     }

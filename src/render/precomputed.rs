@@ -288,7 +288,7 @@ pub(super) fn draw_routes(
                         // This will create a junction on the box border via resolve_overlap
                         for y in box_border_y..route_start.y {
                             if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
-                                eprintln!("    drawing stem at ({}, {})", src_center_x, y);
+                                eprintln!("    drawing stem at ({src_center_x}, {y})");
                             }
                             set_precomputed_route_edge_char(
                                 canvas,
