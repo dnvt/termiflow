@@ -57,8 +57,12 @@ see.
    and a durable lesson artifact. This command validates and receipts the
    cycle; it never appends decisions or approves goldens.
 
-For a deliberate full perceptual pass, use `--include-structural` when pulling
-the queue. This is slower but useful after layout or renderer-wide changes.
+For a deliberate full perceptual pass, start with a fresh decisions file and
+omit `--prescreen-clean`; repeatedly pull one frame with `--next`, inspect it,
+and append the hash-bound observation with `--record` before requesting the
+next frame. This is slower but useful after layout or renderer-wide changes.
+There is intentionally no structural-review escape hatch: a machine clean
+pre-screen is structural coverage only and cannot close perceptual review.
 
 ## Human-eye checklist
 
