@@ -58,7 +58,8 @@ pub(super) fn draw_edge_label(
 ) -> Option<EdgeLabelPlacement> {
     use super::cycle::{center_x, center_y};
 
-    let display_label = format_edge_label_with_limit(label, config.max_edge_label_width);
+    let display_label =
+        format_edge_label_with_limit(label, config.max_edge_label_width.min(canvas.width));
     let label_width = display_width(&display_label);
     let owner_id = edge_owner_id(edge_idx, edge);
     let mut cells = Vec::new();
@@ -382,7 +383,8 @@ pub(super) fn draw_routed_edge_label(
         return None;
     }
 
-    let display_label = format_edge_label_with_limit(label, config.max_edge_label_width);
+    let display_label =
+        format_edge_label_with_limit(label, config.max_edge_label_width.min(canvas.width));
     let label_width = display_width(&display_label);
     let owner_id = edge_owner_id(edge_idx, edge);
     let mut cells = Vec::new();
@@ -831,7 +833,7 @@ pub(super) fn draw_convergent_edge_label(
 
     // Use slightly shorter limit for convergent labels to avoid crowding at merge points
     let convergent_limit = config.max_edge_label_width.saturating_sub(2).max(8);
-    let display_label = format_edge_label_with_limit(label, convergent_limit);
+    let display_label = format_edge_label_with_limit(label, convergent_limit.min(canvas.width));
     let label_width = display_width(&display_label);
     let owner_id = edge_owner_id(edge_idx, edge);
     let mut cells = Vec::new();
