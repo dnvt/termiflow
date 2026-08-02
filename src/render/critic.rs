@@ -196,7 +196,7 @@ fn find_route_topology_mismatches(frame: &SemanticFrame, chars: &StyleChars) -> 
                 continue;
             };
 
-            if cell.ch != expected {
+            if cell.ch != expected && !styled_straight_route_variant(connections, cell.ch) {
                 findings.push(CriticFinding {
                     code: FindingCode::RouteTopologyMismatch,
                     severity: FindingSeverity::Warning,
@@ -213,6 +213,25 @@ fn find_route_topology_mismatches(frame: &SemanticFrame, chars: &StyleChars) -> 
     }
 
     findings
+}
+
+fn styled_straight_route_variant(connections: super::topology::Connections, ch: char) -> bool {
+    let has_horizontal_neighbor = connections.left || connections.right;
+    let has_vertical_neighbor = connections.up || connections.down;
+    let horizontal_only = has_horizontal_neighbor && !has_vertical_neighbor;
+    let vertical_only = has_vertical_neighbor && !has_horizontal_neighbor;
+
+    if horizontal_only {
+        return (char_connects_left(ch) || char_connects_right(ch))
+            && !char_connects_up(ch)
+            && !char_connects_down(ch);
+    }
+    if vertical_only {
+        return (char_connects_up(ch) || char_connects_down(ch))
+            && !char_connects_left(ch)
+            && !char_connects_right(ch);
+    }
+    false
 }
 
 fn is_clean_horizontal_side_portal(

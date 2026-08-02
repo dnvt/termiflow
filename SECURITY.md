@@ -2,9 +2,11 @@
 
 ## Supported Versions
 
-TermiFlow is currently in public beta (0.1.x). Security fixes are applied to
-the latest released 0.1.x version. Please include the affected TermiFlow
-version and toolchain when reporting a vulnerability.
+The latest tagged release is v0.1.1, and the supported release line is 0.1.x.
+Security fixes are applied to the latest released 0.1.x version. The current
+repository source targets version 0.2.0 but is an unreleased candidate; when
+reporting an issue against it, include the commit SHA as well as the affected
+TermiFlow version and toolchain.
 
 ## Reporting a Vulnerability
 

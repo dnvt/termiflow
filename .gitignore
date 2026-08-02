@@ -17,3 +17,17 @@ Thumbs.db
 
 # Local render artifacts
 /artifacts/
+
+# Private Maestro and agent-runtime surfaces. These must never be committed or
+# included in a public checkout; the local Maestro bridge is intentionally
+# machine-private and points at the shared Designer source.
+/.maestro/
+/.maestro.toml
+/.maestro-project/
+/.claude/
+/.agents/
+/AGENTS.md
+/CLAUDE.md
+/plugins/*/.codex-plugin/
+/plugins/*/skills/
+/plugins/*/AGENTS.md

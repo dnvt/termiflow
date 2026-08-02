@@ -197,7 +197,7 @@ fn apply_max_lines(mut lines: Vec<String>, max_lines: usize, max_width: usize) -
 
     let budget = max_width.saturating_sub(suffix_width);
     let base = truncate_label_hard(&lines[last_idx], budget);
-    lines[last_idx] = format!("{}{}", base, suffix);
+    lines[last_idx] = format!("{base}{suffix}");
     lines
 }
 

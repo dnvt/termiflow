@@ -506,7 +506,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             );
             warnings.push(warning.clone());
             if strict {
-                bail!("{}", warning);
+                bail!("{warning}");
             }
             // NOTE: no `continue` — we still parse nodes/edges from this line
         }
@@ -516,7 +516,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             warnings.push(warning.clone());
             unsupported_lines.insert(i);
             if strict {
-                bail!("{}", warning);
+                bail!("{warning}");
             }
             continue;
         }
@@ -526,7 +526,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             warnings.push(warning.clone());
             malformed_lines.insert(i);
             if strict {
-                bail!("{}", warning);
+                bail!("{warning}");
             }
             continue;
         }
@@ -1078,8 +1078,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             // SPEC §1.5: Auto-create warning (INFORMATIONAL - never fatal)
             let line_num = node_first_ref.get(id).unwrap_or(&0);
             let warning = format!(
-                "termiflow: warning: line {}: Node '{}' referenced but never defined, using ID as label",
-                line_num, id
+                "termiflow: warning: line {line_num}: Node '{id}' referenced but never defined, using ID as label"
             );
             warnings.push(warning);
             id.clone()
@@ -1177,15 +1176,13 @@ fn check_unsupported_syntax(line: &str, line_num: usize) -> Option<String> {
         && !RE_NODE_DB.is_match(line)
     {
         return Some(format!(
-            "termiflow: warning: line {}: Nested brackets not supported in node labels",
-            line_num
+            "termiflow: warning: line {line_num}: Nested brackets not supported in node labels"
         ));
     }
 
     if RE_PIPE_IN_LABEL.is_match(line) {
         return Some(format!(
-            "termiflow: warning: line {}: Pipe character not supported in node labels (reserved for edge labels)",
-            line_num
+            "termiflow: warning: line {line_num}: Pipe character not supported in node labels (reserved for edge labels)"
         ));
     }
 
@@ -1193,15 +1190,13 @@ fn check_unsupported_syntax(line: &str, line_num: usize) -> Option<String> {
 
     if RE_STYLE.is_match(line) {
         return Some(format!(
-            "termiflow: warning: line {}: Mermaid styling not supported (use termiflow: directive)",
-            line_num
+            "termiflow: warning: line {line_num}: Mermaid styling not supported (use termiflow: directive)"
         ));
     }
 
     if RE_CLASSDEF.is_match(line) {
         return Some(format!(
-            "termiflow: warning: line {}: Mermaid classes not supported",
-            line_num
+            "termiflow: warning: line {line_num}: Mermaid classes not supported"
         ));
     }
 
@@ -1253,15 +1248,13 @@ fn check_malformed(line: &str, line_num: usize) -> Option<String> {
         && !matches_any_shape
     {
         return Some(format!(
-            "termiflow: warning: line {}: Malformed edge '{}'",
-            line_num, line
+            "termiflow: warning: line {line_num}: Malformed edge '{line}'"
         ));
     }
 
     if has_node_delimiter && !matches_any_shape && !is_known_edge {
         return Some(format!(
-            "termiflow: warning: line {}: Malformed node '{}'",
-            line_num, line
+            "termiflow: warning: line {line_num}: Malformed node '{line}'"
         ));
     }
 

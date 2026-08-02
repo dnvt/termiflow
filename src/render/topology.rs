@@ -250,6 +250,11 @@ pub(crate) fn char_connects_up(ch: char) -> bool {
             | '│'
             | '║'
             | '┃'
+            | '╎'
+            | '┆'
+            | '┊'
+            | '┋'
+            | '╏'
             | '█'
             | '+'
             | '┼'
@@ -287,6 +292,11 @@ pub(crate) fn char_connects_down(ch: char) -> bool {
             | '│'
             | '║'
             | '┃'
+            | '╎'
+            | '┆'
+            | '┊'
+            | '┋'
+            | '╏'
             | '█'
             | '+'
             | '┼'
@@ -320,9 +330,16 @@ pub(crate) fn char_connects_down(ch: char) -> bool {
 pub(crate) fn char_connects_left(ch: char) -> bool {
     matches!(
         ch,
-        '-' | '─'
+        '-' | '='
+            | '.'
+            | '─'
             | '═'
             | '━'
+            | '╌'
+            | '╴'
+            | '╶'
+            | '╸'
+            | '╺'
             | '█'
             | '+'
             | '┼'
@@ -356,9 +373,16 @@ pub(crate) fn char_connects_left(ch: char) -> bool {
 pub(crate) fn char_connects_right(ch: char) -> bool {
     matches!(
         ch,
-        '-' | '─'
+        '-' | '='
+            | '.'
+            | '─'
             | '═'
             | '━'
+            | '╌'
+            | '╴'
+            | '╶'
+            | '╸'
+            | '╺'
             | '█'
             | '+'
             | '┼'
@@ -455,5 +479,13 @@ mod tests {
                 right: false,
             }
         );
+    }
+
+    #[test]
+    fn topology_connections_recognize_styled_route_shafts() {
+        assert!(char_connects_left('.'));
+        assert!(char_connects_right('='));
+        assert!(char_connects_up('╎'));
+        assert!(char_connects_down('╎'));
     }
 }

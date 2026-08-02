@@ -285,6 +285,33 @@ impl LayoutSpacingPolicy {
             } else {
                 spacing *= 2;
             }
+
+            // Reserve enough primary-axis room for the widest edge label emitted
+            // from this layer.  The renderer can place a label tightly when the
+            // route has no margin, but it must not have to detach a complete label
+            // onto an unrelated row just because the layout stopped six cells
+            // short of an eight-cell label.  The four-cell allowance matches the
+            // LR/RL inline label margins and keeps the policy bounded by the
+            // public label-width contract.
+            if has_labels {
+                let widest_label = layer
+                    .iter()
+                    .flat_map(|&idx| {
+                        let source_id = &graph.nodes[idx].id;
+                        graph
+                            .edges
+                            .iter()
+                            .filter(move |edge| {
+                                !edge.is_back_edge && edge.from.as_str() == source_id.as_str()
+                            })
+                            .filter_map(|edge| edge.label.as_deref())
+                            .map(crate::display_profile::display_width)
+                    })
+                    .max()
+                    .unwrap_or(0)
+                    .min(crate::spacing::MAX_LABEL_WIDTH);
+                spacing = spacing.max(widest_label.saturating_add(4));
+            }
         }
 
         spacing
@@ -463,10 +490,10 @@ pub(super) fn place_nodes(
 
     if std::env::var("DEBUG_FANIN").is_ok() {
         if let Some(rect) = node_rects.get("Merge") {
-            eprintln!("post-balance Merge rect {:?}", rect);
+            eprintln!("post-balance Merge rect {rect:?}");
         }
         if let Some(rect) = node_rects.get("S1") {
-            eprintln!("post-balance S1 rect {:?}", rect);
+            eprintln!("post-balance S1 rect {rect:?}");
         }
     }
 
@@ -475,7 +502,7 @@ pub(super) fn place_nodes(
     let min_y = node_rects.values().map(|r| r.y).min().unwrap_or(0);
 
     if std::env::var("DEBUG_FANIN").is_ok() {
-        eprintln!("normalize min_x={} min_y={}", min_x, min_y);
+        eprintln!("normalize min_x={min_x} min_y={min_y}");
     }
 
     if min_x > 0 || min_y > 0 {
@@ -502,10 +529,10 @@ pub(super) fn place_nodes(
 
     if std::env::var("DEBUG_FANIN").is_ok() {
         if let Some(rect) = node_rects.get("Merge") {
-            eprintln!("post-normalize Merge rect {:?}", rect);
+            eprintln!("post-normalize Merge rect {rect:?}");
         }
         if let Some(rect) = node_rects.get("S1") {
-            eprintln!("post-normalize S1 rect {:?}", rect);
+            eprintln!("post-normalize S1 rect {rect:?}");
         }
     }
 

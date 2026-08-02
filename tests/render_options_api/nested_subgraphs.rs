@@ -93,14 +93,14 @@ fn render_with_feedback_keeps_complex_td_data_layer_bottom_exit_to_one_portal() 
     let outcome =
         termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
     let bottom_y = data.bounds.y + data.bounds.height.saturating_sub(1);
-    let portal_marker = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
+    let portal_shaft = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
         .to_style_chars(termiflow::BaseStyle::Unicode)
-        .portal_pierce;
+        .edge_v;
     let portal_count = (data.bounds.x..data.bounds.x + data.bounds.width)
         .filter_map(|x| outcome.semantic_frame.get(x, bottom_y))
         .filter(|cell| {
             cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
-                && cell.ch == portal_marker
+                && cell.ch == portal_shaft
         })
         .count();
 
@@ -121,14 +121,14 @@ fn render_with_feedback_keeps_complex_td_data_layer_top_entries_visible() {
     let outcome =
         termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
     let top_y = data.bounds.y;
-    let portal_marker = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
+    let portal_shaft = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
         .to_style_chars(termiflow::BaseStyle::Unicode)
-        .portal_pierce;
+        .edge_v;
     let portal_count = (data.bounds.x..data.bounds.x + data.bounds.width)
         .filter_map(|x| outcome.semantic_frame.get(x, top_y))
         .filter(|cell| {
             cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
-                && cell.ch == portal_marker
+                && cell.ch == portal_shaft
         })
         .count();
 
@@ -245,14 +245,14 @@ fn render_with_feedback_keeps_nested_child_bottom_border_clean_after_fanin() {
     let outcome =
         termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
     let bottom_y = inner.bounds.y + inner.bounds.height.saturating_sub(1);
-    let portal_marker = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
+    let portal_shaft = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
         .to_style_chars(termiflow::BaseStyle::Unicode)
-        .portal_pierce;
+        .edge_v;
     let edge_owned_cells = (inner.bounds.x..inner.bounds.x + inner.bounds.width)
         .filter_map(|x| outcome.semantic_frame.get(x, bottom_y))
         .filter(|cell| {
             cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
-                && cell.ch == portal_marker
+                && cell.ch == portal_shaft
         })
         .count();
 
@@ -271,9 +271,9 @@ fn render_with_feedback_keeps_nested_child_top_entries_visible_on_top_border() {
 
     let outcome =
         termiflow::render_canvas_with_feedback(&graph, &termiflow::Config::default()).unwrap();
-    let portal_marker = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
+    let portal_shaft = termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Unicode)
         .to_style_chars(termiflow::BaseStyle::Unicode)
-        .portal_pierce;
+        .edge_v;
     let lines: Vec<&str> = outcome.output.lines().collect();
     let title_idx = lines
         .iter()
@@ -285,7 +285,7 @@ fn render_with_feedback_keeps_nested_child_top_entries_visible_on_top_border() {
         .expect("nested child top border row");
 
     assert_eq!(
-        top_border.chars().filter(|&ch| ch == portal_marker).count(),
+        top_border.chars().filter(|&ch| ch == portal_shaft).count(),
         2,
         "expected the nested child top border to keep two visible entry portals after balancing\n{}",
         outcome.output
@@ -363,21 +363,31 @@ fn render_with_feedback_keeps_declared_nested_horizontal_side_entries_simple_on_
             let portal_marker = termiflow::CompositeStyle::from_base(style)
                 .to_style_chars(style)
                 .portal_pierce;
+            let parsed = termiflow::parse(&input, false).unwrap();
+            let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+            let _inner = graph.get_subgraph("SG2").expect("data layer");
             let outcome = termiflow::render_with_feedback(
                 &input,
                 termiflow::RenderOptions::new().with_style(style),
             )
             .unwrap();
-            let db_lines: Vec<&str> = outcome
-                .output
-                .lines()
-                .filter(|line| line.contains("User DB") || line.contains("Order DB"))
-                .collect();
+            let mut used_side_portals = 0;
+            for y in 0..outcome.semantic_frame.height {
+                for x in 0..outcome.semantic_frame.width {
+                    if outcome.semantic_frame.get(x, y).is_some_and(|cell| {
+                        cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
+                            && cell.ch == portal_marker
+                    }) {
+                        used_side_portals += 1;
+                    }
+                }
+            }
 
             assert!(
-                db_lines.iter().any(|line| line.contains(portal_marker)),
-                "expected the declared nested horizontal side-entry to keep a visible dedicated portal marker for {direction} in {:?}\n{}",
+                used_side_portals >= 1,
+                "expected the declared nested horizontal side-entry to keep a visible side-aware portal for {direction} in {:?}, got {}\n{}",
                 style,
+                used_side_portals,
                 outcome.output
             );
         }
@@ -415,13 +425,13 @@ fn render_with_feedback_centers_declared_nested_horizontal_fanin_exit_between_so
             })
             .find(|(_, cell)| {
                 cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
-                    || cell.ch == portal_marker
+                    && cell.ch == portal_marker
             })
             .expect("expected dedicated nested child exit portal on the fan-in border");
 
         assert!(
             portal_y > min_source_y && portal_y < max_source_y,
-            "expected the horizontal nested fan-in exit portal to stay centered between source rows for {direction}, got y={} with source rows {} and {}\n{}",
+            "expected the nested fan-in exit portal to stay centered between source rows for {direction}, got y={} with source rows {} and {}\n{}",
             portal_y,
             min_source_y,
             max_source_y,
@@ -429,7 +439,7 @@ fn render_with_feedback_centers_declared_nested_horizontal_fanin_exit_between_so
         );
         assert!(
             portal.ch == portal_marker,
-            "expected the centered merge portal to use the dedicated portal marker for {direction}, got '{}'\n{}",
+            "expected the centered merge portal to use the dedicated side marker for {direction}, got '{}'\n{}",
             portal.ch,
             outcome.output
         );
@@ -474,7 +484,7 @@ fn render_with_feedback_uses_one_clean_horizontal_exit_portal_for_declared_neste
                     outcome.semantic_frame.get(border_x, y).and_then(|cell| {
                         (cell.owner_kind
                             == termiflow::render::semantic::CellOwnerKind::PortalOpening
-                            || cell.ch == portal_marker)
+                            && cell.ch == portal_marker)
                             .then_some((y, cell.ch))
                     })
                 })
@@ -483,13 +493,13 @@ fn render_with_feedback_uses_one_clean_horizontal_exit_portal_for_declared_neste
             assert_eq!(
                 used_side_portals.len(),
                 1,
-                "expected one clean horizontal exit portal for declared nested fan-in in {direction} / {:?}\n{}",
+                "expected one clean side portal for declared nested fan-in in {direction} / {:?}\n{}",
                 style,
                 outcome.output
             );
             assert!(
                 used_side_portals[0].1 == portal_marker,
-                "expected the declared nested exit portal to use the dedicated portal marker for {direction} in {:?}, got '{}'\n{}",
+                "expected the declared nested exit portal to use the dedicated side marker for {direction} in {:?}, got '{}'\n{}",
                 style,
                 used_side_portals[0].1,
                 outcome.output

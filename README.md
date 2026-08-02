@@ -1,11 +1,11 @@
 # TermiFlow
 
-> Terminal-native Mermaid flowchart renderer and local preview tool
+> TermiFlow is a terminal-native Mermaid flowchart renderer.
 
-Render Mermaid flowcharts as ASCII/Unicode diagrams in your terminal without a
-browser.
+Render Mermaid flowcharts as ASCII/Unicode diagrams directly in your
+terminal—without a browser.
 
-Current status: TermiFlow v0.1.1 is a focused public-beta release. Print mode
+Current status: TermiFlow v0.2.0 is a focused release candidate. Print mode
 and primary-screen watch mode (`--watch`) are the stable workflow; alternate-
 screen live preview (`--tui`) is available but remains partial because input and
 scroll behavior depends on the terminal emulator.
@@ -15,7 +15,7 @@ scroll behavior depends on the terminal emulator.
 **Pipeline — unicode style:**
 
 ```
-$ echo 'graph LR; A[Parse] --> B[Layout]; B --> C[Render]; C --> D[Output]' | tw
+$ printf 'graph LR\n    A[Parse] --> B[Layout]\n    B --> C[Render]\n    C --> D[Output]\n' | tw
 ```
 
 ```
@@ -27,7 +27,7 @@ $ echo 'graph LR; A[Parse] --> B[Layout]; B --> C[Render]; C --> D[Output]' | tw
 **Same diagram — `--style ascii` for maximum portability:**
 
 ```
-$ echo 'graph LR; A[Parse] --> B[Layout]; B --> C[Render]; C --> D[Output]' | tw --style ascii
+$ printf 'graph LR\n    A[Parse] --> B[Layout]\n    B --> C[Render]\n    C --> D[Output]\n' | tw --style ascii
 ```
 
 ```
@@ -77,11 +77,13 @@ $ printf 'graph LR\n    subgraph CI\n        A[Push]-->B[Lint]-->C[Test]\n    en
 ```
 
 ```
-┏[  CI  ]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓   ┏[  CD  ]━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃  CI                                              ┃   ┃  CD                               ┃
 ┃                                                  ┃   ┃                                   ┃
 ┃ ┌────────┐        ┌────────┐        ┌────────┐   ┃   ┃  ┌─────────┐        ┌──────────┐  ┃
-┃ │  Push  ├───────→│  Lint  ├───────→│  Test  ├─────────→│  Build  ├───────→│  Deploy  │  ┃
+┃ │  Push  ├───────→│  Lint  ├───────→│  Test  ├───┼───┼─→│  Build  ├───────→│  Deploy  │  ┃
 ┃ └────────┘        └────────┘        └────────┘   ┃   ┃  └─────────┘        └──────────┘  ┃
+┃                                                  ┃   ┃                                   ┃
 ┃                                                  ┃   ┃                                   ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
@@ -114,26 +116,23 @@ brew install dnvt/termiflow/termiflow
 The Homebrew formula is maintained in the external `dnvt/homebrew-termiflow`
 tap; this repository keeps installation instructions only.
 
-### crates.io
+### GitHub Releases
+
+If Homebrew is unavailable, download a release binary from [GitHub
+Releases](https://github.com/dnvt/termiflow/releases).
+
+### From source (requires Rust)
+
+The candidate source checkout requires a Rust toolchain and Cargo:
 
 ```bash
-cargo install termiflow
+# From the checked-out v0.2.0 candidate:
+cargo install --locked --path . --bin tw
 ```
 
-The registry release and GitHub tags may publish on different schedules. To
-install the version from this repository instead:
-
-```bash
-cargo install --git https://github.com/dnvt/termiflow --tag v0.1.1
-```
-
-### From source
-
-```bash
-cargo install --path .
-```
-
-All three options install both `termiflow` and `tw`.
+This installs the checkout you are using; the `v0.2.0` release tag and
+prebuilt release binaries are published separately after the candidate passes
+its final release checks.
 
 ## Quickstart
 
@@ -200,6 +199,18 @@ The repository’s required checks are documented in `CONTRIBUTING.md`. The
 repository includes deterministic golden fixtures, visual audit tooling, and
 quality-baseline checks so rendering changes can be reviewed reproducibly; see
 `tests/fixtures/README.md` for the contributor workflow.
+
+For a locked local verification pass:
+
+```bash
+cargo fmt --check
+cargo test --locked --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+scripts/regenerate_golden.sh --check
+```
+
+Golden-output changes require explicit review of the generated report and every
+changed snapshot; a regenerated snapshot is not approval by itself.
 
 ## License
 

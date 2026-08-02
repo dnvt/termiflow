@@ -151,7 +151,7 @@ fn move_to_top_of_previous_region<W: Write>(
     previous_height: u16,
 ) -> io::Result<()> {
     if previous_height > 0 {
-        write!(writer, "\x1b[{}A", previous_height)?;
+        write!(writer, "\x1b[{previous_height}A")?;
     }
     Ok(())
 }
@@ -163,7 +163,7 @@ fn render_full_frame<W: Write>(
 ) -> io::Result<()> {
     for y in 0..next.height {
         let line = frame_line(next, y);
-        write!(writer, "\r{}\x1b[K\n", line)?;
+        write!(writer, "\r{line}\x1b[K\n")?;
     }
 
     for _ in next.height..previous_height {
@@ -172,7 +172,7 @@ fn render_full_frame<W: Write>(
 
     let surplus = previous_height.saturating_sub(next.height);
     if surplus > 0 {
-        write!(writer, "\x1b[{}A", surplus)?;
+        write!(writer, "\x1b[{surplus}A")?;
     }
 
     Ok(())
@@ -196,7 +196,7 @@ fn render_diff<W: Write>(
     write!(writer, "\r")?;
     let move_down = next.height.saturating_sub(current_row);
     if move_down > 0 {
-        write!(writer, "\x1b[{}B", move_down)?;
+        write!(writer, "\x1b[{move_down}B")?;
     }
 
     Ok(())
@@ -250,7 +250,7 @@ fn move_inline_cursor<W: Write>(
     if to_row != from_row {
         write!(writer, "\r")?;
         if to_col > 0 {
-            write!(writer, "\x1b[{}C", to_col)?;
+            write!(writer, "\x1b[{to_col}C")?;
         }
         return Ok(());
     }
@@ -258,7 +258,7 @@ fn move_inline_cursor<W: Write>(
     if to_col < from_col {
         write!(writer, "\r")?;
         if to_col > 0 {
-            write!(writer, "\x1b[{}C", to_col)?;
+            write!(writer, "\x1b[{to_col}C")?;
         }
     } else if to_col > from_col {
         write!(writer, "\x1b[{}C", to_col - from_col)?;

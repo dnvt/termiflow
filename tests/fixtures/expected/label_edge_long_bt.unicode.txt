@@ -2,7 +2,7 @@
  │  End  │
  └───────┘
      ↑
-This is a very
+This is a very…
      │
 ┌────┴────┐
 │  Start  │

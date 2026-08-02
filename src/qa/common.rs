@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,6 +21,8 @@ pub const MODES: &[&str] = &["default", "optimized"];
 pub const KINDS: &[&str] = &["success", "warning", "expected_error"];
 pub const STDERR_POLICIES: &[&str] = &["empty", "warning", "error"];
 pub const DIRECTIONS: &[&str] = &["TD", "LR", "RL", "BT", "none"];
+
+static LABEL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct FixtureMetadata {
@@ -61,7 +64,18 @@ pub fn parse_csv(value: &str, allowed: &[&str], label: &str) -> Result<Vec<Strin
 pub fn sha256_bytes(value: &[u8]) -> String {
     let mut digest = Sha256::new();
     digest.update(value);
-    format!("{:x}", digest.finalize())
+    encode_hex(digest.finalize())
+}
+
+fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut rendered = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        rendered.push(HEX[(byte >> 4) as usize] as char);
+        rendered.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    rendered
 }
 
 pub fn sha256_file(path: &Path) -> Result<String> {
@@ -371,9 +385,7 @@ pub fn load_metadata(
         .collect();
     if !missing.is_empty() || !unexpected.is_empty() {
         bail!(
-            "fixture metadata/input mismatch; missing metadata: {:?}; metadata without input: {:?}",
-            missing,
-            unexpected
+            "fixture metadata/input mismatch; missing metadata: {missing:?}; metadata without input: {unexpected:?}"
         );
     }
     Ok((metadata, raw))
@@ -435,7 +447,7 @@ pub fn case_id(input: &[u8], fixture: &str, style: &str, mode: &str) -> String {
     digest.update(style.as_bytes());
     digest.update([0]);
     digest.update(mode.as_bytes());
-    format!("{:x}", digest.finalize())
+    encode_hex(digest.finalize())
 }
 
 pub fn dimensions(stdout: &[u8]) -> Value {
@@ -638,14 +650,22 @@ pub fn deterministic_digest(stage: &Path) -> Result<(String, String)> {
         digest.update(&content);
         digest.update([0]);
     }
-    Ok((format!("{:x}", digest.finalize()), listing))
+    Ok((encode_hex(digest.finalize()), listing))
 }
 
 pub fn now_label() -> String {
+    let sequence = LABEL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_owned())
+        .map(|duration| {
+            format!(
+                "{}-{}-{}-{sequence}",
+                duration.as_secs(),
+                duration.subsec_nanos(),
+                std::process::id()
+            )
+        })
+        .unwrap_or_else(|_| format!("0-{}-{sequence}", std::process::id()))
 }
 
 pub fn atomic_replace(path: &Path, content: &[u8]) -> Result<()> {
@@ -706,5 +726,12 @@ mod tests {
         let root = test_dir("paths");
         assert!(safe_relative_path(Path::new("../outside"), &root, "frame").is_err());
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn now_labels_are_unique_for_parallel_stages() {
+        let first = now_label();
+        let second = now_label();
+        assert_ne!(first, second);
     }
 }

@@ -55,8 +55,7 @@ pub(super) fn route_fanout_into_subgraph_td(
     if std::env::var("DEBUG_FANOUT").is_ok() {
         let target_xs: Vec<usize> = targets.iter().map(|(x, _, _)| *x).collect();
         eprintln!(
-            "fanout stem=({}, {}) portal_y={} jx={} targets={:?}",
-            stem_start_x, stem_start_y, portal_y, junction_x, target_xs
+            "fanout stem=({stem_start_x}, {stem_start_y}) portal_y={portal_y} jx={junction_x} targets={target_xs:?}"
         );
     }
 
@@ -347,16 +346,7 @@ fn route_convergent_from_subgraph_td(
     };
     if std::env::var("DEBUG_FANIN").is_ok() {
         eprintln!(
-            "fanin merge_x={} merge_y={} span=({}, {}) target_sec={} target=({}, {}) arrow=({}, {})",
-            merge_x,
-            merge_y,
-            final_span_start,
-            final_span_end,
-            target_secondary,
-            target_x,
-            target_y,
-            arrow_x,
-            arrow_y
+            "fanin merge_x={merge_x} merge_y={merge_y} span=({final_span_start}, {final_span_end}) target_sec={target_secondary} target=({target_x}, {target_y}) arrow=({arrow_x}, {arrow_y})"
         );
     }
 
@@ -575,8 +565,7 @@ fn route_convergent_from_subgraph_td(
         );
         if std::env::var("DEBUG_FANIN").is_ok() {
             eprintln!(
-                "cleanup bottom_y={} fill='{}' portals={:?}",
-                bottom_y, border_fill, portal_columns
+                "cleanup bottom_y={bottom_y} fill='{border_fill}' portals={portal_columns:?}"
             );
         }
         for (sx, sy, _) in &source_positions {

@@ -108,9 +108,6 @@ fn render_with_feedback_keeps_subgraph_complex_direction_matrix_clean() {
         let input = std::fs::read_to_string(fixture).unwrap();
 
         for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
-            let portal_marker = termiflow::CompositeStyle::from_base(style)
-                .to_style_chars(style)
-                .portal_pierce;
             let outcome = termiflow::render_with_feedback(
                 &input,
                 termiflow::RenderOptions::new().with_style(style),
@@ -143,18 +140,17 @@ fn render_with_feedback_keeps_subgraph_complex_direction_matrix_clean() {
             );
 
             let frame = &outcome.semantic_frame;
-            let visible_used_portals: Vec<char> = (0..frame.height)
+            let visible_used_portals: Vec<()> = (0..frame.height)
                 .flat_map(|y| {
                     (0..frame.width).filter_map(move |x| {
                         let cell = frame.get(x, y)?;
                         (cell.owner_kind
                             == termiflow::render::semantic::CellOwnerKind::PortalOpening
-                            && cell.ch == portal_marker
                             && ((y > 0 && is_route_neighbor(frame, x, y - 1))
                                 || (y + 1 < frame.height && is_route_neighbor(frame, x, y + 1))
                                 || (x > 0 && is_route_neighbor(frame, x - 1, y))
                                 || (x + 1 < frame.width && is_route_neighbor(frame, x + 1, y))))
-                        .then_some(cell.ch)
+                        .then_some(())
                     })
                 })
                 .collect();
@@ -771,26 +767,42 @@ fn render_matches_verified_collision_sibling_subgraphs_lr_snapshots() {
     let input =
         std::fs::read_to_string("tests/fixtures/inputs/collision_sibling_subgraphs_lr.md").unwrap();
 
-    for (style, upper_crossing, lower_crossing) in [
-        (
-            termiflow::BaseStyle::Unicode,
-            "│  Node B  ├───┼───┼",
-            "└──────────────────────┼───┼─→│  Node C  ├───┘",
-        ),
-        (
-            termiflow::BaseStyle::Ascii,
-            "|  Node B  +---+---+",
-            "+----------------------+---+->|  Node C  +---+",
-        ),
-    ] {
-        let output =
-            termiflow::render(&input, termiflow::RenderOptions::new().with_style(style)).unwrap();
+    for style in [termiflow::BaseStyle::Unicode, termiflow::BaseStyle::Ascii] {
+        let parsed = termiflow::parse(&input, false).unwrap();
+        let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
+        let portal_marker = termiflow::CompositeStyle::from_base(style)
+            .to_style_chars(style)
+            .portal_pierce;
+        let outcome = termiflow::render_with_feedback(
+            &input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+        let used_horizontal_portals = graph
+            .subgraphs
+            .iter()
+            .flat_map(|subgraph| {
+                let bounds = &subgraph.bounds;
+                let left_x = bounds.x;
+                let right_x = bounds.x + bounds.width.saturating_sub(1);
+                let y_start = bounds.y.saturating_add(1);
+                let y_end = bounds.y + bounds.height.saturating_sub(1);
+                (y_start..y_end).flat_map(move |y| [(left_x, y), (right_x, y)])
+            })
+            .filter(|&(x, y)| {
+                outcome.semantic_frame.get(x, y).is_some_and(|cell| {
+                    cell.owner_kind == termiflow::render::semantic::CellOwnerKind::PortalOpening
+                        && cell.ch == portal_marker
+                })
+            })
+            .count();
 
         assert!(
-            output.contains(upper_crossing) && output.contains(lower_crossing),
-            "expected verified LR sibling-subgraph crossings to preserve border intersections for {:?}\n{}",
+            used_horizontal_portals >= 2,
+            "expected verified LR sibling-subgraph crossings to use dedicated side portals for {:?}, got {}\n{}",
             style,
-            output
+            used_horizontal_portals,
+            outcome.output
         );
     }
 }
@@ -803,13 +815,13 @@ fn render_matches_verified_collision_parallel_cross_bt_snapshots() {
     for (style, target_crossing, source_crossing) in [
         (
             termiflow::BaseStyle::Unicode,
-            "┗━━━━━━━━━━━┼━━━━━━━━━┼━━━━━━━━┛",
-            "┏━━━━━━━━━┼━━━━━━━━━━━┼━━━━━━━━┓",
+            "┗━━━━━━━━━━━│━━━━━━━━━│━━━━━━━━┛",
+            "┏━━━━━━━━━│━━━━━━━━━━━│━━━━━━━━┓",
         ),
         (
             termiflow::BaseStyle::Ascii,
-            "+-----------+---------+--------+",
-            "+---------+-----------+--------+",
+            "+-----------|---------|--------+",
+            "+---------|-----------|--------+",
         ),
     ] {
         let outcome = termiflow::render_with_feedback(

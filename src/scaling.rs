@@ -287,8 +287,8 @@ mod tests {
         let nodes_per_layer = node_count / depth.max(1);
 
         for i in 0..node_count {
-            let label = format!("Node{}", i);
-            let mut node = Node::new(format!("n{}", i), &label);
+            let label = format!("Node{i}");
+            let mut node = Node::new(format!("n{i}"), &label);
             node.rank = i / nodes_per_layer.max(1);
             graph.nodes.push(node);
         }
@@ -297,7 +297,7 @@ mod tests {
         for i in 0..node_count.saturating_sub(1) {
             if i + nodes_per_layer.max(1) < node_count {
                 graph.edges.push(Edge::new(
-                    format!("n{}", i),
+                    format!("n{i}"),
                     format!("n{}", i + nodes_per_layer.max(1)),
                 ));
             }
@@ -383,7 +383,7 @@ mod tests {
         let mut graph = Graph::new();
         // Create a wide diagram (10 nodes in one layer)
         for i in 0..10 {
-            let mut node = Node::new(format!("n{}", i), "LongLabel123");
+            let mut node = Node::new(format!("n{i}"), "LongLabel123");
             node.rank = 0;
             graph.nodes.push(node);
         }

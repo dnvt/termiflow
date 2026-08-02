@@ -85,7 +85,7 @@ fn parse_shape(raw: Option<&str>) -> NodeShape {
 /// `{"direction":"TD","nodes":[{"id":"A","label":"Start"}],"edges":[{"from":"A","to":"B"}]}`
 pub fn parse_json_graph(input: &str) -> Result<(Graph, ParseConfig)> {
     let parsed: JsonGraph =
-        serde_json::from_str(input).map_err(|e| anyhow!("invalid json graph: {}", e))?;
+        serde_json::from_str(input).map_err(|e| anyhow!("invalid json graph: {e}"))?;
 
     let mut graph = Graph::new();
     graph.direction = parse_direction(parsed.direction);

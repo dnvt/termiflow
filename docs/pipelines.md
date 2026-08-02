@@ -16,7 +16,7 @@ EOF
 This is fully local and uses the Rust binaries shipped by this repository.
 
 ```bash
-cargo run --quiet --bin graph-to-mermaid -- examples/inputs/microservices_graph.json \
+cargo run --locked --quiet --bin graph-to-mermaid -- examples/inputs/microservices_graph.json \
   | tw --wrap --max-lines 3
 ```
 
@@ -25,9 +25,9 @@ cargo run --quiet --bin graph-to-mermaid -- examples/inputs/microservices_graph.
 Fully local (requires Rust + Cargo).
 
 ```bash
-cargo metadata --format-version 1 \
-  | cargo run --quiet --bin cargo-metadata-to-graph -- --direction LR \
-  | cargo run --quiet --bin graph-to-mermaid \
+cargo metadata --locked --format-version 1 \
+  | cargo run --locked --quiet --bin cargo-metadata-to-graph -- --direction LR \
+  | cargo run --locked --quiet --bin graph-to-mermaid \
   | tw --wrap --max-lines 3
 ```
 

@@ -830,8 +830,7 @@ fn route_with_obstacles(
         steps += 1;
         if steps > max_steps {
             eprintln!(
-                "termiflow: warning: routing aborted after {} steps ({:?} -> {:?})",
-                steps, start, end
+                "termiflow: warning: routing aborted after {steps} steps ({start:?} -> {end:?})"
             );
             break;
         }
@@ -853,10 +852,7 @@ fn route_with_obstacles(
             for next in &neighbors {
                 let cost = grid.cost_at(*next);
                 let blocked = avoid_rects.iter().any(|r| r.contains(*next));
-                eprintln!(
-                    "    neighbor {:?} cost={} blocked_by_rect={}",
-                    next, cost, blocked
-                );
+                eprintln!("    neighbor {next:?} cost={cost} blocked_by_rect={blocked}");
             }
         }
         for next in neighbors {
@@ -909,13 +905,13 @@ fn route_with_obstacles(
 
     if !found_end {
         if debug_timing {
-            eprintln!("    routing failed after {} steps", steps);
+            eprintln!("    routing failed after {steps} steps");
         }
         return None;
     }
 
     if debug_timing {
-        eprintln!("    routing succeeded after {} steps", steps);
+        eprintln!("    routing succeeded after {steps} steps");
     }
 
     let mut path: Vec<Point> = Vec::new();

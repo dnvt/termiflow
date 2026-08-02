@@ -31,6 +31,74 @@ pub(crate) fn stamp_portal_opening(
     );
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PortalSide {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+fn portal_side_for_cell(graph: &Graph, x: usize, y: usize) -> Option<PortalSide> {
+    graph
+        .subgraphs
+        .iter()
+        .filter_map(|subgraph| {
+            let bounds = &subgraph.bounds;
+            if !bounds.is_valid() {
+                return None;
+            }
+            let right = bounds.x + bounds.width.saturating_sub(1);
+            let bottom = bounds.y + bounds.height.saturating_sub(1);
+            let side = if y == bounds.y && x > bounds.x && x < right {
+                Some(PortalSide::Top)
+            } else if y == bottom && x > bounds.x && x < right {
+                Some(PortalSide::Bottom)
+            } else if x == bounds.x && y > bounds.y && y < bottom {
+                Some(PortalSide::Left)
+            } else if x == right && y > bounds.y && y < bottom {
+                Some(PortalSide::Right)
+            } else {
+                None
+            }?;
+            Some((bounds.width.saturating_mul(bounds.height), side))
+        })
+        .min_by_key(|(area, _)| *area)
+        .map(|(_, side)| side)
+}
+
+fn stamp_side_aware_portal_opening(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    chars: &StyleChars,
+    side: PortalSide,
+    owner_id: &str,
+    z_index: u8,
+) {
+    if x >= canvas.width || y >= canvas.height || is_textual(canvas.get(x, y)) {
+        return;
+    }
+    if is_node_owned_cell(canvas, x, y) {
+        return;
+    }
+
+    // A wall crossing is not a four-way junction. Keep the semantic portal owner,
+    // but project the route shaft that is perpendicular to the crossed border.
+    let glyph = match side {
+        PortalSide::Top | PortalSide::Bottom => chars.edge_v,
+        PortalSide::Left | PortalSide::Right => chars.portal_pierce,
+    };
+    canvas.set_owned(
+        x,
+        y,
+        glyph,
+        semantic::CellOwnerKind::PortalOpening,
+        owner_id,
+        z_index,
+    );
+}
+
 pub(super) fn annotate_subgraph_region(
     canvas: &mut Canvas,
     subgraph: &crate::graph::Subgraph,
@@ -512,7 +580,14 @@ pub(super) fn finalize_horizontal_side_portals(
         if x >= canvas.width || y >= canvas.height || is_node_owned_cell(canvas, x, y) {
             return;
         }
-        stamp_portal_opening(canvas, x, y, chars, "final_side_portal", 4);
+        match portal_side_for_cell(graph, x, y) {
+            Some(side @ (PortalSide::Left | PortalSide::Right)) => {
+                stamp_side_aware_portal_opening(canvas, x, y, chars, side, "final_side_portal", 4);
+            }
+            Some(PortalSide::Top | PortalSide::Bottom) | None => {
+                stamp_portal_opening(canvas, x, y, chars, "final_side_portal", 4);
+            }
+        }
     };
 
     let is_horizontalish = |c: char| {
@@ -815,7 +890,10 @@ pub(super) fn finalize_dedicated_portal_markers(
     }
 
     for (x, y, owner_id) in markers {
-        stamp_portal_opening(canvas, x, y, chars, &owner_id, 4);
+        match portal_side_for_cell(graph, x, y) {
+            Some(side) => stamp_side_aware_portal_opening(canvas, x, y, chars, side, &owner_id, 4),
+            None => stamp_portal_opening(canvas, x, y, chars, &owner_id, 4),
+        }
     }
 }
 
@@ -913,4 +991,67 @@ pub(crate) fn title_span(
     direction: Direction,
 ) -> Option<(usize, usize)> {
     crate::graph::subgraph_title_span(bounds.x, bounds.width, title, direction)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{stamp_side_aware_portal_opening, PortalSide};
+    use crate::render::semantic::CellOwnerKind;
+    use crate::render::Canvas;
+    use crate::style::{ASCII_CHARS, UNICODE_CHARS};
+
+    #[test]
+    fn portals_use_directional_route_glyphs_and_semantic_ownership() {
+        let mut canvas = Canvas::new(5, 3);
+
+        stamp_side_aware_portal_opening(&mut canvas, 2, 0, &ASCII_CHARS, PortalSide::Top, "top", 4);
+        stamp_side_aware_portal_opening(
+            &mut canvas,
+            2,
+            2,
+            &UNICODE_CHARS,
+            PortalSide::Bottom,
+            "bottom",
+            4,
+        );
+        stamp_side_aware_portal_opening(
+            &mut canvas,
+            0,
+            1,
+            &ASCII_CHARS,
+            PortalSide::Left,
+            "left",
+            4,
+        );
+        stamp_side_aware_portal_opening(
+            &mut canvas,
+            4,
+            1,
+            &UNICODE_CHARS,
+            PortalSide::Right,
+            "right",
+            4,
+        );
+
+        assert_eq!(canvas.get(2, 0), ASCII_CHARS.edge_v);
+        assert_eq!(canvas.get(2, 2), UNICODE_CHARS.edge_v);
+        assert_eq!(canvas.get(0, 1), ASCII_CHARS.portal_pierce);
+        assert_eq!(canvas.get(4, 1), UNICODE_CHARS.portal_pierce);
+        assert_eq!(
+            canvas.get_meta(2, 0).map(|meta| meta.owner_kind),
+            Some(CellOwnerKind::PortalOpening)
+        );
+        assert_eq!(
+            canvas.get_meta(2, 2).map(|meta| meta.owner_kind),
+            Some(CellOwnerKind::PortalOpening)
+        );
+        assert_eq!(
+            canvas.get_meta(0, 1).map(|meta| meta.owner_kind),
+            Some(CellOwnerKind::PortalOpening)
+        );
+        assert_eq!(
+            canvas.get_meta(4, 1).map(|meta| meta.owner_kind),
+            Some(CellOwnerKind::PortalOpening)
+        );
+    }
 }

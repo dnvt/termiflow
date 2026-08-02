@@ -17,10 +17,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
@@ -28,7 +28,7 @@ jobs:
         run: test -z "$(rg --files -g '*.py' -g '*.rb' || true)"
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -42,35 +42,52 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        run: cargo test --all-targets --all-features
+        run: cargo test --locked --all-targets --all-features
 
       - name: cargo test --doc
-        run: cargo test --doc --all-features
+        run: cargo test --locked --doc --all-features
+
+      - name: cargo bench --no-run
+        run: cargo bench --locked --no-run --all-features
+
+      - name: Source-bound Criterion benchmark
+        run: |
+          scripts/benchmark_gate.sh \
+            --sample-size 10 \
+            --receipt "$RUNNER_TEMP/termiflow-benchmark/receipt.json"
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: termiflow-benchmark-${{ matrix.os }}
+          path: ${{ runner.temp }}/termiflow-benchmark
+          if-no-files-found: error
 
       - name: cargo doc
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
 
       - name: golden fixtures
-        run: cargo test --features golden
+        run: cargo test --locked --features golden
 
       - name: cargo build --release
-        run: cargo build --release
+        run: cargo build --locked --release
 
       - name: package contents
         shell: bash
         run: |
-          files="$(cargo package --allow-dirty --list)"
+          files="$(cargo package --locked --list)"
           printf '%s\n' "$files"
-          if printf '%s\n' "$files" | grep -Eq '(^|/)(\.claude|\.agents|\.maestro|\.maestro-project|\.helix|analysis|planning|decisions)(/|$)|^(AGENTS\.md|DEMO\.ts)$|^src/(qa/|bin/termiflow_qa\.rs$)'; then
+          if printf '%s\n' "$files" | grep -Eq '(^|/)(\.claude|\.agents|\.maestro|\.maestro-project|\.helix|analysis|planning|decisions|skills)(/|$)|^(AGENTS\.md|DEMO\.ts)$|^src/(qa/|bin/termiflow_qa\.rs$)'; then
             echo "internal workflow or repository-only QA files leaked into the package" >&2
             exit 1
           fi
 
       - name: publish dry run
-        run: cargo publish --dry-run --allow-dirty
+        run: cargo publish --dry-run --locked
 
       - name: visual evidence smoke
         run: |
@@ -83,15 +100,15 @@ jobs:
     name: Full visual evidence matrix
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Build renderer
-        run: cargo build --bin termiflow
+        run: cargo build --locked --bin termiflow
 
       - name: Run visual evidence matrix
         run: |
@@ -112,22 +129,45 @@ jobs:
     name: MSRV (Rust 1.88)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust 1.88
         uses: dtolnay/rust-toolchain@1.88
+        with:
+          components: rustfmt, clippy
+
+      - name: cargo fmt --check on MSRV
+        run: cargo fmt --check
+
+      - name: cargo clippy on MSRV
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings -A clippy::uninlined_format_args
 
       - name: cargo test on MSRV
-        run: cargo test --all-targets --all-features
+        run: cargo test --locked --all-targets --all-features
+
+      - name: cargo test --doc on MSRV
+        run: cargo test --locked --doc --all-features
+
+      - name: cargo doc on MSRV
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+
+      - name: cargo bench --no-run on MSRV
+        run: cargo bench --locked --no-run --all-features
 
   deny:
     name: Dependency Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --version 0.19.9 --locked
+        run: cargo install cargo-deny --version 0.20.2 --locked
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: cargo deny check
-        run: cargo deny check advisories bans licenses sources
+        run: cargo deny --locked check advisories bans licenses sources
+
+      - name: cargo audit
+        run: cargo audit --deny warnings

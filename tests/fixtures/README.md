@@ -16,6 +16,10 @@ fixtures/
 └── README.md        # This file (source of truth)
 ```
 
+The agent-facing perceptual procedure lives in
+`skills/termiflow-visual-review/SKILL.md`; it is Rust/Bash-only and keeps the
+machine pre-screen separate from one-frame human-visible review.
+
 Note: golden tests (`cargo test --features golden`) load expected files from disk at runtime.
 Regenerate them after intentional rendering changes.
 
@@ -59,9 +63,14 @@ scripts/render_fixtures.sh --ascii --unicode
 # Validate a completed full packet against the known quality baseline
 scripts/visual_validate.sh --packet /path/to/packet --strict-quality
 
-# Review one frame at a time; each record is bound to its frame and evidence hashes
+# Add structural machine coverage for rows with no warning, error, fallback, or critic signal
+scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --prescreen-clean
+
+# Review residual frames one at a time; each record binds frame/evidence hashes
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --next
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --record /tmp/one-review.json
+# Force a full perceptual pass, including machine-clean rows
+scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --next --include-structural
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --validate
 
 # Single test

@@ -340,6 +340,31 @@ fn analyze_reports_route_topology_mismatch_for_wrong_corner() {
 }
 
 #[test]
+fn analyze_accepts_styled_straight_route_variants() {
+    for glyph in ['━', '╌'] {
+        let frame = SemanticFrame {
+            width: 3,
+            height: 1,
+            cells: (0..3)
+                .map(|_| CellMeta {
+                    ch: glyph,
+                    owner_kind: CellOwnerKind::EdgeSegment,
+                    owner_id: Some("edge:0:A->B".to_string()),
+                    role: CellRole::Horizontal,
+                    z_index: 1,
+                })
+                .collect(),
+        };
+
+        let report = analyze(&Graph::new(), &frame, Direction::LR, &unicode_chars());
+        assert!(!report
+            .findings
+            .iter()
+            .any(|finding| finding.code == FindingCode::RouteTopologyMismatch));
+    }
+}
+
+#[test]
 fn analyze_reports_route_topology_mismatch_for_junction_like_lr_side_pierce() {
     let mut graph = Graph::new();
     let mut subgraph = Subgraph::new("sg", Some("Svc".to_string()));

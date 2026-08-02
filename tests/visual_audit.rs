@@ -57,7 +57,7 @@ fn assert_fixture_suite_is_visually_clean(style: BaseStyle) {
 
     for fixture in CURATED_FIXTURES {
         let input = fs::read_to_string(fixture).unwrap_or_else(|err| {
-            panic!("failed to read fixture {}: {}", fixture, err);
+            panic!("failed to read fixture {fixture}: {err}");
         });
 
         let outcome = termiflow::render_with_feedback(
@@ -66,7 +66,7 @@ fn assert_fixture_suite_is_visually_clean(style: BaseStyle) {
                 .with_style(style)
                 .with_optimize_render(true),
         )
-        .unwrap_or_else(|err| panic!("failed to render fixture {}: {}", fixture, err));
+        .unwrap_or_else(|err| panic!("failed to render fixture {fixture}: {err}"));
 
         let summary = outcome.critic_report.audit_summary();
         if summary.verdict != AuditVerdict::Clean {
@@ -170,7 +170,7 @@ fn skewed_branch_spacing_is_flagged_by_visual_audit() {
     };
 
     let outcome = termiflow::render_canvas_with_feedback(&skewed_branch_graph(), &config)
-        .unwrap_or_else(|err| panic!("failed to render skewed branch graph: {}", err));
+        .unwrap_or_else(|err| panic!("failed to render skewed branch graph: {err}"));
     let summary = outcome.critic_report.audit_summary();
 
     assert_eq!(summary.verdict, AuditVerdict::NeedsReview);
@@ -189,7 +189,7 @@ fn dense_branch_crowding_is_flagged_by_visual_audit() {
     };
 
     let outcome = termiflow::render_canvas_with_feedback(&dense_branch_graph(), &config)
-        .unwrap_or_else(|err| panic!("failed to render dense branch graph: {}", err));
+        .unwrap_or_else(|err| panic!("failed to render dense branch graph: {err}"));
     let summary = outcome.critic_report.audit_summary();
 
     assert_eq!(summary.verdict, AuditVerdict::NeedsReview);

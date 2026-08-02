@@ -17,14 +17,17 @@ use crate::graph::{Direction, Graph};
 use crate::orientation::OrientedCoords;
 use crate::portals::{compute_envelopes, SubgraphEnvelope};
 use crate::spacing::SpacingConfig;
-use crate::style::{box_width, BOX_HEIGHT, BOX_MIN_WIDTH};
+use crate::style::{box_width, BOX_MIN_WIDTH};
 
 mod constraints;
+mod envelope_stage;
 #[path = "layout_routing.rs"]
 mod layout_routing;
+mod normalization;
 mod optimization;
 mod pipeline;
 mod placement;
+mod routing_stage;
 
 use constraints::*;
 use optimization::{assign_layers, mark_back_edges};

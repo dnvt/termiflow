@@ -67,6 +67,33 @@ fn set_route_edge_char(
     }
 }
 
+fn style_for_edge_kind(style: &StyleChars, kind: EdgeKind) -> StyleChars {
+    let mut branch_style = *style;
+    match kind {
+        EdgeKind::Thick => {
+            // The precomputed route uses heavy Unicode shafts. Keep the same
+            // semantic distinction in fallback routes, with readable ASCII
+            // approximations when the base style is ASCII-like.
+            branch_style.edge_h = if style.edge_h == '-' { '=' } else { '━' };
+            branch_style.edge_v = if style.edge_v == '|' { '|' } else { '┃' };
+        }
+        EdgeKind::Dotted => {
+            branch_style.edge_h = if style.edge_h == '-' {
+                '.'
+            } else {
+                style.dotted_h
+            };
+            branch_style.edge_v = style.dotted_v;
+        }
+        EdgeKind::Arrow
+        | EdgeKind::Open
+        | EdgeKind::Bidirectional
+        | EdgeKind::CircleEnd
+        | EdgeKind::CrossEnd => {}
+    }
+    branch_style
+}
+
 fn edge_route_owner_id(graph: &Graph, from_id: &str, to_id: &str) -> String {
     graph
         .edges
@@ -331,10 +358,7 @@ pub fn route_divergent_edges(
         }
 
         if debug_timing {
-            eprintln!(
-                "  single target centers ({},{}) -> ({},{})",
-                src_x, src_y, arrow_x, arrow_y
-            );
+            eprintln!("  single target centers ({src_x},{src_y}) -> ({arrow_x},{arrow_y})");
         }
 
         let src_secondary = coords.secondary_coord(src_x, src_y);
@@ -845,6 +869,13 @@ pub fn route_divergent_edges(
             kind: CellOwnerKind::EdgeSegment,
             id: branch_owner_id.as_str(),
         };
+        let edge_kind = graph
+            .edges
+            .iter()
+            .find(|e| e.from == from.id && e.to == target.id && !e.is_back_edge)
+            .map(|e| e.kind)
+            .unwrap_or(EdgeKind::Arrow);
+        let branch_style = style_for_edge_kind(style, edge_kind);
         let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
         let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
 
@@ -861,26 +892,40 @@ pub fn route_divergent_edges(
                 arrow_y,
                 &coords,
                 canvas,
-                style,
+                &branch_style,
                 Some(graph),
                 Some(branch_owner),
             );
         }
 
         // Tip: use edge-kind-specific character (circle/cross end markers, etc.)
-        let edge_kind = graph
-            .edges
-            .iter()
-            .find(|e| e.from == from.id && e.to == target.id && !e.is_back_edge)
-            .map(|e| e.kind)
-            .unwrap_or(EdgeKind::Arrow);
         let tip = match edge_kind {
             EdgeKind::CircleEnd => style.circle_end,
             EdgeKind::CrossEnd => style.cross_end,
-            EdgeKind::Open => coords.primary_edge_char(style), // no arrowhead
+            EdgeKind::Open => coords.primary_edge_char(&branch_style), // no arrowhead
             _ => coords.arrow_end(style),
         };
         set_route_char(canvas, arrow_x, arrow_y, tip, Some(branch_owner));
+
+        // A custom branch shaft can otherwise downgrade the shared fan-out
+        // junction while overlap resolution sees only the branch style. Restore
+        // the base-style tee after drawing the branch so edge-kind emphasis does
+        // not erase topology at the merge point.
+        let (junction_cell_x, junction_cell_y) =
+            coords.with_secondary(junction_x, junction_y, target_secondary);
+        let junction = match direction {
+            Direction::TD | Direction::TB => style.junction_down,
+            Direction::BT => style.junction_up,
+            Direction::LR => style.junction_right,
+            Direction::RL => style.junction_left,
+        };
+        set_route_char(
+            canvas,
+            junction_cell_x,
+            junction_cell_y,
+            junction,
+            Some(fanout_owner),
+        );
     }
 
     // Reinforce clean corners at the ends of the span so drops don't turn them into tees.
@@ -933,6 +978,26 @@ pub fn route_divergent_edges(
 mod tests {
     use super::*;
     use crate::graph::{Direction, Graph, Node, Rectangle, Subgraph};
+    use crate::style::{ASCII_CHARS, UNICODE_CHARS};
+
+    #[test]
+    fn fallback_branch_style_preserves_thick_and_dotted_shafts() {
+        let ascii_thick = style_for_edge_kind(&ASCII_CHARS, EdgeKind::Thick);
+        assert_eq!(ascii_thick.edge_h, '=');
+        assert_eq!(ascii_thick.edge_v, '|');
+
+        let ascii_dotted = style_for_edge_kind(&ASCII_CHARS, EdgeKind::Dotted);
+        assert_eq!(ascii_dotted.edge_h, '.');
+        assert_eq!(ascii_dotted.edge_v, ':');
+
+        let unicode_thick = style_for_edge_kind(&UNICODE_CHARS, EdgeKind::Thick);
+        assert_eq!(unicode_thick.edge_h, '━');
+        assert_eq!(unicode_thick.edge_v, '┃');
+
+        let unicode_dotted = style_for_edge_kind(&UNICODE_CHARS, EdgeKind::Dotted);
+        assert_eq!(unicode_dotted.edge_h, '╌');
+        assert_eq!(unicode_dotted.edge_v, '╎');
+    }
 
     fn make_node(id: &str, x: usize, y: usize, width: usize, height: usize) -> Node {
         let mut n = Node::new(id, id);
