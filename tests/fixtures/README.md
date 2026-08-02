@@ -69,8 +69,10 @@ scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review
 # Review residual frames one at a time; each record binds frame/evidence hashes
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --next
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --record /tmp/one-review.json
-# Force a full perceptual pass, including machine-clean rows
-scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --next --include-structural
+# For a full perceptual pass, start with a fresh decisions file and omit
+# --prescreen-clean; repeat --next and --record until every frame is reviewed.
+scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --next
+scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --record /tmp/one-review.json
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --validate
 
 # Close one explicit fix/hold/lesson cycle without changing goldens
@@ -126,6 +128,11 @@ command are explicit; a `fixed` cycle requires a localized fix and a passed
 holdout. The wrapper never appends decisions, changes source, updates
 expected outputs, or promotes a baseline.
 
+There is intentionally no structural-review escape hatch. A clean machine
+pre-screen is not a human-eye decision; a deliberate full perceptual pass uses
+a fresh decisions file and drains `--next` one frame at a time until
+`--validate` succeeds.
+
 ## Direction Semantics
 
 - **TD/LR**: Flow proceeds in natural reading direction
@@ -133,4 +140,4 @@ expected outputs, or promotes a baseline.
 - **RL**: Same as LR but rendered right-to-left (mirrored)
 
 ---
-Last updated: August 1, 2026
+Last updated: August 2, 2026
