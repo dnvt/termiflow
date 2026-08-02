@@ -123,11 +123,16 @@ Releases](https://github.com/dnvt/termiflow/releases).
 
 ### From source (requires Rust)
 
-Source installation requires a Rust toolchain and Cargo:
+The candidate source checkout requires a Rust toolchain and Cargo:
 
 ```bash
-cargo install --git https://github.com/dnvt/termiflow --tag v0.2.0 --bin tw
+# From the checked-out v0.2.0 candidate:
+cargo install --locked --path . --bin tw
 ```
+
+This installs the checkout you are using; the `v0.2.0` release tag and
+prebuilt release binaries are published separately after the candidate passes
+its final release checks.
 
 ## Quickstart
 
@@ -194,6 +199,18 @@ The repository’s required checks are documented in `CONTRIBUTING.md`. The
 repository includes deterministic golden fixtures, visual audit tooling, and
 quality-baseline checks so rendering changes can be reviewed reproducibly; see
 `tests/fixtures/README.md` for the contributor workflow.
+
+For a locked local verification pass:
+
+```bash
+cargo fmt --check
+cargo test --locked --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+scripts/regenerate_golden.sh --check
+```
+
+Golden-output changes require explicit review of the generated report and every
+changed snapshot; a regenerated snapshot is not approval by itself.
 
 ## License
 

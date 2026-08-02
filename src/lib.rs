@@ -545,6 +545,130 @@ mod tests {
     }
 
     #[test]
+    fn layout_repair_candidates_include_upstream_context_for_fanout() {
+        let mut graph = Graph::new();
+        graph.direction = graph::Direction::TD;
+
+        let mut upstream_left = Node::new("A", "A");
+        upstream_left.x = 0;
+        upstream_left.y = 0;
+        upstream_left.width = 5;
+        let mut upstream_right = Node::new("B", "B");
+        upstream_right.x = 20;
+        upstream_right.y = 0;
+        upstream_right.width = 5;
+        let mut anchor = Node::new("C", "C");
+        anchor.x = 10;
+        anchor.y = 8;
+        anchor.width = 5;
+        let mut branch_left = Node::new("D", "D");
+        branch_left.x = 0;
+        branch_left.y = 16;
+        branch_left.width = 5;
+        let mut branch_right = Node::new("E", "E");
+        branch_right.x = 30;
+        branch_right.y = 16;
+        branch_right.width = 5;
+
+        for node in [
+            upstream_left,
+            upstream_right,
+            anchor,
+            branch_left,
+            branch_right,
+        ] {
+            graph.add_node(node);
+        }
+        graph.add_edge(Edge::new("A", "C"));
+        graph.add_edge(Edge::new("B", "C"));
+        graph.add_edge(Edge::new("C", "D"));
+        graph.add_edge(Edge::new("C", "E"));
+
+        let outcome = dummy_outcome(vec![CriticFinding {
+            code: FindingCode::RouteSymmetryImbalance,
+            severity: FindingSeverity::Info,
+            penalty: 6,
+            message: "fan-out at C is off-center".to_string(),
+            cells: Vec::new(),
+            owner_ids: vec!["C".to_string(), "D".to_string(), "E".to_string()],
+        }]);
+
+        let candidates =
+            build_layout_repair_candidates(&graph, &Config::default(), &outcome).candidates;
+        assert!(candidates.iter().any(|candidate| {
+            candidate
+                .prior_positions
+                .as_ref()
+                .and_then(|positions| {
+                    positions
+                        .get("A")
+                        .zip(positions.get("B"))
+                        .zip(positions.get("C"))
+                        .zip(positions.get("D"))
+                        .zip(positions.get("E"))
+                })
+                .is_some_and(|((((a, b), c), d), e)| {
+                    a.x == 5 && b.x == 25 && c.x == 15 && d.x == 0 && e.x == 30
+                })
+        }));
+    }
+
+    #[test]
+    fn layout_repair_candidates_include_downstream_context_for_fanin() {
+        let mut graph = Graph::new();
+        graph.direction = graph::Direction::TD;
+
+        let mut source_left = Node::new("A", "A");
+        source_left.x = 0;
+        source_left.y = 0;
+        source_left.width = 5;
+        let mut source_right = Node::new("B", "B");
+        source_right.x = 30;
+        source_right.y = 0;
+        source_right.width = 5;
+        let mut anchor = Node::new("C", "C");
+        anchor.x = 10;
+        anchor.y = 8;
+        anchor.width = 5;
+        let mut downstream = Node::new("D", "D");
+        downstream.x = 40;
+        downstream.y = 16;
+        downstream.width = 5;
+
+        for node in [source_left, source_right, anchor, downstream] {
+            graph.add_node(node);
+        }
+        graph.add_edge(Edge::new("A", "C"));
+        graph.add_edge(Edge::new("B", "C"));
+        graph.add_edge(Edge::new("C", "D"));
+
+        let outcome = dummy_outcome(vec![CriticFinding {
+            code: FindingCode::RouteSymmetryImbalance,
+            severity: FindingSeverity::Info,
+            penalty: 6,
+            message: "fan-in at C is off-center".to_string(),
+            cells: Vec::new(),
+            owner_ids: vec!["C".to_string(), "A".to_string(), "B".to_string()],
+        }]);
+
+        let candidates =
+            build_layout_repair_candidates(&graph, &Config::default(), &outcome).candidates;
+        assert!(candidates.iter().any(|candidate| {
+            candidate
+                .prior_positions
+                .as_ref()
+                .and_then(|positions| {
+                    positions
+                        .get("A")
+                        .zip(positions.get("B"))
+                        .zip(positions.get("C"))
+                        .zip(positions.get("D"))
+                })
+                .is_some_and(|(((a, b), c), d)| a.x == 0 && b.x == 30 && c.x == 15 && d.x == 45)
+        }));
+    }
+
+    #[test]
     fn layout_repair_candidates_include_branch_spacing_positions() {
         let mut graph = Graph::new();
         graph.direction = graph::Direction::TD;

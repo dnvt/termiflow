@@ -4,6 +4,8 @@
 //! render API remains in the crate root; keeping this policy private makes the
 //! expensive optimization boundary explicit and testable.
 
+use std::collections::{HashSet, VecDeque};
+
 use crate::config::Config;
 use crate::geom;
 use crate::graph::{self, Graph, Node};
@@ -17,6 +19,11 @@ use crate::spacing::SpacingConfig;
 /// broad spacing fallbacks. The cap prevents pathological critic output from
 /// multiplying full layout/render passes without affecting ordinary fixtures.
 pub(crate) const MAX_LAYOUT_REPAIR_CANDIDATES: usize = 32;
+
+/// Keep context-aware repairs local enough that one critic finding cannot
+/// turn into a graph-wide relocation pass. The scorer still decides whether
+/// the bounded candidate is worth applying.
+const MAX_BRANCH_CONTEXT_NODES: usize = 16;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LayoutRepairCandidateBatch {
@@ -491,6 +498,34 @@ fn push_branch_recenter_candidate(
             },
         );
 
+        // If the anchor is a fan-out source, its upstream context may need to
+        // move with it to preserve the incoming junction. For a fan-in target,
+        // use the symmetric downstream context. Keep this candidate separate
+        // from the direct anchor/branch alternatives so the existing scorer
+        // remains the authority on whether the broader move is worthwhile.
+        let anchor_is_source = branch_ids.iter().any(|branch_id| {
+            graph
+                .edges
+                .iter()
+                .any(|edge| !edge.is_back_edge && edge.from == *anchor_id && edge.to == *branch_id)
+        });
+        if let Some(context_ids) = branch_context_ids(graph, anchor_id, anchor_is_source) {
+            let refs: Vec<&str> = context_ids.iter().map(String::as_str).collect();
+            let nudged_context = build_signed_secondary_shift_positions(
+                base_positions,
+                graph.direction,
+                &refs,
+                anchor_delta,
+            );
+            push_unique_layout_candidate(
+                candidates,
+                LayoutRepairCandidate {
+                    spacing: spacing.clone(),
+                    prior_positions: Some(nudged_context),
+                },
+            );
+        }
+
         // Also retain the branch-shift alternative for cases where the anchor
         // is constrained by a surrounding layout or subgraph.
         let branch_delta = signed_delta(anchor_secondary, midpoint);
@@ -509,6 +544,65 @@ fn push_branch_recenter_candidate(
             },
         );
     }
+}
+
+/// Return the local graph context that should follow a branch-symmetry anchor.
+///
+/// The traversal is deliberately conservative: it ignores back-edges, refuses
+/// to cross a declared subgraph boundary, and returns no candidate when the
+/// bounded context would be exceeded. This keeps a visual repair from moving
+/// an unrelated component merely because it is transitively connected.
+fn branch_context_ids(
+    graph: &Graph,
+    anchor_id: &str,
+    anchor_is_source: bool,
+) -> Option<Vec<String>> {
+    let mut queue = VecDeque::from([anchor_id.to_string()]);
+    let mut seen = HashSet::new();
+    let mut context_ids = Vec::new();
+
+    while let Some(current_id) = queue.pop_front() {
+        if !seen.insert(current_id.clone()) {
+            continue;
+        }
+        if graph.get_node(&current_id).is_none() {
+            continue;
+        }
+
+        context_ids.push(current_id.clone());
+        if context_ids.len() > MAX_BRANCH_CONTEXT_NODES {
+            return None;
+        }
+
+        let mut next_ids = Vec::new();
+        for edge in &graph.edges {
+            if edge.is_back_edge {
+                continue;
+            }
+
+            let next_id = if anchor_is_source {
+                (edge.to == current_id).then_some(edge.from.as_str())
+            } else {
+                (edge.from == current_id).then_some(edge.to.as_str())
+            };
+            let Some(next_id) = next_id else {
+                continue;
+            };
+            if seen.contains(next_id) || graph.get_node(next_id).is_none() {
+                continue;
+            }
+            if graph.edge_crosses_subgraph_boundary(&edge.from, &edge.to) {
+                return None;
+            }
+            next_ids.push(next_id.to_string());
+        }
+
+        next_ids.sort_unstable();
+        next_ids.dedup();
+        queue.extend(next_ids);
+    }
+
+    (context_ids.len() > 1).then_some(context_ids)
 }
 
 fn push_branch_spacing_candidate(
@@ -769,6 +863,59 @@ fn apply_signed_delta(value: usize, delta: isize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branch_context_ids_is_deterministic() {
+        let mut graph = Graph::new();
+        for node_id in ["A", "B", "C"] {
+            graph.add_node(Node::new(node_id, node_id));
+        }
+        graph.add_edge(crate::graph::Edge::new("A", "C"));
+        graph.add_edge(crate::graph::Edge::new("B", "C"));
+
+        assert_eq!(
+            branch_context_ids(&graph, "C", true),
+            Some(vec!["C".to_string(), "A".to_string(), "B".to_string()])
+        );
+    }
+
+    #[test]
+    fn branch_context_ids_rejects_oversized_context() {
+        let mut graph = Graph::new();
+        for index in 0..=MAX_BRANCH_CONTEXT_NODES {
+            graph.add_node(Node::new(format!("N{index}"), format!("N{index}")));
+            if index > 0 {
+                graph.add_edge(crate::graph::Edge::new(
+                    format!("N{}", index - 1),
+                    format!("N{index}"),
+                ));
+            }
+        }
+
+        assert!(branch_context_ids(&graph, "N0", false).is_none());
+    }
+
+    #[test]
+    fn branch_context_ids_rejects_subgraph_boundary() {
+        let mut graph = Graph::new();
+        for node_id in ["A", "C", "D", "E"] {
+            graph.add_node(Node::new(node_id, node_id));
+        }
+        graph.add_edge(crate::graph::Edge::new("A", "C"));
+        graph.add_edge(crate::graph::Edge::new("C", "D"));
+        graph.add_edge(crate::graph::Edge::new("C", "E"));
+
+        let mut subgraph = crate::graph::Subgraph::new("sg", Some("Group".to_string()));
+        subgraph.add_node("C");
+        subgraph.add_node("D");
+        subgraph.add_node("E");
+        graph.add_subgraph(subgraph);
+        graph.associate_node_with_subgraph("C", "sg");
+        graph.associate_node_with_subgraph("D", "sg");
+        graph.associate_node_with_subgraph("E", "sg");
+
+        assert!(branch_context_ids(&graph, "C", true).is_none());
+    }
 
     #[test]
     fn candidate_cap_is_deterministic() {
