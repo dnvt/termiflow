@@ -285,6 +285,33 @@ impl LayoutSpacingPolicy {
             } else {
                 spacing *= 2;
             }
+
+            // Reserve enough primary-axis room for the widest edge label emitted
+            // from this layer.  The renderer can place a label tightly when the
+            // route has no margin, but it must not have to detach a complete label
+            // onto an unrelated row just because the layout stopped six cells
+            // short of an eight-cell label.  The four-cell allowance matches the
+            // LR/RL inline label margins and keeps the policy bounded by the
+            // public label-width contract.
+            if has_labels {
+                let widest_label = layer
+                    .iter()
+                    .flat_map(|&idx| {
+                        let source_id = &graph.nodes[idx].id;
+                        graph
+                            .edges
+                            .iter()
+                            .filter(move |edge| {
+                                !edge.is_back_edge && edge.from.as_str() == source_id.as_str()
+                            })
+                            .filter_map(|edge| edge.label.as_deref())
+                            .map(crate::display_profile::display_width)
+                    })
+                    .max()
+                    .unwrap_or(0)
+                    .min(crate::spacing::MAX_LABEL_WIDTH);
+                spacing = spacing.max(widest_label.saturating_add(4));
+            }
         }
 
         spacing

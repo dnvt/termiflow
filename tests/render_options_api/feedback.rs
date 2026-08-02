@@ -35,6 +35,43 @@ fn vertical_long_edge_label_is_bounded_without_silent_clipping() {
 }
 
 #[test]
+fn horizontal_edge_labels_stay_readable_when_the_route_has_no_margin() {
+    for (direction, input) in [
+        ("LR", include_str!("../fixtures/inputs/label_basic_lr.md")),
+        ("RL", include_str!("../fixtures/inputs/label_basic_rl.md")),
+    ] {
+        for optimize_render in [false, true] {
+            let output = termiflow::render(
+                input,
+                termiflow::RenderOptions::new()
+                    .with_style(termiflow::BaseStyle::Ascii)
+                    .with_optimize_render(optimize_render),
+            )
+            .unwrap();
+
+            for label in ["validate", "success", "error"] {
+                assert!(
+                    output.contains(label),
+                    "expected complete {direction} edge label {label:?} with optimize_render={optimize_render}:\n{output}"
+                );
+                let label_line = output
+                    .lines()
+                    .find(|line| line.contains(label))
+                    .expect("complete edge label should occupy a rendered line");
+                assert!(
+                    label_line.contains('-'),
+                    "{direction} edge label {label:?} must remain attached to its route instead of floating on a blank row with optimize_render={optimize_render}:\n{output}"
+                );
+            }
+            assert!(
+                !output.contains("succ…") && !output.contains("v…"),
+                "{direction} edge labels must not silently truncate when the raw route span can fit them with no margin:\n{output}"
+            );
+        }
+    }
+}
+
+#[test]
 fn render_options_applies_composite_style() {
     let input = "graph TD\nA[Node]";
     let output = termiflow::render(

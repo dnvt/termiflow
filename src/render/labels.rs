@@ -165,9 +165,16 @@ pub(super) fn draw_edge_label(
             let stem_start_x = from.x + from.width;
             let arrow_x = to.x.saturating_sub(1);
             let span_width = arrow_x.saturating_sub(stem_start_x);
-            let outside_row =
-                pick_outside_horizontal_label_row(edge_y, canvas.height, &[from, to], graph);
+            let outside_row = pick_outside_horizontal_label_row(
+                canvas,
+                edge_y,
+                stem_start_x + span_width / 2,
+                label_width,
+                &[from, to],
+                graph,
+            );
             let can_fit_full_inline = label_width + 3 <= span_width;
+            let can_fit_tight_inline = label_width <= span_width;
 
             if can_fit_full_inline {
                 let label_start_x = stem_start_x + (span_width - (label_width + 3)) / 2;
@@ -191,6 +198,26 @@ pub(super) fn draw_edge_label(
                     canvas.set(x_pos, edge_y, ' ');
                 }
                 x_pos += 1;
+
+                for x in x_pos..arrow_x {
+                    if x < canvas.width {
+                        canvas.set(x, edge_y, style.edge_h);
+                    }
+                }
+            } else if can_fit_tight_inline {
+                let label_start_x = stem_start_x + (span_width - label_width) / 2;
+                for x in stem_start_x..label_start_x {
+                    canvas.set(x, edge_y, style.edge_h);
+                }
+
+                let mut x_pos = label_start_x;
+                for c in display_label.chars() {
+                    if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
+                        canvas.set(x_pos, edge_y, c);
+                        record_label_cell(&mut cells, x_pos, edge_y);
+                    }
+                    x_pos += display_char_width(c);
+                }
 
                 for x in x_pos..arrow_x {
                     if x < canvas.width {
@@ -262,9 +289,16 @@ pub(super) fn draw_edge_label(
             let stem_end_x = from.x; // Edge ends at left side of source box
             let gap_start_x = arrow_x.saturating_add(1);
             let span_width = stem_end_x.saturating_sub(gap_start_x);
-            let outside_row =
-                pick_outside_horizontal_label_row(edge_y, canvas.height, &[from, to], graph);
+            let outside_row = pick_outside_horizontal_label_row(
+                canvas,
+                edge_y,
+                gap_start_x + span_width / 2,
+                label_width,
+                &[from, to],
+                graph,
+            );
             let can_fit_full_inline = label_width + 4 <= span_width;
+            let can_fit_tight_inline = label_width <= span_width;
 
             if can_fit_full_inline {
                 let label_start_x = gap_start_x + 1 + (span_width - (label_width + 4)) / 2;
@@ -292,6 +326,28 @@ pub(super) fn draw_edge_label(
                     canvas.set(x_pos, edge_y, ' ');
                 }
                 x_pos += 1;
+
+                for x in x_pos..stem_end_x {
+                    if x < canvas.width {
+                        canvas.set(x, edge_y, style.edge_h);
+                    }
+                }
+            } else if can_fit_tight_inline {
+                let label_start_x = gap_start_x + (span_width - label_width) / 2;
+                for x in gap_start_x..label_start_x {
+                    if x < canvas.width {
+                        canvas.set(x, edge_y, style.edge_h);
+                    }
+                }
+
+                let mut x_pos = label_start_x;
+                for c in display_label.chars() {
+                    if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
+                        canvas.set(x_pos, edge_y, c);
+                        record_label_cell(&mut cells, x_pos, edge_y);
+                    }
+                    x_pos += display_char_width(c);
+                }
 
                 for x in x_pos..stem_end_x {
                     if x < canvas.width {
@@ -390,6 +446,14 @@ pub(super) fn draw_routed_edge_label(
     let mut cells = Vec::new();
 
     let nodes: Vec<&Node> = graph.nodes.iter().collect();
+    let from_node = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == edge.from.as_str());
+    let to_node = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == edge.to.as_str());
     let border_spans: Vec<crate::graph::Rectangle> = graph
         .subgraphs
         .iter()
@@ -451,11 +515,26 @@ pub(super) fn draw_routed_edge_label(
         let gap_width = gap_end_x.saturating_sub(gap_start_x);
         let mid_x = gap_start_x + gap_width / 2;
         let centered_start_x = mid_x.saturating_sub(label_width / 2);
-        let outside_row = pick_outside_horizontal_label_row(y, canvas.height, &nodes, graph);
+        let outside_row =
+            pick_outside_horizontal_label_row(canvas, y, mid_x, label_width, &nodes, graph);
         let reserve_leading_shaft = graph.direction == Direction::RL;
         let inline_margin = if reserve_leading_shaft { 4 } else { 3 };
-        let inline_collides = overlaps_node(&nodes, centered_start_x, y, label_width);
+        let inline_collides = overlaps_node(&nodes, centered_start_x, y, label_width)
+            || overlaps_reserved_subgraph_cells(graph, centered_start_x, y, label_width);
         let can_fit_full_inline = !inline_collides && label_width + inline_margin <= gap_width;
+        let can_fit_tight_inline = !inline_collides && label_width <= gap_width;
+        let (node_gap_start_x, node_gap_end_x) = match (graph.direction, from_node, to_node) {
+            (Direction::LR, Some(from), Some(to)) => (from.x + from.width, to.x.saturating_sub(1)),
+            (Direction::RL, Some(from), Some(to)) => (to.x + to.width, from.x),
+            _ => (gap_start_x, gap_end_x),
+        };
+        let node_gap_width = node_gap_end_x.saturating_sub(node_gap_start_x);
+        let node_gap_center = node_gap_start_x + node_gap_width / 2;
+        let node_gap_start = node_gap_center.saturating_sub(label_width / 2);
+        let can_fit_node_gap = matches!(graph.direction, Direction::LR | Direction::RL)
+            && label_width <= node_gap_width
+            && !overlaps_node(&nodes, node_gap_start, y, label_width)
+            && !overlaps_reserved_subgraph_cells(graph, node_gap_start, y, label_width);
 
         if can_fit_full_inline {
             let start_x = gap_start_x
@@ -486,6 +565,50 @@ pub(super) fn draw_routed_edge_label(
             x_pos += 1;
 
             for x in x_pos..gap_end_x {
+                if y < canvas.height && x < canvas.width {
+                    canvas.set(x, y, style.edge_h);
+                }
+            }
+        } else if can_fit_tight_inline {
+            let start_x = gap_start_x + (gap_width.saturating_sub(label_width)) / 2;
+            for x in gap_start_x..start_x {
+                if y < canvas.height && x < canvas.width {
+                    canvas.set(x, y, style.edge_h);
+                }
+            }
+
+            let mut x_pos = start_x;
+            for c in display_label.chars() {
+                if y < canvas.height && x_pos < canvas.width {
+                    canvas.set(x_pos, y, c);
+                    record_label_cell(&mut cells, x_pos, y);
+                }
+                x_pos += display_char_width(c);
+            }
+
+            for x in x_pos..gap_end_x {
+                if y < canvas.height && x < canvas.width {
+                    canvas.set(x, y, style.edge_h);
+                }
+            }
+        } else if can_fit_node_gap {
+            let start_x = node_gap_start;
+            for x in node_gap_start_x..start_x {
+                if y < canvas.height && x < canvas.width {
+                    canvas.set(x, y, style.edge_h);
+                }
+            }
+
+            let mut x_pos = start_x;
+            for c in display_label.chars() {
+                if y < canvas.height && x_pos < canvas.width {
+                    canvas.set(x_pos, y, c);
+                    record_label_cell(&mut cells, x_pos, y);
+                }
+                x_pos += display_char_width(c);
+            }
+
+            for x in x_pos..node_gap_end_x {
                 if y < canvas.height && x < canvas.width {
                     canvas.set(x, y, style.edge_h);
                 }
@@ -748,28 +871,42 @@ fn adjust_horizontal_label_slot(
 }
 
 fn pick_outside_horizontal_label_row(
+    canvas: &Canvas,
     edge_y: usize,
-    canvas_height: usize,
+    label_center_x: usize,
+    label_width: usize,
     nodes: &[&Node],
     graph: &Graph,
 ) -> Option<usize> {
-    let mut candidates = Vec::new();
+    if label_width == 0 || label_width > canvas.width {
+        return None;
+    }
 
-    for delta in [2usize, 3usize] {
+    let max_start = canvas.width.saturating_sub(label_width);
+    let label_start_x = label_center_x
+        .saturating_sub(label_width / 2)
+        .min(max_start);
+    let mut candidates = Vec::with_capacity(canvas.height.saturating_sub(1));
+    for delta in 1..=canvas.height {
         if let Some(row) = edge_y.checked_sub(delta) {
             candidates.push(row);
         }
         let row = edge_y.saturating_add(delta);
-        if row < canvas_height {
+        if row < canvas.height {
             candidates.push(row);
         }
     }
 
     candidates.into_iter().find(|row| {
-        let intersects_node = nodes
-            .iter()
-            .any(|node| *row >= node.y && *row < node.bottom_y());
-        !intersects_node && !is_reserved_subgraph_label_row(graph, *row)
+        let intersects_node = nodes.iter().any(|node| {
+            *row >= node.y
+                && *row < node.bottom_y()
+                && label_start_x < node.x + node.width
+                && label_start_x + label_width > node.x
+        });
+        let occupied =
+            (label_start_x..label_start_x + label_width).any(|x| canvas.get(x, *row) != ' ');
+        !intersects_node && !occupied && !is_reserved_subgraph_label_row(graph, *row)
     })
 }
 
