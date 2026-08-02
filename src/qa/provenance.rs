@@ -359,14 +359,10 @@ fn first_file_sha256(root: &Path, candidates: &[&str]) -> Result<Option<String>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("termiflow-provenance-{nonce}"));
+        let root =
+            std::env::temp_dir().join(format!("termiflow-provenance-{}", common::now_label()));
         fs::create_dir_all(&root).expect("create provenance temp root");
         root
     }

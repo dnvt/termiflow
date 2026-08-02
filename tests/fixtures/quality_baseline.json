@@ -2,7 +2,7 @@
   "schema": "termiflow.quality_baseline.v1",
   "identity": {
     "source_commit": "53faeb4",
-    "cargo_lock_sha256": "f544cd4a926ce6555d52014dac05e44725433c5ddd2cc9ee7f00521734163c60",
+    "cargo_lock_sha256": "4e2fa1c64e92fcc01fcbd64ff7049686e54494e35d380728dec37dece53d14e1",
     "display_profile": "terminal-grid-v1",
     "styles": ["ascii", "unicode"],
     "modes": ["default", "optimized"]
