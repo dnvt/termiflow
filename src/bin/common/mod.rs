@@ -57,18 +57,18 @@ impl Drop for TerminalSession {
     }
 }
 
-/// Interactive TUI graph explorer - jq for diagrams
+/// Terminal-native Mermaid flowchart renderer
 #[derive(Parser)]
 #[command(name = "termiflow")]
 #[command(version, about, long_about = None)]
 #[command(after_help = "Examples:
-  termiflow diagram.md              Print to stdout (default)
-  termiflow -f diagram.md           File flag (jq-style)
-  termiflow --print diagram.md      Print (explicit)
-  termiflow --tui diagram.md        Partial alternate-screen preview
-  termiflow --watch diagram.md      Safer live preview in normal scrollback
-  cat file.md | termiflow           Read from stdin
-  termiflow -s unicode diagram.md   Use Unicode borders
+  tw diagram.md              Print to stdout (default)
+  tw -f diagram.md           File flag
+  tw --print diagram.md      Print (explicit)
+  tw --tui diagram.md        Partial alternate-screen preview
+  tw --watch diagram.md      Safer live preview in normal scrollback
+  cat file.md | tw            Read from stdin
+  tw -s unicode diagram.md   Use Unicode borders
 
 Notes:
   --watch keeps normal scrollback and avoids most fullscreen-emulator surprises
@@ -78,7 +78,7 @@ pub struct Cli {
     #[arg(value_name = "FILE")]
     pub file: Option<PathBuf>,
 
-    /// Input Mermaid file (flag form, jq-style parity)
+    /// Input Mermaid file (flag form)
     #[arg(short = 'f', long = "file", value_name = "FILE")]
     pub file_flag: Option<PathBuf>,
 
