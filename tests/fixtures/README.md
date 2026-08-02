@@ -73,6 +73,13 @@ scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --next --include-structural
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --validate
 
+# Close one explicit fix/hold/lesson cycle without changing goldens
+scripts/visual_cycle.sh \
+  --packet /path/to/packet \
+  --decisions /tmp/review-decisions.jsonl \
+  --record /tmp/visual-cycle.json \
+  --output /tmp/visual-cycle-receipt.json
+
 # Single test
 cargo run -- --print tests/fixtures/inputs/flow_simple_td.md > tests/fixtures/expected/flow_simple_td.unicode.txt
 cargo run -- --print --style=ascii tests/fixtures/inputs/flow_simple_td.md > tests/fixtures/expected/flow_simple_td.ascii.txt
@@ -100,6 +107,24 @@ done
 7. **Frame review is sequential** - inspect one frame, bind its frame/evidence
    hashes, state the observation, propose a falsifiable hypothesis, identify
    related fixtures, and choose the next targeted command before moving on
+
+## Visual cycle receipt
+
+`tests/fixtures/visual_cycle_record.schema.json` defines the record consumed by
+`scripts/visual_cycle.sh`. The command first requires strict packet validation
+and complete one-frame perceptual coverage, then verifies the record against
+the exact packet completion/manifest/identity/checksum hashes and decision-log
+hash. A record must include the human-eye observation with row/column/glyph
+details, owner-layer hypothesis, predicted observation, falsifier, next
+command, fix or explicit hold disposition, homologs, holdout result, and a
+hash-bound durable lesson artifact.
+
+The receipt is process evidence, not golden approval. Machine critic findings
+and perceptual decisions remain separate evidence layers. A `hold` or
+`falsified` cycle may keep a holdout blocked or unrun when the reason and next
+command are explicit; a `fixed` cycle requires a localized fix and a passed
+holdout. The wrapper never appends decisions, changes source, updates
+expected outputs, or promotes a baseline.
 
 ## Direction Semantics
 
