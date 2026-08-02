@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,6 +21,8 @@ pub const MODES: &[&str] = &["default", "optimized"];
 pub const KINDS: &[&str] = &["success", "warning", "expected_error"];
 pub const STDERR_POLICIES: &[&str] = &["empty", "warning", "error"];
 pub const DIRECTIONS: &[&str] = &["TD", "LR", "RL", "BT", "none"];
+
+static LABEL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct FixtureMetadata {
@@ -653,10 +656,18 @@ pub fn deterministic_digest(stage: &Path) -> Result<(String, String)> {
 }
 
 pub fn now_label() -> String {
+    let sequence = LABEL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_owned())
+        .map(|duration| {
+            format!(
+                "{}-{}-{}-{sequence}",
+                duration.as_secs(),
+                duration.subsec_nanos(),
+                std::process::id()
+            )
+        })
+        .unwrap_or_else(|_| format!("0-{}-{sequence}", std::process::id()))
 }
 
 pub fn atomic_replace(path: &Path, content: &[u8]) -> Result<()> {
@@ -717,5 +728,12 @@ mod tests {
         let root = test_dir("paths");
         assert!(safe_relative_path(Path::new("../outside"), &root, "frame").is_err());
         fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn now_labels_are_unique_for_parallel_stages() {
+        let first = now_label();
+        let second = now_label();
+        assert_ne!(first, second);
     }
 }
