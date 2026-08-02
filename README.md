@@ -5,7 +5,7 @@
 Render Mermaid flowcharts as ASCII/Unicode diagrams directly in your
 terminal—without a browser.
 
-Current status: TermiFlow v0.2.0 is a focused release candidate. Print mode
+Current status: TermiFlow v0.2.0 is the current public release. Print mode
 and primary-screen watch mode (`--watch`) are the stable workflow; alternate-
 screen live preview (`--tui`) is available but remains partial because input and
 scroll behavior depends on the terminal emulator.
@@ -126,13 +126,13 @@ Releases](https://github.com/dnvt/termiflow/releases).
 The candidate source checkout requires a Rust toolchain and Cargo:
 
 ```bash
-# From the checked-out v0.2.0 candidate:
+# From a checked-out v0.2.0 source tree:
 cargo install --locked --path . --bin tw
 ```
 
-This installs the checkout you are using; the `v0.2.0` release tag and
-prebuilt release binaries are published separately after the candidate passes
-its final release checks.
+This installs the checkout you are using. For a no-Rust installation, prefer
+the v0.2.0 Homebrew formula or the prebuilt binaries linked from the GitHub
+release.
 
 ## Quickstart
 

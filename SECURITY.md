@@ -2,11 +2,11 @@
 
 ## Supported Versions
 
-The latest tagged release is v0.1.1, and the supported release line is 0.1.x.
-Security fixes are applied to the latest released 0.1.x version. The current
-repository source targets version 0.2.0 but is an unreleased candidate; when
-reporting an issue against it, include the commit SHA as well as the affected
-TermiFlow version and toolchain.
+The latest tagged release is v0.2.0, and the supported release line is 0.2.x.
+Security fixes are applied to the latest released 0.2.x version. The current
+repository source targets version 0.2.0 and may include changes after the
+latest tag; when reporting an issue, include the commit SHA as well as the
+affected TermiFlow version and toolchain.
 
 ## Reporting a Vulnerability
 
