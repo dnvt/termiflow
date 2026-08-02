@@ -51,9 +51,9 @@ jobs:
       - name: Build release binary
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --locked --release --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --locked --release --target ${{ matrix.target }}
           fi
 
       - name: Package
@@ -87,7 +87,7 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3.0.0
+        uses: softprops/action-gh-release@v3.0.2
         with:
           files: artifacts/*.tar.gz
           generate_release_notes: true

@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::common;
+use super::provenance::{self, ProvenanceInputs};
 
 #[derive(Debug)]
 pub struct AuditArgs {
@@ -79,6 +80,7 @@ pub fn run(args: AuditArgs) -> Result<()> {
         &root,
         &stage,
         &out,
+        &input_root,
         &metadata_path,
         metadata,
         metadata_bytes,
@@ -101,6 +103,7 @@ fn build_packet(
     root: &Path,
     stage: &Path,
     out: &Path,
+    input_root: &Path,
     metadata_path: &Path,
     metadata: std::collections::BTreeMap<String, common::FixtureMetadata>,
     metadata_bytes: Vec<u8>,
@@ -113,7 +116,21 @@ fn build_packet(
     planned_count: usize,
 ) -> Result<()> {
     let binary = common::discover_binary(root, stage, supplied_binary)?;
-    let identity = common::source_identity(root, &binary, display_profile)?;
+    let base_identity = common::source_identity(root, &binary, display_profile)?;
+    let identity = provenance::enrich_identity(
+        root,
+        &binary,
+        &base_identity,
+        &ProvenanceInputs {
+            input_root,
+            metadata_path,
+            metadata_bytes: &metadata_bytes,
+            input_paths,
+            styles,
+            modes,
+            display_profile,
+        },
+    )?;
     let metadata_value: Value =
         serde_json::from_slice(&metadata_bytes).context("parse metadata for packet")?;
     common::write_json(&stage.join("metadata.json"), &metadata_value)?;

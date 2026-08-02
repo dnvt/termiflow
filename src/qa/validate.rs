@@ -6,6 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::common;
+use super::provenance;
 
 const BASELINE_SCHEMA: &str = "termiflow.quality_baseline.v1";
 const COMPLETE_SCHEMA: &str = "termiflow.visual_audit.complete.v1";
@@ -94,6 +95,7 @@ fn unique_string_array(value: Option<&Value>, label: &str) -> Result<Vec<String>
 }
 
 fn validate_identity(root: &Path, identity: &Value, baseline: &Value, strict: bool) -> Result<()> {
+    provenance::validate_identity(identity)?;
     let identity = identity
         .as_object()
         .ok_or_else(|| anyhow!("identity.json must contain an object"))?;
@@ -123,6 +125,12 @@ fn validate_identity(root: &Path, identity: &Value, baseline: &Value, strict: bo
     )?;
     let packet_commit =
         non_empty_string(identity.get("source_commit"), "identity.json.source_commit")?;
+    if strict {
+        let current_commit = common::run_text(&["git", "rev-parse", "HEAD"], root);
+        if current_commit.is_empty() || current_commit != packet_commit {
+            bail!("strict quality validation requires packet source commit to match current HEAD");
+        }
+    }
     if packet_commit == "unknown"
         || !common::git_is_ancestor(root, &baseline_commit, &packet_commit)
     {
