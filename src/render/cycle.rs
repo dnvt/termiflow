@@ -48,6 +48,69 @@ pub fn route_cycle_edge(
             let from_y = from.center_y();
             let to_y = to.center_y();
 
+            // Self-loops need their own three-sided route. The generic
+            // same-row path would collapse to a clipped one-sided tail because
+            // `from_y == to_y`; reserve a nearby return leg so the human eye
+            // can see a closed cycle in TD/BT as well as LR/RL.
+            if from.id == to.id {
+                let node_right = from.x + from.width;
+                let return_x = node_right.saturating_add(2);
+                let loop_offset = spacing.row_spacing.max(2);
+                let loop_y = match direction {
+                    Direction::BT => from.y.saturating_sub(loop_offset),
+                    Direction::TD | Direction::TB => from.bottom_y().saturating_add(loop_offset),
+                    _ => unreachable!(),
+                };
+
+                if return_x >= gutter_x || loop_y >= canvas.height {
+                    return;
+                }
+
+                let (gutter_source_corner, gutter_loop_corner, return_loop_corner, return_junction) =
+                    if matches!(direction, Direction::BT) {
+                        (
+                            style.corner_ur,
+                            style.corner_dr,
+                            style.corner_dl,
+                            style.junction_up,
+                        )
+                    } else {
+                        (
+                            style.corner_dr,
+                            style.corner_ur,
+                            style.corner_ul,
+                            style.junction_down,
+                        )
+                    };
+
+                // Place corners before lines so overlap resolution cannot turn
+                // them into generic crosses.
+                set_cycle_char(canvas, gutter_x, from_y, gutter_source_corner, owner_id);
+                set_cycle_char(canvas, gutter_x, loop_y, gutter_loop_corner, owner_id);
+                set_cycle_char(canvas, return_x, loop_y, return_loop_corner, owner_id);
+
+                let (min_y, max_y) = if loop_y < from_y {
+                    (loop_y, from_y)
+                } else {
+                    (from_y, loop_y)
+                };
+                for y in min_y.saturating_add(1)..max_y {
+                    set_cycle_edge_char(canvas, gutter_x, y, style.back_v, style, owner_id);
+                    set_cycle_edge_char(canvas, return_x, y, style.back_v, style, owner_id);
+                }
+
+                for x in node_right.saturating_add(1)..gutter_x {
+                    set_cycle_edge_char(canvas, x, from_y, style.back_h, style, owner_id);
+                }
+                for x in return_x.saturating_add(1)..gutter_x {
+                    set_cycle_edge_char(canvas, x, loop_y, style.back_h, style, owner_id);
+                }
+
+                set_cycle_char(canvas, return_x, from_y, return_junction, owner_id);
+                set_cycle_char(canvas, node_right, from_y, style.arrow_left, owner_id);
+                return;
+            }
+
             // Horizontal line from source to gutter
             for x in (from.x + from.width)..gutter_x {
                 set_cycle_edge_char(canvas, x, from_y, style.back_h, style, owner_id);
@@ -391,6 +454,68 @@ mod tests {
         assert_eq!(canvas.get(center_x, gutter_y), chars.corner_ul);
         assert_eq!(canvas.get(center_x, node.bottom_y()), chars.arrow_up);
         assert_eq!(canvas.get(center_x, node.bottom_y() + 1), chars.back_v);
+    }
+
+    #[test]
+    fn cycle_self_loop_bt_places_visible_return_leg() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(40, 20);
+
+        let node = make_node("Self", 8, 10, 8);
+        let spacing = SpacingConfig::default_config();
+        route_cycle_edge(
+            &node,
+            &node,
+            &mut canvas,
+            &chars,
+            &spacing,
+            Direction::BT,
+            None,
+        );
+
+        let gutter_x = canvas.width - 2;
+        let return_x = node.x + node.width + 2;
+        let loop_y = node.y - spacing.row_spacing.max(2);
+        assert_eq!(
+            canvas.get(node.x + node.width, node.center_y()),
+            chars.arrow_left
+        );
+        assert_eq!(canvas.get(gutter_x, node.center_y()), chars.corner_ur);
+        assert_eq!(canvas.get(gutter_x, loop_y), chars.corner_dr);
+        assert_eq!(canvas.get(return_x, loop_y), chars.corner_dl);
+        assert_eq!(canvas.get(return_x, node.center_y()), chars.junction_up);
+        assert_eq!(canvas.get(return_x, node.center_y() - 1), chars.back_v);
+    }
+
+    #[test]
+    fn cycle_self_loop_td_places_visible_return_leg() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(40, 20);
+
+        let node = make_node("Self", 8, 2, 8);
+        let spacing = SpacingConfig::default_config();
+        route_cycle_edge(
+            &node,
+            &node,
+            &mut canvas,
+            &chars,
+            &spacing,
+            Direction::TD,
+            None,
+        );
+
+        let gutter_x = canvas.width - 2;
+        let return_x = node.x + node.width + 2;
+        let loop_y = node.bottom_y() + spacing.row_spacing.max(2);
+        assert_eq!(
+            canvas.get(node.x + node.width, node.center_y()),
+            chars.arrow_left
+        );
+        assert_eq!(canvas.get(gutter_x, node.center_y()), chars.corner_dr);
+        assert_eq!(canvas.get(gutter_x, loop_y), chars.corner_ur);
+        assert_eq!(canvas.get(return_x, loop_y), chars.corner_ul);
+        assert_eq!(canvas.get(return_x, node.center_y()), chars.junction_down);
+        assert_eq!(canvas.get(return_x, node.center_y() + 1), chars.back_v);
     }
 
     // ==========================================================================
