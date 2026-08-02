@@ -36,6 +36,12 @@ pub(super) fn pad_string(input: &str, pad: usize) -> String {
     out.join("\n")
 }
 
+fn set_routed_label_shaft(canvas: &mut Canvas, x: usize, y: usize, glyph: char) {
+    if x < canvas.width && y < canvas.height && !canvas::is_arrow(canvas.get(x, y)) {
+        canvas.set(x, y, glyph);
+    }
+}
+
 // ============================================================================
 // Edge Label Drawing
 // ============================================================================
@@ -541,9 +547,7 @@ pub(super) fn draw_routed_edge_label(
                 + usize::from(reserve_leading_shaft)
                 + (gap_width - (label_width + inline_margin)) / 2;
             for x in gap_start_x..start_x {
-                if y < canvas.height && x < canvas.width {
-                    canvas.set(x, y, style.edge_h);
-                }
+                set_routed_label_shaft(canvas, x, y, style.edge_h);
             }
 
             if start_x < canvas.width && y < canvas.height {
@@ -552,7 +556,10 @@ pub(super) fn draw_routed_edge_label(
 
             let mut x_pos = start_x + 1;
             for c in display_label.chars() {
-                if y < canvas.height && x_pos < canvas.width {
+                if y < canvas.height
+                    && x_pos < canvas.width
+                    && !canvas::is_arrow(canvas.get(x_pos, y))
+                {
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
@@ -565,21 +572,20 @@ pub(super) fn draw_routed_edge_label(
             x_pos += 1;
 
             for x in x_pos..gap_end_x {
-                if y < canvas.height && x < canvas.width {
-                    canvas.set(x, y, style.edge_h);
-                }
+                set_routed_label_shaft(canvas, x, y, style.edge_h);
             }
         } else if can_fit_tight_inline {
             let start_x = gap_start_x + (gap_width.saturating_sub(label_width)) / 2;
             for x in gap_start_x..start_x {
-                if y < canvas.height && x < canvas.width {
-                    canvas.set(x, y, style.edge_h);
-                }
+                set_routed_label_shaft(canvas, x, y, style.edge_h);
             }
 
             let mut x_pos = start_x;
             for c in display_label.chars() {
-                if y < canvas.height && x_pos < canvas.width {
+                if y < canvas.height
+                    && x_pos < canvas.width
+                    && !canvas::is_arrow(canvas.get(x_pos, y))
+                {
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
@@ -587,21 +593,20 @@ pub(super) fn draw_routed_edge_label(
             }
 
             for x in x_pos..gap_end_x {
-                if y < canvas.height && x < canvas.width {
-                    canvas.set(x, y, style.edge_h);
-                }
+                set_routed_label_shaft(canvas, x, y, style.edge_h);
             }
         } else if can_fit_node_gap {
             let start_x = node_gap_start;
             for x in node_gap_start_x..start_x {
-                if y < canvas.height && x < canvas.width {
-                    canvas.set(x, y, style.edge_h);
-                }
+                set_routed_label_shaft(canvas, x, y, style.edge_h);
             }
 
             let mut x_pos = start_x;
             for c in display_label.chars() {
-                if y < canvas.height && x_pos < canvas.width {
+                if y < canvas.height
+                    && x_pos < canvas.width
+                    && !canvas::is_arrow(canvas.get(x_pos, y))
+                {
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
@@ -609,9 +614,7 @@ pub(super) fn draw_routed_edge_label(
             }
 
             for x in x_pos..node_gap_end_x {
-                if y < canvas.height && x < canvas.width {
-                    canvas.set(x, y, style.edge_h);
-                }
+                set_routed_label_shaft(canvas, x, y, style.edge_h);
             }
         } else if let Some(label_row) = outside_row {
             let max_label_start = canvas.width.saturating_sub(label_width);
@@ -645,9 +648,7 @@ pub(super) fn draw_routed_edge_label(
                 + (gap_width.saturating_sub(inline_width + inline_margin)) / 2;
 
             for x in gap_start_x..start_x {
-                if y < canvas.height && x < canvas.width {
-                    canvas.set(x, y, style.edge_h);
-                }
+                set_routed_label_shaft(canvas, x, y, style.edge_h);
             }
 
             if start_x < canvas.width && y < canvas.height {
@@ -656,7 +657,10 @@ pub(super) fn draw_routed_edge_label(
 
             let mut x_pos = start_x + 1;
             for c in inline_label.chars() {
-                if y < canvas.height && x_pos < canvas.width {
+                if y < canvas.height
+                    && x_pos < canvas.width
+                    && !canvas::is_arrow(canvas.get(x_pos, y))
+                {
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
@@ -669,9 +673,7 @@ pub(super) fn draw_routed_edge_label(
             x_pos += 1;
 
             for x in x_pos..gap_end_x {
-                if y < canvas.height && x < canvas.width {
-                    canvas.set(x, y, style.edge_h);
-                }
+                set_routed_label_shaft(canvas, x, y, style.edge_h);
             }
         }
     } else {

@@ -217,6 +217,40 @@ fn render_with_feedback_keeps_td_edge_labels_off_final_arrow_shaft() {
 }
 
 #[test]
+fn render_with_feedback_preserves_rl_labeled_edge_arrowheads() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_labels_rl.md").unwrap();
+
+    for (style, arrow) in [
+        (termiflow::BaseStyle::Ascii, '<'),
+        (termiflow::BaseStyle::Unicode, '←'),
+    ] {
+        let outcome = termiflow::render_with_feedback(
+            &input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+
+        assert!(
+            outcome.output.contains("submit") && outcome.output.contains("success"),
+            "expected both labeled RL edges to remain readable in {:?}\n{}",
+            style,
+            outcome.output
+        );
+        assert_eq!(
+            outcome
+                .output
+                .chars()
+                .filter(|character| *character == arrow)
+                .count(),
+            2,
+            "expected both labeled RL edges to retain visible arrowheads in {:?}\n{}",
+            style,
+            outcome.output
+        );
+    }
+}
+
+#[test]
 fn render_with_feedback_keeps_td_sibling_subgraph_arrows_off_foreign_borders() {
     let input =
         std::fs::read_to_string("tests/fixtures/inputs/collision_sibling_subgraphs_td.md").unwrap();
