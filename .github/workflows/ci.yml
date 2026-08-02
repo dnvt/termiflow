@@ -30,6 +30,12 @@ jobs:
       - name: Enforce Rust/Bash-only repository automation
         run: test -z "$(rg --files -g '*.py' -g '*.rb' || true)"
 
+      - name: Validate visual cycle contract
+        run: |
+          bash -n scripts/visual_cycle.sh
+          jq empty tests/fixtures/visual_cycle_record.schema.json
+          scripts/visual_cycle.sh --help >/dev/null
+
       - name: Cache Cargo registry
         uses: actions/cache@v6.1.0
         with:
