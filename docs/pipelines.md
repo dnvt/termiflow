@@ -2,6 +2,11 @@
 
 TermiFlow (`termiflow`, recommended alias `tw`) renders Mermaid flowcharts from either files or stdin.
 
+Run each example from the project that owns its input: the Terraform example
+needs a Terraform plan, the Docker example needs a Compose file, and the npm
+example needs a JavaScript project with `package.json`. The first three
+examples are self-contained in this repository.
+
 ## Basic Pipe
 
 ```bash
