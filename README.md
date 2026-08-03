@@ -5,7 +5,7 @@
 Render Mermaid flowcharts as ASCII/Unicode diagrams directly in your
 terminal—without a browser.
 
-Current status: TermiFlow v0.2.0 is a focused release candidate. Print mode
+Current status: TermiFlow v0.2.0 is the current public release. Print mode
 and primary-screen watch mode (`--watch`) are the stable workflow; alternate-
 screen live preview (`--tui`) is available but remains partial because input and
 scroll behavior depends on the terminal emulator.
@@ -107,7 +107,7 @@ $ printf 'graph LR\n    subgraph CI\n        A[Push]-->B[Lint]-->C[Test]\n    en
 
 ## Installation
 
-### Homebrew (macOS and Linux — no Rust required)
+### Homebrew (macOS and supported Linux systems — no Rust required)
 
 ```bash
 brew install dnvt/termiflow/termiflow
@@ -116,6 +116,11 @@ brew install dnvt/termiflow/termiflow
 The Homebrew formula is maintained in the external `dnvt/homebrew-termiflow`
 tap; this repository keeps installation instructions only.
 
+The v0.2.0 Linux release binaries are architecture-specific: the x86_64 GNU
+archive targets glibc 2.39 or newer, while the aarch64 GNU archive targets
+glibc 2.18 or newer. Older or different Linux userspaces can use the Rust
+source fallback below.
+
 ### GitHub Releases
 
 If Homebrew is unavailable, download a release binary from [GitHub
@@ -123,16 +128,16 @@ Releases](https://github.com/dnvt/termiflow/releases).
 
 ### From source (requires Rust)
 
-The candidate source checkout requires a Rust toolchain and Cargo:
+A source checkout requires a Rust toolchain and Cargo:
 
 ```bash
-# From the checked-out v0.2.0 candidate:
+# From a checked-out v0.2.0 source tree:
 cargo install --locked --path . --bin tw
 ```
 
-This installs the checkout you are using; the `v0.2.0` release tag and
-prebuilt release binaries are published separately after the candidate passes
-its final release checks.
+This installs the checkout you are using. For a no-Rust installation, prefer
+the v0.2.0 Homebrew formula or the prebuilt binaries linked from the GitHub
+release.
 
 ## Quickstart
 
@@ -157,7 +162,7 @@ tw --pad 1 diagram.md
 tw --no-crop diagram.md
 
 # Tighter layout spacing
-tw --compact diagram.md
+tw --spacing compact diagram.md
 
 # Live preview modes
 tw --tui diagram.md
@@ -188,6 +193,10 @@ tw --strict diagram.md
 
 ## Docs
 
+- Website: https://termiflow.dnvt.me
+- Crates.io: https://crates.io/crates/termiflow
+- GitHub repository: https://github.com/dnvt/termiflow
+- Homebrew tap: https://github.com/dnvt/homebrew-termiflow
 - Pipelines (Terraform/Docker Compose/npm → Mermaid → TermiFlow): `docs/pipelines.md`
 - CLI + syntax reference (flags, config, supported syntax): `docs/reference.md`
 - Contributing: `CONTRIBUTING.md`
