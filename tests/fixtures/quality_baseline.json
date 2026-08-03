@@ -1,7 +1,7 @@
 {
   "schema": "termiflow.quality_baseline.v1",
   "identity": {
-    "source_commit": "693ee1f0944291e910914e2b75bb43559e644fd4",
+    "source_commit": "12553a1fc38c1bda8fb1af6c794608077beca894",
     "cargo_lock_sha256": "4e2fa1c64e92fcc01fcbd64ff7049686e54494e35d380728dec37dece53d14e1",
     "display_profile": "terminal-grid-v1",
     "styles": ["ascii", "unicode"],
@@ -14,12 +14,7 @@
     "next_command": "scripts/review_visual_packet.sh --next --record"
   },
   "exception_fields": ["fixture", "style", "mode", "layer", "code", "message"],
-  "exceptions": [
-    {"fixture": "scale_dense_bt", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 13 cell(s)"},
-    {"fixture": "scale_dense_lr", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 3 cell(s)"},
-    {"fixture": "scale_dense_rl", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 3 cell(s)"},
-    {"fixture": "scale_dense_td", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 13 cell(s)"}
-  ],
+  "exceptions": [],
   "forbidden_codes": [
     "ArrowWithoutVisibleShaft",
     "ArrowTouchesNodeBorder",
