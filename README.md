@@ -123,7 +123,7 @@ Releases](https://github.com/dnvt/termiflow/releases).
 
 ### From source (requires Rust)
 
-The candidate source checkout requires a Rust toolchain and Cargo:
+A source checkout requires a Rust toolchain and Cargo:
 
 ```bash
 # From a checked-out v0.2.0 source tree:
@@ -188,6 +188,10 @@ tw --strict diagram.md
 
 ## Docs
 
+- Website: https://termiflow.dnvt.me
+- Crates.io: https://crates.io/crates/termiflow
+- GitHub repository: https://github.com/dnvt/termiflow
+- Homebrew tap: https://github.com/dnvt/homebrew-termiflow
 - Pipelines (Terraform/Docker Compose/npm → Mermaid → TermiFlow): `docs/pipelines.md`
 - CLI + syntax reference (flags, config, supported syntax): `docs/reference.md`
 - Contributing: `CONTRIBUTING.md`
