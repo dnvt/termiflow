@@ -791,6 +791,7 @@ fn validate_schema_packet(
         &styles,
         &modes,
         strict,
+        holdouts,
     )?;
     validate_schema_quality(baseline, &codes)?;
     validate_timing_file(packet, &rows)?;
@@ -879,6 +880,14 @@ fn validate_schema_manifest(document: &Value, holdouts: bool) -> Result<SchemaQu
         {
             bail!("queue manifest row {variant_id} is not a reviewable success");
         }
+        if !holdouts
+            && row
+                .get("input_path")
+                .and_then(Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            bail!("queue manifest input_path must be a non-empty string");
+        }
         let fixture = format!("{case_id}--{variant_id}");
         let key = format!("{fixture}\u{1f}{style}\u{1f}{mode}");
         if normalized_rows.insert(key, row.clone()).is_some() {
@@ -917,6 +926,7 @@ fn validate_schema_rows(
     styles: &[String],
     modes: &[String],
     strict: bool,
+    holdouts: bool,
 ) -> Result<(BTreeSet<Signature>, BTreeSet<String>)> {
     let mut seen = BTreeSet::new();
     let mut observed = BTreeSet::new();
@@ -944,17 +954,32 @@ fn validate_schema_rows(
         if row["direction"] != expected["direction"] {
             bail!("schema packet direction mismatch for {fixture}");
         }
-        let expected_input =
-            non_empty_string(expected.get("input_path"), "queue manifest input_path")?;
-        if row["input"] != expected_input {
-            bail!("schema packet input mismatch for {fixture}");
-        }
-        let input_path = common::repository_file(
-            root,
-            &row["input"],
-            &format!("schema packet {fixture} input"),
-        )?;
-        let input_bytes = fs::read(&input_path)?;
+        let input_bytes = if let Some(expected_input) = expected
+            .get("input_path")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            if row["input"] != expected_input {
+                bail!("schema packet input mismatch for {fixture}");
+            }
+            let input_path = common::repository_file(
+                root,
+                &row["input"],
+                &format!("schema packet {fixture} input"),
+            )?;
+            fs::read(&input_path)?
+        } else if holdouts {
+            if row
+                .get("input")
+                .and_then(Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                bail!("schema packet {fixture} holdout input marker is missing");
+            }
+            non_empty_string(expected.get("source"), "queue manifest source")?.into_bytes()
+        } else {
+            bail!("queue manifest input_path must be a non-empty string");
+        };
         if common::sha256_bytes(&input_bytes)
             != non_empty_string(
                 expected.get("source_sha256"),

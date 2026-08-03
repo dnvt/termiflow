@@ -52,6 +52,7 @@ struct SchemaWorkload {
     styles: Vec<String>,
     modes: Vec<String>,
     planned_count: usize,
+    temporary_inputs: Vec<PathBuf>,
 }
 
 pub fn run(args: AuditArgs) -> Result<()> {
@@ -428,6 +429,9 @@ pub fn run_schema_packet(
         workload.planned_count,
         Some(&identity),
     );
+    for path in &workload.temporary_inputs {
+        let _ = fs::remove_file(path);
+    }
     if result.is_err() {
         let _ = fs::remove_dir_all(&stage);
     }
@@ -487,6 +491,7 @@ fn schema_workload(
     let mut styles_seen = BTreeSet::new();
     let mut modes_seen = BTreeSet::new();
     let mut matrix_keys = BTreeSet::new();
+    let mut temporary_inputs = Vec::new();
 
     for row in rows {
         let case_id = required_manifest_string(row, "case_id", key)?;
@@ -511,14 +516,42 @@ fn schema_workload(
                 "schema manifest {fixture} has holdout class {holdout_class}, expected {expected_holdout}"
             );
         }
-        let input_path = required_manifest_string(row, "input_path", key)?;
-        let input_path = common::safe_relative_path(
-            Path::new(&input_path),
-            root,
-            &format!("schema manifest {fixture} input_path"),
-        )?;
         let source = required_manifest_string(row, "source", key)?;
         let source_sha256 = required_manifest_string(row, "source_sha256", key)?;
+        let input_path = match row
+            .get("input_path")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(input_path) => common::safe_relative_path(
+                Path::new(input_path),
+                root,
+                &format!("schema manifest {fixture} input_path"),
+            )?,
+            None if holdouts => {
+                if common::sha256_bytes(source.as_bytes()) != source_sha256 {
+                    bail!("schema manifest source hash mismatch for {fixture}");
+                }
+                let input_path = std::env::temp_dir().join(format!(
+                    "termiflow-holdout-input-{}-{}-{}.md",
+                    std::process::id(),
+                    common::now_label(),
+                    &source_sha256[..16]
+                ));
+                if input_path.exists() {
+                    bail!(
+                        "temporary holdout input already exists: {}",
+                        input_path.display()
+                    );
+                }
+                common::write_bytes(&input_path, source.as_bytes())?;
+                temporary_inputs.push(input_path.clone());
+                input_path
+            }
+            None => {
+                bail!("schema manifest {key}.input_path must be a non-empty string")
+            }
+        };
         let input_bytes = fs::read(&input_path)
             .with_context(|| format!("read schema manifest input {}", input_path.display()))?;
         if input_bytes != source.as_bytes() {
@@ -594,6 +627,7 @@ fn schema_workload(
         styles,
         modes,
         planned_count,
+        temporary_inputs,
     })
 }
 
