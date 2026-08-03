@@ -504,7 +504,7 @@ fn structural_decision(row: &Value, packet: &Path, decisions_path: &Path) -> Res
 }
 
 fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
-    let input = common::repository_file(root, &row["input"], "manifest input")?;
+    let input_source = manifest_input_source(root, packet, row)?;
     let frame = common::validate_blob_ref(packet, &row["stdout"], "frame")?;
     let evidence_ref = row
         .get("evidence")
@@ -522,7 +522,7 @@ fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
         "mode": row["mode"],
         "frame_sha256": row["stdout"]["sha256"],
         "evidence_sha256": evidence_hash,
-        "input": String::from_utf8(common::require_file(&input, "manifest input")?).context("input is not UTF-8")?,
+        "input": input_source,
         "frame": String::from_utf8(frame).context("frame is not UTF-8")?,
         "dimensions": row["dimensions"],
         "critic": evidence["critic"],
@@ -552,6 +552,61 @@ fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
             "review_kind": "perceptual",
         },
     }))
+}
+
+fn manifest_input_source(root: &Path, packet: &Path, row: &Value) -> Result<String> {
+    let input = &row["input"];
+    match common::repository_file(root, input, "manifest input") {
+        Ok(path) => String::from_utf8(common::require_file(&path, "manifest input")?)
+            .context("input is not UTF-8"),
+        Err(input_error) => holdout_input_source(packet, row)?.ok_or(input_error),
+    }
+}
+
+fn holdout_input_source(packet: &Path, row: &Value) -> Result<Option<String>> {
+    let schema_manifest = packet.join("schema_manifest.json");
+    if !schema_manifest.is_file() {
+        return Ok(None);
+    }
+    let schema = common::load_json(&schema_manifest, "packet schema manifest")?;
+    let Some(holdouts) = schema.get("holdouts").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let fixture = row
+        .get("fixture")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout review row has no fixture"))?;
+    let variant_id = fixture
+        .rsplit_once("--")
+        .map(|(_, variant)| variant)
+        .ok_or_else(|| anyhow!("holdout review fixture has no variant: {fixture}"))?;
+    let style = row
+        .get("style")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout review row has no style"))?;
+    let mode = row
+        .get("mode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout review row has no mode"))?;
+    let Some(holdout) = holdouts.iter().find(|holdout| {
+        holdout.get("variant_id").and_then(Value::as_str) == Some(variant_id)
+            && holdout.get("style").and_then(Value::as_str) == Some(style)
+            && holdout.get("mode").and_then(Value::as_str) == Some(mode)
+    }) else {
+        return Ok(None);
+    };
+    let source = holdout
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout source is missing for {variant_id}"))?;
+    let expected_hash = holdout
+        .get("source_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout source hash is missing for {variant_id}"))?;
+    if common::sha256_bytes(source.as_bytes()) != expected_hash {
+        bail!("holdout source hash is stale for {variant_id}");
+    }
+    Ok(Some(source.to_owned()))
 }
 
 fn append_decision(path: &Path, decision: &Value) -> Result<()> {
@@ -790,5 +845,40 @@ mod tests {
             "timestamp": "now"
         });
         assert!(validate_decision(&decision, &rows).is_err());
+    }
+
+    #[test]
+    fn source_only_holdout_review_uses_packet_manifest_source() {
+        let packet = std::env::temp_dir().join(format!(
+            "termiflow-review-holdout-{}-{}",
+            std::process::id(),
+            common::now_label()
+        ));
+        fs::create_dir_all(&packet).expect("create packet directory");
+        let source = "graph TD\nA[In] --> B[Out]\n";
+        common::write_json(
+            &packet.join("schema_manifest.json"),
+            &json!({
+                "holdouts": [{
+                    "variant_id": "holdout_td",
+                    "style": "unicode",
+                    "mode": "default",
+                    "source": source,
+                    "source_sha256": common::sha256_bytes(source.as_bytes())
+                }]
+            }),
+        )
+        .expect("write schema manifest");
+        let row = json!({
+            "input": "termiflow-holdout-input-transient.md",
+            "fixture": "case--holdout_td",
+            "style": "unicode",
+            "mode": "default"
+        });
+
+        let actual = manifest_input_source(Path::new("/missing-root"), &packet, &row)
+            .expect("resolve source-only holdout input");
+        assert_eq!(actual, source);
+        fs::remove_dir_all(packet).expect("remove packet directory");
     }
 }
