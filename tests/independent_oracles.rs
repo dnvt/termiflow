@@ -3,6 +3,7 @@
 //! These deliberately do not consume `SemanticFrame`, provenance, or critic
 //! findings. Geometry checks consume the normalized trace as a separate input.
 
+use std::collections::HashSet;
 use std::fs;
 use termiflow::{
     layout_and_render_with_feedback, measure, parse, BaseStyle, CompositeStyle, Config,
@@ -39,6 +40,7 @@ fn raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
 
 fn junction_quad_raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
     let parsed = parse(input, false).expect("parse junction quad oracle input");
+    let (_, _, _, expected_arrows) = dual_junction_shape(&parsed.graph);
     let mut errors = Vec::new();
     for node in &parsed.graph.nodes {
         if !node.label.is_empty() && !frame.contains(&node.label) {
@@ -48,11 +50,49 @@ fn junction_quad_raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
             ));
         }
     }
-    // The two incoming semantic edges intentionally share one merge arrowhead;
-    // the independent geometry trace below still requires all four semantic
-    // edge records to survive alongside the raw-frame shaft/arrow checks.
-    errors.extend(raw_topology_errors(frame, 3));
+    // Incoming semantic edges intentionally share one merge arrowhead. The
+    // independent geometry trace still requires every semantic edge record to
+    // survive alongside the raw-frame shaft/arrow checks.
+    errors.extend(raw_topology_errors(frame, expected_arrows));
     errors
+}
+
+fn dual_junction_shape(graph: &termiflow::Graph) -> (String, Vec<String>, usize, usize) {
+    let candidates: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let incoming: HashSet<&str> = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.to == node.id && edge.from != node.id)
+                .map(|edge| edge.from.as_str())
+                .collect();
+            let outgoing: HashSet<&str> = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.from == node.id && edge.to != node.id)
+                .map(|edge| edge.to.as_str())
+                .collect();
+            (incoming.len() >= 2 && outgoing.len() >= 2).then(|| {
+                let mut targets: Vec<String> = outgoing.into_iter().map(str::to_owned).collect();
+                targets.sort_unstable();
+                (node.id.clone(), targets, incoming.len())
+            })
+        })
+        .collect();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "expected exactly one dual-junction anchor"
+    );
+    let (anchor, targets, incoming_count) = candidates
+        .into_iter()
+        .next()
+        .expect("dual-junction candidate");
+    let semantic_edges = graph.edges.len();
+    let expected_arrows = semantic_edges.saturating_sub(incoming_count.saturating_sub(1));
+    (anchor, targets, semantic_edges, expected_arrows)
 }
 
 fn raw_topology_errors(frame: &str, expected_edges: usize) -> Vec<String> {
@@ -322,71 +362,76 @@ fn full_fixture_corpus_geometry_traces_are_deterministic() {
 
 #[test]
 fn junction_quad_independent_oracle_covers_the_full_review_matrix() {
-    for direction in ["TD", "BT", "LR", "RL"] {
-        let input = fs::read_to_string(format!(
-            "tests/fixtures/inputs/junction_quad_{direction}.md"
-        ))
-        .expect("read junction quad fixture");
+    for prefix in ["junction_quad", "junction_quad_holdout"] {
+        for direction in ["TD", "BT", "LR", "RL"] {
+            let input = fs::read_to_string(if prefix == "junction_quad" {
+                format!("tests/fixtures/inputs/{prefix}_{direction}.md")
+            } else {
+                format!("tests/fixtures/holdouts/inputs/{prefix}_{direction}.md")
+            })
+            .expect("read junction quad fixture");
+            let (anchor_id, target_ids, semantic_edges, _) =
+                dual_junction_shape(&parse(&input, false).expect("parse junction quad").graph);
 
-        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
-            for optimized in [false, true] {
-                let render_case = || {
-                    let mut graph = parse(&input, false)
-                        .expect("parse junction quad fixture")
-                        .graph;
-                    let mut config = Config::default();
-                    config.optimize_render = optimized;
-                    config.composite_style = CompositeStyle::from_base(style);
-                    config.spacing = config.spacing.for_direction(graph.direction);
-                    measure::measure_graph(&mut graph, &config);
-                    let (graph, outcome) = layout_and_render_with_feedback(graph, config)
-                        .expect("render junction quad fixture");
-                    (outcome.output, GeometryTrace::from_graph(&graph))
-                };
+            for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+                for optimized in [false, true] {
+                    let render_case = || {
+                        let mut graph = parse(&input, false)
+                            .expect("parse junction quad fixture")
+                            .graph;
+                        let mut config = Config::default();
+                        config.optimize_render = optimized;
+                        config.composite_style = CompositeStyle::from_base(style);
+                        config.spacing = config.spacing.for_direction(graph.direction);
+                        measure::measure_graph(&mut graph, &config);
+                        let (graph, outcome) = layout_and_render_with_feedback(graph, config)
+                            .expect("render junction quad fixture");
+                        (outcome.output, GeometryTrace::from_graph(&graph))
+                    };
 
-                let (first_output, first_trace) = render_case();
-                let (second_output, second_trace) = render_case();
-                assert_eq!(
-                    first_output, second_output,
-                    "non-deterministic raw frame for {direction} {style:?} optimized={optimized}"
-                );
-                assert_eq!(
-                    first_trace, second_trace,
-                    "non-deterministic geometry for {direction} {style:?} optimized={optimized}"
-                );
+                    let (first_output, first_trace) = render_case();
+                    let (second_output, second_trace) = render_case();
+                    assert_eq!(
+                        first_output, second_output,
+                        "non-deterministic raw frame for {prefix} {direction} {style:?} optimized={optimized}"
+                    );
+                    assert_eq!(
+                        first_trace, second_trace,
+                        "non-deterministic geometry for {prefix} {direction} {style:?} optimized={optimized}"
+                    );
 
-                let raw_errors = junction_quad_raw_frame_errors(&input, &first_output);
-                assert!(
-                    raw_errors.is_empty(),
-                    "raw-frame oracle failed for {direction} {style:?} optimized={optimized}: {raw_errors:?}\n{first_output}"
-                );
-                let node_errors = node_geometry_errors(&first_trace);
-                assert!(
-                    node_errors.is_empty(),
-                    "geometry oracle failed for {direction} {style:?} optimized={optimized}: {node_errors:?}"
-                );
-                assert_eq!(
-                    first_trace.edges.len(),
-                    4,
-                    "junction quad lost a semantic edge trace for {direction} {style:?} optimized={optimized}"
-                );
+                    let raw_errors = junction_quad_raw_frame_errors(&input, &first_output);
+                    assert!(
+                        raw_errors.is_empty(),
+                        "raw-frame oracle failed for {prefix} {direction} {style:?} optimized={optimized}: {raw_errors:?}\n{first_output}"
+                    );
+                    let node_errors = node_geometry_errors(&first_trace);
+                    assert!(
+                        node_errors.is_empty(),
+                        "geometry oracle failed for {prefix} {direction} {style:?} optimized={optimized}: {node_errors:?}"
+                    );
+                    assert_eq!(
+                        first_trace.edges.len(),
+                        semantic_edges,
+                        "junction quad lost a semantic edge trace for {prefix} {direction} {style:?} optimized={optimized}"
+                    );
 
-                let center = |id: &str| {
-                    let node = first_trace
-                        .nodes
-                        .iter()
-                        .find(|node| node.id == id)
-                        .unwrap_or_else(|| panic!("missing node {id}"));
-                    secondary_center_for(node.x, node.y, node.width, node.height, direction)
-                };
-                let target_midpoint = (center("D") + center("E")) / 2;
-                assert!(
-                    center("C").abs_diff(target_midpoint) <= 1,
-                    "dual-junction midpoint drift for {direction} {style:?} optimized={optimized}: C={} D={} E={}",
-                    center("C"),
-                    center("D"),
-                    center("E")
-                );
+                    let center = |id: &str| {
+                        let node = first_trace
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == id)
+                            .unwrap_or_else(|| panic!("missing node {id}"));
+                        secondary_center_for(node.x, node.y, node.width, node.height, direction)
+                    };
+                    let target_midpoint =
+                        (center(&target_ids[0]) + center(target_ids.last().expect("target"))) / 2;
+                    assert!(
+                        center(&anchor_id).abs_diff(target_midpoint) <= 1,
+                        "dual-junction midpoint drift for {prefix} {direction} {style:?} optimized={optimized}: anchor={} target_midpoint={target_midpoint}",
+                        center(&anchor_id),
+                    );
+                }
             }
         }
     }

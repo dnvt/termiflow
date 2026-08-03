@@ -1,6 +1,42 @@
 {
-  "schema": "termiflow.fixture_spec.v1",
-  "spec_version": 1,
+  "schema": "termiflow.fixture_spec.v2",
+  "spec_version": 2,
+  "queues": [
+    {
+      "id": "canonical-smoke",
+      "families": ["subgraph-boundary", "unsupported-style-warning"],
+      "review_cases": ["subgraph_narrow_canary"],
+      "negative_cases": ["warn_classdef_canary"],
+      "holdout_cases": ["subgraph_narrow_holdout"],
+      "matrix": {
+        "directions": ["TD", "BT", "LR", "RL"],
+        "styles": ["ascii", "unicode"],
+        "modes": ["default", "optimized"]
+      },
+      "expected": {
+        "reviewable_rows": 16,
+        "negative_variants": 1,
+        "holdout_rows": 4
+      }
+    },
+    {
+      "id": "junction-quad",
+      "families": ["junction-dual"],
+      "review_cases": ["junction_quad_canary"],
+      "negative_cases": [],
+      "holdout_cases": ["junction_quad_holdout"],
+      "matrix": {
+        "directions": ["TD", "BT", "LR", "RL"],
+        "styles": ["ascii", "unicode"],
+        "modes": ["default", "optimized"]
+      },
+      "expected": {
+        "reviewable_rows": 16,
+        "negative_variants": 0,
+        "holdout_rows": 16
+      }
+    }
+  ],
   "cases": [
     {
       "id": "subgraph_narrow_canary",
@@ -139,6 +175,178 @@
           "stderr_contains": ["Mermaid classes not supported"],
           "holdout": "shared",
           "review_targets": []
+        }
+      ]
+    }
+    ,{
+      "id": "junction_quad_canary",
+      "family": "junction-dual",
+      "semantic": {
+        "nodes": ["A", "B", "C", "D", "E"],
+        "edges": [
+          {"from": "A", "to": "C"},
+          {"from": "B", "to": "C"},
+          {"from": "C", "to": "D"},
+          {"from": "C", "to": "E"}
+        ],
+        "subgraphs": [],
+        "labels": {
+          "A": "Top",
+          "B": "Left",
+          "C": "Center",
+          "D": "Bottom",
+          "E": "Right"
+        }
+      },
+      "homologs": ["junction_quad_canary", "junction_quad_holdout"],
+      "variants": [
+        {
+          "id": "junction_quad_td",
+          "direction": "TD",
+          "source": "graph TD\n    A[Top] --> C[Center]\n    B[Left] --> C\n    C --> D[Bottom]\n    C --> E[Right]\n",
+          "input_path": "tests/fixtures/inputs/junction_quad_td.md",
+          "golden_stem": "junction_quad_td",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "none",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P2", "class": "junction_topology", "region": "dual-junction merge/split"}
+          ]
+        },
+        {
+          "id": "junction_quad_lr",
+          "direction": "LR",
+          "source": "graph LR\n    A[Top] --> C[Center]\n    B[Left] --> C\n    C --> D[Bottom]\n    C --> E[Right]\n",
+          "input_path": "tests/fixtures/inputs/junction_quad_lr.md",
+          "golden_stem": "junction_quad_lr",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "none",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P2", "class": "junction_topology", "region": "dual-junction merge/split"}
+          ]
+        },
+        {
+          "id": "junction_quad_bt",
+          "direction": "BT",
+          "source": "graph BT\n    A[Top] --> C[Center]\n    B[Left] --> C\n    C --> D[Bottom]\n    C --> E[Right]\n",
+          "input_path": "tests/fixtures/inputs/junction_quad_bt.md",
+          "golden_stem": "junction_quad_bt",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "none",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P2", "class": "junction_topology", "region": "dual-junction merge/split"}
+          ]
+        },
+        {
+          "id": "junction_quad_rl",
+          "direction": "RL",
+          "source": "graph RL\n    A[Top] --> C[Center]\n    B[Left] --> C\n    C --> D[Bottom]\n    C --> E[Right]\n",
+          "input_path": "tests/fixtures/inputs/junction_quad_rl.md",
+          "golden_stem": "junction_quad_rl",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "none",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P2", "class": "junction_topology", "region": "dual-junction merge/split"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "junction_quad_holdout",
+      "family": "junction-dual",
+      "semantic": {
+        "nodes": ["Root", "Left", "Merge", "Exit", "Side"],
+        "edges": [
+          {"from": "Root", "to": "Merge"},
+          {"from": "Left", "to": "Merge"},
+          {"from": "Merge", "to": "Exit"},
+          {"from": "Merge", "to": "Side"}
+        ],
+        "subgraphs": [],
+        "labels": {
+          "Root": "Root",
+          "Left": "Long Left",
+          "Merge": "Merge Point",
+          "Exit": "Long Exit",
+          "Side": "Side Exit"
+        }
+      },
+      "homologs": ["junction_quad_canary", "junction_quad_holdout"],
+      "variants": [
+        {
+          "id": "junction_quad_holdout_td",
+          "direction": "TD",
+          "source": "graph TD\n    Left[Long Left] --> Merge[Merge Point]\n    Root[Root] --> Merge[Merge Point]\n    Merge --> Exit[Long Exit]\n    Merge --> Side[Side Exit]\n",
+          "input_path": "tests/fixtures/holdouts/inputs/junction_quad_holdout_td.md",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "evaluator_owned",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P1", "class": "junction_topology", "region": "evaluator dual-junction holdout"}
+          ]
+        },
+        {
+          "id": "junction_quad_holdout_lr",
+          "direction": "LR",
+          "source": "graph LR\n    Left[Long Left] --> Merge[Merge Point]\n    Root[Root] --> Merge[Merge Point]\n    Merge --> Exit[Long Exit]\n    Merge --> Side[Side Exit]\n",
+          "input_path": "tests/fixtures/holdouts/inputs/junction_quad_holdout_lr.md",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "evaluator_owned",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P1", "class": "junction_topology", "region": "evaluator dual-junction holdout"}
+          ]
+        },
+        {
+          "id": "junction_quad_holdout_bt",
+          "direction": "BT",
+          "source": "graph BT\n    Left[Long Left] --> Merge[Merge Point]\n    Root[Root] --> Merge[Merge Point]\n    Merge --> Exit[Long Exit]\n    Merge --> Side[Side Exit]\n",
+          "input_path": "tests/fixtures/holdouts/inputs/junction_quad_holdout_bt.md",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "evaluator_owned",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P1", "class": "junction_topology", "region": "evaluator dual-junction holdout"}
+          ]
+        },
+        {
+          "id": "junction_quad_holdout_rl",
+          "direction": "RL",
+          "source": "graph RL\n    Left[Long Left] --> Merge[Merge Point]\n    Root[Root] --> Merge[Merge Point]\n    Merge --> Exit[Long Exit]\n    Merge --> Side[Side Exit]\n",
+          "input_path": "tests/fixtures/holdouts/inputs/junction_quad_holdout_rl.md",
+          "styles": ["ascii", "unicode"],
+          "modes": ["default", "optimized"],
+          "kind": "success",
+          "stderr_policy": "empty",
+          "stderr_contains": [],
+          "holdout": "evaluator_owned",
+          "review_targets": [
+            {"dimension": "route", "severity_floor": "P1", "class": "junction_topology", "region": "evaluator dual-junction holdout"}
+          ]
         }
       ]
     }

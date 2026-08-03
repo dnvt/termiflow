@@ -28,6 +28,8 @@ enum Command {
     Review(ReviewArgs),
     /// Validate a canonical Mermaid fixture spec and emit its deterministic manifest.
     Schema(SchemaArgs),
+    /// Execute evaluator-owned holdout rows into a golden-free packet and receipt.
+    Holdout(HoldoutArgs),
 }
 
 #[derive(Debug, Args)]
@@ -35,6 +37,12 @@ struct VisualValidateArgs {
     /// Visual-audit packet directory.
     #[arg(long)]
     packet: PathBuf,
+    /// Versioned schema manifest that scopes a queue packet.
+    #[arg(long)]
+    queue_manifest: Option<PathBuf>,
+    /// Validate the evaluator-owned holdout section of the queue manifest.
+    #[arg(long, requires = "queue_manifest")]
+    holdout: bool,
     /// Quality baseline JSON.
     #[arg(long, default_value = "tests/fixtures/quality_baseline.json")]
     baseline: PathBuf,
@@ -109,6 +117,9 @@ struct SchemaArgs {
     /// Canonical fixture-spec JSON.
     #[arg(long)]
     spec: PathBuf,
+    /// Named fixture queue to validate and materialize.
+    #[arg(long)]
+    queue: String,
     /// Validate only and emit a summary without writing a manifest.
     #[arg(long, conflicts_with = "emit_manifest")]
     check: bool,
@@ -118,10 +129,38 @@ struct SchemaArgs {
 }
 
 #[derive(Debug, Args)]
+struct HoldoutArgs {
+    /// Canonical fixture-spec JSON.
+    #[arg(long)]
+    spec: PathBuf,
+    /// Named fixture queue whose evaluator-owned rows should execute.
+    #[arg(long)]
+    queue: String,
+    /// Golden-free holdout packet directory.
+    #[arg(long)]
+    out: PathBuf,
+    /// Hash-bound holdout receipt JSON.
+    #[arg(long)]
+    receipt: PathBuf,
+    /// Prebuilt renderer executable; skips Cargo discovery.
+    #[arg(long)]
+    binary: Option<PathBuf>,
+    /// Stable display-profile identifier.
+    #[arg(long, default_value = "terminal-grid-v1")]
+    display_profile: String,
+    /// Per-row process timeout in seconds.
+    #[arg(long, default_value_t = 60.0)]
+    timeout_seconds: f64,
+}
+
+#[derive(Debug, Args)]
 struct VisualAuditArgs {
     /// Final packet directory.
     #[arg(long)]
     out: Option<PathBuf>,
+    /// Versioned schema manifest; audits only its reviewable queue rows.
+    #[arg(long, conflicts_with_all = ["input_root", "metadata", "styles", "modes"])]
+    schema_manifest: Option<PathBuf>,
     /// Comma-separated styles.
     #[arg(long, default_value = "ascii,unicode")]
     styles: String,
@@ -150,6 +189,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::VisualAudit(args) => qa::audit::run(qa::audit::AuditArgs {
             out: args.out,
+            schema_manifest: args.schema_manifest,
             styles: args.styles,
             modes: args.modes,
             binary: args.binary,
@@ -160,6 +200,8 @@ fn main() -> Result<()> {
         }),
         Command::VisualValidate(args) => qa::validate::run(qa::validate::ValidateArgs {
             packet: args.packet,
+            queue_manifest: args.queue_manifest,
+            holdout: args.holdout,
             baseline: args.baseline,
             strict_quality: args.strict_quality,
         }),
@@ -194,8 +236,18 @@ fn main() -> Result<()> {
         }),
         Command::Schema(args) => qa::spec::run(qa::spec::SpecArgs {
             spec: args.spec,
+            queue: args.queue,
             check: args.check,
             emit_manifest: args.emit_manifest,
+        }),
+        Command::Holdout(args) => qa::holdout::run(qa::holdout::HoldoutArgs {
+            spec: args.spec,
+            queue: args.queue,
+            out: args.out,
+            receipt: args.receipt,
+            binary: args.binary,
+            display_profile: args.display_profile,
+            timeout_seconds: args.timeout_seconds,
         }),
     }
 }

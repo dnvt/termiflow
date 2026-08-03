@@ -17,6 +17,8 @@ type Signature = (String, String, String, String, String, String);
 #[derive(Debug)]
 pub struct ValidateArgs {
     pub packet: PathBuf,
+    pub queue_manifest: Option<PathBuf>,
+    pub holdout: bool,
     pub baseline: PathBuf,
     pub strict_quality: bool,
 }
@@ -26,6 +28,17 @@ pub fn run(args: ValidateArgs) -> Result<()> {
     let packet = resolve_from_root(&root, &args.packet);
     let baseline_path = resolve_from_root(&root, &args.baseline);
     let baseline = load_baseline(&baseline_path)?;
+    if let Some(queue_manifest) = args.queue_manifest.as_deref() {
+        let queue_manifest = resolve_from_root(&root, queue_manifest);
+        return validate_schema_packet(
+            &root,
+            &packet,
+            &queue_manifest,
+            &baseline,
+            args.strict_quality,
+            args.holdout,
+        );
+    }
     validate_packet_integrity(&root, &packet, &baseline, args.strict_quality)
 }
 
@@ -699,6 +712,304 @@ fn validate_packet_integrity(
         observed.len(),
         if strict { "strict" } else { "integrity" }
     );
+    Ok(())
+}
+
+fn validate_schema_packet(
+    root: &Path,
+    packet: &Path,
+    queue_manifest_path: &Path,
+    baseline: &Value,
+    strict: bool,
+    holdouts: bool,
+) -> Result<()> {
+    if !packet.is_dir() {
+        bail!("packet directory does not exist: {}", packet.display());
+    }
+    let packet_identity = common::load_json(&packet.join("identity.json"), "identity")?;
+    validate_identity(root, &packet_identity, baseline, strict)?;
+
+    let manifest_bytes = common::require_file(queue_manifest_path, "queue manifest")?;
+    let queue_manifest: Value = serde_json::from_slice(&manifest_bytes).with_context(|| {
+        format!(
+            "parse queue manifest JSON: {}",
+            queue_manifest_path.display()
+        )
+    })?;
+    let queue = validate_schema_manifest(&queue_manifest, holdouts)?;
+    let packet_schema_manifest = common::load_json(
+        &packet.join("schema_manifest.json"),
+        "packet schema manifest",
+    )?;
+    if packet_schema_manifest != queue_manifest {
+        bail!("packet schema manifest does not match the supplied queue manifest");
+    }
+
+    let summary = common::load_json(&packet.join("summary.json"), "summary")?;
+    if summary["schema"].as_str() != Some(common::SUMMARY_SCHEMA)
+        || summary["workload"].as_str() != Some("schema_queue")
+        || summary["schema_role"].as_str() != Some(if holdouts { "holdout" } else { "review" })
+    {
+        bail!("schema packet summary has the wrong workload schema");
+    }
+    let manifest_sha256 = common::sha256_bytes(&manifest_bytes);
+    if summary["schema_manifest_sha256"].as_str() != Some(manifest_sha256.as_str())
+        || summary["queue_id"] != queue.queue_id
+        || summary["queue_sha256"] != queue.queue_sha256
+    {
+        bail!("schema packet summary does not match the queue manifest");
+    }
+    if summary["binary"] != packet_identity["binary"] {
+        bail!("summary binary does not match identity.json");
+    }
+
+    let rows = load_manifest(packet)?;
+    if rows.len() != queue.expected_rows {
+        bail!(
+            "schema packet row count does not match queue manifest: expected {}, found {}",
+            queue.expected_rows,
+            rows.len()
+        );
+    }
+    if summary["expected_rows"].as_u64() != Some(queue.expected_rows as u64)
+        || summary["actual_rows"].as_u64() != Some(rows.len() as u64)
+        || summary["primary_rows"].as_u64() != Some(rows.len() as u64)
+        || summary["expected_error_rows"].as_u64() != Some(0)
+        || summary["warning_rows"].as_u64() != Some(0)
+        || summary["failures"] != json!([])
+    {
+        bail!("schema packet summary row counts or failures are invalid");
+    }
+    let styles = queue.styles.clone();
+    let modes = queue.modes.clone();
+    let (observed, codes) = validate_schema_rows(
+        root,
+        packet,
+        &rows,
+        &queue.rows,
+        &packet_identity,
+        &styles,
+        &modes,
+        strict,
+    )?;
+    validate_schema_quality(baseline, &codes)?;
+    validate_timing_file(packet, &rows)?;
+
+    let complete = common::load_json(&packet.join("COMPLETE.json"), "completion marker")?;
+    if complete["schema"].as_str() != Some(COMPLETE_SCHEMA) {
+        bail!("completion schema must be {COMPLETE_SCHEMA}");
+    }
+    let packet_manifest_hash = common::sha256_file(&packet.join("manifest.jsonl"))?;
+    if complete["rows"].as_u64() != Some(rows.len() as u64)
+        || complete["manifest_sha256"].as_str() != Some(packet_manifest_hash.as_str())
+    {
+        bail!("completion marker does not match the schema packet manifest");
+    }
+    let (digest, listing) = common::deterministic_digest(packet)?;
+    if common::require_file(&packet.join("PACKET.sha256"), "packet listing")? != listing.as_bytes()
+        || complete["packet_sha256"].as_str() != Some(digest.as_str())
+    {
+        bail!("schema packet checksum does not match packet contents");
+    }
+    println!(
+        "schema visual validation passed: {} (queue {}, {} rows, {} findings, {})",
+        packet.display(),
+        queue.queue_id,
+        rows.len(),
+        observed.len(),
+        if strict { "strict" } else { "integrity" }
+    );
+    Ok(())
+}
+
+struct SchemaQueue {
+    queue_id: Value,
+    queue_sha256: Value,
+    styles: Vec<String>,
+    modes: Vec<String>,
+    expected_rows: usize,
+    rows: BTreeMap<String, Value>,
+}
+
+fn validate_schema_manifest(document: &Value, holdouts: bool) -> Result<SchemaQueue> {
+    if document["schema"].as_str() != Some("termiflow.fixture_manifest.v2")
+        || document["spec_schema"].as_str() != Some("termiflow.fixture_spec.v2")
+        || document["spec_version"].as_i64() != Some(2)
+    {
+        bail!("schema manifest identity is invalid");
+    }
+    let queue_id = non_empty_string(document.get("queue_id"), "queue manifest queue_id")?;
+    let queue_sha256 =
+        non_empty_string(document.get("queue_sha256"), "queue manifest queue_sha256")?;
+    if queue_sha256.len() != 64 || !queue_sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("queue manifest queue_sha256 must be a SHA-256 digest");
+    }
+    let section = if holdouts { "holdouts" } else { "rows" };
+    let rows = document
+        .get(section)
+        .and_then(Value::as_array)
+        .filter(|rows| !rows.is_empty())
+        .ok_or_else(|| anyhow!("queue manifest rows must be a non-empty array"))?;
+    let count_key = if holdouts {
+        "holdout_row_count"
+    } else {
+        "row_count"
+    };
+    let declared_rows = document
+        .get(count_key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("queue manifest {count_key} must be an integer"))?;
+    if declared_rows != rows.len() as u64 {
+        bail!("queue manifest {count_key} does not match {section}");
+    }
+    let mut styles = BTreeSet::new();
+    let mut modes = BTreeSet::new();
+    let mut normalized_rows = BTreeMap::new();
+    for row in rows {
+        let case_id = non_empty_string(row.get("case_id"), "queue manifest case_id")?;
+        let variant_id = non_empty_string(row.get("variant_id"), "queue manifest variant_id")?;
+        let style = non_empty_string(row.get("style"), "queue manifest style")?;
+        let mode = non_empty_string(row.get("mode"), "queue manifest mode")?;
+        if !common::STYLES.contains(&style.as_str()) || !common::MODES.contains(&mode.as_str()) {
+            bail!("queue manifest row {variant_id} has invalid style or mode");
+        }
+        if row.get("kind").and_then(Value::as_str) != Some("success")
+            || row.get("holdout").and_then(Value::as_str)
+                != Some(if holdouts { "evaluator_owned" } else { "none" })
+        {
+            bail!("queue manifest row {variant_id} is not a reviewable success");
+        }
+        let fixture = format!("{case_id}--{variant_id}");
+        let key = format!("{fixture}\u{1f}{style}\u{1f}{mode}");
+        if normalized_rows.insert(key, row.clone()).is_some() {
+            bail!("queue manifest contains duplicate row {variant_id}.{style}.{mode}");
+        }
+        styles.insert(style);
+        modes.insert(mode);
+    }
+    let styles = common::STYLES
+        .iter()
+        .filter(|style| styles.contains(**style))
+        .map(|style| (*style).to_owned())
+        .collect::<Vec<_>>();
+    let modes = common::MODES
+        .iter()
+        .filter(|mode| modes.contains(**mode))
+        .map(|mode| (*mode).to_owned())
+        .collect::<Vec<_>>();
+    Ok(SchemaQueue {
+        queue_id: Value::String(queue_id),
+        queue_sha256: Value::String(queue_sha256),
+        styles,
+        modes,
+        expected_rows: normalized_rows.len(),
+        rows: normalized_rows,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_schema_rows(
+    root: &Path,
+    packet: &Path,
+    packet_rows: &[Value],
+    expected_rows: &BTreeMap<String, Value>,
+    packet_identity: &Value,
+    styles: &[String],
+    modes: &[String],
+    strict: bool,
+) -> Result<(BTreeSet<Signature>, BTreeSet<String>)> {
+    let mut seen = BTreeSet::new();
+    let mut observed = BTreeSet::new();
+    let mut codes = BTreeSet::new();
+    for row in packet_rows {
+        let fixture = non_empty_string(row.get("fixture"), "schema packet fixture")?;
+        let style = non_empty_string(row.get("style"), "schema packet style")?;
+        let mode = non_empty_string(row.get("mode"), "schema packet mode")?;
+        if !styles.contains(&style) || !modes.contains(&mode) {
+            bail!("schema packet row {fixture} has invalid style or mode");
+        }
+        let key = format!("{fixture}\u{1f}{style}\u{1f}{mode}");
+        let expected = expected_rows.get(&key).ok_or_else(|| {
+            anyhow!("schema packet row is outside the queue: {fixture}.{style}.{mode}")
+        })?;
+        if !seen.insert(key) {
+            bail!("schema packet contains a duplicate row {fixture}.{style}.{mode}");
+        }
+        if row.get("schema").and_then(Value::as_str) != Some(common::AUDIT_SCHEMA)
+            || row.get("classification").and_then(Value::as_str) != Some("success")
+            || row.get("holdout").and_then(Value::as_str) == Some("evaluator_owned")
+        {
+            bail!("schema packet row {fixture} is not a reviewable success");
+        }
+        if row["direction"] != expected["direction"] {
+            bail!("schema packet direction mismatch for {fixture}");
+        }
+        let expected_input =
+            non_empty_string(expected.get("input_path"), "queue manifest input_path")?;
+        if row["input"] != expected_input {
+            bail!("schema packet input mismatch for {fixture}");
+        }
+        let input_path = common::repository_file(
+            root,
+            &row["input"],
+            &format!("schema packet {fixture} input"),
+        )?;
+        let input_bytes = fs::read(&input_path)?;
+        if common::sha256_bytes(&input_bytes)
+            != non_empty_string(
+                expected.get("source_sha256"),
+                "queue manifest source_sha256",
+            )?
+        {
+            bail!("schema packet source hash mismatch for {fixture}");
+        }
+        let actual_case_id = common::case_id(&input_bytes, &fixture, &style, &mode);
+        if row["case_id"].as_str() != Some(actual_case_id.as_str()) {
+            bail!("schema packet case_id does not match its input/style/mode for {fixture}");
+        }
+        if row.get("identity") != Some(packet_identity) {
+            bail!("schema packet row identity differs from identity.json");
+        }
+        let stdout = common::validate_blob_ref(packet, &row["stdout"], "schema packet stdout")?;
+        let stderr = common::validate_blob_ref(packet, &row["stderr"], "schema packet stderr")?;
+        if row["status"].as_i64() != Some(0) || stdout.is_empty() || !stderr.is_empty() {
+            bail!("schema packet stream contract failed for {fixture}");
+        }
+        let dimensions = common::dimensions(&stdout);
+        for field in ["stdout_rows", "stdout_max_codepoints", "stdout_bytes"] {
+            if row["dimensions"].get(field) != dimensions.get(field) {
+                bail!("schema packet dimensions mismatch for {fixture}");
+            }
+        }
+        let (row_observed, row_codes) = validate_evidence(packet, row, "success", strict)?;
+        observed.extend(row_observed);
+        codes.extend(row_codes);
+    }
+    if seen.len() != expected_rows.len() {
+        bail!(
+            "schema packet coverage mismatch: expected {}, found {}",
+            expected_rows.len(),
+            seen.len()
+        );
+    }
+    Ok((observed, codes))
+}
+
+fn validate_schema_quality(baseline: &Value, codes: &BTreeSet<String>) -> Result<()> {
+    let forbidden = baseline["forbidden_codes"]
+        .as_array()
+        .ok_or_else(|| anyhow!("baseline.forbidden_codes must be a string list"))?;
+    let forbidden_observed: Vec<_> = forbidden
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|code| codes.contains(*code))
+        .collect();
+    if !forbidden_observed.is_empty() {
+        bail!(
+            "forbidden critic findings in schema packet: {}",
+            forbidden_observed.join(", ")
+        );
+    }
     Ok(())
 }
 
