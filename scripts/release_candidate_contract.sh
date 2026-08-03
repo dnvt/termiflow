@@ -20,12 +20,14 @@ GIT_INDEX_FILE="$patch_index" git -C "$root" read-tree HEAD
 GIT_INDEX_FILE="$patch_index" git -C "$root" add -A -- .
 GIT_INDEX_FILE="$patch_index" git -C "$root" diff --cached --binary --full-index HEAD -- . > "$patch_file"
 git -C "$root" worktree add --detach "$test_root/repo" HEAD >/dev/null
-git -C "$test_root/repo" apply --whitespace=nowarn "$patch_file"
+if [[ -s "$patch_file" ]]; then
+  git -C "$test_root/repo" apply --whitespace=nowarn "$patch_file"
+fi
 cp "$root/scripts/release_candidate.sh" "$test_root/repo/scripts/release_candidate.sh"
 cp "$root/scripts/package_contract.sh" "$test_root/repo/scripts/package_contract.sh"
 chmod +x "$test_root/repo/scripts/release_candidate.sh" "$test_root/repo/scripts/package_contract.sh"
 git -C "$test_root/repo" add -A
-git -C "$test_root/repo" -c user.name='TermiFlow contract test' -c user.email='contract-test@localhost' commit --no-verify -m 'candidate contract fixture' >/dev/null
+git -C "$test_root/repo" -c user.name='TermiFlow contract test' -c user.email='contract-test@localhost' commit --allow-empty --no-verify -m 'candidate contract fixture' >/dev/null
 
 candidate="$test_root/candidate.json"
 repo="$test_root/repo"
