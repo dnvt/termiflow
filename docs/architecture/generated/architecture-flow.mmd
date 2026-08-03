@@ -1,0 +1,21 @@
+% Generated file; edit docs/architecture/facts.json instead.
+% termiflow-facts-schema: termiflow.architecture_facts.v1
+% termiflow-facts-sha256: d86126ceff707b6a56d52f4bf715613f6932e9fbf7a02fcc553821dc8c4b43d0
+% termiflow-generator: scripts/generate_architecture_diagrams.sh
+flowchart LR
+  public_input[Public graph/config/parser]
+  private_geometry[Immutable geometry snapshot]
+  private_scene[Scene observation seam]
+  qa_publication[QA publication state machine]
+  release_candidate[Candidate-bound release]
+  reservation[Reservation]
+  topology[Topology]
+  semantic_cells[Semantic cells]
+  glyph_projection[Glyph projection]
+  terminal_transport[Terminal transport]
+  public_input -->|semantic graph and effective policy| reservation
+  reservation -->|immutable geometry and route intent| topology
+  topology -->|route ownership and boundary crossings| semantic_cells
+  semantic_cells -->|cell metadata and collision decisions| glyph_projection
+  glyph_projection -->|display frame and terminal updates| terminal_transport
+  qa_publication -->|validated evidence and package contract| release_candidate

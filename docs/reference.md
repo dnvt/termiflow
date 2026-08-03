@@ -28,7 +28,7 @@
 - `--pad N`: add padding (spaces/lines) around output (default 0).
 - `--spacing`: choose `compact`, `default`, or `spacious` layout spacing.
 - `--compact`: legacy alias for `--spacing=compact`; deprecated.
-- `--scaling`: choose `auto` or `fixed` canvas scaling (default `auto`).
+- `--scaling`: choose `auto` or `fixed` canvas scaling (default `fixed`).
 - `--fit-terminal`: constrain the canvas to current terminal dimensions.
 - `--optimize-render`: enable bounded render/layout repair after the initial draw.
 - `--render-repair-passes N`: max render repair passes when optimization is enabled.

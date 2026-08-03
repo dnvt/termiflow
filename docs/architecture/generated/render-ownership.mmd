@@ -1,0 +1,14 @@
+% Generated file; edit docs/architecture/facts.json instead.
+% termiflow-facts-schema: termiflow.architecture_facts.v1
+% termiflow-facts-sha256: d86126ceff707b6a56d52f4bf715613f6932e9fbf7a02fcc553821dc8c4b43d0
+% termiflow-generator: scripts/generate_architecture_diagrams.sh
+flowchart TD
+  reservation[Reservation]
+  topology[Topology]
+  semantic_cells[Semantic cells]
+  glyph_projection[Glyph projection]
+  terminal_transport[Terminal transport]
+  reservation --> topology
+  topology --> semantic_cells
+  semantic_cells --> glyph_projection
+  glyph_projection --> terminal_transport

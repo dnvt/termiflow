@@ -12,6 +12,8 @@ timestamped packet with `scripts/visual_audit.sh`.
 ```
 fixtures/
 ├── inputs/          # Mermaid-lite input diagrams (.md)
+├── holdouts/        # Evaluator-owned schema inputs (never golden-tested)
+│   └── inputs/
 ├── expected/        # Expected output files (.unicode.txt, .ascii.txt) (generated)
 └── README.md        # This file (source of truth)
 ```
@@ -19,6 +21,12 @@ fixtures/
 The agent-facing perceptual procedure lives in
 `skills/termiflow-visual-review/SKILL.md`; it is Rust/Bash-only and keeps the
 machine pre-screen separate from one-frame human-visible review.
+
+The versioned schema contract lives in `fixture_spec.json`. Each named queue
+owns its review canaries, negative variants, and evaluator-owned holdouts;
+holdout rows are emitted for evaluation but never receive a checked-in golden
+target. Holdout source files live outside the primary input corpus so legacy
+golden and metadata sweeps cannot accidentally promote them.
 
 Note: golden tests (`cargo test --features golden`) load expected files from disk at runtime.
 Regenerate them after intentional rendering changes.
@@ -63,15 +71,51 @@ scripts/render_fixtures.sh --ascii --unicode
 # Validate a completed full packet against the known quality baseline
 scripts/visual_validate.sh --packet /path/to/packet --strict-quality
 
+# Validate or materialize the canonical smoke queue (16 review rows)
+cargo run --features qa --bin termiflow-qa -- schema \
+  --spec tests/fixtures/fixture_spec.json \
+  --queue canonical-smoke --check
+cargo run --features qa --bin termiflow-qa -- schema \
+  --spec tests/fixtures/fixture_spec.json \
+  --queue canonical-smoke \
+  --emit-manifest /tmp/canonical-smoke-manifest.json
+
+# Materialize the junction canary queue; its 16 holdout rows stay evaluator-owned
+cargo run --features qa --bin termiflow-qa -- schema \
+  --spec tests/fixtures/fixture_spec.json \
+  --queue junction-quad \
+  --emit-manifest /tmp/junction-quad-manifest.json
+cargo run --features qa --bin termiflow-qa -- golden \
+  --manifest /tmp/junction-quad-manifest.json --check
+
+# Execute the evaluator-owned holdout queue without creating goldens
+cargo run --features qa --bin termiflow-qa -- holdout \
+  --spec tests/fixtures/fixture_spec.json \
+  --queue junction-quad \
+  --out /tmp/junction-quad-holdout-packet \
+  --receipt /tmp/junction-quad-holdout-receipt.json
+
 # Add structural machine coverage for rows with no warning, error, fallback, or critic signal
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --prescreen-clean
 
 # Review residual frames one at a time; each record binds frame/evidence hashes
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --next
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --record /tmp/one-review.json
-# Force a full perceptual pass, including machine-clean rows
-scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --next --include-structural
+# For a full perceptual pass, start with a fresh decisions file and omit
+# --prescreen-clean; repeat --next and --record until every frame is reviewed.
+scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --next
+scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --record /tmp/one-review.json
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --validate
+
+# Close one explicit fix/hold/lesson cycle without changing goldens
+scripts/visual_cycle.sh \
+  --packet /path/to/packet \
+  --decisions /tmp/review-decisions.jsonl \
+  --queue-manifest /tmp/junction-quad-manifest.json \
+  --holdout-receipt /tmp/junction-quad-holdout-receipt.json \
+  --holdout-decisions /tmp/junction-quad-holdout-decisions.jsonl \
+  --record /tmp/visual-cycle.json \
+  --output /tmp/visual-cycle-receipt.json
 
 # Single test
 cargo run -- --print tests/fixtures/inputs/flow_simple_td.md > tests/fixtures/expected/flow_simple_td.unicode.txt
@@ -100,6 +144,37 @@ done
 7. **Frame review is sequential** - inspect one frame, bind its frame/evidence
    hashes, state the observation, propose a falsifiable hypothesis, identify
    related fixtures, and choose the next targeted command before moving on
+8. **The loop is self-improving** - generate schema-bound golden canaries,
+   inspect rendered frames with machine evidence plus human-eye row/column and
+   glyph observations, record a falsifiable fix hypothesis, run homolog and
+   evaluator-owned holdout checks, then preserve the lesson and next target in
+   the cycle receipt
+
+## Visual cycle receipt
+
+`tests/fixtures/visual_cycle_record.schema.json` defines the record consumed by
+`scripts/visual_cycle.sh`. The command first requires strict packet validation
+and complete one-frame perceptual coverage, then verifies the record against
+the exact packet completion/manifest/identity/checksum hashes and decision-log
+hash. Its required `scope` object repeats the queue, packet, review, holdout,
+fix, homolog result, golden-approval, and lesson bindings so a record cannot
+look complete while its top-level evidence refers to another run. A record
+must include the human-eye observation with row/column/glyph details,
+owner-layer hypothesis, predicted observation, falsifier, next command, fix or
+explicit hold disposition, homolog result, holdout result, and a hash-bound
+durable lesson artifact.
+
+The receipt is process evidence, not golden approval. Machine critic findings
+and perceptual decisions remain separate evidence layers. A `hold` or
+`falsified` cycle may keep a holdout blocked or unrun when the reason and next
+command are explicit; a `fixed` cycle requires a localized fix and a passed
+holdout. The wrapper never appends decisions, changes source, updates
+expected outputs, or promotes a baseline.
+
+There is intentionally no structural-review escape hatch. A clean machine
+pre-screen is not a human-eye decision; a deliberate full perceptual pass uses
+a fresh decisions file and drains `--next` one frame at a time until
+`--validate` succeeds.
 
 ## Direction Semantics
 
@@ -108,4 +183,4 @@ done
 - **RL**: Same as LR but rendered right-to-left (mirrored)
 
 ---
-Last updated: August 1, 2026
+Last updated: August 2, 2026

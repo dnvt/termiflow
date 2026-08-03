@@ -16,7 +16,7 @@
 //!
 //! The rendering pipeline has three stages:
 //! 1. **Parse** - Convert Mermaid syntax to a graph structure
-//! 2. **Layout** - Assign coordinates using the waterfall algorithm
+//! 2. **Layout** - Assign coordinates using the coarse layered layout pipeline
 //! 3. **Render** - Draw boxes and edges on a 2D canvas
 
 // ============================================================================
@@ -39,6 +39,7 @@ pub mod parser;
 pub mod portals;
 pub mod render;
 pub(crate) mod route_plan;
+pub(crate) mod runtime;
 pub mod scaling;
 pub mod spacing;
 pub mod style;
@@ -48,7 +49,7 @@ pub mod tui;
 // Re-exports for convenient access
 // ============================================================================
 
-pub use config::{Config, ConfigBuilder};
+pub use config::{effective_render_policy, Config, ConfigBuilder};
 pub use crossing::{CrossingConfig, CrossingMinimizer, Heuristic};
 pub use display_profile::{
     display_char_width, display_width, graphemes, split_text_to_width_chunks, truncate_to_width,
@@ -235,14 +236,18 @@ pub fn render(input: &str, options: RenderOptions) -> Result<String> {
 
 /// Render a Mermaid diagram and return critic/semantic feedback for the final frame.
 pub fn render_with_feedback(input: &str, options: RenderOptions) -> Result<RenderOutcome> {
-    let parse_result = parser::parse(input, options.strict)?;
-    render_parse_result_with_feedback(parse_result, options)
+    runtime::with_captured(|| {
+        let parse_result = parser::parse(input, options.strict)?;
+        render_parse_result_with_feedback(parse_result, options)
+    })
 }
 
 /// Render a TermiFlow JSON graph (see `parse_json_graph`) to ASCII/Unicode art.
 pub fn render_json(input: &str, options: RenderOptions) -> Result<String> {
-    let (graph, config) = json_input::parse_json_graph(input)?;
-    Ok(render_parse_result_with_feedback(ParseResult { graph, config }, options)?.output)
+    runtime::with_captured(|| {
+        let (graph, config) = json_input::parse_json_graph(input)?;
+        Ok(render_parse_result_with_feedback(ParseResult { graph, config }, options)?.output)
+    })
 }
 
 fn render_parse_result_with_feedback(
@@ -318,16 +323,22 @@ pub fn layout_and_render_with_feedback(
     graph: Graph,
     config: Config,
 ) -> Result<(Graph, RenderOutcome)> {
+    runtime::with_captured(|| layout_and_render_with_feedback_inner(graph, config))
+}
+
+fn layout_and_render_with_feedback_inner(
+    graph: Graph,
+    config: Config,
+) -> Result<(Graph, RenderOutcome)> {
     let mut best_config = config.clone();
     let mut best_graph = layout_graph(graph.clone(), &best_config.spacing, None)?;
     let mut best_outcome = render::render_with_feedback(&best_graph, &best_config)?;
     best_outcome.warnings = best_graph.warnings.clone();
     best_outcome.layout_attempts = 1;
 
-    let layout_repair_passes = std::env::var("TERMIFLOW_LAYOUT_REPAIR_PASSES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .map(|value| value.max(1))
+    let layout_repair_passes = runtime::current()
+        .compatibility
+        .layout_repair_passes
         .unwrap_or(config.layout_repair_passes);
 
     if config.optimize_render {

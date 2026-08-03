@@ -49,9 +49,20 @@ see.
 6. Repeat `--next` only after the previous record succeeds. Finish with
    `--validate`; exception rows require perceptual decisions even if a machine
    pre-screen exists.
+7. Close an accepted improvement cycle with
+   `scripts/visual_cycle.sh --packet PACKET --decisions DECISIONS --record
+   CYCLE.json --output RECEIPT.json`. The cycle record must bind the packet and
+   decision hashes, exact observation details, owner-layer hypothesis,
+   expected result, falsifier, fix or explicit hold, homologs, holdout result,
+   and a durable lesson artifact. This command validates and receipts the
+   cycle; it never appends decisions or approves goldens.
 
-For a deliberate full perceptual pass, use `--include-structural` when pulling
-the queue. This is slower but useful after layout or renderer-wide changes.
+For a deliberate full perceptual pass, start with a fresh decisions file and
+omit `--prescreen-clean`; repeatedly pull one frame with `--next`, inspect it,
+and append the hash-bound observation with `--record` before requesting the
+next frame. This is slower but useful after layout or renderer-wide changes.
+There is intentionally no structural-review escape hatch: a machine clean
+pre-screen is structural coverage only and cannot close perceptual review.
 
 ## Human-eye checklist
 
@@ -110,8 +121,11 @@ For each `watch` or `fail`:
 5. Generate a fresh packet, rerun structural validation and perceptual review,
    then update the decision only with a new hash-bound record. Do not mutate the
    old record to make history look clean.
-6. Update the golden only with `--approve --intent "..."` after the new frame is
-   visibly better and all strict checks pass.
+6. Record the cycle receipt with `scripts/visual_cycle.sh`; a `hold` or
+   `falsified` disposition is valid when its next command and holdout status are
+   explicit, but it is not a renderer-fix claim.
+7. Update the golden only with `--approve --intent "..."` after the new frame is
+   visibly better, the cycle receipt is accepted, and all strict checks pass.
 
 ## Integration points
 
@@ -119,7 +133,9 @@ For each `watch` or `fail`:
   packet/evidence validators.
 - Bash entry points: `scripts/visual_audit.sh`,
   `scripts/review_visual_packet.sh`, `scripts/visual_validate.sh`, and
-  `scripts/regenerate_golden.sh`.
+  `scripts/regenerate_golden.sh`, plus `scripts/visual_cycle.sh` for the
+  hash-bound fix/hold/lesson boundary.
+- Cycle record contract: `tests/fixtures/visual_cycle_record.schema.json`.
 - Contributor contract: `CONTRIBUTING.md` and `tests/fixtures/README.md`.
 - Maestro checkpoints: record research, plan, implementation review, decision,
   and run/completion artifacts for each material workflow slice.

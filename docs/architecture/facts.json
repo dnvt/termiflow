@@ -1,0 +1,133 @@
+{
+  "schema": "termiflow.architecture_facts.v1",
+  "version": 1,
+  "source": {
+    "owner": "docs/architecture/facts.json",
+    "repository": "github.com/dnvt/termiflow",
+    "mode": "curated assertions with executable source-owner and drift checks",
+    "supporting_inventories": [
+      "docs/architecture/effective-policy-matrix.json",
+      "docs/architecture/persistence-capability-matrix.json",
+      "docs/architecture/scene-mapping.md"
+    ]
+  },
+  "layers": [
+    {
+      "id": "reservation",
+      "label": "Reservation",
+      "owner": "src/layout",
+      "visibility": "private implementation",
+      "responsibilities": ["ranks", "bounds", "keepouts", "portal slots"]
+    },
+    {
+      "id": "topology",
+      "label": "Topology",
+      "owner": "src/geom.rs",
+      "visibility": "private implementation",
+      "responsibilities": ["axis-aligned routes", "boundary crossings", "route ownership"]
+    },
+    {
+      "id": "semantic-cells",
+      "label": "Semantic cells",
+      "owner": "src/render/semantic.rs",
+      "visibility": "public facade, private cell ownership",
+      "responsibilities": ["owner kind", "role", "z-order", "semantic frame"]
+    },
+    {
+      "id": "glyph-projection",
+      "label": "Glyph projection",
+      "owner": "src/render/canvas.rs",
+      "visibility": "public Canvas compatibility surface",
+      "responsibilities": ["glyph lowering", "overlap resolution", "bounded repair"]
+    },
+    {
+      "id": "terminal-transport",
+      "label": "Terminal transport",
+      "owner": "src/tui",
+      "visibility": "public terminal facade",
+      "responsibilities": ["viewport slicing", "frame retention", "presenter diffs"]
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "public-input",
+      "label": "Public graph/config/parser",
+      "owner": "src/lib.rs",
+      "visibility": "public",
+      "contract": "Graph, config, parser, JSON input, and render entrypoints preserve compatibility"
+    },
+    {
+      "id": "private-geometry",
+      "label": "Immutable geometry snapshot",
+      "owner": "src/layout_snapshot.rs",
+      "visibility": "private",
+      "contract": "Derived coordinates and routes are copied once at the render boundary"
+    },
+    {
+      "id": "private-scene",
+      "label": "Scene observation seam",
+      "owner": "src/render/scene.rs",
+      "visibility": "private",
+      "contract": "Typed intents may be recorded, but Canvas remains the glyph authority"
+    },
+    {
+      "id": "qa-publication",
+      "label": "QA publication state machine",
+      "owner": "src/qa/persist.rs",
+      "visibility": "private repository QA",
+      "contract": "Claim, stage, digest, and publish without clobbering"
+    },
+    {
+      "id": "release-candidate",
+      "label": "Candidate-bound release",
+      "owner": "scripts/release_candidate.sh",
+      "visibility": "repository workflow",
+      "contract": "Tag, source, package, toolchain, targets, and archives bind before publication"
+    }
+  ],
+  "flows": [
+    {"from": "public-input", "to": "reservation", "data": "semantic graph and effective policy"},
+    {"from": "reservation", "to": "topology", "data": "immutable geometry and route intent"},
+    {"from": "topology", "to": "semantic-cells", "data": "route ownership and boundary crossings"},
+    {"from": "semantic-cells", "to": "glyph-projection", "data": "cell metadata and collision decisions"},
+    {"from": "glyph-projection", "to": "terminal-transport", "data": "display frame and terminal updates"},
+    {"from": "qa-publication", "to": "release-candidate", "data": "validated evidence and package contract"}
+  ],
+  "contracts": {
+    "determinism": {
+      "owner": "src/render/trace.rs",
+      "schema": "termiflow.render_determinism.v1",
+      "tie_breakers": ["semantic owner", "canonical endpoint/key", "source occurrence", "segment index"]
+    },
+    "qa": {
+      "owner": "src/qa/persist.rs",
+      "states": ["claimed", "writing", "ready", "published", "failed", "recovery-required"],
+      "invariant": "completion markers and content digests precede final publication"
+    },
+    "release": {
+      "owner": "scripts/release_preflight.sh",
+      "required_evidence": ["candidate manifest", "package contract", "target archive fragments", "source identity"]
+    }
+  },
+  "capabilities": {
+    "diagram_family": "flowchart",
+    "supported_directions": ["TD", "TB", "LR", "RL", "BT"],
+    "supported_adapters": ["Mermaid flowchart"],
+    "unsupported_without_silent_degradation": ["sequence", "state", "class", "er", "gantt", "mindmap"]
+  },
+  "diagnostics": [
+    {"id": "strict-warnings", "owner": "src/parser.rs", "behavior": "warnings become errors in strict mode"},
+    {"id": "critic", "owner": "src/render/critic.rs", "behavior": "critic findings remain diagnostic and do not silently change public output"},
+    {"id": "policy-digest", "owner": "src/config.rs", "behavior": "output-affecting effective policy is hash-bound to evidence"}
+  ],
+  "provenance": {
+    "facts_owner": "docs/architecture/facts.json",
+    "generated_outputs": [
+      "docs/architecture/generated/architecture-flow.mmd",
+      "docs/architecture/generated/render-ownership.mmd"
+    ],
+    "generator": "scripts/generate_architecture_diagrams.sh",
+    "drift_check": "scripts/check_architecture_facts.sh",
+    "portable_path_policy": "repository-relative paths only"
+  }
+}

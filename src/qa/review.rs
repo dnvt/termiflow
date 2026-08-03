@@ -1,12 +1,10 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
-use super::common;
+use super::{common, persist};
 
 pub const DECISION_SCHEMA: &str = "termiflow.visual_review.decision.v3";
 const FRAME_SCHEMA: &str = "termiflow.visual_review.frame.v2";
@@ -32,6 +30,14 @@ impl DecisionState {
             STRUCTURAL_PRESCREEN => self.structural.is_some(),
             PERCEPTUAL_REVIEW => self.perceptual.is_some(),
             _ => false,
+        }
+    }
+
+    fn get(&self, kind: &str) -> Option<&Value> {
+        match kind {
+            STRUCTURAL_PRESCREEN => self.structural.as_ref(),
+            PERCEPTUAL_REVIEW => self.perceptual.as_ref(),
+            _ => None,
         }
     }
 
@@ -75,13 +81,22 @@ pub fn run(args: ReviewArgs) -> Result<()> {
         validate_decision(&decision, &rows)?;
         let case_id = non_empty_string(decision.get("case_id"), "decision case_id")?;
         let kind = review_kind(&decision)?;
-        if decisions
-            .get(&case_id)
-            .is_some_and(|state| state.contains(kind))
-        {
+        let outcome = persist::append_decision_checked(&decisions_path, &decision, || {
+            let fresh_decisions = load_decisions(&decisions_path, &rows)?;
+            if let Some(existing) = fresh_decisions
+                .get(&case_id)
+                .and_then(|state| state.get(kind))
+            {
+                if persist::semantically_equal_without_timestamp(existing, &decision) {
+                    return Ok(persist::PublishOutcome::EqualReplay);
+                }
+                bail!("conflicting {kind} decision for case_id: {case_id}");
+            }
+            Ok(persist::PublishOutcome::Published)
+        })?;
+        if outcome == persist::PublishOutcome::EqualReplay {
             bail!("duplicate {kind} decision for case_id: {case_id}");
         }
-        append_decision(&decisions_path, &decision)?;
         println!("{case_id}");
         return Ok(());
     }
@@ -222,6 +237,16 @@ fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result
     let row = rows
         .get(&case_id)
         .ok_or_else(|| anyhow!("decision references unknown case_id: {case_id}"))?;
+    if let Some(run_id) = row["identity"]["run_identity"]["run_id"].as_str() {
+        if decision.get("run_id").and_then(Value::as_str) != Some(run_id) {
+            bail!("decision run_id is stale for {case_id}");
+        }
+    }
+    if let Some(policy_sha256) = row["policy"]["sha256"].as_str() {
+        if decision.get("policy_sha256").and_then(Value::as_str) != Some(policy_sha256) {
+            bail!("decision effective policy is stale for {case_id}");
+        }
+    }
     if decision["frame_sha256"] != row["stdout"]["sha256"] {
         bail!("stale frame hash for {case_id}; regenerate the next frame");
     }
@@ -378,7 +403,7 @@ fn prescreen_clean(
 
         let decision = structural_decision(row, packet, decisions_path)?;
         validate_decision(&decision, rows)?;
-        append_decision(decisions_path, &decision)?;
+        persist::append_decision(decisions_path, &decision)?;
         recorded += 1;
     }
 
@@ -477,12 +502,13 @@ fn structural_decision(row: &Value, packet: &Path, decisions_path: &Path) -> Res
         "manifest evidence sha256",
     )?;
 
-    Ok(json!({
+    let mut decision = json!({
         "schema": DECISION_SCHEMA,
         "review_kind": STRUCTURAL_PRESCREEN,
         "case_id": case_id,
         "frame_sha256": frame_sha256,
         "evidence_sha256": evidence_sha256,
+        "policy_sha256": row["policy"]["sha256"],
         "decision": "pass",
         "severity": "P3",
         "dimensions": DIMENSIONS,
@@ -500,11 +526,15 @@ fn structural_decision(row: &Value, packet: &Path, decisions_path: &Path) -> Res
         ),
         "reviewer": "machine",
         "timestamp": common::now_label(),
-    }))
+    });
+    if let Some(run_id) = row["identity"]["run_identity"]["run_id"].as_str() {
+        decision["run_id"] = Value::String(run_id.to_owned());
+    }
+    Ok(decision)
 }
 
 fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
-    let input = common::repository_file(root, &row["input"], "manifest input")?;
+    let input_source = manifest_input_source(root, packet, row)?;
     let frame = common::validate_blob_ref(packet, &row["stdout"], "frame")?;
     let evidence_ref = row
         .get("evidence")
@@ -517,12 +547,14 @@ fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
     Ok(json!({
         "schema": FRAME_SCHEMA,
         "case_id": row["case_id"],
+        "run_id": row["identity"]["run_identity"]["run_id"],
+        "policy_sha256": row["policy"]["sha256"],
         "fixture": row["fixture"],
         "style": row["style"],
         "mode": row["mode"],
         "frame_sha256": row["stdout"]["sha256"],
         "evidence_sha256": evidence_hash,
-        "input": String::from_utf8(common::require_file(&input, "manifest input")?).context("input is not UTF-8")?,
+        "input": input_source,
         "frame": String::from_utf8(frame).context("frame is not UTF-8")?,
         "dimensions": row["dimensions"],
         "critic": evidence["critic"],
@@ -550,22 +582,76 @@ fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
             "next_command": "targeted test or review command",
             "reviewer": "ai|human",
             "review_kind": "perceptual",
+            "run_id": row["identity"]["run_identity"]["run_id"],
+            "policy_sha256": row["policy"]["sha256"],
         },
     }))
 }
 
-fn append_decision(path: &Path, decision: &Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+fn manifest_input_source(root: &Path, packet: &Path, row: &Value) -> Result<String> {
+    let input = &row["input"];
+    match common::repository_file(root, input, "manifest input") {
+        Ok(path) => String::from_utf8(common::require_file(&path, "manifest input")?)
+            .context("input is not UTF-8"),
+        Err(input_error) => holdout_input_source(packet, row)?.ok_or(input_error),
     }
-    let mut stream = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("open decision log {}", path.display()))?;
-    let mut line = serde_json::to_vec(decision)?;
-    line.push(b'\n');
-    stream.write_all(&line).context("append review decision")
+}
+
+fn holdout_input_source(packet: &Path, row: &Value) -> Result<Option<String>> {
+    let schema_manifest = packet.join("schema_manifest.json");
+    if !schema_manifest.is_file() {
+        return Ok(None);
+    }
+    let summary = common::load_json(&packet.join("summary.json"), "packet summary")?;
+    let expected_manifest_hash = summary
+        .get("schema_manifest_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("packet summary has no schema manifest hash"))?;
+    let actual_manifest_hash = common::sha256_file(&schema_manifest)?;
+    if actual_manifest_hash != expected_manifest_hash {
+        bail!(
+            "packet schema manifest hash mismatch: expected {expected_manifest_hash}, got {actual_manifest_hash}"
+        );
+    }
+    let schema = common::load_json(&schema_manifest, "packet schema manifest")?;
+    let Some(holdouts) = schema.get("holdouts").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let fixture = row
+        .get("fixture")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout review row has no fixture"))?;
+    let variant_id = fixture
+        .rsplit_once("--")
+        .map(|(_, variant)| variant)
+        .ok_or_else(|| anyhow!("holdout review fixture has no variant: {fixture}"))?;
+    let style = row
+        .get("style")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout review row has no style"))?;
+    let mode = row
+        .get("mode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout review row has no mode"))?;
+    let Some(holdout) = holdouts.iter().find(|holdout| {
+        holdout.get("variant_id").and_then(Value::as_str) == Some(variant_id)
+            && holdout.get("style").and_then(Value::as_str) == Some(style)
+            && holdout.get("mode").and_then(Value::as_str) == Some(mode)
+    }) else {
+        return Ok(None);
+    };
+    let source = holdout
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout source is missing for {variant_id}"))?;
+    let expected_hash = holdout
+        .get("source_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout source hash is missing for {variant_id}"))?;
+    if common::sha256_bytes(source.as_bytes()) != expected_hash {
+        bail!("holdout source hash is stale for {variant_id}");
+    }
+    Ok(Some(source.to_owned()))
 }
 
 fn non_empty_string(value: Option<&Value>, label: &str) -> Result<String> {
@@ -579,6 +665,7 @@ fn non_empty_string(value: Option<&Value>, label: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn structural_predicate_rejects_every_machine_signal() {
@@ -790,5 +877,64 @@ mod tests {
             "timestamp": "now"
         });
         assert!(validate_decision(&decision, &rows).is_err());
+    }
+
+    #[test]
+    fn source_only_holdout_review_uses_packet_manifest_source() {
+        let packet = std::env::temp_dir().join(format!(
+            "termiflow-review-holdout-{}-{}",
+            std::process::id(),
+            common::now_label()
+        ));
+        fs::create_dir_all(&packet).expect("create packet directory");
+        let source = "graph TD\nA[In] --> B[Out]\n";
+        common::write_json(
+            &packet.join("schema_manifest.json"),
+            &json!({
+                "holdouts": [{
+                    "variant_id": "holdout_td",
+                    "style": "unicode",
+                    "mode": "default",
+                    "source": source,
+                    "source_sha256": common::sha256_bytes(source.as_bytes())
+                }]
+            }),
+        )
+        .expect("write schema manifest");
+        let schema_hash = common::sha256_file(&packet.join("schema_manifest.json"))
+            .expect("hash schema manifest");
+        common::write_json(
+            &packet.join("summary.json"),
+            &json!({"schema_manifest_sha256": schema_hash}),
+        )
+        .expect("write packet summary");
+        let row = json!({
+            "input": "termiflow-holdout-input-transient.md",
+            "fixture": "case--holdout_td",
+            "style": "unicode",
+            "mode": "default"
+        });
+
+        let actual = manifest_input_source(Path::new("/missing-root"), &packet, &row)
+            .expect("resolve source-only holdout input");
+        assert_eq!(actual, source);
+
+        common::write_json(
+            &packet.join("schema_manifest.json"),
+            &json!({
+                "holdouts": [{
+                    "variant_id": "holdout_td",
+                    "style": "unicode",
+                    "mode": "default",
+                    "source": "graph TD\nA[Changed] --> B[Out]\n",
+                    "source_sha256": common::sha256_bytes(b"graph TD\nA[Changed] --> B[Out]\n")
+                }]
+            }),
+        )
+        .expect("tamper schema manifest");
+        let error = manifest_input_source(Path::new("/missing-root"), &packet, &row)
+            .expect_err("tampered schema manifest must be rejected");
+        assert!(error.to_string().contains("schema manifest hash mismatch"));
+        fs::remove_dir_all(packet).expect("remove packet directory");
     }
 }

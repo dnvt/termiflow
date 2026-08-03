@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,10 +7,10 @@ use serde_json::{json, Map, Value};
 
 use super::common;
 
-pub const SPEC_SCHEMA: &str = "termiflow.fixture_spec.v1";
-pub const MANIFEST_SCHEMA: &str = "termiflow.fixture_manifest.v1";
-const CHECK_SCHEMA: &str = "termiflow.fixture_spec_check.v1";
-const SPEC_VERSION: i64 = 1;
+pub const SPEC_SCHEMA: &str = "termiflow.fixture_spec.v2";
+pub const MANIFEST_SCHEMA: &str = "termiflow.fixture_manifest.v2";
+const CHECK_SCHEMA: &str = "termiflow.fixture_spec_check.v2";
+const SPEC_VERSION: i64 = 2;
 const HOLDOUTS: &[&str] = &["none", "shared", "evaluator_owned"];
 const SEVERITIES: &[&str] = &["P0", "P1", "P2", "P3"];
 const DIMENSIONS: &[&str] = &["semantic", "containment", "route", "text", "readability"];
@@ -31,8 +31,21 @@ const REVIEW_CLASSES: &[&str] = &[
 #[derive(Debug)]
 pub struct SpecArgs {
     pub spec: PathBuf,
+    pub queue: String,
     pub check: bool,
     pub emit_manifest: Option<PathBuf>,
+}
+
+pub fn load_manifest(root: &Path, spec_path: &Path, queue_id: &str) -> Result<(Value, Vec<u8>)> {
+    let spec_path = resolve(root, spec_path);
+    let raw = common::require_file(&spec_path, "fixture spec")?;
+    let document: Value = serde_json::from_slice(&raw)
+        .with_context(|| format!("parse fixture spec JSON: {}", spec_path.display()))?;
+    let validated = validate(root, &document, queue_id)?;
+    let spec_sha256 = common::sha256_bytes(&validated.normalized_bytes);
+    let manifest = build_manifest(&validated, &spec_sha256)?;
+    let bytes = json_bytes(&manifest)?;
+    Ok((manifest, bytes))
 }
 
 #[derive(Debug, Clone)]
@@ -61,13 +74,31 @@ struct ValidatedVariant {
     review_targets: Value,
 }
 
+#[derive(Debug, Clone)]
+struct QueueSpec {
+    id: String,
+    families: Vec<String>,
+    review_cases: Vec<String>,
+    negative_cases: Vec<String>,
+    holdout_cases: Vec<String>,
+    directions: Vec<String>,
+    styles: Vec<String>,
+    modes: Vec<String>,
+    expected_reviewable_rows: usize,
+    expected_negative_variants: usize,
+    expected_holdout_rows: usize,
+    queue_sha256: String,
+}
+
 #[derive(Debug)]
 struct ValidatedSpec {
     normalized_bytes: Vec<u8>,
     cases: Vec<ValidatedCase>,
+    queue: QueueSpec,
     reviewable_rows: usize,
     negative_cases: usize,
     holdout_variants: usize,
+    holdout_rows: usize,
 }
 
 pub fn run(args: SpecArgs) -> Result<()> {
@@ -80,7 +111,7 @@ pub fn run(args: SpecArgs) -> Result<()> {
     let raw = common::require_file(&spec_path, "fixture spec")?;
     let document: Value = serde_json::from_slice(&raw)
         .with_context(|| format!("parse fixture spec JSON: {}", spec_path.display()))?;
-    let validated = validate(&root, &document)?;
+    let validated = validate(&root, &document, &args.queue)?;
     let spec_sha256 = common::sha256_bytes(&validated.normalized_bytes);
     let manifest = build_manifest(&validated, &spec_sha256)?;
 
@@ -110,9 +141,13 @@ fn resolve(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn validate(root: &Path, document: &Value) -> Result<ValidatedSpec> {
+fn validate(root: &Path, document: &Value, queue_id: &str) -> Result<ValidatedSpec> {
     let object = object(document, "fixture spec")?;
-    allowed_keys(object, &["schema", "spec_version", "cases"], "fixture spec")?;
+    allowed_keys(
+        object,
+        &["schema", "spec_version", "queues", "cases"],
+        "fixture spec",
+    )?;
     if required_string(object, "schema", "fixture spec")? != SPEC_SCHEMA {
         bail!("fixture spec schema must be {SPEC_SCHEMA}");
     }
@@ -147,13 +182,7 @@ fn validate(root: &Path, document: &Value) -> Result<ValidatedSpec> {
         }
     }
 
-    let mut directions = BTreeSet::new();
-    let mut styles = BTreeSet::new();
-    let mut modes = BTreeSet::new();
     let mut golden_stems = BTreeSet::new();
-    let mut reviewable_rows = 0;
-    let mut negative_cases = 0;
-    let mut holdout_variants = 0;
     for case in &cases {
         for variant in &case.variants {
             if variant.kind == "success" && variant.holdout != "evaluator_owned" {
@@ -165,51 +194,283 @@ fn validate(root: &Path, document: &Value) -> Result<ValidatedSpec> {
                     bail!("duplicate golden_stem: {stem}");
                 }
             }
-            if variant.holdout == "evaluator_owned" {
-                holdout_variants += 1;
-                continue;
-            }
-            if variant.kind == "success" {
-                directions.insert(variant.direction.as_str());
-                styles.extend(variant.styles.iter().map(String::as_str));
-                modes.extend(variant.modes.iter().map(String::as_str));
-                reviewable_rows += variant.styles.len() * variant.modes.len();
-            } else {
-                negative_cases += 1;
-            }
         }
     }
 
-    for direction in ["TD", "LR", "BT", "RL"] {
-        if !directions.contains(direction) {
-            bail!("fixture spec success canary is missing direction {direction}");
+    let queue_values = required_array(object, "queues", "fixture spec")?;
+    if queue_values.is_empty() {
+        bail!("fixture spec queues must be non-empty");
+    }
+    let mut queues = BTreeMap::new();
+    for value in queue_values {
+        let queue = validate_queue(value)?;
+        if queues.insert(queue.id.clone(), queue).is_some() {
+            bail!("duplicate fixture spec queue id");
         }
     }
-    for style in ["ascii", "unicode"] {
-        if !styles.contains(style) {
-            bail!("fixture spec success canary is missing style {style}");
+    let selected_queue = queues
+        .get(queue_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("unknown fixture spec queue {queue_id}"))?;
+
+    let case_map: BTreeMap<&str, &ValidatedCase> =
+        cases.iter().map(|case| (case.id.as_str(), case)).collect();
+    let mut memberships = BTreeMap::new();
+    for queue in queues.values() {
+        let (reviewable_rows, negative_cases, holdout_rows) =
+            validate_queue_membership(queue, &case_map, &mut memberships)?;
+        if reviewable_rows != queue.expected_reviewable_rows {
+            bail!(
+                "queue {} declares {} reviewable rows but expands to {}",
+                queue.id,
+                queue.expected_reviewable_rows,
+                reviewable_rows
+            );
+        }
+        if negative_cases != queue.expected_negative_variants {
+            bail!(
+                "queue {} declares {} negative variants but expands to {}",
+                queue.id,
+                queue.expected_negative_variants,
+                negative_cases
+            );
+        }
+        if holdout_rows != queue.expected_holdout_rows {
+            bail!(
+                "queue {} declares {} holdout rows but expands to {}",
+                queue.id,
+                queue.expected_holdout_rows,
+                holdout_rows
+            );
         }
     }
-    for mode in ["default", "optimized"] {
-        if !modes.contains(mode) {
-            bail!("fixture spec success canary is missing mode {mode}");
-        }
+    if memberships.len() != cases.len() {
+        let unassigned: Vec<_> = cases
+            .iter()
+            .filter(|case| !memberships.contains_key(&case.id))
+            .map(|case| case.id.as_str())
+            .collect();
+        bail!("fixture spec cases are not assigned to a queue: {unassigned:?}");
     }
-    if reviewable_rows != 16 {
-        bail!("fixture spec canary must emit exactly 16 reviewable rows, got {reviewable_rows}");
-    }
-    if negative_cases == 0 {
-        bail!("fixture spec must contain at least one warning or expected-error variant");
-    }
+
+    let (reviewable_rows, negative_cases, holdout_rows) =
+        validate_queue_membership(&selected_queue, &case_map, &mut BTreeMap::new())?;
+    let holdout_variants = selected_queue
+        .holdout_cases
+        .iter()
+        .flat_map(|case_id| case_map[case_id.as_str()].variants.iter())
+        .count();
 
     let normalized_bytes = json_bytes(&normalize(document))?;
     Ok(ValidatedSpec {
         normalized_bytes,
         cases,
+        queue: selected_queue,
         reviewable_rows,
         negative_cases,
         holdout_variants,
+        holdout_rows,
     })
+}
+
+fn validate_queue(value: &Value) -> Result<QueueSpec> {
+    let fields = object(value, "fixture spec queue")?;
+    allowed_keys(
+        fields,
+        &[
+            "id",
+            "families",
+            "review_cases",
+            "negative_cases",
+            "holdout_cases",
+            "matrix",
+            "expected",
+        ],
+        "fixture spec queue",
+    )?;
+    let id = required_id(fields, "id", "fixture spec queue")?;
+    let families = string_list(fields, "families", &format!("queue {id}"), true)?;
+    let review_cases = string_list(fields, "review_cases", &format!("queue {id}"), true)?;
+    let negative_cases = string_list(fields, "negative_cases", &format!("queue {id}"), false)?;
+    let holdout_cases = string_list(fields, "holdout_cases", &format!("queue {id}"), true)?;
+
+    let matrix = object(
+        fields
+            .get("matrix")
+            .ok_or_else(|| anyhow!("queue {id} is missing matrix"))?,
+        &format!("queue {id} matrix"),
+    )?;
+    allowed_keys(
+        matrix,
+        &["directions", "styles", "modes"],
+        &format!("queue {id} matrix"),
+    )?;
+    let directions = allowed_list(
+        matrix,
+        "directions",
+        &format!("queue {id} matrix"),
+        &["TD", "LR", "BT", "RL"],
+    )?;
+    let styles = allowed_list(
+        matrix,
+        "styles",
+        &format!("queue {id} matrix"),
+        common::STYLES,
+    )?;
+    let modes = allowed_list(
+        matrix,
+        "modes",
+        &format!("queue {id} matrix"),
+        common::MODES,
+    )?;
+
+    let expected = object(
+        fields
+            .get("expected")
+            .ok_or_else(|| anyhow!("queue {id} is missing expected counts"))?,
+        &format!("queue {id} expected"),
+    )?;
+    allowed_keys(
+        expected,
+        &["reviewable_rows", "negative_variants", "holdout_rows"],
+        &format!("queue {id} expected"),
+    )?;
+    let expected_reviewable_rows =
+        nonnegative_usize(expected, "reviewable_rows", &format!("queue {id} expected"))?;
+    let expected_negative_variants = nonnegative_usize(
+        expected,
+        "negative_variants",
+        &format!("queue {id} expected"),
+    )?;
+    let expected_holdout_rows =
+        nonnegative_usize(expected, "holdout_rows", &format!("queue {id} expected"))?;
+    let queue_sha256 = common::sha256_bytes(&json_bytes(&normalize(value))?);
+
+    Ok(QueueSpec {
+        id,
+        families,
+        review_cases,
+        negative_cases,
+        holdout_cases,
+        directions,
+        styles,
+        modes,
+        expected_reviewable_rows,
+        expected_negative_variants,
+        expected_holdout_rows,
+        queue_sha256,
+    })
+}
+
+fn validate_queue_membership(
+    queue: &QueueSpec,
+    cases: &BTreeMap<&str, &ValidatedCase>,
+    memberships: &mut BTreeMap<String, String>,
+) -> Result<(usize, usize, usize)> {
+    let groups = [
+        ("review", queue.review_cases.as_slice()),
+        ("negative", queue.negative_cases.as_slice()),
+        ("holdout", queue.holdout_cases.as_slice()),
+    ];
+    let mut local = BTreeSet::new();
+    for (role, case_ids) in groups {
+        for case_id in case_ids {
+            let case = cases
+                .get(case_id.as_str())
+                .ok_or_else(|| anyhow!("queue {} references unknown case {case_id}", queue.id))?;
+            if !local.insert(case_id.clone()) {
+                bail!("queue {} assigns case {case_id} more than once", queue.id);
+            }
+            if !queue.families.contains(&case.family) {
+                bail!(
+                    "queue {} does not declare family {} for case {case_id}",
+                    queue.id,
+                    case.family
+                );
+            }
+            if let Some(previous) = memberships.insert(case_id.clone(), queue.id.clone()) {
+                bail!(
+                    "case {case_id} is assigned to queues {previous} and {}",
+                    queue.id
+                );
+            }
+            for variant in &case.variants {
+                validate_variant_matrix(queue, variant)?;
+                match role {
+                    "review" => {
+                        if variant.kind != "success" || variant.holdout == "evaluator_owned" {
+                            bail!(
+                                "queue {} review case {case_id} contains a non-review variant",
+                                queue.id
+                            );
+                        }
+                    }
+                    "negative" => {
+                        if variant.kind == "success" || variant.holdout == "evaluator_owned" {
+                            bail!("queue {} negative case {case_id} contains a success/holdout variant", queue.id);
+                        }
+                    }
+                    "holdout" => {
+                        if variant.kind != "success" || variant.holdout != "evaluator_owned" {
+                            bail!(
+                                "queue {} holdout case {case_id} is not evaluator-owned success",
+                                queue.id
+                            );
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    let reviewable_rows = queue
+        .review_cases
+        .iter()
+        .flat_map(|case_id| cases[case_id.as_str()].variants.iter())
+        .map(|variant| variant.styles.len() * variant.modes.len())
+        .sum();
+    let negative_variants = queue
+        .negative_cases
+        .iter()
+        .map(|case_id| cases[case_id.as_str()].variants.len())
+        .sum();
+    let holdout_rows = queue
+        .holdout_cases
+        .iter()
+        .flat_map(|case_id| cases[case_id.as_str()].variants.iter())
+        .map(|variant| variant.styles.len() * variant.modes.len())
+        .sum();
+    Ok((reviewable_rows, negative_variants, holdout_rows))
+}
+
+fn validate_variant_matrix(queue: &QueueSpec, variant: &ValidatedVariant) -> Result<()> {
+    if !queue.directions.contains(&variant.direction) {
+        bail!(
+            "queue {} matrix excludes direction {}",
+            queue.id,
+            variant.direction
+        );
+    }
+    if variant
+        .styles
+        .iter()
+        .any(|style| !queue.styles.contains(style))
+    {
+        bail!(
+            "queue {} matrix excludes a style in variant {}",
+            queue.id,
+            variant.id
+        );
+    }
+    if variant.modes.iter().any(|mode| !queue.modes.contains(mode)) {
+        bail!(
+            "queue {} matrix excludes a mode in variant {}",
+            queue.id,
+            variant.id
+        );
+    }
+    Ok(())
 }
 
 fn validate_case(root: &Path, value: &Value) -> Result<ValidatedCase> {
@@ -506,33 +767,15 @@ fn build_manifest(spec: &ValidatedSpec, spec_sha256: &str) -> Result<Value> {
     let mut rows = Vec::new();
     let mut negative_cases = Vec::new();
     let mut holdouts = Vec::new();
-    for case in &spec.cases {
+    let cases: BTreeMap<&str, &ValidatedCase> = spec
+        .cases
+        .iter()
+        .map(|case| (case.id.as_str(), case))
+        .collect();
+
+    for case_id in &spec.queue.review_cases {
+        let case = cases[case_id.as_str()];
         for variant in &case.variants {
-            if variant.holdout == "evaluator_owned" {
-                holdouts.push(json!({
-                    "case_id": case.id,
-                    "variant_id": variant.id,
-                    "direction": variant.direction,
-                    "source_sha256": variant.source_sha256,
-                }));
-                continue;
-            }
-            if variant.kind != "success" {
-                negative_cases.push(json!({
-                    "case_id": case.id,
-                    "variant_id": variant.id,
-                    "direction": variant.direction,
-                    "kind": variant.kind,
-                    "stderr_policy": variant.stderr_policy,
-                    "stderr_contains": variant.stderr_contains,
-                    "source": variant.source,
-                    "source_sha256": variant.source_sha256,
-                    "input_path": variant.input_path,
-                    "styles": variant.styles,
-                    "modes": variant.modes,
-                }));
-                continue;
-            }
             for style in &variant.styles {
                 for mode in &variant.modes {
                     let golden =
@@ -570,18 +813,76 @@ fn build_manifest(spec: &ValidatedSpec, spec_sha256: &str) -> Result<Value> {
             }
         }
     }
+
+    for case_id in &spec.queue.negative_cases {
+        let case = cases[case_id.as_str()];
+        for variant in &case.variants {
+            negative_cases.push(json!({
+                "case_id": case.id,
+                "variant_id": variant.id,
+                "direction": variant.direction,
+                "kind": variant.kind,
+                "stderr_policy": variant.stderr_policy,
+                "stderr_contains": variant.stderr_contains,
+                "source": variant.source,
+                "source_sha256": variant.source_sha256,
+                "input_path": variant.input_path,
+                "styles": variant.styles,
+                "modes": variant.modes,
+            }));
+        }
+    }
+
+    for case_id in &spec.queue.holdout_cases {
+        let case = cases[case_id.as_str()];
+        for variant in &case.variants {
+            for style in &variant.styles {
+                for mode in &variant.modes {
+                    holdouts.push(json!({
+                        "case_id": case.id,
+                        "family": case.family,
+                        "variant_id": variant.id,
+                        "direction": variant.direction,
+                        "style": style,
+                        "mode": mode,
+                        "kind": variant.kind,
+                        "source": variant.source,
+                        "source_sha256": variant.source_sha256,
+                        "input_path": variant.input_path,
+                        "golden_stem": variant.golden_stem,
+                        "golden": Value::Null,
+                        "holdout": variant.holdout,
+                        "homologs": case.homologs,
+                        "semantic": case.semantic,
+                        "review_targets": variant.review_targets,
+                    }));
+                }
+            }
+        }
+    }
     rows.sort_by_key(row_key);
     negative_cases.sort_by_key(row_key);
     holdouts.sort_by_key(row_key);
+
+    let holdout_variant_count = spec
+        .queue
+        .holdout_cases
+        .iter()
+        .flat_map(|case_id| cases[case_id.as_str()].variants.iter())
+        .count();
 
     Ok(json!({
         "schema": MANIFEST_SCHEMA,
         "spec_schema": SPEC_SCHEMA,
         "spec_version": SPEC_VERSION,
+        "queue_id": spec.queue.id,
+        "families": spec.queue.families,
+        "queue_sha256": spec.queue.queue_sha256,
         "spec_sha256": spec_sha256,
         "row_count": rows.len(),
         "negative_case_count": negative_cases.len(),
-        "holdout_variant_count": holdouts.len(),
+        "holdout_variant_count": holdout_variant_count,
+        "holdout_row_count": holdouts.len(),
         "rows": rows,
         "negative_cases": negative_cases,
         "holdouts": holdouts,
@@ -600,10 +901,15 @@ fn check_summary(spec_sha256: &str, spec: &ValidatedSpec, manifest: Option<&Path
     let mut summary = json!({
         "schema": CHECK_SCHEMA,
         "spec_schema": SPEC_SCHEMA,
+        "spec_version": SPEC_VERSION,
+        "queue_id": spec.queue.id,
+        "families": spec.queue.families,
+        "queue_sha256": spec.queue.queue_sha256,
         "spec_sha256": spec_sha256,
         "row_count": spec.reviewable_rows,
         "negative_case_count": spec.negative_cases,
         "holdout_variant_count": spec.holdout_variants,
+        "holdout_row_count": spec.holdout_rows,
     });
     if let Some(path) = manifest {
         summary["manifest"] = Value::String(path.to_string_lossy().replace('\\', "/"));
@@ -698,6 +1004,11 @@ fn required_i64(object: &Map<String, Value>, key: &str, label: &str) -> Result<i
         .get(key)
         .and_then(Value::as_i64)
         .ok_or_else(|| anyhow!("{label} {key} must be an integer"))
+}
+
+fn nonnegative_usize(object: &Map<String, Value>, key: &str, label: &str) -> Result<usize> {
+    let value = required_i64(object, key, label)?;
+    usize::try_from(value).map_err(|_| anyhow!("{label} {key} must be non-negative"))
 }
 
 fn string_list(

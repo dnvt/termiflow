@@ -502,7 +502,7 @@ fn render_with_feedback_skips_false_positive_label_repairs() {
 }
 
 #[test]
-fn render_with_feedback_preserves_and_applies_fanout_layout_repairs() {
+fn render_with_feedback_keeps_default_dual_junctions_centered_before_repair() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/junction_quad_td.md").unwrap();
     let baseline =
         termiflow::render_with_feedback(&input, termiflow::RenderOptions::default()).unwrap();
@@ -512,19 +512,17 @@ fn render_with_feedback_preserves_and_applies_fanout_layout_repairs() {
     )
     .unwrap();
 
-    let baseline_finding = baseline
+    assert!(!baseline
         .critic_report
         .findings
         .iter()
-        .find(|finding| finding.code == termiflow::FindingCode::RouteSymmetryImbalance)
-        .expect("baseline should expose the skewed fan-out");
-
-    assert!(baseline_finding.message.contains("by 7 cell(s)"));
-    assert!(optimized.layout_repairs_applied >= 1);
-    assert!(optimized.layout_attempts > 1);
-    assert_ne!(optimized.output, baseline.output);
-    assert!(optimized.critic_report.findings.iter().all(|finding| {
-        finding.code != termiflow::FindingCode::RouteSymmetryImbalance
-            || !finding.message.contains("by 7 cell(s)")
-    }));
+        .any(|finding| finding.code == termiflow::FindingCode::RouteSymmetryImbalance));
+    assert!(!optimized
+        .critic_report
+        .findings
+        .iter()
+        .any(|finding| finding.code == termiflow::FindingCode::RouteSymmetryImbalance));
+    assert_eq!(optimized.layout_repairs_applied, 0);
+    assert_eq!(optimized.layout_attempts, 1);
+    assert_eq!(optimized.output, baseline.output);
 }

@@ -168,19 +168,16 @@ impl CanvasBudget {
     /// Create a budget based on terminal dimensions (if available)
     pub fn from_terminal() -> Self {
         let mut budget = Self::default();
+        let terminal = crate::runtime::current().terminal;
 
-        // Try to detect terminal width
-        if let Ok(term_width) = std::env::var("COLUMNS") {
-            if let Ok(w) = term_width.parse::<usize>() {
-                budget.target_width = Some(w.saturating_sub(2)); // Leave margin
-            }
+        // Try to detect terminal width from the boundary snapshot.
+        if let Some(w) = terminal.columns {
+            budget.target_width = Some(w.saturating_sub(2)); // Leave margin
         }
 
-        // Try to detect terminal height
-        if let Ok(term_height) = std::env::var("LINES") {
-            if let Ok(h) = term_height.parse::<usize>() {
-                budget.target_height = Some(h.saturating_sub(2)); // Leave margin
-            }
+        // Try to detect terminal height from the boundary snapshot.
+        if let Some(h) = terminal.lines {
+            budget.target_height = Some(h.saturating_sub(2)); // Leave margin
         }
 
         budget

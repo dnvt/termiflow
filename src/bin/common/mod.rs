@@ -140,7 +140,7 @@ pub struct Cli {
     #[arg(long, value_name = "MODE")]
     pub spacing: Option<String>,
 
-    /// Scaling mode: auto (adapts to diagram complexity) or fixed
+    /// Scaling mode: auto (adapts to diagram complexity) or fixed (default)
     #[arg(long, value_name = "MODE")]
     pub scaling: Option<String>,
 
@@ -300,7 +300,12 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     let t_render_start = std::time::Instant::now();
     let rendered = render_cli_input(cli, &input, true)?;
     if let Some(path) = &cli.audit_json {
-        termiflow::render::evidence::write_json(path, &rendered.graph, &rendered.outcome)?;
+        termiflow::render::evidence::write_json_with_policy(
+            path,
+            &rendered.graph,
+            &rendered.outcome,
+            Some(&rendered.policy),
+        )?;
     }
     if debug_timing {
         eprintln!("termiflow: layout+render {:?}", t_render_start.elapsed());
@@ -576,6 +581,7 @@ impl Cli {
 struct PreparedRender {
     graph: termiflow::Graph,
     outcome: RenderOutcome,
+    policy: serde_json::Value,
 }
 
 const ANSI_INVERT_ON: &str = "\u{1b}[7m";
@@ -845,11 +851,24 @@ fn render_cli_input(cli: &Cli, input: &str, emit_debug_critic: bool) -> Result<P
     }
     config.spacing = config.spacing.for_direction(parse_result.graph.direction);
 
+    let policy = termiflow::effective_render_policy(
+        &config,
+        parse_result.graph.direction,
+        termiflow::DEFAULT_DISPLAY_PROFILE.name,
+        &format!("{scaling_mode:?}"),
+        cli.from_json,
+        cli.fit_terminal,
+    );
+
     let mut graph = parse_result.graph;
     measure::measure_graph(&mut graph, &config);
 
     let (graph, outcome) = layout_and_render_with_feedback(graph, config)?;
-    Ok(PreparedRender { graph, outcome })
+    Ok(PreparedRender {
+        graph,
+        outcome,
+        policy,
+    })
 }
 
 /// Build a TUI frame from the current file state.

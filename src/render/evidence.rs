@@ -32,6 +32,8 @@ pub struct RenderEvidence {
     pub repair_passes: usize,
     pub layout_attempts: usize,
     pub layout_repairs_applied: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -89,13 +91,25 @@ pub fn build(graph: &Graph, outcome: &RenderOutcome) -> RenderEvidence {
         repair_passes: outcome.repair_passes,
         layout_attempts: outcome.layout_attempts,
         layout_repairs_applied: outcome.layout_repairs_applied,
+        policy: None,
     }
 }
 
 /// Write evidence atomically next to the requested destination.
 pub fn write_json(path: &Path, graph: &Graph, outcome: &RenderOutcome) -> Result<()> {
-    let bytes =
-        serde_json::to_vec_pretty(&build(graph, outcome)).context("serialize render evidence")?;
+    write_json_with_policy(path, graph, outcome, None)
+}
+
+/// Write evidence with the resolved CLI/runtime policy used for the render.
+pub fn write_json_with_policy(
+    path: &Path,
+    graph: &Graph,
+    outcome: &RenderOutcome,
+    policy: Option<&serde_json::Value>,
+) -> Result<()> {
+    let mut evidence = build(graph, outcome);
+    evidence.policy = policy.cloned();
+    let bytes = serde_json::to_vec_pretty(&evidence).context("serialize render evidence")?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())

@@ -87,6 +87,8 @@ impl CrossingMinimizer {
             return 0;
         }
 
+        let debug_crossing = crate::runtime::current().diagnostics.crossing;
+
         let mut prev_crossings = self.count_crossings(graph, layers);
         let initial_crossings = prev_crossings;
 
@@ -108,7 +110,7 @@ impl CrossingMinimizer {
                 let improvement =
                     (prev_crossings as f32 - current_crossings as f32) / prev_crossings as f32;
                 if improvement < self.config.convergence_threshold {
-                    if std::env::var("TERMIFLOW_DEBUG_CROSSING").is_ok() {
+                    if debug_crossing {
                         eprintln!(
                             "crossing: converged at pass {} ({} -> {} crossings, {:.1}% improvement)",
                             pass + 1,
@@ -122,7 +124,7 @@ impl CrossingMinimizer {
             }
 
             if current_crossings == 0 {
-                if std::env::var("TERMIFLOW_DEBUG_CROSSING").is_ok() {
+                if debug_crossing {
                     eprintln!("crossing: achieved zero crossings at pass {}", pass + 1);
                 }
                 return 0;
@@ -131,7 +133,7 @@ impl CrossingMinimizer {
             prev_crossings = current_crossings;
         }
 
-        if std::env::var("TERMIFLOW_DEBUG_CROSSING").is_ok() {
+        if debug_crossing {
             let final_crossings = self.count_crossings(graph, layers);
             eprintln!(
                 "crossing: completed {} passes ({} -> {} crossings, {:.1}% reduction)",

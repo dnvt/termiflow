@@ -105,6 +105,7 @@ fn inner_bounds_persist_on_graph() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn routes_cross_subgraph_boundaries() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_outside_td.md")
         .expect("read fixture");
@@ -129,6 +130,7 @@ fn routes_cross_subgraph_boundaries() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn bt_nested_external_target_stays_above_root_envelope() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_nested_bt.md")
         .expect("read nested BT fixture");
@@ -177,6 +179,7 @@ fn bt_nested_external_target_stays_above_root_envelope() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn td_nested_external_target_stays_below_root_envelope() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_nested_td.md")
         .expect("read nested TD fixture");
@@ -225,6 +228,7 @@ fn td_nested_external_target_stays_below_root_envelope() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn bt_titled_root_sources_clear_the_bottom_border() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/collision_edge_along_border_bt.md")
         .expect("read BT border fixture");
@@ -487,6 +491,7 @@ fn explicit_nested_horizontal_children_stay_contained_and_ordered_by_flow() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn sibling_subgraphs_stay_separate_in_td_layout() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md")
         .expect("read fixture");
@@ -540,6 +545,7 @@ fn sibling_subgraphs_stay_separate_in_td_layout() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn stacked_top_level_td_sibling_subgraphs_harmonize_widths_when_chain_connected() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md")
         .expect("read fixture");
@@ -565,6 +571,7 @@ fn stacked_top_level_td_sibling_subgraphs_harmonize_widths_when_chain_connected(
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn stacked_top_level_td_sibling_subgraphs_stay_vertically_compact() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md")
         .expect("read fixture");
@@ -594,6 +601,7 @@ fn stacked_top_level_td_sibling_subgraphs_stay_vertically_compact() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn sibling_subgraphs_stay_separate_in_horizontal_layouts() {
     for fixture in [
         "tests/fixtures/inputs/subgraph_complex_lr.md",
@@ -664,6 +672,7 @@ fn sibling_subgraphs_stay_separate_in_horizontal_layouts() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn side_by_side_horizontal_top_level_siblings_harmonize_heights_when_route_gutters_overlap() {
     for fixture in [
         "tests/fixtures/inputs/subgraph_complex_lr.md",
@@ -687,6 +696,7 @@ fn side_by_side_horizontal_top_level_siblings_harmonize_heights_when_route_gutte
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn side_by_side_lr_sibling_subgraphs_share_frame_height_when_close() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_lr.md")
         .expect("read fixture");
@@ -712,6 +722,7 @@ fn side_by_side_lr_sibling_subgraphs_share_frame_height_when_close() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn side_by_side_lr_top_level_siblings_balance_trailing_response_gap() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_lr.md")
         .expect("read fixture");
@@ -998,6 +1009,7 @@ fn widen_subgraph_for_internal_route_span_shifts_centered_nested_fanout_partitio
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn nested_horizontal_subgraphs_keep_distinct_title_rows() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_nested_lr.md")
         .expect("read fixture");
@@ -1024,6 +1036,7 @@ fn nested_horizontal_subgraphs_keep_distinct_title_rows() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn titled_vertical_subgraph_balances_left_and_right_inner_padding() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_basic_td.md")
         .expect("read fixture");
@@ -1053,6 +1066,7 @@ fn titled_vertical_subgraph_balances_left_and_right_inner_padding() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn titled_vertical_subgraph_balances_top_and_bottom_inner_padding() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_basic_td.md")
         .expect("read fixture");
@@ -1079,6 +1093,7 @@ fn titled_vertical_subgraph_balances_top_and_bottom_inner_padding() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn titled_bt_subgraph_balances_top_and_bottom_inner_padding() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_basic_bt.md")
         .expect("read fixture");
@@ -1105,6 +1120,7 @@ fn titled_bt_subgraph_balances_top_and_bottom_inner_padding() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
 fn titled_vertical_leaf_subgraphs_with_single_external_trunks_balance_horizontal_padding() {
     for fixture_path in [
         "tests/fixtures/inputs/subgraph_direct_td.md",

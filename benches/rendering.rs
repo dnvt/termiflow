@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
-use termiflow::{render, BaseStyle, RenderOptions};
+use termiflow::{render, BaseStyle, Config, ParseConfig, RenderOptions};
 
 fn simple_diagram() -> &'static str {
     "graph TD\nA[Start] --> B[Process]\nB --> C[End]"
@@ -202,6 +202,27 @@ fn benchmark_route_dense_subgraphs(c: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_configuration_resolution(c: &mut Criterion) {
+    let directives = ParseConfig {
+        max_label: Some(18),
+        wrap_labels: Some(true),
+        optimize_render: Some(true),
+        render_repair_passes: Some(2),
+        layout_repair_passes: Some(2),
+        ..ParseConfig::default()
+    };
+
+    c.bench_function("configuration_resolution", |b| {
+        b.iter(|| {
+            Config::builder()
+                .max_label_width(20)
+                .wrap_labels(false)
+                .optimize_render(false)
+                .build(black_box(&directives))
+        })
+    });
+}
+
 criterion_group!(
     benches,
     benchmark_simple_render,
@@ -210,6 +231,7 @@ criterion_group!(
     benchmark_indexed_render_scheduling,
     benchmark_different_orientations,
     benchmark_different_styles,
-    benchmark_route_dense_subgraphs
+    benchmark_route_dense_subgraphs,
+    benchmark_configuration_resolution
 );
 criterion_main!(benches);

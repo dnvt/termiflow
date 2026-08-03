@@ -1,8 +1,8 @@
 {
   "schema": "termiflow.quality_baseline.v1",
   "identity": {
-    "source_commit": "6ff6d06ff4ba73de972b4a866baf469a2eca8121",
-    "cargo_lock_sha256": "4e2fa1c64e92fcc01fcbd64ff7049686e54494e35d380728dec37dece53d14e1",
+    "source_commit": "f4d08b337d68cd032b1d387b8b981ba3afd1d13b",
+    "cargo_lock_sha256": "1b791145acaf38e06fd33e903c4ea6b0d115dc634decb5603799e5465e30fd45",
     "display_profile": "terminal-grid-v1",
     "styles": ["ascii", "unicode"],
     "modes": ["default", "optimized"]
@@ -14,16 +14,7 @@
     "next_command": "scripts/review_visual_packet.sh --next --record"
   },
   "exception_fields": ["fixture", "style", "mode", "layer", "code", "message"],
-  "exceptions": [
-    {"fixture": "junction_quad_bt", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 7 cell(s)"},
-    {"fixture": "junction_quad_lr", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 2 cell(s)"},
-    {"fixture": "junction_quad_rl", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 2 cell(s)"},
-    {"fixture": "junction_quad_td", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-out at C is off-center from its targets by 7 cell(s)"},
-    {"fixture": "scale_dense_bt", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 13 cell(s)"},
-    {"fixture": "scale_dense_lr", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 3 cell(s)"},
-    {"fixture": "scale_dense_rl", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 3 cell(s)"},
-    {"fixture": "scale_dense_td", "styles": ["ascii", "unicode"], "modes": ["default"], "layer": "critic", "code": "RouteSymmetryImbalance", "message": "fan-in at END is off-center from its sources by 13 cell(s)"}
-  ],
+  "exceptions": [],
   "forbidden_codes": [
     "ArrowWithoutVisibleShaft",
     "ArrowTouchesNodeBorder",

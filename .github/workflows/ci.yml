@@ -18,6 +18,11 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check Rust and workflow currency policy
+        run: bash scripts/check_toolchain_policy.sh
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@1.97.1
@@ -25,7 +30,33 @@ jobs:
           components: rustfmt, clippy
 
       - name: Enforce Rust/Bash-only repository automation
-        run: test -z "$(rg --files -g '*.py' -g '*.rb' || true)"
+        run: test -z "$(find . -type f \( -name '*.py' -o -name '*.rb' \) -print -quit)"
+
+      - name: Validate visual cycle contract
+        run: |
+          bash -n scripts/visual_cycle.sh
+          jq empty tests/fixtures/visual_cycle_record.schema.json
+          scripts/visual_cycle.sh --help >/dev/null
+
+      - name: Validate QA architecture contracts
+        run: scripts/check_qa_contracts.sh
+
+      - name: Validate portable architecture facts
+        run: |
+          bash -n scripts/generate_architecture_diagrams.sh scripts/check_architecture_facts.sh scripts/architecture_facts_contract.sh
+          scripts/check_architecture_facts.sh
+          scripts/architecture_facts_contract.sh
+
+      - name: Validate OSS stewardship surface
+        run: |
+          test -f .github/CODEOWNERS
+          test -f .github/PULL_REQUEST_TEMPLATE.md
+          test -f .github/ISSUE_TEMPLATE/bug_report.md
+          test -f .github/ISSUE_TEMPLATE/feature_request.md
+          test -f CHANGELOG.md
+          test -f docs/releasing.md
+          grep -Eq 'security/advisories/new' README.md SECURITY.md
+          grep -Eq 'release_candidate.sh|release_preflight.sh' docs/releasing.md
 
       - name: Cache Cargo registry
         uses: actions/cache@v6.1.0
@@ -86,6 +117,12 @@ jobs:
             exit 1
           fi
 
+      - name: extracted package contract
+        run: scripts/package_contract.sh --output "$RUNNER_TEMP/termiflow-package-contract/report.json"
+
+      - name: release candidate contract
+        run: scripts/release_candidate_contract.sh
+
       - name: publish dry run
         run: cargo publish --dry-run --locked
 
@@ -130,6 +167,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install Rust 1.88
         uses: dtolnay/rust-toolchain@1.88
@@ -159,12 +198,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Install cargo-deny
         run: cargo install cargo-deny --version 0.20.2 --locked
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated --version 0.19.0 --locked
+
+      - name: Rust and dependency currency receipt
+        run: |
+          scripts/dependency_currency_gate.sh \
+            --receipt "$RUNNER_TEMP/termiflow-dependency-currency/receipt.json"
+
+      - name: Upload dependency currency evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: termiflow-dependency-currency
+          path: ${{ runner.temp }}/termiflow-dependency-currency
+          if-no-files-found: error
 
       - name: cargo deny check
         run: cargo deny --locked check advisories bans licenses sources

@@ -208,7 +208,7 @@ pub(super) fn route_cross_subgraph_td(
     graph: &Graph,
     owner: Option<RouteOwner<'_>>,
 ) -> bool {
-    let debug_timing = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
+    let debug_timing = crate::runtime::current().diagnostics.timing;
     let from_sg = graph.get_node_subgraph(&from.id);
     let to_sg = graph.get_node_subgraph(&to.id);
     if from_sg == to_sg {

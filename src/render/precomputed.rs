@@ -5,7 +5,7 @@
 
 use super::canvas;
 use super::provenance::edge_owner_id;
-use super::scene::{Scene, SceneIntent};
+use super::scene::{Scene, SceneIntent, SceneRecorder};
 use super::semantic::{CellOwnerKind, CellRole};
 use super::subgraph_title_y;
 use super::Canvas;
@@ -201,7 +201,9 @@ pub(super) fn draw_routes(
     layout_snapshot: &LayoutSnapshot,
     canvas: &mut Canvas,
     chars: &StyleChars,
+    recorder: &mut SceneRecorder,
 ) {
+    let debug_timing = crate::runtime::current().diagnostics.timing;
     let mut edge_ids: Vec<EdgeId> = layout_snapshot.route_ids().collect();
     edge_ids.sort_unstable();
     let mut marker_scene = Scene::new();
@@ -278,7 +280,7 @@ pub(super) fn draw_routes(
                         // Box border is at y = from.y + from.height - 1
                         // We need to draw from box border down to route start to create junction
                         let box_border_y = from.y + from.height - 1;
-                        if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
+                        if debug_timing {
                             eprintln!(
                                 "  TD horizontal-first: src_center_x={} box_border_y={} route_start.y={}",
                                 src_center_x, box_border_y, route_start.y
@@ -287,7 +289,7 @@ pub(super) fn draw_routes(
                         // Draw vertical stem from box border to the route start row (exclusive)
                         // This will create a junction on the box border via resolve_overlap
                         for y in box_border_y..route_start.y {
-                            if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
+                            if debug_timing {
                                 eprintln!("    drawing stem at ({src_center_x}, {y})");
                             }
                             set_precomputed_route_edge_char(
@@ -309,7 +311,7 @@ pub(super) fn draw_routes(
                         } else {
                             route_chars.corner_ul // └ - connects up, right
                         };
-                        if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
+                        if debug_timing {
                             eprintln!(
                                 "    needs_start_corner=({}, {}, '{}')",
                                 src_center_x, route_start.y, corner
@@ -497,7 +499,7 @@ pub(super) fn draw_routes(
     }
 
     if !marker_scene.is_empty() {
-        marker_scene.resolve(canvas, chars);
+        marker_scene.resolve_with_recorder(canvas, chars, recorder, "precomputed-route-markers");
     }
 }
 
