@@ -169,15 +169,18 @@ fn run_checks(
     )
 }
 
-const MANIFEST_SCHEMA: &str = "termiflow.fixture_manifest.v1";
+const MANIFEST_SCHEMA: &str = "termiflow.fixture_manifest.v2";
 const MANIFEST_REPORT_SCHEMA: &str = "termiflow.golden_manifest_update.v1";
 
 struct ManifestData {
     manifest_sha256: String,
     spec_sha256: String,
+    queue_id: String,
+    queue_sha256: String,
     rows: Vec<Value>,
     negative_cases: Vec<Value>,
     holdout_variant_count: usize,
+    holdout_row_count: usize,
 }
 
 fn run_manifest_checks(
@@ -346,12 +349,15 @@ fn run_manifest_checks(
         "manifest_path": common::relative_to_root(manifest_path, root),
         "manifest_sha256": manifest.manifest_sha256,
         "spec_sha256": manifest.spec_sha256,
+        "queue_id": manifest.queue_id,
+        "queue_sha256": manifest.queue_sha256,
         "identity": identity,
         "eligible_rows": eligible_rows,
         "candidate_count": eligible_rows,
         "changed_candidate_count": candidates.len(),
         "negative_results": negative_results,
         "holdout_variant_count": manifest.holdout_variant_count,
+        "holdout_row_count": manifest.holdout_row_count,
         "failures": failures,
         "changes": changes,
     });
@@ -406,10 +412,14 @@ fn validate_manifest(
         "schema",
         "spec_schema",
         "spec_version",
+        "queue_id",
+        "families",
+        "queue_sha256",
         "spec_sha256",
         "row_count",
         "negative_case_count",
         "holdout_variant_count",
+        "holdout_row_count",
         "rows",
         "negative_cases",
         "holdouts",
@@ -428,11 +438,14 @@ fn validate_manifest(
     if document.get("schema").and_then(Value::as_str) != Some(MANIFEST_SCHEMA) {
         bail!("fixture manifest schema must be {MANIFEST_SCHEMA}");
     }
-    if document.get("spec_schema").and_then(Value::as_str) != Some("termiflow.fixture_spec.v1")
-        || document.get("spec_version").and_then(Value::as_i64) != Some(1)
+    if document.get("spec_schema").and_then(Value::as_str) != Some("termiflow.fixture_spec.v2")
+        || document.get("spec_version").and_then(Value::as_i64) != Some(2)
     {
         bail!("fixture manifest spec identity is invalid");
     }
+    let queue_id = value_string(document.get("queue_id"), "manifest queue_id")?;
+    let _families = string_array(document.get("families"), "manifest families")?;
+    let queue_sha256 = value_string(document.get("queue_sha256"), "manifest queue_sha256")?;
     let spec_sha256 = value_string(document.get("spec_sha256"), "manifest spec_sha256")?;
     let row_values = document
         .get("rows")
@@ -449,6 +462,10 @@ fn validate_manifest(
         .get("negative_case_count")
         .and_then(Value::as_u64)
         .ok_or_else(|| anyhow::anyhow!("manifest negative_case_count must be an integer"))?;
+    let declared_holdout_rows = document
+        .get("holdout_row_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("manifest holdout_row_count must be an integer"))?;
 
     let mut row_ids = BTreeSet::new();
     let mut targets = BTreeSet::new();
@@ -564,11 +581,63 @@ fn validate_manifest(
             }
         }
     }
-    let holdout_variant_count = document
+    let holdouts = document
         .get("holdouts")
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("manifest holdouts must be an array"))?
-        .len();
+        .clone();
+    if declared_holdout_rows != holdouts.len() as u64 {
+        bail!("manifest holdout_row_count does not match holdouts");
+    }
+    let mut holdout_row_ids = BTreeSet::new();
+    let mut holdout_variant_ids = BTreeSet::new();
+    for holdout in &holdouts {
+        let case_id = value_string(holdout.get("case_id"), "holdout case_id")?;
+        let variant_id = value_string(holdout.get("variant_id"), "holdout variant_id")?;
+        let _family = value_string(holdout.get("family"), "holdout family")?;
+        let _direction = value_string(holdout.get("direction"), "holdout direction")?;
+        let style = value_string(holdout.get("style"), "holdout style")?;
+        let mode = value_string(holdout.get("mode"), "holdout mode")?;
+        if !common::STYLES.contains(&style.as_str()) || !common::MODES.contains(&mode.as_str()) {
+            bail!("holdout {variant_id} has unsupported style or mode");
+        }
+        let key = format!("{case_id}\u{1f}{variant_id}\u{1f}{style}\u{1f}{mode}");
+        if !holdout_row_ids.insert(key) {
+            bail!("manifest contains duplicate holdout row {variant_id}.{style}.{mode}");
+        }
+        holdout_variant_ids.insert(format!("{case_id}\u{1f}{variant_id}"));
+        if value_string(holdout.get("kind"), "holdout kind")? != "success" {
+            bail!("holdout {variant_id} is not a success row");
+        }
+        if value_string(holdout.get("holdout"), "holdout class")? != "evaluator_owned" {
+            bail!("holdout {variant_id} is not evaluator-owned");
+        }
+        if holdout.get("golden").is_some_and(|value| !value.is_null()) {
+            bail!("evaluator-owned holdout has a golden target: {variant_id}");
+        }
+        if holdout
+            .get("golden_stem")
+            .is_some_and(|value| !value.is_null())
+        {
+            bail!("evaluator-owned holdout has a golden stem: {variant_id}");
+        }
+        let source = value_string(holdout.get("source"), "holdout source")?;
+        let expected_hash = value_string(holdout.get("source_sha256"), "holdout source_sha256")?;
+        if common::sha256_bytes(source.as_bytes()) != expected_hash {
+            bail!("holdout source hash mismatch for {variant_id}");
+        }
+        if let Some(input_path) = holdout.get("input_path").and_then(Value::as_str) {
+            let path = common::safe_relative_path(
+                Path::new(input_path),
+                root,
+                &format!("holdout {variant_id} input_path"),
+            )?;
+            if fs::read(&path)? != source.as_bytes() {
+                bail!("holdout source does not match input_path for {variant_id}");
+            }
+        }
+    }
+    let holdout_variant_count = holdout_variant_ids.len();
     if document
         .get("holdout_variant_count")
         .and_then(Value::as_u64)
@@ -580,9 +649,12 @@ fn validate_manifest(
     Ok(ManifestData {
         manifest_sha256,
         spec_sha256,
+        queue_id,
+        queue_sha256,
         rows: row_values.clone(),
         negative_cases,
         holdout_variant_count,
+        holdout_row_count: holdouts.len(),
     })
 }
 
