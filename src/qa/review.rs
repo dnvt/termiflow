@@ -568,6 +568,17 @@ fn holdout_input_source(packet: &Path, row: &Value) -> Result<Option<String>> {
     if !schema_manifest.is_file() {
         return Ok(None);
     }
+    let summary = common::load_json(&packet.join("summary.json"), "packet summary")?;
+    let expected_manifest_hash = summary
+        .get("schema_manifest_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("packet summary has no schema manifest hash"))?;
+    let actual_manifest_hash = common::sha256_file(&schema_manifest)?;
+    if actual_manifest_hash != expected_manifest_hash {
+        bail!(
+            "packet schema manifest hash mismatch: expected {expected_manifest_hash}, got {actual_manifest_hash}"
+        );
+    }
     let schema = common::load_json(&schema_manifest, "packet schema manifest")?;
     let Some(holdouts) = schema.get("holdouts").and_then(Value::as_array) else {
         return Ok(None);
@@ -869,6 +880,13 @@ mod tests {
             }),
         )
         .expect("write schema manifest");
+        let schema_hash = common::sha256_file(&packet.join("schema_manifest.json"))
+            .expect("hash schema manifest");
+        common::write_json(
+            &packet.join("summary.json"),
+            &json!({"schema_manifest_sha256": schema_hash}),
+        )
+        .expect("write packet summary");
         let row = json!({
             "input": "termiflow-holdout-input-transient.md",
             "fixture": "case--holdout_td",
@@ -879,6 +897,23 @@ mod tests {
         let actual = manifest_input_source(Path::new("/missing-root"), &packet, &row)
             .expect("resolve source-only holdout input");
         assert_eq!(actual, source);
+
+        common::write_json(
+            &packet.join("schema_manifest.json"),
+            &json!({
+                "holdouts": [{
+                    "variant_id": "holdout_td",
+                    "style": "unicode",
+                    "mode": "default",
+                    "source": "graph TD\nA[Changed] --> B[Out]\n",
+                    "source_sha256": common::sha256_bytes(b"graph TD\nA[Changed] --> B[Out]\n")
+                }]
+            }),
+        )
+        .expect("tamper schema manifest");
+        let error = manifest_input_source(Path::new("/missing-root"), &packet, &row)
+            .expect_err("tampered schema manifest must be rejected");
+        assert!(error.to_string().contains("schema manifest hash mismatch"));
         fs::remove_dir_all(packet).expect("remove packet directory");
     }
 }
