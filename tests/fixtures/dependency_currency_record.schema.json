@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "termiflow.dependency_currency_receipt.v1",
+  "title": "TermiFlow dated Rust and Cargo dependency currency receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "observed_at",
+    "source",
+    "toolchain",
+    "commands",
+    "latest",
+    "graph",
+    "direct_requirements",
+    "reachable_packages",
+    "duplicate_tree",
+    "non_root_lock_metadata",
+    "findings",
+    "status"
+  ],
+  "properties": {
+    "schema": {"const": "termiflow.dependency_currency_receipt.v1"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "source": {"$ref": "#/$defs/source"},
+    "toolchain": {"$ref": "#/$defs/toolchain"},
+    "commands": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/command"},
+      "required": [
+        "rustup_check",
+        "cargo_outdated_root",
+        "cargo_outdated_features",
+        "cargo_update",
+        "cargo_metadata",
+        "cargo_tree",
+        "cargo_duplicates",
+        "cargo_deny",
+        "cargo_audit"
+      ]
+    },
+    "latest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rust_status",
+        "pinned_stable",
+        "observed_stable",
+        "root_status",
+        "feature_status",
+        "root_candidate_count",
+        "feature_candidate_count",
+        "major_versions_checked"
+      ],
+      "properties": {
+        "rust_status": {"enum": ["pass", "error"]},
+        "pinned_stable": {"type": "string", "minLength": 1},
+        "observed_stable": {"type": "string", "minLength": 1},
+        "root_status": {"enum": ["current", "candidate", "error"]},
+        "feature_status": {"enum": ["current", "candidate", "error"]},
+        "root_candidate_count": {"type": "integer", "minimum": 0},
+        "feature_candidate_count": {"type": "integer", "minimum": 0},
+        "major_versions_checked": {"const": true}
+      }
+    },
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metadata_sha256",
+        "reachable_tree_sha256",
+        "reachable_package_count",
+        "non_root_lock_metadata_count"
+      ],
+      "properties": {
+        "metadata_sha256": {"$ref": "#/$defs/sha256"},
+        "reachable_tree_sha256": {"$ref": "#/$defs/sha256"},
+        "reachable_package_count": {"type": "integer", "minimum": 1},
+        "non_root_lock_metadata_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "direct_requirements": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/direct_requirement"}
+    },
+    "reachable_packages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/package"}
+    },
+    "duplicate_tree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "lines"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "lines": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "non_root_lock_metadata": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/lock_package"}
+    },
+    "findings": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "status": {"enum": ["pass", "blocked"]}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "worktree_dirty",
+        "allow_dirty",
+        "tracked_worktree_sha256",
+        "tracked_diff_sha256",
+        "staged_diff_sha256",
+        "untracked_files_sha256",
+        "untracked_paths",
+        "identity_sha256",
+        "manifest_sha256",
+        "lock_sha256",
+        "toolchain_sha256"
+      ],
+      "properties": {
+        "commit": {"type": "string", "minLength": 1},
+        "worktree_dirty": {"type": "boolean"},
+        "allow_dirty": {"type": "boolean"},
+        "tracked_worktree_sha256": {"$ref": "#/$defs/sha256"},
+        "tracked_diff_sha256": {"$ref": "#/$defs/sha256"},
+        "staged_diff_sha256": {"$ref": "#/$defs/sha256"},
+        "untracked_files_sha256": {"$ref": "#/$defs/sha256"},
+        "untracked_paths": {"type": "array", "items": {"type": "string"}},
+        "identity_sha256": {"$ref": "#/$defs/sha256"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "lock_sha256": {"$ref": "#/$defs/sha256"},
+        "toolchain_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rustc_release",
+        "host",
+        "msrv",
+        "rustc_verbose_sha256",
+        "cargo_version_sha256",
+        "rustup_active_toolchain"
+      ],
+      "properties": {
+        "rustc_release": {"type": "string", "minLength": 1},
+        "host": {"type": "string", "minLength": 1},
+        "msrv": {"type": "string", "minLength": 1},
+        "rustc_verbose_sha256": {"$ref": "#/$defs/sha256"},
+        "cargo_version_sha256": {"$ref": "#/$defs/sha256"},
+        "rustup_active_toolchain": {"type": "string", "minLength": 1}
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "exit_code",
+        "argv",
+        "stdout_sha256",
+        "stderr_sha256",
+        "stdout_path",
+        "stderr_path"
+      ],
+      "properties": {
+        "status": {"type": "string", "minLength": 1},
+        "exit_code": {"type": "integer", "minimum": 0},
+        "argv": {"type": "array", "items": {"type": "string"}},
+        "stdout_sha256": {"$ref": "#/$defs/sha256"},
+        "stderr_sha256": {"$ref": "#/$defs/sha256"},
+        "stdout_path": {"type": "string", "minLength": 1},
+        "stderr_path": {"type": "string", "minLength": 1}
+      }
+    },
+    "direct_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "req", "kind", "optional", "target"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "req": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "optional": {"type": "boolean"},
+        "target": {"type": ["string", "null"]}
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "lock_package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "source"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
