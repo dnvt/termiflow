@@ -57,7 +57,7 @@ jq empty "$facts_path" || fail "facts manifest is invalid JSON"
 [[ "$(jq -r '.schema // empty' "$facts_path")" == "termiflow.architecture_facts.v1" ]] || fail "facts schema is not termiflow.architecture_facts.v1"
 [[ "$(jq -r '.version // 0' "$facts_path")" == "1" ]] || fail "facts version is not 1"
 
-if rg -n '"(checkout|branch|evidence_path)"|/Users/|/private/|/tmp/|/Developer/' \
+if grep -En '"(checkout|branch|evidence_path)"|/Users/|/private/|/tmp/|/Developer/' \
   "$facts_path" "$root_dir/docs/architecture/baseline-manifest.json" "$root_dir/docs/architecture/capability-matrix.json" >/dev/null; then
   fail "architecture facts contain machine-local paths or historical branch fields"
 fi
@@ -86,9 +86,9 @@ while IFS= read -r relative_path; do
   name="$(basename "$relative_path")"
   generated="$generated_dir/$name"
   [[ -f "$generated" ]] || fail "generated output is missing: $relative_path"
-  rg -q "^% termiflow-facts-sha256: $facts_sha256$" "$generated" || fail "generated output has stale facts digest: $relative_path"
-  rg -q '^% termiflow-generator: scripts/generate_architecture_diagrams.sh$' "$generated" || fail "generated output has no generator marker: $relative_path"
-  rg -q '^flowchart (TD|TB|LR|RL|BT)$' "$generated" || fail "generated output has no supported flowchart header: $relative_path"
+  grep -Eq "^% termiflow-facts-sha256: $facts_sha256$" "$generated" || fail "generated output has stale facts digest: $relative_path"
+  grep -Eq '^% termiflow-generator: scripts/generate_architecture_diagrams.sh$' "$generated" || fail "generated output has no generator marker: $relative_path"
+  grep -Eq '^flowchart (TD|TB|LR|RL|BT)$' "$generated" || fail "generated output has no supported flowchart header: $relative_path"
   if command -v tw >/dev/null 2>&1; then
     tw --strict --print "$generated" >/dev/null || fail "strict Mermaid validation failed: $relative_path"
   fi

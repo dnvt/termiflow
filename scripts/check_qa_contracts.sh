@@ -30,7 +30,7 @@ if [[ "$(printf '%s\n' "$policy_fields" | sort)" != "$(printf '%s\n' "$code_poli
 fi
 
 capability_targets=$(jq -r '.targets[].target' "$capability_matrix")
-code_capability_targets=$(rg '^pub\(crate\) const PERSISTENCE_CAPABILITY_TARGETS' "$persist_source" \
+code_capability_targets=$(grep -E '^pub\(crate\) const PERSISTENCE_CAPABILITY_TARGETS' "$persist_source" \
   | grep -o '"[^"]*"' | tr -d '"')
 [[ -n "$code_capability_targets" ]] || fail "code-owned capability target list is missing"
 if [[ "$(printf '%s\n' "$capability_targets" | sort)" != "$(printf '%s\n' "$code_capability_targets" | sort)" ]]; then

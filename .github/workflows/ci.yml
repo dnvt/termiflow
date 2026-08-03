@@ -18,26 +18,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7.0.1
-
-      - name: Install repository shell dependencies
-        shell: bash
-        run: |
-          if command -v rg >/dev/null 2>&1; then
-            exit 0
-          fi
-          case "$RUNNER_OS" in
-            Linux)
-              sudo apt-get update
-              sudo apt-get install --yes ripgrep
-              ;;
-            macOS)
-              brew install ripgrep
-              ;;
-            *)
-              echo "unsupported runner without ripgrep: $RUNNER_OS" >&2
-              exit 1
-              ;;
-          esac
+        with:
+          fetch-depth: 0
 
       - name: Check Rust and workflow currency policy
         run: bash scripts/check_toolchain_policy.sh
@@ -48,7 +30,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Enforce Rust/Bash-only repository automation
-        run: test -z "$(rg --files -g '*.py' -g '*.rb' || true)"
+        run: test -z "$(find . -type f \( -name '*.py' -o -name '*.rb' \) -print -quit)"
 
       - name: Validate visual cycle contract
         run: |
@@ -73,8 +55,8 @@ jobs:
           test -f .github/ISSUE_TEMPLATE/feature_request.md
           test -f CHANGELOG.md
           test -f docs/releasing.md
-          rg -q 'security/advisories/new' README.md SECURITY.md
-          rg -q 'release_candidate.sh|release_preflight.sh' docs/releasing.md
+          grep -Eq 'security/advisories/new' README.md SECURITY.md
+          grep -Eq 'release_candidate.sh|release_preflight.sh' docs/releasing.md
 
       - name: Cache Cargo registry
         uses: actions/cache@v6.1.0
@@ -185,6 +167,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install Rust 1.88
         uses: dtolnay/rust-toolchain@1.88
@@ -214,6 +198,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@1.97.1
