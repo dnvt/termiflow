@@ -16,7 +16,7 @@
 //!
 //! The rendering pipeline has three stages:
 //! 1. **Parse** - Convert Mermaid syntax to a graph structure
-//! 2. **Layout** - Assign coordinates using the waterfall algorithm
+//! 2. **Layout** - Assign coordinates using the coarse layered layout pipeline
 //! 3. **Render** - Draw boxes and edges on a 2D canvas
 
 // ============================================================================

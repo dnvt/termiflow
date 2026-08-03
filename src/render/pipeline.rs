@@ -60,7 +60,7 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
     }
 
     // Capture immutable geometry and indexes once at the render boundary.
-    // The legacy Graph remains authoritative for all projection behavior.
+    // The public Graph remains authoritative for all projection behavior.
     let layout_snapshot = LayoutSnapshot::from_graph(graph);
     let graph_index = IndexedGraph::new(graph);
     let max_right = layout_snapshot.max_right();
@@ -132,7 +132,7 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
         .filter(|n| canvas.is_visible(n))
         .collect();
 
-    // Precomputed routes from legacy/experimental layout spikes (may be partial).
+    // Precomputed routes from the layout/routing stages (may be partial).
     let mut routed_edges: HashSet<usize> = HashSet::new();
     for edge_id in layout_snapshot.route_ids() {
         if layout_snapshot
