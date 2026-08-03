@@ -5,6 +5,7 @@
 
 mod convergence;
 mod edge_primitives;
+mod fanout;
 mod subgraph;
 
 use crate::graph::{Direction, EdgeKind, Graph, Node};
@@ -17,7 +18,6 @@ use super::edge_policy::title_safe_td_entry_x;
 use super::provenance::edge_owner_id;
 use super::semantic::CellOwnerKind;
 pub use convergence::route_convergent_edges;
-use convergence::route_fanout_into_subgraph_td;
 pub use edge_primitives::edge_exit_point;
 use edge_primitives::{
     adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, get_node_center,
@@ -25,6 +25,7 @@ use edge_primitives::{
 pub(super) use edge_primitives::{edge_entry_candidates, is_subgraph_title_cell};
 #[cfg(test)]
 use edge_primitives::{edge_entry_point, hits_foreign_subgraph_border};
+use fanout::route_fanout_into_subgraph_td;
 use subgraph::{
     route_cross_subgraph_bt, route_cross_subgraph_td, route_divergent_into_subgraph_bt,
     route_divergent_into_subgraph_td,
