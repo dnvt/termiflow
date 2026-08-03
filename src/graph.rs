@@ -315,8 +315,8 @@ pub struct Graph {
     pub subgraphs: Vec<Subgraph>,
     /// Maps node ID to its containing subgraph ID (if any)
     pub node_subgraph: HashMap<String, String>,
-    /// Optional precomputed routes (kept for legacy/experimental spikes; the
-    /// main pipeline uses the deterministic waterfall layout + live routing)
+    /// Optional precomputed routes produced by layout/routing stages and kept
+    /// as public compatibility data for render, trace, and route ownership.
     pub edge_routes: HashMap<usize, EdgeRoute>,
 }
 

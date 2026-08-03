@@ -1,8 +1,8 @@
 //! Coarse layout + Manhattan routing pipeline (default engine).
 //!
-//! This module supersedes the legacy waterfall layout while keeping a legacy
-//! implementation available in `layout_legacy` for compatibility. The coarse
-//! engine provides:
+//! This module owns the current coarse layout and Manhattan-routing pipeline.
+//! The deprecated waterfall/spike names below remain compatibility aliases for
+//! callers migrating to the coarse engine. The pipeline provides:
 //! - Direction-agnostic layered placement on a coarse grid
 //! - Obstacle-aware Manhattan routing with simple detours
 //! - Subgraph gutter metadata for future avoidance/bundling
@@ -106,8 +106,8 @@ pub fn coarse_waterfall(graph: Graph) -> Result<Graph> {
     coarse_waterfall_with_config(graph, CoarseLayoutConfig::default())
 }
 
-/// Backwards-compatible alias for callers expecting `waterfall`.
-#[deprecated(note = "Use coarse_waterfall or layout_legacy::waterfall for the old engine")]
+/// Deprecated compatibility alias for [`coarse_waterfall`].
+#[deprecated(note = "Use coarse_waterfall; this alias runs the current coarse engine")]
 pub fn waterfall(graph: Graph) -> Result<Graph> {
     coarse_waterfall(graph)
 }
@@ -288,8 +288,8 @@ fn adjust_portal_slots_for_title(envelopes: &mut HashMap<String, SubgraphEnvelop
     }
 }
 
-/// Backwards-compatible alias for callers using the previous spike API.
-#[deprecated(note = "Use apply_coarse_layout instead")]
+/// Deprecated compatibility alias for [`apply_coarse_layout`].
+#[deprecated(note = "Use apply_coarse_layout; this alias runs the current coarse engine")]
 pub fn apply_spike_layout(
     graph: Graph,
     prior_positions: Option<HashMap<String, Point>>,
