@@ -431,10 +431,11 @@ fn full_fixture_corpus_geometry_traces_are_deterministic() {
 fn junction_quad_independent_oracle_covers_the_full_review_matrix() {
     for prefix in ["junction_quad", "junction_quad_holdout"] {
         for direction in ["TD", "BT", "LR", "RL"] {
+            let direction_file = direction.to_ascii_lowercase();
             let input = fs::read_to_string(if prefix == "junction_quad" {
-                format!("tests/fixtures/inputs/{prefix}_{direction}.md")
+                format!("tests/fixtures/inputs/{prefix}_{direction_file}.md")
             } else {
-                format!("tests/fixtures/holdouts/inputs/{prefix}_{direction}.md")
+                format!("tests/fixtures/holdouts/inputs/{prefix}_{direction_file}.md")
             })
             .expect("read junction quad fixture");
             let (anchor_id, target_ids, semantic_edges, _) =

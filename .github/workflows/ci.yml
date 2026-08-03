@@ -19,6 +19,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      - name: Install repository shell dependencies
+        shell: bash
+        run: |
+          if command -v rg >/dev/null 2>&1; then
+            exit 0
+          fi
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install --yes ripgrep
+              ;;
+            macOS)
+              brew install ripgrep
+              ;;
+            *)
+              echo "unsupported runner without ripgrep: $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Check Rust and workflow currency policy
         run: bash scripts/check_toolchain_policy.sh
 
