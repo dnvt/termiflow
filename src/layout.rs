@@ -20,6 +20,7 @@ use crate::spacing::SpacingConfig;
 use crate::style::{box_width, BOX_MIN_WIDTH};
 
 mod constraints;
+mod dual_junction;
 mod envelope_stage;
 #[path = "layout_routing.rs"]
 mod layout_routing;

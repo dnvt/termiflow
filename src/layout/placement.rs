@@ -7,6 +7,7 @@ use crate::graph::{Direction, Graph};
 use crate::orientation::{Axis, OrientedCoords};
 use crate::style::BOX_HEIGHT;
 
+use super::dual_junction::balance_dual_junctions;
 use super::optimization::{balance_coordinates, node_extent_primary, node_extent_secondary};
 use super::reserve_titled_horizontal_subgraph_headroom;
 use super::CoarseLayoutConfig;
@@ -487,6 +488,8 @@ pub(super) fn place_nodes(
         config,
         prior_positions,
     );
+
+    balance_dual_junctions(graph, layers, coords, &mut positions, &mut node_rects);
 
     if std::env::var("DEBUG_FANIN").is_ok() {
         if let Some(rect) = node_rects.get("Merge") {
