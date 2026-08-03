@@ -28,6 +28,7 @@ mod normalization;
 mod optimization;
 mod pipeline;
 mod placement;
+mod pure_fan_in;
 mod routing_stage;
 
 use constraints::*;

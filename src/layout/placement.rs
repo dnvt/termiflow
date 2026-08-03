@@ -9,6 +9,7 @@ use crate::style::BOX_HEIGHT;
 
 use super::dual_junction::balance_dual_junctions;
 use super::optimization::{balance_coordinates, node_extent_primary, node_extent_secondary};
+use super::pure_fan_in::balance_pure_fan_in_targets;
 use super::reserve_titled_horizontal_subgraph_headroom;
 use super::CoarseLayoutConfig;
 
@@ -488,6 +489,8 @@ pub(super) fn place_nodes(
         config,
         prior_positions,
     );
+
+    balance_pure_fan_in_targets(graph, layers, coords, &mut positions, &mut node_rects);
 
     balance_dual_junctions(graph, layers, coords, &mut positions, &mut node_rects);
 

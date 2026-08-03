@@ -38,6 +38,37 @@ fn raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
     errors
 }
 
+fn shared_fan_in_raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
+    let parsed = parse(input, false).expect("parse fan-in oracle input");
+    let mut errors = Vec::new();
+    if frame.trim().is_empty() {
+        errors.push("rendered frame is empty".to_string());
+    }
+    for node in &parsed.graph.nodes {
+        if !node.label.is_empty() && !frame.contains(&node.label) {
+            errors.push(format!(
+                "node label {:?} is absent from raw frame",
+                node.label
+            ));
+        }
+    }
+
+    let expected_arrowheads = parsed
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            parsed
+                .graph
+                .edges
+                .iter()
+                .any(|edge| !edge.is_back_edge && edge.to == node.id)
+        })
+        .count();
+    errors.extend(raw_topology_errors(frame, expected_arrowheads));
+    errors
+}
+
 fn junction_quad_raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
     let parsed = parse(input, false).expect("parse junction quad oracle input");
     let (_, _, _, expected_arrows) = dual_junction_shape(&parsed.graph);
@@ -93,6 +124,42 @@ fn dual_junction_shape(graph: &termiflow::Graph) -> (String, Vec<String>, usize,
     let semantic_edges = graph.edges.len();
     let expected_arrows = semantic_edges.saturating_sub(incoming_count.saturating_sub(1));
     (anchor, targets, semantic_edges, expected_arrows)
+}
+
+fn pure_fan_in_shape(graph: &termiflow::Graph) -> (String, Vec<String>, usize) {
+    let candidates: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let incoming: HashSet<&str> = graph
+                .edges
+                .iter()
+                .filter(|edge| !edge.is_back_edge && edge.to == node.id && edge.from != node.id)
+                .map(|edge| edge.from.as_str())
+                .collect();
+            let outgoing = graph
+                .edges
+                .iter()
+                .any(|edge| !edge.is_back_edge && edge.from == node.id && edge.to != node.id);
+            if incoming.len() < 2 || outgoing {
+                return None;
+            }
+
+            let mut sources: Vec<String> = incoming.into_iter().map(str::to_owned).collect();
+            sources.sort_unstable();
+            Some((node.id.clone(), sources))
+        })
+        .collect();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "expected exactly one pure fan-in target"
+    );
+    let (anchor, sources) = candidates
+        .into_iter()
+        .next()
+        .expect("pure fan-in candidate");
+    (anchor, sources, graph.edges.len())
 }
 
 fn raw_topology_errors(frame: &str, expected_edges: usize) -> Vec<String> {
@@ -433,6 +500,132 @@ fn junction_quad_independent_oracle_covers_the_full_review_matrix() {
                     );
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn pure_fan_in_independent_oracle_covers_the_full_scale_matrix() {
+    for direction in ["TD", "BT", "LR", "RL"] {
+        let input = fs::read_to_string(format!(
+            "tests/fixtures/inputs/scale_dense_{}.md",
+            direction.to_lowercase()
+        ))
+        .expect("read scale dense fixture");
+        let parsed = parse(&input, false).expect("parse scale dense fixture");
+        let (anchor_id, source_ids, semantic_edges) = pure_fan_in_shape(&parsed.graph);
+
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let render_case = || {
+                    let mut graph = parse(&input, false)
+                        .expect("parse scale dense fixture")
+                        .graph;
+                    let mut config = Config::default();
+                    config.optimize_render = optimized;
+                    config.composite_style = CompositeStyle::from_base(style);
+                    config.spacing = config.spacing.for_direction(graph.direction);
+                    measure::measure_graph(&mut graph, &config);
+                    let (graph, outcome) = layout_and_render_with_feedback(graph, config)
+                        .expect("render scale dense fixture");
+                    (
+                        outcome.output.clone(),
+                        GeometryTrace::from_graph(&graph),
+                        outcome,
+                    )
+                };
+
+                let (first_output, first_trace, first_outcome) = render_case();
+                let (second_output, second_trace, _) = render_case();
+                assert_eq!(
+                    first_output, second_output,
+                    "non-deterministic raw frame for scale_dense {direction} {style:?} optimized={optimized}"
+                );
+                assert_eq!(
+                    first_trace, second_trace,
+                    "non-deterministic geometry for scale_dense {direction} {style:?} optimized={optimized}"
+                );
+
+                assert!(
+                    shared_fan_in_raw_frame_errors(&input, &first_output).is_empty(),
+                    "raw-frame oracle failed for scale_dense {direction} {style:?} optimized={optimized}: {:?}\n{first_output}",
+                    shared_fan_in_raw_frame_errors(&input, &first_output)
+                );
+                assert!(
+                    node_geometry_errors(&first_trace).is_empty(),
+                    "node geometry oracle failed for scale_dense {direction} {style:?} optimized={optimized}: {:?}",
+                    node_geometry_errors(&first_trace)
+                );
+                assert_eq!(
+                    first_trace.edges.len(),
+                    semantic_edges,
+                    "scale dense lost a semantic edge trace for {direction} {style:?} optimized={optimized}"
+                );
+                assert!(
+                    first_outcome
+                        .critic_report
+                        .findings
+                        .iter()
+                        .all(|finding| finding.code != termiflow::FindingCode::RouteSymmetryImbalance),
+                    "pure fan-in critic finding remained for scale_dense {direction} {style:?} optimized={optimized}: {:?}",
+                    first_outcome.critic_report.findings
+                );
+
+                let center = |id: &str| {
+                    let node = first_trace
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == id)
+                        .unwrap_or_else(|| panic!("missing node {id}"));
+                    secondary_center_for(node.x, node.y, node.width, node.height, direction)
+                };
+                let source_centers: Vec<usize> = source_ids.iter().map(|id| center(id)).collect();
+                let source_midpoint =
+                    (source_centers.iter().min().copied().expect("source center")
+                        + source_centers.iter().max().copied().expect("source center"))
+                        / 2;
+                assert!(
+                    center(&anchor_id).abs_diff(source_midpoint) <= 1,
+                    "pure fan-in midpoint drift for scale_dense {direction} {style:?} optimized={optimized}: anchor={} midpoint={source_midpoint}",
+                    center(&anchor_id)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn subgraph_fan_in_remains_owned_by_boundary_layout() {
+    for direction in ["TD", "BT", "LR", "RL"] {
+        let input = fs::read_to_string(format!(
+            "tests/fixtures/inputs/subgraph_fanin_{}.md",
+            direction.to_lowercase()
+        ))
+        .expect("read subgraph fan-in fixture");
+        let parsed = parse(&input, false).expect("parse subgraph fan-in fixture");
+        let (anchor_id, source_ids, _) = pure_fan_in_shape(&parsed.graph);
+        assert!(
+            source_ids.iter().any(|source_id| {
+                parsed
+                    .graph
+                    .edge_crosses_subgraph_boundary(source_id, &anchor_id)
+            }),
+            "fixture must cross a declared boundary for {direction}"
+        );
+
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            let outcome =
+                termiflow::render_with_feedback(&input, RenderOptions::new().with_style(style))
+                    .expect("render subgraph fan-in fixture");
+            assert!(
+                outcome
+                    .critic_report
+                    .findings
+                    .iter()
+                    .all(|finding| finding.code != termiflow::FindingCode::RouteSymmetryImbalance),
+                "boundary-owned fan-in should not be claimed by the pure normalizer for {direction} {style:?}: {:?}",
+                outcome.critic_report.findings
+            );
         }
     }
 }
