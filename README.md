@@ -107,7 +107,7 @@ $ printf 'graph LR\n    subgraph CI\n        A[Push]-->B[Lint]-->C[Test]\n    en
 
 ## Installation
 
-### Homebrew (macOS and Linux — no Rust required)
+### Homebrew (macOS and supported Linux systems — no Rust required)
 
 ```bash
 brew install dnvt/termiflow/termiflow
@@ -115,6 +115,11 @@ brew install dnvt/termiflow/termiflow
 
 The Homebrew formula is maintained in the external `dnvt/homebrew-termiflow`
 tap; this repository keeps installation instructions only.
+
+The v0.2.0 Linux release binaries are architecture-specific: the x86_64 GNU
+archive targets glibc 2.39 or newer, while the aarch64 GNU archive targets
+glibc 2.18 or newer. Older or different Linux userspaces can use the Rust
+source fallback below.
 
 ### GitHub Releases
 
@@ -157,7 +162,7 @@ tw --pad 1 diagram.md
 tw --no-crop diagram.md
 
 # Tighter layout spacing
-tw --compact diagram.md
+tw --spacing compact diagram.md
 
 # Live preview modes
 tw --tui diagram.md
