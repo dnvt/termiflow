@@ -375,6 +375,54 @@ fn scoped_visual_packet_and_holdout_receipt_are_hash_bound() {
 }
 
 #[test]
+fn source_only_holdout_materializes_and_validates() {
+    let manifest = emit_manifest_for("source-only-holdout-manifest", "canonical-smoke");
+    let holdout_packet = temp_path("source-only-holdout-packet").with_extension("packet");
+    let receipt = temp_path("source-only-holdout-receipt");
+    let holdout = qa_command()
+        .args([
+            "holdout",
+            "--spec",
+            spec_path(),
+            "--queue",
+            "canonical-smoke",
+            "--out",
+        ])
+        .arg(&holdout_packet)
+        .args(["--receipt"])
+        .arg(&receipt)
+        .output()
+        .expect("run source-only holdout executor");
+    assert!(
+        holdout.status.success(),
+        "source-only holdout execution failed: {holdout:?}"
+    );
+    let validation = qa_command()
+        .args(["visual-validate", "--packet"])
+        .arg(&holdout_packet)
+        .args(["--queue-manifest"])
+        .arg(&manifest)
+        .args(["--holdout"])
+        .output()
+        .expect("validate source-only holdout packet");
+    assert!(
+        validation.status.success(),
+        "source-only holdout validation failed: {validation:?}"
+    );
+    let receipt_value: Value =
+        serde_json::from_slice(&fs::read(&receipt).expect("read source-only receipt"))
+            .expect("parse source-only receipt");
+    assert_eq!(receipt_value["queue_id"], "canonical-smoke");
+    assert_eq!(receipt_value["expected_rows"], 4);
+    assert_eq!(receipt_value["actual_rows"], 4);
+    assert_eq!(receipt_value["status"], "passed");
+
+    fs::remove_file(manifest).expect("remove source-only manifest");
+    fs::remove_dir_all(holdout_packet).expect("remove source-only packet");
+    fs::remove_file(receipt).expect("remove source-only receipt");
+}
+
+#[test]
 fn manifest_golden_bridge_checks_canary_and_negative_contract() {
     let manifest_path = emit_manifest("golden-bridge-manifest");
     let report_path = temp_path("golden-bridge-report");
