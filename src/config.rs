@@ -9,6 +9,50 @@ use std::path::Path;
 use crate::parser::ParseConfig;
 use crate::spacing::{SpacingConfig, SpacingMode};
 use crate::style::CompositeStyle;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+pub const EFFECTIVE_POLICY_SCHEMA: &str = "termiflow.effective_policy.v1";
+
+/// Top-level policy paths owned by the render-boundary contract. The
+/// architecture checker reads this list so a new behavior-bearing input cannot
+/// silently bypass the effective-policy matrix.
+pub const EFFECTIVE_POLICY_CONTRACT_FIELDS: &[&str] = &[
+    "config.max_label_width",
+    "config.max_edge_label_width",
+    "config.wrap_labels",
+    "config.max_label_lines",
+    "config.crop",
+    "config.pad",
+    "config.strict_parsing",
+    "config.composite_style",
+    "config.spacing",
+    "config.optimize_render",
+    "config.render_repair_passes",
+    "config.layout_repair_passes",
+    "config.debug_critic",
+    "runtime.compatibility.optimize_render",
+    "runtime.compatibility.disable_portals",
+    "runtime.compatibility.render_repair_passes",
+    "runtime.compatibility.layout_repair_passes",
+    "runtime.diagnostics.timing",
+    "runtime.diagnostics.routes",
+    "runtime.diagnostics.fan_in",
+    "runtime.diagnostics.fan_out",
+    "runtime.diagnostics.cross",
+    "runtime.diagnostics.crossing",
+    "runtime.diagnostics.critic",
+    "runtime.terminal.columns",
+    "runtime.terminal.lines",
+    "boundary.direction",
+    "boundary.display_profile",
+    "boundary.scaling_mode",
+    "boundary.from_json",
+    "boundary.fit_terminal",
+    "environment.TERM",
+    "environment.LANG",
+    "environment.LC_ALL",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigSource {
@@ -106,6 +150,157 @@ pub struct Config {
     pub layout_repair_passes: usize,
     /// Emit critic findings for the rendered frame.
     pub debug_critic: bool,
+}
+
+/// Build the canonical policy record for one resolved render boundary.
+///
+/// The record deliberately includes both resolved configuration and the
+/// process-bound compatibility inputs consumed below the public API. Callers
+/// can persist the returned `sha256` alongside evidence and provenance.
+pub fn effective_render_policy(
+    config: &Config,
+    direction: crate::graph::Direction,
+    display_profile: &str,
+    scaling_mode: &str,
+    from_json: bool,
+    fit_terminal: bool,
+) -> Value {
+    let runtime = crate::runtime::current();
+    let fields = json!({
+        "config": {
+            "max_label_width": config.max_label_width,
+            "max_edge_label_width": config.max_edge_label_width,
+            "wrap_labels": config.wrap_labels,
+            "max_label_lines": config.max_label_lines,
+            "crop": config.crop,
+            "pad": config.pad,
+            "strict_parsing": config.strict_parsing,
+            "composite_style": composite_style_value(&config.composite_style),
+            "spacing": spacing_value(&config.spacing),
+            "optimize_render": config.optimize_render,
+            "render_repair_passes": config.render_repair_passes,
+            "layout_repair_passes": config.layout_repair_passes,
+            "debug_critic": config.debug_critic,
+        },
+        "runtime": {
+            "compatibility": {
+                "optimize_render": runtime.compatibility.optimize_render,
+                "disable_portals": runtime.compatibility.disable_portals,
+                "render_repair_passes": runtime.compatibility.render_repair_passes,
+                "layout_repair_passes": runtime.compatibility.layout_repair_passes,
+            },
+            "diagnostics": {
+                "timing": runtime.diagnostics.timing,
+                "routes": runtime.diagnostics.routes,
+                "fan_in": runtime.diagnostics.fan_in,
+                "fan_out": runtime.diagnostics.fan_out,
+                "cross": runtime.diagnostics.cross,
+                "crossing": runtime.diagnostics.crossing,
+                "critic": runtime.diagnostics.critic,
+            },
+            "terminal": {
+                "columns": runtime.terminal.columns,
+                "lines": runtime.terminal.lines,
+            },
+        },
+        "boundary": {
+            "direction": format!("{direction:?}"),
+            "display_profile": display_profile,
+            "scaling_mode": scaling_mode,
+            "from_json": from_json,
+            "fit_terminal": fit_terminal,
+        },
+        "environment": {
+            "TERM": normalized_environment("TERM"),
+            "LANG": normalized_environment("LANG"),
+            "LC_ALL": normalized_environment("LC_ALL"),
+        },
+        "contract_fields": EFFECTIVE_POLICY_CONTRACT_FIELDS,
+    });
+    let sha256 = policy_digest(&fields);
+    json!({
+        "schema": EFFECTIVE_POLICY_SCHEMA,
+        "version": 1,
+        "fields": fields,
+        "sha256": sha256,
+    })
+}
+
+fn composite_style_value(style: &CompositeStyle) -> Value {
+    json!({
+        "corner": style.corner.map(|value| format!("{value:?}")),
+        "border": style.border.map(|value| format!("{value:?}")),
+        "arrow": style.arrow.map(|value| format!("{value:?}")),
+        "edge": style.edge.map(|value| format!("{value:?}")),
+        "junction": style.junction.map(|value| format!("{value:?}")),
+        "back": style.back.map(|value| format!("{value:?}")),
+        "subgraph": style.subgraph.map(|value| format!("{value:?}")),
+        "fallback": "Unicode",
+    })
+}
+
+fn spacing_value(spacing: &SpacingConfig) -> Value {
+    json!({
+        "box_height": spacing.box_height,
+        "box_min_width": spacing.box_min_width,
+        "box_padding": spacing.box_padding,
+        "row_spacing": spacing.row_spacing,
+        "col_spacing": spacing.col_spacing,
+        "node_margin": spacing.node_margin,
+        "subgraph_gutter": spacing.subgraph_gutter,
+        "stem_length_vertical": spacing.stem_length_vertical,
+        "stem_length_horizontal": spacing.stem_length_horizontal,
+        "edge_junction_height": spacing.edge_junction_height,
+        "edge_drop_height": spacing.edge_drop_height,
+        "max_label_width": spacing.max_label_width,
+        "max_canvas_width": spacing.max_canvas_width,
+        "max_canvas_height": spacing.max_canvas_height,
+        "cycle_gutter": spacing.cycle_gutter,
+    })
+}
+
+fn sha256_json(value: &Value) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    Sha256::digest(
+        serde_json::to_vec(&canonical_json(value)).expect("effective policy is serializable"),
+    )
+    .iter()
+    .flat_map(|byte| {
+        [
+            HEX[(byte >> 4) as usize] as char,
+            HEX[(byte & 0x0f) as usize] as char,
+        ]
+    })
+    .collect()
+}
+
+fn normalized_environment(name: &str) -> Value {
+    std::env::var_os(name)
+        .and_then(|value| value.into_string().ok())
+        .map(|value| Value::String(value.trim().to_owned()))
+        .unwrap_or(Value::Null)
+}
+
+/// Canonicalize JSON objects recursively while preserving array order. This
+/// keeps policy digests independent of map insertion order at validation time.
+pub fn canonical_json(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort();
+            let mut canonical = serde_json::Map::new();
+            for key in keys {
+                canonical.insert(key.clone(), canonical_json(&object[key]));
+            }
+            Value::Object(canonical)
+        }
+        Value::Array(values) => Value::Array(values.iter().map(canonical_json).collect()),
+        _ => value.clone(),
+    }
+}
+
+pub fn policy_digest(fields: &Value) -> String {
+    sha256_json(fields)
 }
 
 impl Default for Config {
@@ -641,5 +836,44 @@ mod tests {
                 && record.field == ConfigField::RenderRepairPasses
                 && record.action == ResolutionAction::Normalized
         }));
+    }
+
+    #[test]
+    fn effective_policy_digest_binds_render_fields_but_not_unrelated_inputs() {
+        let base = Config::default();
+        let first = effective_render_policy(
+            &base,
+            crate::graph::Direction::TD,
+            "test-display",
+            "Fixed",
+            false,
+            false,
+        );
+
+        let mut changed = base.clone();
+        changed.max_label_width += 1;
+        let second = effective_render_policy(
+            &changed,
+            crate::graph::Direction::TD,
+            "test-display",
+            "Fixed",
+            false,
+            false,
+        );
+        assert_ne!(first["sha256"], second["sha256"]);
+        assert_eq!(first["schema"], EFFECTIVE_POLICY_SCHEMA);
+        assert!(first["fields"]["config"]["spacing"]
+            .get("edge_drop_height")
+            .is_some());
+
+        let unrelated = effective_render_policy(
+            &base,
+            crate::graph::Direction::TD,
+            "test-display",
+            "Fixed",
+            false,
+            false,
+        );
+        assert_eq!(first, unrelated);
     }
 }

@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use super::common;
 
 pub const PROVENANCE_SCHEMA: &str = "termiflow.source_provenance.v1";
+pub const POLICY_SET_SCHEMA: &str = "termiflow.effective_policy_set.v1";
 
 pub struct ProvenanceInputs<'a> {
     pub input_root: &'a Path,
@@ -208,12 +209,405 @@ pub fn validate_identity(identity: &Value) -> Result<()> {
         "identity.json.provenance.workload.modes",
     )?;
 
+    if let Some(policy_set) = object.get("policy_set") {
+        validate_policy_set(policy_set)?;
+    }
+
     let host = required_object(object.get("host"), "identity.json.provenance.host")?;
     for field in ["os", "arch", "uname_srm"] {
         required_string(
             host.get(field),
             &format!("identity.json.provenance.host.{field}"),
         )?;
+    }
+    Ok(())
+}
+
+/// Bind the effective per-row render policies observed while a packet is
+/// being built. Legacy packets may omit this record; new packets always write
+/// it before the packet becomes publishable.
+pub fn bind_policy_observations(identity: &mut Value, observations: &mut Vec<Value>) -> Result<()> {
+    for record in observations.iter() {
+        let policy = record
+            .get("policy")
+            .ok_or_else(|| anyhow!("policy observation is missing policy"))?;
+        validate_policy(policy)?;
+        required_string(record.get("case_id"), "policy observation.case_id")?;
+        required_hash(
+            record.get("policy_sha256"),
+            "policy observation.policy_sha256",
+        )?;
+    }
+    observations.sort_by_key(|record| {
+        (
+            record["case_id"].as_str().unwrap_or_default().to_owned(),
+            record["policy_sha256"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        )
+    });
+    observations.dedup_by(|left, right| left == right);
+    for pair in observations.windows(2) {
+        if pair[0]["case_id"] == pair[1]["case_id"]
+            && pair[0]["policy_sha256"] != pair[1]["policy_sha256"]
+        {
+            bail!(
+                "case {} observed more than one effective policy",
+                pair[0]["case_id"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    let unsigned_set = json!({
+        "schema": POLICY_SET_SCHEMA,
+        "version": 1,
+        "records": observations,
+    });
+    let set_sha256 = common::sha256_bytes(&serde_json::to_vec(
+        &termiflow::config::canonical_json(&unsigned_set),
+    )?);
+    let policy_set = json!({
+        "schema": POLICY_SET_SCHEMA,
+        "version": 1,
+        "records": observations,
+        "sha256": set_sha256,
+    });
+    let provenance = identity
+        .get_mut("provenance")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| anyhow!("identity.json.provenance must be an object"))?;
+    provenance.insert("policy_set".to_owned(), policy_set);
+    let unsigned = Value::Object(provenance.clone());
+    provenance.insert(
+        "effective_sha256".to_owned(),
+        Value::String(common::sha256_bytes(&serde_json::to_vec(
+            &unsigned_without_effective(&unsigned),
+        )?)),
+    );
+    Ok(())
+}
+
+fn unsigned_without_effective(value: &Value) -> Value {
+    let mut unsigned = value.clone();
+    if let Some(object) = unsigned.as_object_mut() {
+        object.remove("effective_sha256");
+    }
+    unsigned
+}
+
+pub fn validate_policy_set(value: &Value) -> Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("identity.json.provenance.policy_set must be an object"))?;
+    if object.get("schema").and_then(Value::as_str) != Some(POLICY_SET_SCHEMA)
+        || object.get("version").and_then(Value::as_u64) != Some(1)
+    {
+        bail!("identity.json.provenance.policy_set schema/version is invalid");
+    }
+    let records = object
+        .get("records")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("identity.json.provenance.policy_set.records must be an array"))?;
+    for record in records {
+        let record_object = record
+            .as_object()
+            .ok_or_else(|| anyhow!("policy-set records must be objects"))?;
+        required_string(
+            record_object.get("case_id"),
+            "identity.json.provenance.policy_set.records.case_id",
+        )?;
+        let policy = record_object
+            .get("policy")
+            .ok_or_else(|| anyhow!("policy-set record is missing policy"))?;
+        validate_policy(policy)?;
+        let declared = required_hash(
+            record_object.get("policy_sha256"),
+            "identity.json.provenance.policy_set.records.policy_sha256",
+        )?;
+        let actual = policy
+            .get("sha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("policy-set record policy.sha256 is missing"))?;
+        if declared != actual {
+            bail!("policy-set record digest does not match policy.sha256");
+        }
+    }
+    for pair in records.windows(2) {
+        let left_case = pair[0]["case_id"].as_str().unwrap_or_default();
+        let right_case = pair[1]["case_id"].as_str().unwrap_or_default();
+        if left_case >= right_case {
+            bail!("policy-set records must be sorted by unique case_id");
+        }
+    }
+    let unsigned = json!({
+        "schema": POLICY_SET_SCHEMA,
+        "version": 1,
+        "records": records,
+    });
+    let expected = common::sha256_bytes(&serde_json::to_vec(&termiflow::config::canonical_json(
+        &unsigned,
+    ))?);
+    if object.get("sha256").and_then(Value::as_str) != Some(expected.as_str()) {
+        bail!("identity.json.provenance.policy_set.sha256 does not match its records");
+    }
+    Ok(())
+}
+
+pub fn validate_policy(value: &Value) -> Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("effective render policy must be an object"))?;
+    if object.get("schema").and_then(Value::as_str)
+        != Some(termiflow::config::EFFECTIVE_POLICY_SCHEMA)
+        || object.get("version").and_then(Value::as_u64) != Some(1)
+    {
+        bail!("effective render policy schema/version is invalid");
+    }
+    exact_keys(
+        object,
+        &["schema", "version", "fields", "sha256"],
+        "effective render policy",
+    )?;
+    let fields = object
+        .get("fields")
+        .ok_or_else(|| anyhow!("effective render policy.fields is required"))?;
+    let fields_object = fields
+        .as_object()
+        .ok_or_else(|| anyhow!("effective render policy.fields must be an object"))?;
+    exact_keys(
+        fields_object,
+        &[
+            "config",
+            "runtime",
+            "boundary",
+            "environment",
+            "contract_fields",
+        ],
+        "effective render policy.fields",
+    )?;
+    validate_policy_fields(fields_object)?;
+    let contract_fields = fields_object
+        .get("contract_fields")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("effective policy.contract_fields must be a string array"))?;
+    let expected_contract_fields = termiflow::config::EFFECTIVE_POLICY_CONTRACT_FIELDS
+        .iter()
+        .map(|field| Value::String((*field).to_owned()))
+        .collect::<Vec<_>>();
+    if *contract_fields != expected_contract_fields {
+        bail!("effective policy.contract_fields drift from code-owned list");
+    }
+    let expected = termiflow::config::policy_digest(fields);
+    if object.get("sha256").and_then(Value::as_str) != Some(expected.as_str()) {
+        bail!("effective render policy.sha256 does not match fields");
+    }
+    Ok(())
+}
+
+fn validate_policy_fields(fields: &serde_json::Map<String, Value>) -> Result<()> {
+    let config = required_object(fields.get("config"), "effective policy.config")?;
+    exact_keys(
+        config,
+        &[
+            "max_label_width",
+            "max_edge_label_width",
+            "wrap_labels",
+            "max_label_lines",
+            "crop",
+            "pad",
+            "strict_parsing",
+            "composite_style",
+            "spacing",
+            "optimize_render",
+            "render_repair_passes",
+            "layout_repair_passes",
+            "debug_critic",
+        ],
+        "effective policy.config",
+    )?;
+    for field in [
+        "max_label_width",
+        "max_edge_label_width",
+        "max_label_lines",
+        "pad",
+        "render_repair_passes",
+        "layout_repair_passes",
+    ] {
+        if !config[field].is_u64() {
+            bail!("effective policy.config.{field} must be a non-negative integer");
+        }
+    }
+    for field in [
+        "wrap_labels",
+        "crop",
+        "strict_parsing",
+        "optimize_render",
+        "debug_critic",
+    ] {
+        if !config[field].is_boolean() {
+            bail!("effective policy.config.{field} must be boolean");
+        }
+    }
+    let composite = required_object(
+        config.get("composite_style"),
+        "effective policy.config.composite_style",
+    )?;
+    exact_keys(
+        composite,
+        &[
+            "corner", "border", "arrow", "edge", "junction", "back", "subgraph", "fallback",
+        ],
+        "effective policy.config.composite_style",
+    )?;
+    if composite["fallback"] != Value::String("Unicode".to_owned()) {
+        bail!("effective policy.config.composite_style.fallback is invalid");
+    }
+    for field in [
+        "corner", "border", "arrow", "edge", "junction", "back", "subgraph",
+    ] {
+        if !composite[field].is_string() && !composite[field].is_null() {
+            bail!("effective policy.config.composite_style.{field} must be string or null");
+        }
+    }
+    let spacing = required_object(config.get("spacing"), "effective policy.config.spacing")?;
+    exact_keys(
+        spacing,
+        &[
+            "box_height",
+            "box_min_width",
+            "box_padding",
+            "row_spacing",
+            "col_spacing",
+            "node_margin",
+            "subgraph_gutter",
+            "stem_length_vertical",
+            "stem_length_horizontal",
+            "edge_junction_height",
+            "edge_drop_height",
+            "max_label_width",
+            "max_canvas_width",
+            "max_canvas_height",
+            "cycle_gutter",
+        ],
+        "effective policy.config.spacing",
+    )?;
+    if spacing.values().any(|value| !value.is_u64()) {
+        bail!("effective policy.config.spacing must contain only non-negative integers");
+    }
+
+    let runtime = required_object(fields.get("runtime"), "effective policy.runtime")?;
+    exact_keys(
+        runtime,
+        &["compatibility", "diagnostics", "terminal"],
+        "effective policy.runtime",
+    )?;
+    let compatibility = required_object(
+        runtime.get("compatibility"),
+        "effective policy.runtime.compatibility",
+    )?;
+    exact_keys(
+        compatibility,
+        &[
+            "optimize_render",
+            "disable_portals",
+            "render_repair_passes",
+            "layout_repair_passes",
+        ],
+        "effective policy.runtime.compatibility",
+    )?;
+    for field in ["optimize_render", "disable_portals"] {
+        if !compatibility[field].is_boolean() {
+            bail!("effective policy.runtime.compatibility.{field} must be boolean");
+        }
+    }
+    for field in ["render_repair_passes", "layout_repair_passes"] {
+        if !compatibility[field].is_u64() && !compatibility[field].is_null() {
+            bail!("effective policy.runtime.compatibility.{field} must be integer or null");
+        }
+    }
+    let diagnostics = required_object(
+        runtime.get("diagnostics"),
+        "effective policy.runtime.diagnostics",
+    )?;
+    exact_keys(
+        diagnostics,
+        &[
+            "timing", "routes", "fan_in", "fan_out", "cross", "crossing", "critic",
+        ],
+        "effective policy.runtime.diagnostics",
+    )?;
+    if diagnostics.values().any(|value| !value.is_boolean()) {
+        bail!("effective policy.runtime.diagnostics must contain only booleans");
+    }
+    let terminal = required_object(runtime.get("terminal"), "effective policy.runtime.terminal")?;
+    exact_keys(
+        terminal,
+        &["columns", "lines"],
+        "effective policy.runtime.terminal",
+    )?;
+    if terminal
+        .values()
+        .any(|value| !value.is_u64() && !value.is_null())
+    {
+        bail!("effective policy.runtime.terminal values must be integer or null");
+    }
+
+    let boundary = required_object(fields.get("boundary"), "effective policy.boundary")?;
+    exact_keys(
+        boundary,
+        &[
+            "direction",
+            "display_profile",
+            "scaling_mode",
+            "from_json",
+            "fit_terminal",
+        ],
+        "effective policy.boundary",
+    )?;
+    for field in ["direction", "display_profile", "scaling_mode"] {
+        required_string(
+            boundary.get(field),
+            &format!("effective policy.boundary.{field}"),
+        )?;
+    }
+    for field in ["from_json", "fit_terminal"] {
+        if !boundary[field].is_boolean() {
+            bail!("effective policy.boundary.{field} must be boolean");
+        }
+    }
+
+    let environment = required_object(fields.get("environment"), "effective policy.environment")?;
+    exact_keys(
+        environment,
+        &["TERM", "LANG", "LC_ALL"],
+        "effective policy.environment",
+    )?;
+    if environment
+        .values()
+        .any(|value| !value.is_string() && !value.is_null())
+    {
+        bail!("effective policy.environment values must be string or null");
+    }
+    Ok(())
+}
+
+fn exact_keys(
+    object: &serde_json::Map<String, Value>,
+    expected: &[&str],
+    label: &str,
+) -> Result<()> {
+    let expected = expected
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual = object
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual != expected {
+        let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
+        let unknown = actual.difference(&expected).copied().collect::<Vec<_>>();
+        bail!("{label} keys drifted; missing={missing:?} unknown={unknown:?}");
     }
     Ok(())
 }
@@ -447,5 +841,38 @@ mod tests {
         validate_identity(&identity).expect("valid provenance identity");
         identity["provenance"]["source"]["tracked_tree_sha256"] = Value::String("b".repeat(64));
         assert!(validate_identity(&identity).is_err());
+    }
+
+    #[test]
+    fn effective_policy_validation_is_strict_and_canonical() {
+        let policy = termiflow::config::effective_render_policy(
+            &termiflow::Config::default(),
+            termiflow::graph::Direction::TD,
+            "test-display",
+            "Fixed",
+            false,
+            false,
+        );
+        validate_policy(&policy).expect("default effective policy is valid");
+
+        let fields = policy["fields"].clone();
+        let mut reordered = serde_json::Map::new();
+        for key in [
+            "environment",
+            "contract_fields",
+            "boundary",
+            "config",
+            "runtime",
+        ] {
+            reordered.insert(key.to_owned(), fields[key].clone());
+        }
+        assert_eq!(
+            termiflow::config::policy_digest(&fields),
+            termiflow::config::policy_digest(&Value::Object(reordered))
+        );
+
+        let mut unknown = policy.clone();
+        unknown["fields"]["unknown"] = Value::Bool(true);
+        assert!(validate_policy(&unknown).is_err());
     }
 }

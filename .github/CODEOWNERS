@@ -1,0 +1,6 @@
+# Default ownership for review routing. Release and security changes still
+# require the repository maintainer's explicit review.
+* @dnvt
+.github/ @dnvt
+scripts/release_*.sh @dnvt
+SECURITY.md @dnvt

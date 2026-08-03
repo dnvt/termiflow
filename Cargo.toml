@@ -1,6 +1,6 @@
 [package]
 name = "termiflow"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Terminal-native Mermaid flowchart renderer."
 license = "MIT"
@@ -21,6 +21,7 @@ exclude = [
     "tests/visual_audit.rs",
     "tests/visual_audit_runner.rs",
     "benches/",
+    "tests/",
     "scripts/",
     "docs/",
     "skills/",
@@ -65,6 +66,10 @@ required-features = ["qa"]
 [features]
 golden = []
 qa = []
+# These tests intentionally exercise the repository's visual fixture corpus,
+# which is excluded from the published crate. Repository CI enables this
+# feature; the package contract test omits it to validate the consumer crate.
+maintainer-fixtures = []
 
 [dependencies]
 ratatui = "0.30.2"

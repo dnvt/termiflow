@@ -21,6 +21,8 @@ pub mod canvas;
 pub mod contract;
 pub mod critic;
 pub mod cycle;
+#[cfg(test)]
+mod determinism;
 pub mod edge;
 mod edge_policy;
 pub mod evidence;
@@ -59,7 +61,7 @@ use anyhow::Result;
 
 #[cfg(test)]
 use labels::format_edge_label_with_limit;
-#[cfg(test)]
+#[cfg(all(test, feature = "maintainer-fixtures"))]
 use portal_projection::title_span;
 use portal_projection::{is_textual, subgraph_title_y};
 
@@ -311,6 +313,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn td_top_portals_outside_the_title_span_keep_a_visible_stem() {
         let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md")
             .expect("read fixture");

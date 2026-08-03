@@ -36,6 +36,26 @@ jobs:
           jq empty tests/fixtures/visual_cycle_record.schema.json
           scripts/visual_cycle.sh --help >/dev/null
 
+      - name: Validate QA architecture contracts
+        run: scripts/check_qa_contracts.sh
+
+      - name: Validate portable architecture facts
+        run: |
+          bash -n scripts/generate_architecture_diagrams.sh scripts/check_architecture_facts.sh scripts/architecture_facts_contract.sh
+          scripts/check_architecture_facts.sh
+          scripts/architecture_facts_contract.sh
+
+      - name: Validate OSS stewardship surface
+        run: |
+          test -f .github/CODEOWNERS
+          test -f .github/PULL_REQUEST_TEMPLATE.md
+          test -f .github/ISSUE_TEMPLATE/bug_report.md
+          test -f .github/ISSUE_TEMPLATE/feature_request.md
+          test -f CHANGELOG.md
+          test -f docs/releasing.md
+          rg -q 'security/advisories/new' README.md SECURITY.md
+          rg -q 'release_candidate.sh|release_preflight.sh' docs/releasing.md
+
       - name: Cache Cargo registry
         uses: actions/cache@v6.1.0
         with:
@@ -94,6 +114,12 @@ jobs:
             echo "internal workflow or repository-only QA files leaked into the package" >&2
             exit 1
           fi
+
+      - name: extracted package contract
+        run: scripts/package_contract.sh --output "$RUNNER_TEMP/termiflow-package-contract/report.json"
+
+      - name: release candidate contract
+        run: scripts/release_candidate_contract.sh
 
       - name: publish dry run
         run: cargo publish --dry-run --locked

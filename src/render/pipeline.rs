@@ -23,7 +23,7 @@ use super::repair::{
     optimize_canvas, stabilize_arrow_shafts, stabilize_degree_mismatches, stabilize_junction_cells,
     stabilize_routing_topology, stabilize_straight_segments,
 };
-use super::scene::{Scene, SceneIntent};
+use super::scene::{Scene, SceneIntent, SceneRecorder};
 use super::semantic::{CellOwnerKind, CellRole, SemanticFrame};
 use super::shapes;
 
@@ -100,6 +100,7 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
         .max(1);
 
     let mut canvas = Canvas::new(width, height);
+    let mut scene_recorder = SceneRecorder::new();
     let chars = config.composite_style.to_style_chars(BaseStyle::default());
 
     // Draw subgraphs (background layer)
@@ -211,7 +212,13 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
 
     // Draw any precomputed routes first.
     if has_precomputed_routes {
-        precomputed::draw_routes(graph, &layout_snapshot, &mut canvas, &chars);
+        precomputed::draw_routes(
+            graph,
+            &layout_snapshot,
+            &mut canvas,
+            &chars,
+            &mut scene_recorder,
+        );
     }
 
     // Process remaining edges: prioritize convergence (multiple sources → one target)
@@ -466,7 +473,12 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
                 junction_y,
                 junction_char,
             ));
-            source_junction_scene.resolve(&mut canvas, &chars);
+            source_junction_scene.resolve_with_recorder(
+                &mut canvas,
+                &chars,
+                &mut scene_recorder,
+                "source-junction",
+            );
             source_junction_records.push((junction_x, junction_y, format!("junction:{source_id}")));
         }
     }
@@ -704,7 +716,12 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
             ));
         }
     }
-    source_junction_ownership_scene.resolve(&mut canvas, &chars);
+    source_junction_ownership_scene.resolve_with_recorder(
+        &mut canvas,
+        &chars,
+        &mut scene_recorder,
+        "source-junction-ownership",
+    );
 
     let semantic_frame = SemanticFrame::from_canvas(&canvas);
     let display_semantic_frame = semantic_frame.crop_and_pad(config.crop, config.pad);

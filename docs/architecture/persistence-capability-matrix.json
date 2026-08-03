@@ -1,0 +1,34 @@
+{
+  "schema": "termiflow.persistence_capability_matrix.v1",
+  "version": 1,
+  "publication_contract": "absent-final atomic directory claim; no ordinary rename fallback",
+  "targets": [
+    {
+      "target": "linux-gnu",
+      "status": "supported",
+      "primitive": "renameat2(RENAME_NOREPLACE)",
+      "capability_probe": "deliberately existing same-parent target must return EEXIST without replacing it",
+      "durability": "stage tree sync, directory claim, final and parent sync",
+      "errors": {"EEXIST":"conflict","EINVAL|ENOSYS|ENOTSUP|EXDEV":"unsupported","other":"recovery-required"},
+      "test_command": "cargo test --locked --features qa --test qa_persistence two_process_visual_packet_claims_have_one_winner"
+    },
+    {
+      "target": "macos-apple",
+      "status": "supported",
+      "primitive": "renamex_np(RENAME_EXCL)",
+      "capability_probe": "deliberately existing same-parent target must return EEXIST; EINVAL/ENOTSUP is unsupported",
+      "durability": "stage tree sync, directory claim, final and parent sync",
+      "errors": {"EEXIST":"conflict","EINVAL|ENOTSUP|EXDEV":"unsupported","other":"recovery-required"},
+      "test_command": "cargo test --locked --features qa --test qa_persistence two_process_visual_packet_claims_have_one_winner"
+    },
+    {
+      "target": "other",
+      "status": "unsupported",
+      "primitive": null,
+      "capability_probe": "none",
+      "durability": "none",
+      "errors": {"all":"unsupported"},
+      "test_command": "cargo test --locked --bin termiflow-qa -- qa::persist"
+    }
+  ]
+}

@@ -6,6 +6,8 @@ Docs here stay short and user-focused.
 - **Project overview & usage:** [`../README.md`](../README.md)
 - **CLI + syntax reference:** `reference.md`
 - **Pipelines:** `pipelines.md`
+- **Architecture facts:** `architecture/README.md`
+- **Release process:** `releasing.md`
 
 ## Breadcrumbs
 - Render overview: `render-overview.md`

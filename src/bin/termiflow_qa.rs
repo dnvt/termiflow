@@ -182,6 +182,12 @@ struct VisualAuditArgs {
     /// Per-row process timeout in seconds.
     #[arg(long, default_value_t = 60.0)]
     timeout_seconds: f64,
+    /// Pause a private packet subprocess at a named persistence boundary (test-only).
+    #[arg(long, hide = true, value_parser = ["stage-created", "writing", "ready", "before-publish", "after-publish"])]
+    pause_at: Option<String>,
+    /// Marker path written before a requested pause.
+    #[arg(long, hide = true, requires = "pause_at")]
+    pause_marker: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -197,6 +203,8 @@ fn main() -> Result<()> {
             metadata: args.metadata,
             display_profile: args.display_profile,
             timeout_seconds: args.timeout_seconds,
+            pause_at: args.pause_at,
+            pause_marker: args.pause_marker,
         }),
         Command::VisualValidate(args) => qa::validate::run(qa::validate::ValidateArgs {
             packet: args.packet,

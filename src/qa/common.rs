@@ -629,7 +629,12 @@ fn exit_status(_code: i32) -> std::process::ExitStatus {
 pub fn deterministic_digest(stage: &Path) -> Result<(String, String)> {
     let mut files = Vec::new();
     collect_files(stage, &mut files)?;
-    let ignored = ["timings.jsonl", "COMPLETE.json", "PACKET.sha256"];
+    let ignored = [
+        "timings.jsonl",
+        "COMPLETE.json",
+        "PACKET.sha256",
+        "run_state.json",
+    ];
     let mut digest = Sha256::new();
     let mut listing = String::new();
     for path in files {

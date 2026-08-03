@@ -39,6 +39,53 @@ CI, security, package, publish, documentation, and visual gates. Any entry that
 cannot move must have a dated, evidence-backed owner/reason/revisit record; a
 compatible range or a previous observation is not a waiver.
 
+## Private QA state and identity transitions
+
+The private persistence contract is deliberately stricter than the
+backward-readable public packet shape. `run_spec.v1` owns the requested work;
+`run_identity.v2` owns the final policy-bound identity; and `run_state.v2` owns
+recovery evidence. A pending policy is represented by `policy_pending: true`,
+never by a zero digest or a provisional final run ID.
+
+The effective policy record is intentionally `termiflow.effective_policy.v1`:
+this is the first persisted policy contract and no earlier packet carried a
+comparable effective-policy schema. Its strict nested shape, canonical digest,
+unknown-field rejection, and legacy `legacy-uncomparable` handling are the
+version-one contract; a future incompatible policy-shape change must increment
+this schema rather than silently widening it.
+
+| State | Required evidence | Allowed next states | Final-path rule |
+| --- | --- | --- | --- |
+| `planned` | valid run spec, owner, requested final | `claimed`, `failed`, `recovery-required` | final absent |
+| `claimed` | private stage and owner claim | `writing`, `failed`, `recovery-required` | final absent |
+| `writing` | pending or final policy context, private stage | `ready`, `failed`, `recovery-required` | final absent |
+| `ready` | complete marker, manifest, policy set, packet digest, final run identity | `published`, `failed`, `recovery-required` | final absent |
+| `published` | complete final packet and matching published state | `published` (equal replay only) | final complete |
+| `failed` | transition reason and preserved owner/stage evidence | `recovery-required` | final absent unless claim already recorded |
+| `recovery-required` | reason, owner, stage/final claim and repair route | `published` only through repair, or manual action | never republish an already-claimed final |
+
+Every state carries `run_spec_id`, owner `pid`/`host`/process-start token,
+creation and last-transition timestamps, transition reason, intended final,
+private stage, candidate packet digest, `policy_pending` or policy-set digest,
+and publication-guard identity. A successful directory claim is irreversible;
+post-claim state or guard failures preserve the final and route through
+`repair_published_state(final)`.
+
+## Packet and receipt identity ownership
+
+| Artifact | Owns | Retry/reconciliation |
+| --- | --- | --- |
+| `run_spec.json` | requested role, source/workload, final path, policy context | discoverable before policy collection; never a success signal |
+| `identity.json` | final `run_id`, `run_spec_id`, source/workload, policy-set digest | must match every manifest row and run state |
+| `COMPLETE.json`/`PACKET.sha256` | complete packet and deterministic packet digest | final publication requires both; bytes are immutable after claim |
+| holdout receipt | queue/spec, final run identity, policy digest, packet/manifest/complete digests | absent receipt may be reconstructed only from a complete matching packet; equal bytes replay, different/malformed bytes conflict or require recovery |
+
+The exact field inventories and target capability claims are machine-readable in
+`docs/architecture/effective-policy-matrix.json` and
+`docs/architecture/persistence-capability-matrix.json`; the CI contract check
+must fail if either inventory drifts from code or the subprocess interruption
+test inventory.
+
 ## Source and public-surface inventory
 
 The public facade is `src/lib.rs`. Public module visibility is itself part of

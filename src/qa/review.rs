@@ -237,6 +237,16 @@ fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result
     let row = rows
         .get(&case_id)
         .ok_or_else(|| anyhow!("decision references unknown case_id: {case_id}"))?;
+    if let Some(run_id) = row["identity"]["run_identity"]["run_id"].as_str() {
+        if decision.get("run_id").and_then(Value::as_str) != Some(run_id) {
+            bail!("decision run_id is stale for {case_id}");
+        }
+    }
+    if let Some(policy_sha256) = row["policy"]["sha256"].as_str() {
+        if decision.get("policy_sha256").and_then(Value::as_str) != Some(policy_sha256) {
+            bail!("decision effective policy is stale for {case_id}");
+        }
+    }
     if decision["frame_sha256"] != row["stdout"]["sha256"] {
         bail!("stale frame hash for {case_id}; regenerate the next frame");
     }
@@ -492,12 +502,13 @@ fn structural_decision(row: &Value, packet: &Path, decisions_path: &Path) -> Res
         "manifest evidence sha256",
     )?;
 
-    Ok(json!({
+    let mut decision = json!({
         "schema": DECISION_SCHEMA,
         "review_kind": STRUCTURAL_PRESCREEN,
         "case_id": case_id,
         "frame_sha256": frame_sha256,
         "evidence_sha256": evidence_sha256,
+        "policy_sha256": row["policy"]["sha256"],
         "decision": "pass",
         "severity": "P3",
         "dimensions": DIMENSIONS,
@@ -515,7 +526,11 @@ fn structural_decision(row: &Value, packet: &Path, decisions_path: &Path) -> Res
         ),
         "reviewer": "machine",
         "timestamp": common::now_label(),
-    }))
+    });
+    if let Some(run_id) = row["identity"]["run_identity"]["run_id"].as_str() {
+        decision["run_id"] = Value::String(run_id.to_owned());
+    }
+    Ok(decision)
 }
 
 fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
@@ -532,6 +547,8 @@ fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
     Ok(json!({
         "schema": FRAME_SCHEMA,
         "case_id": row["case_id"],
+        "run_id": row["identity"]["run_identity"]["run_id"],
+        "policy_sha256": row["policy"]["sha256"],
         "fixture": row["fixture"],
         "style": row["style"],
         "mode": row["mode"],
@@ -565,6 +582,8 @@ fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
             "next_command": "targeted test or review command",
             "reviewer": "ai|human",
             "review_kind": "perceptual",
+            "run_id": row["identity"]["run_identity"]["run_id"],
+            "policy_sha256": row["policy"]["sha256"],
         },
     }))
 }

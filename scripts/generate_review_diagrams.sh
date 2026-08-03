@@ -17,6 +17,7 @@ EOF
 
 out_dir="artifacts/review-diagrams"
 render=false
+root_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,6 +46,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$out_dir"
+
+"$root_dir/scripts/generate_architecture_diagrams.sh" --out "$out_dir/architecture"
 
 write_diagram() {
   local name="$1"
@@ -147,4 +150,4 @@ if "$render"; then
 fi
 
 echo "Generated Mermaid diagrams: $out_dir"
-find "$out_dir" -maxdepth 1 -type f -name '*.md' -print | sort
+find "$out_dir" -maxdepth 2 -type f \( -name '*.md' -o -name '*.mmd' \) -print | sort

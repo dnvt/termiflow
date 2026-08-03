@@ -10,6 +10,8 @@
     "queue_sha256",
     "manifest_sha256",
     "spec_sha256",
+    "state",
+    "run_identity",
     "packet",
     "expected_rows",
     "actual_rows",
@@ -22,15 +24,21 @@
     "queue_sha256": {"$ref": "#/$defs/sha256"},
     "manifest_sha256": {"$ref": "#/$defs/sha256"},
     "spec_sha256": {"$ref": "#/$defs/sha256"},
+    "state": {"const": "published"},
+    "run_identity": {"$ref": "#/$defs/run_identity"},
     "packet": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "manifest_sha256", "identity_sha256", "packet_sha256"],
+      "required": ["path", "manifest_sha256", "identity_sha256", "packet_sha256", "complete_sha256", "deterministic_packet_sha256", "run_id", "policy_sha256"],
       "properties": {
         "path": {"type": "string", "minLength": 1},
         "manifest_sha256": {"$ref": "#/$defs/sha256"},
         "identity_sha256": {"$ref": "#/$defs/sha256"},
-        "packet_sha256": {"$ref": "#/$defs/sha256"}
+        "packet_sha256": {"$ref": "#/$defs/sha256"},
+        "complete_sha256": {"$ref": "#/$defs/sha256"},
+        "deterministic_packet_sha256": {"$ref": "#/$defs/sha256"},
+        "run_id": {"$ref": "#/$defs/sha256"},
+        "policy_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "expected_rows": {"type": "integer", "minimum": 1},
@@ -92,6 +100,30 @@
         "path": {"type": "string", "minLength": 1},
         "sha256": {"$ref": "#/$defs/sha256"},
         "bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "run_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "run_id",
+        "run_spec_id",
+        "role",
+        "source_sha256",
+        "workload_sha256",
+        "policy_sha256"
+      ],
+      "properties": {
+        "schema": {"const": "termiflow.run_identity.v2"},
+        "version": {"const": 2},
+        "run_id": {"$ref": "#/$defs/sha256"},
+        "run_spec_id": {"$ref": "#/$defs/sha256"},
+        "role": {"type": "string", "minLength": 1},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "workload_sha256": {"$ref": "#/$defs/sha256"},
+        "policy_sha256": {"$ref": "#/$defs/sha256"}
       }
     }
   }

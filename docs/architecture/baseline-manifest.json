@@ -3,8 +3,7 @@
   "observed_at": "2026-08-03",
   "purpose": "A0 clean baseline for behavior/API ownership and modular-renderer changes",
   "source": {
-    "checkout": "/Users/dnvt/Developer/termiflow-audit",
-    "branch": "audit/maestro-architecture-2026-08-03",
+    "repository": "github.com/dnvt/termiflow",
     "commit": "fc4e888c72349c3caf4ba55008e8a51c81dbdaab",
     "worktree_dirty": false,
     "tracked_file_count": 858,
@@ -35,14 +34,14 @@
     "metadata": "tests/fixtures/metadata.json",
     "metadata_sha256": "fefc7dd9e1aeee3ec6ad687ab9c23ebe3c8e50f0843df4970aced8029e31d1aa",
     "quality_baseline": "tests/fixtures/quality_baseline.json",
-    "quality_baseline_sha256": "5825113746da6e254190b66b2437a5c7a737cb54f28b324625ad74c95cfb4104",
+    "quality_baseline_sha256": "624bfb85f68463ae95e42d84e53e712ccbdf4b5a7a7bf826b54dd5957eb8b277",
     "display_profile": "terminal-grid-v1",
     "styles": ["ascii", "unicode"],
     "modes": ["default", "optimized"]
   },
   "visual_packet": {
-    "command": "scripts/visual_audit.sh --out /private/tmp/termiflow-architecture-a0-visual-fc4-20260803 --styles ascii,unicode --modes default,optimized",
-    "evidence_path": "/private/tmp/termiflow-architecture-a0-visual-fc4-20260803",
+    "command": "scripts/visual_audit.sh --out <fresh-output> --styles ascii,unicode --modes default,optimized",
+    "evidence_root": "<fresh-output>",
     "rows": 948,
     "primary_rows": 936,
     "warning_rows": 72,

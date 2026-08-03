@@ -5,7 +5,7 @@
 
 use super::canvas;
 use super::provenance::edge_owner_id;
-use super::scene::{Scene, SceneIntent};
+use super::scene::{Scene, SceneIntent, SceneRecorder};
 use super::semantic::{CellOwnerKind, CellRole};
 use super::subgraph_title_y;
 use super::Canvas;
@@ -201,6 +201,7 @@ pub(super) fn draw_routes(
     layout_snapshot: &LayoutSnapshot,
     canvas: &mut Canvas,
     chars: &StyleChars,
+    recorder: &mut SceneRecorder,
 ) {
     let debug_timing = crate::runtime::current().diagnostics.timing;
     let mut edge_ids: Vec<EdgeId> = layout_snapshot.route_ids().collect();
@@ -498,7 +499,7 @@ pub(super) fn draw_routes(
     }
 
     if !marker_scene.is_empty() {
-        marker_scene.resolve(canvas, chars);
+        marker_scene.resolve_with_recorder(canvas, chars, recorder, "precomputed-route-markers");
     }
 }
 

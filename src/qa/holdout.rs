@@ -29,11 +29,45 @@ pub fn run(args: HoldoutArgs) -> Result<()> {
         .and_then(Value::as_array)
         .filter(|rows| !rows.is_empty())
         .ok_or_else(|| anyhow!("selected queue has no holdout rows"))?;
+    let queue_id = manifest
+        .get("queue_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout manifest queue_id is missing"))?;
+    let queue_sha256 = manifest
+        .get("queue_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout manifest queue_sha256 is missing"))?;
     let out = resolve(&root, &args.out);
     let receipt_path = resolve(&root, &args.receipt);
-    persist::reject_existing(&receipt_path, "holdout receipt")?;
     if let Some(parent) = receipt_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+
+    if out.exists() {
+        let outcome = reconcile_published_packet_receipt(
+            &root,
+            &out,
+            &receipt_path,
+            &manifest,
+            &manifest_bytes,
+            holdouts,
+        )?;
+        println!(
+            "holdout receipt reconciled ({outcome:?}): {} ({} rows); receipt {}",
+            out.display(),
+            holdouts.len(),
+            receipt_path.display()
+        );
+        return Ok(());
+    }
+    if receipt_path.exists() {
+        return Err(persist::PersistenceError::RecoveryRequired {
+            path: receipt_path,
+            detail:
+                "receipt exists while its final packet is absent; preserve both for manual recovery"
+                    .to_owned(),
+        }
+        .into());
     }
 
     let temporary_manifest = std::env::temp_dir().join(format!(
@@ -56,8 +90,10 @@ pub fn run(args: HoldoutArgs) -> Result<()> {
     );
     let _ = fs::remove_file(&temporary_manifest);
     let packet = packet?;
+    let packet = audit::load_published_schema_packet(&packet.out, queue_id, queue_sha256)
+        .context("validate published holdout packet before receipt claim")?;
     let receipt = build_receipt(&root, &manifest, &manifest_bytes, &packet, holdouts)?;
-    persist::publish_json(&receipt_path, &receipt)?;
+    let outcome = persist::publish_json(&receipt_path, &receipt)?;
     if receipt["status"] != "passed" {
         bail!(
             "holdout execution produced failed rows; receipt {}",
@@ -70,7 +106,52 @@ pub fn run(args: HoldoutArgs) -> Result<()> {
         packet.row_count,
         receipt_path.display()
     );
+    if outcome == persist::PublishOutcome::EqualReplay {
+        eprintln!("holdout receipt was an equal replay");
+    }
     Ok(())
+}
+
+/// Reconcile the one-sided crash boundary between a published packet and its
+/// holdout receipt. This operation never reruns the renderer or republishes a
+/// final directory.
+pub(crate) fn reconcile_published_packet_receipt(
+    root: &Path,
+    out: &Path,
+    receipt_path: &Path,
+    manifest: &Value,
+    manifest_bytes: &[u8],
+    holdouts: &[Value],
+) -> Result<persist::PublishOutcome> {
+    let queue_id = manifest
+        .get("queue_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout manifest queue_id is missing"))?;
+    let queue_sha256 = manifest
+        .get("queue_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("holdout manifest queue_sha256 is missing"))?;
+    let packet = audit::load_published_schema_packet(out, queue_id, queue_sha256)?;
+    let receipt = build_receipt(root, manifest, manifest_bytes, &packet, holdouts)?;
+    if receipt_path.is_file() {
+        let existing = fs::read(receipt_path)
+            .with_context(|| format!("read existing holdout receipt {}", receipt_path.display()))?;
+        let existing_value: Value = serde_json::from_slice(&existing).map_err(|error| {
+            persist::PersistenceError::RecoveryRequired {
+                path: receipt_path.to_path_buf(),
+                detail: format!("existing receipt is malformed: {error}"),
+            }
+        })?;
+        if existing_value != receipt {
+            return Err(persist::PersistenceError::Conflict {
+                path: receipt_path.to_path_buf(),
+                detail: "existing receipt identity differs from the complete published packet"
+                    .to_owned(),
+            }
+            .into());
+        }
+    }
+    persist::publish_json(receipt_path, &receipt)
 }
 
 fn build_receipt(
@@ -81,6 +162,7 @@ fn build_receipt(
     holdouts: &[Value],
 ) -> Result<Value> {
     let packet_rows = load_packet_rows(&packet.out)?;
+    persist::validate_run_identity(&packet.run_identity)?;
     if packet_rows.len() != holdouts.len() {
         bail!(
             "holdout packet row count mismatch: expected {}, got {}",
@@ -172,6 +254,8 @@ fn build_receipt(
     });
     Ok(json!({
         "schema": RECEIPT_SCHEMA,
+        "state": "published",
+        "run_identity": packet.run_identity,
         "queue_id": packet.queue_id,
         "queue_sha256": packet.queue_sha256,
         "manifest_sha256": common::sha256_bytes(manifest_bytes),
@@ -181,6 +265,10 @@ fn build_receipt(
             "manifest_sha256": packet.manifest_sha256,
             "identity_sha256": packet.identity_sha256,
             "packet_sha256": packet.packet_sha256,
+            "complete_sha256": packet.complete_sha256,
+            "deterministic_packet_sha256": packet.deterministic_packet_sha256,
+            "run_id": packet.run_identity["run_id"],
+            "policy_sha256": packet.run_identity["policy_sha256"],
         },
         "expected_rows": expected.len(),
         "actual_rows": rows.len(),

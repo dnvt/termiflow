@@ -383,8 +383,11 @@ fn scoped_visual_packet_and_holdout_receipt_are_hash_bound() {
         .arg(&receipt)
         .output()
         .expect("retry scoped holdout executor");
-    assert!(!retry.status.success());
-    assert!(String::from_utf8_lossy(&retry.stderr).contains("already exists"));
+    assert!(
+        retry.status.success(),
+        "holdout reconciliation failed: {retry:?}"
+    );
+    assert!(String::from_utf8_lossy(&retry.stdout).contains("reconciled"));
     assert_eq!(
         fs::read(&receipt).expect("read receipt after retry"),
         receipt_before_retry,

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::provenance::{self, ProvenanceInputs};
@@ -20,6 +20,8 @@ pub struct AuditArgs {
     pub metadata: PathBuf,
     pub display_profile: String,
     pub timeout_seconds: f64,
+    pub pause_at: Option<String>,
+    pub pause_marker: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,9 +30,12 @@ pub struct SchemaPacketResult {
     pub manifest_sha256: String,
     pub identity_sha256: String,
     pub packet_sha256: String,
+    pub complete_sha256: String,
+    pub deterministic_packet_sha256: String,
     pub queue_id: String,
     pub queue_sha256: String,
     pub row_count: usize,
+    pub run_identity: Value,
 }
 
 struct SchemaPacketIdentity<'a> {
@@ -56,6 +61,14 @@ struct SchemaWorkload {
 }
 
 pub fn run(args: AuditArgs) -> Result<()> {
+    match (&args.pause_at, &args.pause_marker) {
+        (Some(point), Some(marker)) => {
+            std::env::set_var("TERMIFLOW_QA_PAUSE_AT", point);
+            std::env::set_var("TERMIFLOW_QA_PAUSE_MARKER", marker);
+        }
+        (None, None) => {}
+        _ => bail!("--pause-at and --pause-marker must be provided together"),
+    }
     let root = std::env::current_dir().context("resolve repository root")?;
     if let Some(schema_manifest) = args.schema_manifest.as_deref() {
         let out = resolve_from_root(
@@ -110,10 +123,11 @@ pub fn run(args: AuditArgs) -> Result<()> {
     if out_canonical == expected_root || out_canonical.starts_with(&expected_root) {
         bail!("refusing to write a visual packet inside golden expected outputs");
     }
-    let stage = persist::claim_directory(&out)?;
+    let stage = persist::claim_directory_stage(&out)?;
     fs::create_dir_all(stage.join("frames"))?;
     fs::create_dir_all(stage.join("logs"))?;
     fs::create_dir_all(stage.join("evidence"))?;
+    persist::pause_if_requested("stage-created", &stage)?;
 
     let result = build_packet(
         &root,
@@ -132,19 +146,34 @@ pub fn run(args: AuditArgs) -> Result<()> {
         planned_count,
         None,
     );
-    if result.is_err() {
-        if let Err(cleanup) = persist::remove_incomplete_directory(&stage) {
-            eprintln!("visual audit recovery required: {cleanup}");
+    match result {
+        Ok(()) => {
+            if let Err(error) = validate_packet_for_publication(&stage, "visual-audit", None) {
+                if let Err(cleanup) = persist::remove_incomplete_directory(&stage) {
+                    eprintln!("visual audit recovery required: {cleanup}");
+                }
+                return Err(error);
+            }
+            persist::pause_if_requested("before-publish", &stage)?;
+            persist::publish_directory(&stage, &out, b"publisher=visual-audit\n")?;
+            persist::pause_if_requested("after-publish", &out)?;
+            eprintln!("visual audit complete: {}", out.display());
+            Ok(())
+        }
+        Err(error) => {
+            if let Err(cleanup) = persist::remove_incomplete_directory(&stage) {
+                eprintln!("visual audit recovery required: {cleanup}");
+            }
+            Err(error)
         }
     }
-    result
 }
 
 #[allow(clippy::too_many_arguments)]
 fn build_packet(
     root: &Path,
     stage: &Path,
-    out: &Path,
+    _out: &Path,
     input_root: &Path,
     metadata_path: &Path,
     metadata: std::collections::BTreeMap<String, common::FixtureMetadata>,
@@ -160,7 +189,7 @@ fn build_packet(
 ) -> Result<()> {
     let binary = common::discover_binary(root, stage, supplied_binary)?;
     let base_identity = common::source_identity(root, &binary, display_profile)?;
-    let identity = provenance::enrich_identity(
+    let mut identity = provenance::enrich_identity(
         root,
         &binary,
         &base_identity,
@@ -174,18 +203,80 @@ fn build_packet(
             display_profile,
         },
     )?;
+    let role = schema.map(|value| value.role).unwrap_or("visual-audit");
+    let initial_source_sha256 = identity["provenance"]["effective_sha256"]
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("provenance effective digest is missing"))?;
+    let workload_sha256 =
+        common::sha256_bytes(&serde_json::to_vec(&identity["provenance"]["workload"])?);
+    let requested_policy_context = json!({
+        "policy_schema": termiflow::config::EFFECTIVE_POLICY_SCHEMA,
+        "role": role,
+        "styles": styles,
+        "modes": modes,
+        "display_profile": display_profile,
+        "schema_queue": schema.map(|value| json!({
+            "queue_id": value.queue_id,
+            "manifest_sha256": value.manifest_sha256,
+        })),
+    });
+    let run_spec = persist::run_spec_value(
+        role,
+        &initial_source_sha256,
+        &workload_sha256,
+        _out,
+        display_profile,
+        &requested_policy_context,
+    );
+    let run_spec_id = persist::run_spec_id(&run_spec)?;
+    common::write_json(&stage.join("run_spec.json"), &run_spec)?;
+    let created_at = common::now_label();
+    let publication_guard = persist::guard_path(_out, "publish")?;
+    identity["run_spec_id"] = Value::String(run_spec_id.clone());
+    persist::write_run_state(
+        stage,
+        &persist::run_state_value(
+            &run_spec_id,
+            None,
+            "claimed",
+            _out,
+            stage,
+            None,
+            &created_at,
+            "private stage claimed",
+            false,
+            Some(&publication_guard),
+        ),
+    )?;
+    persist::write_run_state(
+        stage,
+        &persist::run_state_value(
+            &run_spec_id,
+            None,
+            "writing",
+            _out,
+            stage,
+            None,
+            &created_at,
+            "packet content writing started",
+            false,
+            Some(&publication_guard),
+        ),
+    )?;
+    persist::pause_if_requested("writing", stage)?;
     let metadata_value: Value =
         serde_json::from_slice(&metadata_bytes).context("parse metadata for packet")?;
     common::write_json(&stage.join("metadata.json"), &metadata_value)?;
     if let Some(schema) = schema {
         common::write_json(&stage.join("schema_manifest.json"), schema.manifest)?;
     }
-    common::write_json(&stage.join("identity.json"), &identity)?;
 
     let mut rows = Vec::new();
     let mut timings = Vec::new();
     let mut failures = Vec::new();
     let mut planned_ids = BTreeSet::new();
+    let mut policy_observations = Vec::new();
 
     for (fixture, input_path) in input_paths {
         let input_bytes =
@@ -261,6 +352,30 @@ fn build_packet(
                 } else if record.kind != "expected_error" {
                     row_failures.push("successful render did not produce evidence JSON".to_owned());
                 }
+
+                if record.kind != "expected_error" {
+                    match evidence.as_ref().and_then(|value| value.get("policy")) {
+                        Some(policy) => {
+                            provenance::validate_policy(policy)
+                                .with_context(|| format!("{stem}: invalid effective policy"))?;
+                            let policy_sha256 = policy
+                                .get("sha256")
+                                .and_then(Value::as_str)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("{stem}: effective policy digest is missing")
+                                })?;
+                            policy_observations.push(json!({
+                                "case_id": case_id,
+                                "policy_sha256": policy_sha256,
+                                "policy": policy,
+                            }));
+                        }
+                        None => row_failures.push(
+                            "successful render did not produce effective policy evidence"
+                                .to_owned(),
+                        ),
+                    }
+                }
                 failures.extend(
                     row_failures
                         .into_iter()
@@ -295,6 +410,11 @@ fn build_packet(
                     "stdout": { "path": frame_rel, "sha256": common::sha256_bytes(&process.stdout), "bytes": process.stdout.len() },
                     "stderr": { "path": log_rel, "sha256": common::sha256_bytes(&process.stderr), "bytes": process.stderr.len(), "policy": record.stderr_policy },
                     "evidence": evidence_ref,
+                    "policy": evidence
+                        .as_ref()
+                        .and_then(|value| value.get("policy"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
                     "dimensions": { "stdout_rows": common::dimensions(&process.stdout)["stdout_rows"], "stdout_max_codepoints": common::dimensions(&process.stdout)["stdout_max_codepoints"], "stdout_bytes": process.stdout.len(), "display": evidence_dimensions },
                     "findings": {
                         "critic": evidence.as_ref().and_then(|value| value["critic"]["findings"].as_array()).map_or(0, Vec::len),
@@ -317,6 +437,23 @@ fn build_packet(
     }
     rows.sort_by(|left, right| left["case_id"].as_str().cmp(&right["case_id"].as_str()));
     timings.sort_by(|left, right| left["case_id"].as_str().cmp(&right["case_id"].as_str()));
+    provenance::bind_policy_observations(&mut identity, &mut policy_observations)?;
+    let policy_set_sha256 = identity["provenance"]["policy_set"]["sha256"]
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("policy set digest is missing"))?;
+    let run_identity = persist::run_identity_value(
+        &run_spec_id,
+        role,
+        &initial_source_sha256,
+        &workload_sha256,
+        &policy_set_sha256,
+    );
+    identity["run_identity"] = run_identity.clone();
+    for row in &mut rows {
+        row["identity"] = identity.clone();
+    }
+    common::write_json(&stage.join("identity.json"), &identity)?;
     write_jsonl(&stage.join("manifest.jsonl"), &rows)?;
     write_jsonl(&stage.join("timings.jsonl"), &timings)?;
     let mut summary = json!({
@@ -366,12 +503,134 @@ fn build_packet(
             "packet_sha256": packet_digest,
         }),
     )?;
-    eprintln!(
-        "visual audit complete: {} ({} rows)",
-        out.display(),
-        rows.len()
-    );
+    persist::write_run_state(
+        stage,
+        &persist::run_state_value(
+            &run_spec_id,
+            Some(&run_identity),
+            "ready",
+            _out,
+            stage,
+            Some(&packet_digest),
+            &created_at,
+            "packet complete and policy-bound digests written",
+            false,
+            Some(&publication_guard),
+        ),
+    )?;
+    persist::pause_if_requested("ready", stage)?;
     let _ = metadata_path;
+    Ok(())
+}
+
+/// Validate the private packet's identity and referenced bytes immediately
+/// before the irreversible directory claim. This is intentionally narrower
+/// than the baseline/quality validator: custom QA matrices remain publishable,
+/// while no incomplete or internally inconsistent packet can become visible.
+fn validate_packet_for_publication(
+    stage: &Path,
+    expected_role: &str,
+    expected_queue: Option<(&str, &str)>,
+) -> Result<()> {
+    let run_spec = common::load_json(&stage.join("run_spec.json"), "staged run spec")?;
+    persist::validate_run_spec(&run_spec)?;
+    let identity = common::load_json(&stage.join("identity.json"), "staged identity")?;
+    provenance::validate_identity(&identity)?;
+    let run_identity = identity
+        .get("run_identity")
+        .ok_or_else(|| anyhow!("staged identity is missing run_identity"))?;
+    persist::validate_run_identity(run_identity)?;
+    if run_identity.get("role").and_then(Value::as_str) != Some(expected_role)
+        || run_spec.get("role").and_then(Value::as_str) != Some(expected_role)
+        || run_identity.get("run_spec_id") != run_spec.get("run_spec_id")
+    {
+        bail!("staged packet role or run-spec identity is inconsistent");
+    }
+
+    let state = common::load_json(&stage.join("run_state.json"), "staged run state")?;
+    persist::validate_run_state(&state)?;
+    if state["state"] != "ready"
+        || state["final_claimed"] != Value::Bool(false)
+        || state["run_identity"] != *run_identity
+    {
+        bail!("staged packet is not in an unclaimed ready state");
+    }
+
+    if let Some((queue_id, queue_sha256)) = expected_queue {
+        let schema_manifest = common::load_json(
+            &stage.join("schema_manifest.json"),
+            "staged schema manifest",
+        )?;
+        if schema_manifest.get("queue_id").and_then(Value::as_str) != Some(queue_id)
+            || schema_manifest.get("queue_sha256").and_then(Value::as_str) != Some(queue_sha256)
+        {
+            bail!("staged schema queue identity is inconsistent");
+        }
+    }
+
+    let manifest = common::require_file(&stage.join("manifest.jsonl"), "staged manifest")?;
+    let mut row_count = 0usize;
+    for (line_number, line) in String::from_utf8(manifest.clone())?.lines().enumerate() {
+        if line.trim().is_empty() {
+            bail!("staged manifest line {} is empty", line_number + 1);
+        }
+        let row: Value = serde_json::from_str(line)
+            .with_context(|| format!("parse staged manifest line {}", line_number + 1))?;
+        if row.get("schema").and_then(Value::as_str) != Some(common::AUDIT_SCHEMA) {
+            bail!(
+                "staged manifest line {} has the wrong schema",
+                line_number + 1
+            );
+        }
+        if row.get("identity") != Some(&identity) {
+            bail!(
+                "staged manifest line {} has a different identity",
+                line_number + 1
+            );
+        }
+        common::validate_blob_ref(stage, &row["stdout"], "staged frame")?;
+        common::validate_blob_ref(stage, &row["stderr"], "staged stderr")?;
+        if row.get("evidence").is_some_and(|value| !value.is_null()) {
+            common::validate_blob_ref(stage, &row["evidence"], "staged evidence")?;
+        }
+        if row["classification"] != "expected_error" {
+            let policy = row
+                .get("policy")
+                .filter(|value| !value.is_null())
+                .ok_or_else(|| anyhow!("staged successful row is missing policy"))?;
+            provenance::validate_policy(policy)?;
+        }
+        row_count += 1;
+    }
+    if row_count == 0 {
+        bail!("staged manifest is empty");
+    }
+    let summary = common::load_json(&stage.join("summary.json"), "staged summary")?;
+    if summary.get("failures") != Some(&Value::Array(Vec::new()))
+        || summary.get("actual_rows").and_then(Value::as_u64) != Some(row_count as u64)
+    {
+        bail!("staged summary does not match the manifest");
+    }
+    let complete = common::load_json(&stage.join("COMPLETE.json"), "staged completion marker")?;
+    if complete.get("schema").and_then(Value::as_str) != Some("termiflow.visual_audit.complete.v1")
+        || complete.get("rows").and_then(Value::as_u64) != Some(row_count as u64)
+        || complete.get("manifest_sha256").and_then(Value::as_str)
+            != Some(common::sha256_bytes(&manifest).as_str())
+    {
+        bail!("staged completion marker does not match the manifest");
+    }
+    let packet_digest = complete
+        .get("packet_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| anyhow!("staged completion marker packet digest is invalid"))?;
+    let (actual_packet_digest, packet_listing) = common::deterministic_digest(stage)?;
+    if actual_packet_digest != packet_digest
+        || common::require_file(&stage.join("PACKET.sha256"), "staged packet listing")?
+            != packet_listing.as_bytes()
+    {
+        bail!("staged packet digest or listing is stale");
+    }
     Ok(())
 }
 
@@ -419,24 +678,154 @@ pub fn run_schema_packet(
     for path in &workload.temporary_inputs {
         let _ = fs::remove_file(path);
     }
-    if result.is_err() {
-        if let Err(cleanup) = persist::remove_incomplete_directory(&stage) {
-            eprintln!("schema packet recovery required: {cleanup}");
+    match result {
+        Ok(()) => {
+            if let Err(error) = validate_packet_for_publication(
+                &stage,
+                if holdouts { "holdout" } else { "review" },
+                Some((&workload.queue_id, &workload.queue_sha256)),
+            ) {
+                if let Err(cleanup) = persist::remove_incomplete_directory(&stage) {
+                    eprintln!("schema packet recovery required: {cleanup}");
+                }
+                return Err(error);
+            }
+            persist::pause_if_requested("before-publish", &stage)?;
+            persist::publish_directory(&stage, &out, b"publisher=schema-packet\n")?;
+            persist::pause_if_requested("after-publish", &out)?;
+        }
+        Err(error) => {
+            if let Err(cleanup) = persist::remove_incomplete_directory(&stage) {
+                eprintln!("schema packet recovery required: {cleanup}");
+            }
+            return Err(error);
         }
     }
-    result?;
     let manifest_sha256 = common::sha256_file(&out.join("manifest.jsonl"))?;
     let identity_sha256 = common::sha256_file(&out.join("identity.json"))?;
     let packet_sha256 = common::sha256_file(&out.join("PACKET.sha256"))?;
+    let complete_sha256 = common::sha256_file(&out.join("COMPLETE.json"))?;
+    let complete = common::load_json(&out.join("COMPLETE.json"), "packet completion marker")?;
+    let deterministic_packet_sha256 = complete
+        .get("packet_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() == 64)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("packet completion marker is missing packet_sha256"))?;
+    let packet_identity = common::load_json(&out.join("identity.json"), "packet identity")?;
+    let run_identity = packet_identity
+        .get("run_identity")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("packet identity is missing run_identity"))?;
+    persist::validate_run_identity(&run_identity)?;
     Ok(SchemaPacketResult {
         out,
         manifest_sha256,
         identity_sha256,
         packet_sha256,
+        complete_sha256,
+        deterministic_packet_sha256,
         queue_id: workload.queue_id,
         queue_sha256: workload.queue_sha256,
         row_count: workload.planned_count,
+        run_identity,
     })
+}
+
+/// Re-open a complete schema packet for receipt reconciliation without
+/// rerunning its renderer or creating a second publication candidate.
+pub fn load_published_schema_packet(
+    out: &Path,
+    queue_id: &str,
+    queue_sha256: &str,
+) -> Result<SchemaPacketResult> {
+    if queue_sha256.len() != 64 || !queue_sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("published packet queue_sha256 must be a SHA-256 digest");
+    }
+    let identity = common::load_json(&out.join("identity.json"), "published packet identity")?;
+    provenance::validate_identity(&identity)?;
+    let run_identity = identity
+        .get("run_identity")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("published packet identity is missing run_identity"))?;
+    persist::validate_run_identity(&run_identity)?;
+    if run_identity["role"] != "holdout" {
+        bail!("published packet run role is not holdout");
+    }
+    let schema_manifest = common::load_json(
+        &out.join("schema_manifest.json"),
+        "published packet schema manifest",
+    )?;
+    if schema_manifest.get("queue_id").and_then(Value::as_str) != Some(queue_id)
+        || schema_manifest.get("queue_sha256").and_then(Value::as_str) != Some(queue_sha256)
+    {
+        bail!("published packet queue identity does not match the requested holdout");
+    }
+    let state = common::load_json(&out.join("run_state.json"), "published packet run state")?;
+    persist::validate_run_state(&state)?;
+    if state["run_identity"] != run_identity {
+        bail!("published packet state identity does not match identity.json");
+    }
+    if state["state"] != "published" {
+        persist::repair_published_state(out)
+            .context("repair published state before receipt reconciliation")?;
+    }
+    let state = common::load_json(&out.join("run_state.json"), "repaired packet run state")?;
+    persist::validate_run_state(&state)?;
+    if state["state"] != "published" || state["run_identity"] != run_identity {
+        bail!("published packet state was not repaired to its final identity");
+    }
+    let complete = common::load_json(&out.join("COMPLETE.json"), "published packet completion")?;
+    if complete.get("schema").and_then(Value::as_str) != Some("termiflow.visual_audit.complete.v1")
+    {
+        bail!("published packet completion schema is invalid");
+    }
+    let manifest_sha256 = common::sha256_file(&out.join("manifest.jsonl"))?;
+    if complete.get("manifest_sha256").and_then(Value::as_str) != Some(manifest_sha256.as_str()) {
+        bail!("published packet completion manifest digest is stale");
+    }
+    let complete_packet_sha256 = complete
+        .get("packet_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| anyhow::anyhow!("published packet completion packet digest is invalid"))?;
+    let (actual_packet_sha256, packet_listing) = common::deterministic_digest(out)?;
+    if actual_packet_sha256 != complete_packet_sha256 {
+        bail!("published packet completion packet digest is stale");
+    }
+    if common::require_file(&out.join("PACKET.sha256"), "published packet listing")?
+        != packet_listing.as_bytes()
+    {
+        bail!("published packet listing is stale");
+    }
+    let packet_sha256 = common::sha256_file(&out.join("PACKET.sha256"))?;
+    let complete_sha256 = common::sha256_file(&out.join("COMPLETE.json"))?;
+    let rows = load_packet_rows_for_reconciliation(out)?;
+    if complete.get("rows").and_then(Value::as_u64) != Some(rows.len() as u64) {
+        bail!("published packet completion row count is stale");
+    }
+    Ok(SchemaPacketResult {
+        out: out.to_path_buf(),
+        manifest_sha256,
+        identity_sha256: common::sha256_file(&out.join("identity.json"))?,
+        packet_sha256,
+        complete_sha256,
+        deterministic_packet_sha256: complete_packet_sha256.to_owned(),
+        queue_id: queue_id.to_owned(),
+        queue_sha256: queue_sha256.to_owned(),
+        row_count: rows.len(),
+        run_identity,
+    })
+}
+
+fn load_packet_rows_for_reconciliation(out: &Path) -> Result<Vec<Value>> {
+    let bytes = common::require_file(&out.join("manifest.jsonl"), "published packet manifest")?;
+    String::from_utf8(bytes)
+        .context("published packet manifest is not UTF-8")?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).context("parse published packet row"))
+        .collect()
 }
 
 fn schema_workload(
@@ -643,10 +1032,11 @@ fn prepare_packet_output(root: &Path, out: &Path) -> Result<(PathBuf, PathBuf)> 
     if out_canonical == expected_root || out_canonical.starts_with(&expected_root) {
         bail!("refusing to write a visual packet inside golden expected outputs");
     }
-    let stage = persist::claim_directory(out)?;
+    let stage = persist::claim_directory_stage(out)?;
     fs::create_dir_all(stage.join("frames"))?;
     fs::create_dir_all(stage.join("logs"))?;
     fs::create_dir_all(stage.join("evidence"))?;
+    persist::pause_if_requested("stage-created", &stage)?;
     Ok((out.to_path_buf(), stage))
 }
 

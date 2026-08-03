@@ -6,6 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::common;
+use super::persist;
 use super::provenance;
 
 const BASELINE_SCHEMA: &str = "termiflow.quality_baseline.v1";
@@ -109,6 +110,9 @@ fn unique_string_array(value: Option<&Value>, label: &str) -> Result<Vec<String>
 
 fn validate_identity(root: &Path, identity: &Value, baseline: &Value, strict: bool) -> Result<()> {
     provenance::validate_identity(identity)?;
+    if let Some(run_identity) = identity.get("run_identity") {
+        persist::validate_run_identity(run_identity)?;
+    }
     let identity = identity
         .as_object()
         .ok_or_else(|| anyhow!("identity.json must contain an object"))?;
@@ -148,6 +152,28 @@ fn validate_identity(root: &Path, identity: &Value, baseline: &Value, strict: bo
         || !common::git_is_ancestor(root, &baseline_commit, &packet_commit)
     {
         bail!("packet source commit is not the baseline commit or a descendant of it; regenerate the packet after the baseline was established");
+    }
+    Ok(())
+}
+
+fn validate_packet_run_state(packet: &Path, identity: &Value) -> Result<()> {
+    let state_path = packet.join("run_state.json");
+    if !state_path.is_file() {
+        if identity.get("run_identity").is_some() {
+            bail!("new packet identity requires run_state.json");
+        }
+        return Ok(());
+    }
+    let state = common::load_json(&state_path, "run state")?;
+    persist::validate_run_state(&state)?;
+    if state["run_identity"] != identity["run_identity"] {
+        bail!("run_state.run_identity does not match identity.json");
+    }
+    if state["state"] == "ready" && packet.join("COMPLETE.json").is_file() {
+        bail!("complete packet has stale ready state; published-state-repair required");
+    }
+    if !matches!(state["state"].as_str(), Some("ready" | "published")) {
+        bail!("authoritative packet run state is not ready or published");
     }
     Ok(())
 }
@@ -271,6 +297,15 @@ fn validate_evidence(
         .with_context(|| format!("{fixture}: evidence is invalid JSON"))?;
     if evidence.get("schema").and_then(Value::as_str) != Some(common::EVIDENCE_SCHEMA) {
         bail!("{fixture}: evidence schema mismatch");
+    }
+    if let Some(policy) = evidence.get("policy") {
+        provenance::validate_policy(policy)
+            .with_context(|| format!("{fixture}: effective policy is invalid"))?;
+        if row.get("policy") != Some(policy) {
+            bail!("{fixture}: row/evidence effective policies differ");
+        }
+    } else if row.get("policy").is_some_and(|value| !value.is_null()) {
+        bail!("{fixture}: manifest policy is present but evidence policy is missing");
     }
     let warnings = evidence
         .get("warnings")
@@ -601,6 +636,7 @@ fn validate_packet_integrity(
     }
     let packet_identity = common::load_json(&packet.join("identity.json"), "identity")?;
     validate_identity(root, &packet_identity, baseline, strict)?;
+    validate_packet_run_state(packet, &packet_identity)?;
     let metadata = validate_packet_metadata(root, packet)?;
     let summary = common::load_json(&packet.join("summary.json"), "summary")?;
     if summary["schema"].as_str() != Some(common::SUMMARY_SCHEMA) {
@@ -728,6 +764,7 @@ fn validate_schema_packet(
     }
     let packet_identity = common::load_json(&packet.join("identity.json"), "identity")?;
     validate_identity(root, &packet_identity, baseline, strict)?;
+    validate_packet_run_state(packet, &packet_identity)?;
 
     let manifest_bytes = common::require_file(queue_manifest_path, "queue manifest")?;
     let queue_manifest: Value = serde_json::from_slice(&manifest_bytes).with_context(|| {

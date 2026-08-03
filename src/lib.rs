@@ -49,7 +49,7 @@ pub mod tui;
 // Re-exports for convenient access
 // ============================================================================
 
-pub use config::{Config, ConfigBuilder};
+pub use config::{effective_render_policy, Config, ConfigBuilder};
 pub use crossing::{CrossingConfig, CrossingMinimizer, Heuristic};
 pub use display_profile::{
     display_char_width, display_width, graphemes, split_text_to_width_chunks, truncate_to_width,
