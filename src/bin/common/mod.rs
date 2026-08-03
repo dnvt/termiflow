@@ -140,7 +140,7 @@ pub struct Cli {
     #[arg(long, value_name = "MODE")]
     pub spacing: Option<String>,
 
-    /// Scaling mode: auto (adapts to diagram complexity) or fixed
+    /// Scaling mode: auto (adapts to diagram complexity) or fixed (default)
     #[arg(long, value_name = "MODE")]
     pub scaling: Option<String>,
 

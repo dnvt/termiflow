@@ -123,7 +123,8 @@ pub fn route_divergent_edges(
     }
 
     let coords = OrientedCoords::new(direction);
-    let debug_timing = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
+    let context = crate::runtime::current();
+    let debug_timing = context.diagnostics.timing;
     if debug_timing {
         let targets: Vec<&str> = to_nodes.iter().map(|n| n.id.as_str()).collect();
         eprintln!("render: route from {} to {:?}", from.id, targets);
@@ -301,7 +302,7 @@ pub fn route_divergent_edges(
             } else {
                 arrow_x
             };
-            if std::env::var("DEBUG_CROSS").is_ok() {
+            if context.diagnostics.cross {
                 eprintln!(
                     "single-edge cross? {}({:?}) -> {}({:?})",
                     from.id, from_sg, target.id, to_sg

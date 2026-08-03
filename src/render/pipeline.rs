@@ -59,6 +59,8 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
         });
     }
 
+    let context = crate::runtime::current();
+
     // Capture immutable geometry and indexes once at the render boundary.
     // The public Graph remains authoritative for all projection behavior.
     let layout_snapshot = LayoutSnapshot::from_graph(graph);
@@ -113,8 +115,8 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
         annotate_subgraph_region(&mut canvas, subgraph, graph.direction);
     }
     // Carve portal openings in subgraph borders so external edges can pass through.
-    // Portal carving is disabled if the env var TERMIFLOW_DISABLE_PORTALS is set.
-    let portals_enabled = std::env::var("TERMIFLOW_DISABLE_PORTALS").is_err();
+    // Portal behavior is fixed by the runtime boundary snapshot.
+    let portals_enabled = !context.compatibility.disable_portals;
     let node_rects = node_rects_from_graph(graph);
     let portal_slots = if portals_enabled {
         collect_portal_slots(graph, &node_rects, graph.direction)
@@ -196,7 +198,7 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
         }
     }
 
-    if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
+    if context.diagnostics.timing {
         eprintln!("render: sources_with_edges {sources_with_edges:?}");
     }
 
@@ -537,7 +539,7 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
     }
 
     // Debug: print canvas content for convergent edge A7/A8 -> P4
-    if std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok() {
+    if context.diagnostics.timing {
         eprintln!("  Input 7/8 -> Process 4 area (y=2-6, x=100-130):");
         for y in 2..=6 {
             let row: String = (100..=130).map(|x| canvas.get(x, y)).collect();
@@ -556,8 +558,7 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
         eprintln!("  pos: [{markers}] (^=101,108,125)");
     }
 
-    let optimize_render =
-        config.optimize_render || std::env::var("TERMIFLOW_OPTIMIZE_RENDER").is_ok();
+    let optimize_render = config.optimize_render || context.compatibility.optimize_render;
 
     refresh_provenance(
         &mut canvas,
@@ -619,11 +620,10 @@ pub(super) fn render_with_feedback(graph: &Graph, config: &Config) -> Result<Ren
         );
     }
 
-    let debug_critic = config.debug_critic || std::env::var("TERMIFLOW_DEBUG_CRITIC").is_ok();
-    let repair_passes = std::env::var("TERMIFLOW_RENDER_REPAIR_PASSES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .map(|value| value.max(1))
+    let debug_critic = config.debug_critic || context.diagnostics.critic;
+    let repair_passes = context
+        .compatibility
+        .render_repair_passes
         .unwrap_or(config.render_repair_passes);
 
     let mut applied_repair_passes = 0;

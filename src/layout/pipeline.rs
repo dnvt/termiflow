@@ -5,7 +5,7 @@ use super::*;
 
 pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOutput> {
     let coords = OrientedCoords::new(input.graph.direction);
-    let debug_timing = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
+    let debug_timing = crate::runtime::current().diagnostics.timing;
 
     // 1) Layer assignment (lenient Kahn) and ordering.
     let t_layers = std::time::Instant::now();

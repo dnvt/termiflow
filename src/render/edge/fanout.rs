@@ -46,7 +46,7 @@ pub(super) fn route_fanout_into_subgraph_td(
         .min()
         .unwrap_or(portal_y.saturating_add(2));
 
-    if std::env::var("DEBUG_FANOUT").is_ok() {
+    if crate::runtime::current().diagnostics.fan_out {
         let target_xs: Vec<usize> = targets.iter().map(|(x, _, _)| *x).collect();
         eprintln!(
             "fanout stem=({stem_start_x}, {stem_start_y}) portal_y={portal_y} jx={junction_x} targets={target_xs:?}"

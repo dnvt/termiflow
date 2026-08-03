@@ -346,6 +346,7 @@ pub(super) fn place_nodes(
     config: &CoarseLayoutConfig,
     prior_positions: Option<&HashMap<String, Point>>,
 ) -> Placement {
+    let debug_fan_in = crate::runtime::current().diagnostics.fan_in;
     let mut positions: HashMap<String, Point> = HashMap::new();
     let mut node_rects: HashMap<String, Rect> = HashMap::new();
     let mut ranks: HashMap<String, usize> = HashMap::new();
@@ -403,7 +404,7 @@ pub(super) fn place_nodes(
                 .iter()
                 .any(|e| !e.is_back_edge && e.to == node.id);
 
-            if std::env::var("DEBUG_FANIN").is_ok() && node.id == "Merge" {
+            if debug_fan_in && node.id == "Merge" {
                 eprintln!(
                     "layout fanin node={} parents={:?} incoming_edges={}",
                     node.id, parent_centers, has_incoming
@@ -454,7 +455,7 @@ pub(super) fn place_nodes(
             let desired_start = desired_center.saturating_sub(extent_sec / 2);
             let secondary_pos = desired_start.max(secondary_cursor);
 
-            if std::env::var("DEBUG_FANIN").is_ok() && node.id == "Merge" {
+            if debug_fan_in && node.id == "Merge" {
                 eprintln!(
                     "place {} desired_center={} extent={} start={} cursor={} -> pos={}",
                     node.id,
@@ -494,7 +495,7 @@ pub(super) fn place_nodes(
 
     balance_dual_junctions(graph, layers, coords, &mut positions, &mut node_rects);
 
-    if std::env::var("DEBUG_FANIN").is_ok() {
+    if debug_fan_in {
         if let Some(rect) = node_rects.get("Merge") {
             eprintln!("post-balance Merge rect {rect:?}");
         }
@@ -507,7 +508,7 @@ pub(super) fn place_nodes(
     let min_x = node_rects.values().map(|r| r.x).min().unwrap_or(0);
     let min_y = node_rects.values().map(|r| r.y).min().unwrap_or(0);
 
-    if std::env::var("DEBUG_FANIN").is_ok() {
+    if debug_fan_in {
         eprintln!("normalize min_x={min_x} min_y={min_y}");
     }
 
@@ -533,7 +534,7 @@ pub(super) fn place_nodes(
         &mut post_normalize_canvas_height,
     );
 
-    if std::env::var("DEBUG_FANIN").is_ok() {
+    if debug_fan_in {
         if let Some(rect) = node_rects.get("Merge") {
             eprintln!("post-normalize Merge rect {rect:?}");
         }

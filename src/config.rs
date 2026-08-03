@@ -4,10 +4,82 @@
 //! See SPEC §5 for details
 
 use std::fs;
+use std::path::Path;
 
 use crate::parser::ParseConfig;
 use crate::spacing::{SpacingConfig, SpacingMode};
 use crate::style::CompositeStyle;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigSource {
+    File,
+    Directive,
+    Builder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigField {
+    MaxLabelWidth,
+    MaxEdgeLabelWidth,
+    WrapLabels,
+    MaxLabelLines,
+    Crop,
+    Pad,
+    StrictParsing,
+    CompositeStyle,
+    Spacing,
+    OptimizeRender,
+    RenderRepairPasses,
+    LayoutRepairPasses,
+    DebugCritic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EffectClass {
+    LayoutAndOutput,
+    Output,
+    Parsing,
+    Diagnostic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResolutionAction {
+    Applied,
+    Normalized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResolutionRecord {
+    pub(crate) source: ConfigSource,
+    pub(crate) field: ConfigField,
+    pub(crate) action: ResolutionAction,
+    pub(crate) effect: EffectClass,
+}
+
+/// Presence-aware values contributed by one configuration source.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ConfigPatch {
+    max_label_width: Option<usize>,
+    max_edge_label_width: Option<usize>,
+    wrap_labels: Option<bool>,
+    max_label_lines: Option<usize>,
+    crop: Option<bool>,
+    pad: Option<usize>,
+    strict_parsing: Option<bool>,
+    composite_style: Option<CompositeStyle>,
+    spacing: Option<SpacingConfig>,
+    optimize_render: Option<bool>,
+    render_repair_passes: Option<usize>,
+    layout_repair_passes: Option<usize>,
+    debug_critic: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedConfig {
+    pub(crate) config: Config,
+    #[allow(dead_code)]
+    pub(crate) records: Vec<ResolutionRecord>,
+}
 
 /// Application configuration
 #[derive(Debug, Clone)]
@@ -56,6 +128,144 @@ impl Default for Config {
     }
 }
 
+impl ConfigPatch {
+    fn from_parse_config(parse_config: &ParseConfig) -> Self {
+        Self {
+            composite_style: parse_config.style.as_deref().map(CompositeStyle::parse),
+            max_label_width: parse_config.max_label,
+            max_edge_label_width: parse_config.max_edge_label,
+            wrap_labels: parse_config.wrap_labels,
+            max_label_lines: parse_config.max_label_lines,
+            spacing: parse_config.spacing_mode.map(SpacingConfig::from_mode),
+            optimize_render: parse_config.optimize_render,
+            render_repair_passes: parse_config.render_repair_passes,
+            layout_repair_passes: parse_config.layout_repair_passes,
+            debug_critic: parse_config.debug_critic,
+            ..Self::default()
+        }
+    }
+
+    fn from_file_config(file_config: &FileConfig) -> Self {
+        Self {
+            max_label_width: file_config.max_label_width,
+            max_edge_label_width: file_config.max_edge_label_width,
+            wrap_labels: file_config.wrap_labels,
+            max_label_lines: file_config.max_label_lines,
+            crop: file_config.crop,
+            pad: file_config.pad,
+            composite_style: file_config.composite_style.clone(),
+            spacing: file_config.spacing_mode.map(SpacingConfig::from_mode),
+            optimize_render: file_config.optimize_render,
+            render_repair_passes: file_config.render_repair_passes,
+            layout_repair_passes: file_config.layout_repair_passes,
+            debug_critic: file_config.debug_critic,
+            ..Self::default()
+        }
+    }
+
+    fn apply(self, config: &mut Config, source: ConfigSource, records: &mut Vec<ResolutionRecord>) {
+        macro_rules! apply_value {
+            ($field:ident, $field_kind:ident, $target:ident, $effect:expr) => {
+                if let Some(value) = self.$field {
+                    config.$target = value;
+                    records.push(ResolutionRecord {
+                        source,
+                        field: ConfigField::$field_kind,
+                        action: ResolutionAction::Applied,
+                        effect: $effect,
+                    });
+                }
+            };
+        }
+
+        apply_value!(
+            max_label_width,
+            MaxLabelWidth,
+            max_label_width,
+            EffectClass::LayoutAndOutput
+        );
+        apply_value!(
+            max_edge_label_width,
+            MaxEdgeLabelWidth,
+            max_edge_label_width,
+            EffectClass::LayoutAndOutput
+        );
+        apply_value!(
+            wrap_labels,
+            WrapLabels,
+            wrap_labels,
+            EffectClass::LayoutAndOutput
+        );
+        apply_value!(crop, Crop, crop, EffectClass::Output);
+        apply_value!(pad, Pad, pad, EffectClass::Output);
+        apply_value!(
+            strict_parsing,
+            StrictParsing,
+            strict_parsing,
+            EffectClass::Parsing
+        );
+        apply_value!(
+            composite_style,
+            CompositeStyle,
+            composite_style,
+            EffectClass::Output
+        );
+        apply_value!(spacing, Spacing, spacing, EffectClass::LayoutAndOutput);
+        apply_value!(
+            optimize_render,
+            OptimizeRender,
+            optimize_render,
+            EffectClass::LayoutAndOutput
+        );
+        apply_value!(
+            debug_critic,
+            DebugCritic,
+            debug_critic,
+            EffectClass::Diagnostic
+        );
+
+        if let Some(lines) = self.max_label_lines {
+            config.max_label_lines = lines;
+            records.push(ResolutionRecord {
+                source,
+                field: ConfigField::MaxLabelLines,
+                action: ResolutionAction::Applied,
+                effect: EffectClass::LayoutAndOutput,
+            });
+        }
+
+        if let Some(passes) = self.render_repair_passes {
+            let normalized = passes.max(1);
+            config.render_repair_passes = normalized;
+            records.push(ResolutionRecord {
+                source,
+                field: ConfigField::RenderRepairPasses,
+                action: if normalized == passes {
+                    ResolutionAction::Applied
+                } else {
+                    ResolutionAction::Normalized
+                },
+                effect: EffectClass::LayoutAndOutput,
+            });
+        }
+
+        if let Some(passes) = self.layout_repair_passes {
+            let normalized = passes.max(1);
+            config.layout_repair_passes = normalized;
+            records.push(ResolutionRecord {
+                source,
+                field: ConfigField::LayoutRepairPasses,
+                action: if normalized == passes {
+                    ResolutionAction::Applied
+                } else {
+                    ResolutionAction::Normalized
+                },
+                effect: EffectClass::LayoutAndOutput,
+            });
+        }
+    }
+}
+
 impl Config {
     /// Create a new config builder
     pub fn builder() -> ConfigBuilder {
@@ -65,81 +275,38 @@ impl Config {
     /// Load configuration from file config + in-file directives
     /// Used by the library API
     pub fn from_parse_config(parse_config: &ParseConfig) -> Self {
-        let mut config = Self::default();
-
-        // Config file (lowest priority)
-        if let Some(file_cfg) = load_file_config() {
-            if let Some(max_label) = file_cfg.max_label_width {
-                config.max_label_width = max_label;
-            }
-            if let Some(max_edge_label) = file_cfg.max_edge_label_width {
-                config.max_edge_label_width = max_edge_label;
-            }
-            if let Some(wrap_labels) = file_cfg.wrap_labels {
-                config.wrap_labels = wrap_labels;
-            }
-            if let Some(max_label_lines) = file_cfg.max_label_lines {
-                config.max_label_lines = max_label_lines;
-            }
-            if let Some(crop) = file_cfg.crop {
-                config.crop = crop;
-            }
-            if let Some(pad) = file_cfg.pad {
-                config.pad = pad;
-            }
-            if let Some(mode) = file_cfg.spacing_mode {
-                config.spacing = SpacingConfig::from_mode(mode);
-            }
-            if let Some(optimize_render) = file_cfg.optimize_render {
-                config.optimize_render = optimize_render;
-            }
-            if let Some(render_repair_passes) = file_cfg.render_repair_passes {
-                config.render_repair_passes = render_repair_passes;
-            }
-            if let Some(layout_repair_passes) = file_cfg.layout_repair_passes {
-                config.layout_repair_passes = layout_repair_passes;
-            }
-            if let Some(debug_critic) = file_cfg.debug_critic {
-                config.debug_critic = debug_critic;
-            }
-            config.composite_style = file_cfg.composite_style;
-        }
-
-        // In-file directives (medium priority)
-        if let Some(max_label) = parse_config.max_label {
-            config.max_label_width = max_label;
-        }
-        if let Some(max_edge_label) = parse_config.max_edge_label {
-            config.max_edge_label_width = max_edge_label;
-        }
-        if let Some(wrap_labels) = parse_config.wrap_labels {
-            config.wrap_labels = wrap_labels;
-        }
-        if let Some(max_label_lines) = parse_config.max_label_lines {
-            config.max_label_lines = max_label_lines;
-        }
-        if let Some(style_str) = parse_config.style.as_ref() {
-            config.composite_style = CompositeStyle::parse(style_str);
-        }
-        if let Some(mode) = parse_config.spacing_mode {
-            config.spacing = SpacingConfig::from_mode(mode);
-        }
-        if let Some(optimize_render) = parse_config.optimize_render {
-            config.optimize_render = optimize_render;
-        }
-        if let Some(render_repair_passes) = parse_config.render_repair_passes {
-            config.render_repair_passes = render_repair_passes;
-        }
-        if let Some(layout_repair_passes) = parse_config.layout_repair_passes {
-            config.layout_repair_passes = layout_repair_passes;
-        }
-        if let Some(debug_critic) = parse_config.debug_critic {
-            config.debug_critic = debug_critic;
-        }
-
-        config.spacing.max_label_width = config.max_label_width;
-        config
+        resolve_config(load_file_config(), parse_config, ConfigPatch::default()).config
     }
+}
+
+fn resolve_config(
+    file_config: Option<FileConfig>,
+    parse_config: &ParseConfig,
+    builder_patch: ConfigPatch,
+) -> ResolvedConfig {
+    let mut config = Config::default();
+    let mut records = Vec::new();
+
+    if let Some(file_config) = file_config.as_ref() {
+        ConfigPatch::from_file_config(file_config).apply(
+            &mut config,
+            ConfigSource::File,
+            &mut records,
+        );
+    }
+
+    ConfigPatch::from_parse_config(parse_config).apply(
+        &mut config,
+        ConfigSource::Directive,
+        &mut records,
+    );
+    builder_patch.apply(&mut config, ConfigSource::Builder, &mut records);
+
+    // This derived spacing field has always followed the resolved label
+    // width. Keep that invariant in one place after all source patches.
+    config.spacing.max_label_width = config.max_label_width;
+
+    ResolvedConfig { config, records }
 }
 
 /// Builder for Config - allows CLI to override settings
@@ -232,52 +399,25 @@ impl ConfigBuilder {
 
     /// Build config, applying CLI overrides to parse_config base
     pub fn build(self, parse_config: &ParseConfig) -> Config {
-        let mut config = Config::from_parse_config(parse_config);
+        resolve_config(load_file_config(), parse_config, self.into_patch()).config
+    }
 
-        // CLI overrides (highest priority)
-        if let Some(width) = self.max_label_width {
-            config.max_label_width = width;
+    fn into_patch(self) -> ConfigPatch {
+        ConfigPatch {
+            max_label_width: self.max_label_width,
+            max_edge_label_width: self.max_edge_label_width,
+            wrap_labels: self.wrap_labels,
+            max_label_lines: self.max_label_lines,
+            crop: self.crop,
+            pad: self.pad,
+            strict_parsing: self.strict_parsing,
+            composite_style: self.composite_style,
+            spacing: self.spacing,
+            optimize_render: self.optimize_render,
+            render_repair_passes: self.render_repair_passes,
+            layout_repair_passes: self.layout_repair_passes,
+            debug_critic: self.debug_critic,
         }
-        if let Some(width) = self.max_edge_label_width {
-            config.max_edge_label_width = width;
-        }
-        if let Some(wrap) = self.wrap_labels {
-            config.wrap_labels = wrap;
-        }
-        if let Some(lines) = self.max_label_lines {
-            config.max_label_lines = lines;
-        }
-        if let Some(crop) = self.crop {
-            config.crop = crop;
-        }
-        if let Some(pad) = self.pad {
-            config.pad = pad;
-        }
-        if let Some(strict) = self.strict_parsing {
-            config.strict_parsing = strict;
-        }
-        if let Some(style) = self.composite_style {
-            config.composite_style = style;
-        }
-        if let Some(spacing) = self.spacing {
-            config.spacing = spacing;
-        }
-        if let Some(optimize_render) = self.optimize_render {
-            config.optimize_render = optimize_render;
-        }
-        if let Some(render_repair_passes) = self.render_repair_passes {
-            config.render_repair_passes = render_repair_passes;
-        }
-        if let Some(layout_repair_passes) = self.layout_repair_passes {
-            config.layout_repair_passes = layout_repair_passes;
-        }
-        if let Some(debug_critic) = self.debug_critic {
-            config.debug_critic = debug_critic;
-        }
-
-        config.spacing.max_label_width = config.max_label_width;
-
-        config
     }
 }
 
@@ -288,16 +428,14 @@ fn load_file_config() -> Option<FileConfig> {
     path.push("config.toml");
 
     let contents = fs::read_to_string(&path).ok()?;
-    match toml::from_str::<toml::Value>(&contents) {
+    parse_file_config(&path, &contents)
+}
+
+fn parse_file_config(path: &Path, contents: &str) -> Option<FileConfig> {
+    match toml::from_str::<toml::Value>(contents) {
         Ok(value) => {
             let style_str = value.get("style").and_then(|v| v.as_str());
-
-            // Parse composite style
-            let composite_style = if let Some(s) = style_str {
-                CompositeStyle::parse(s)
-            } else {
-                CompositeStyle::default()
-            };
+            let composite_style = style_str.map(CompositeStyle::parse);
 
             let spacing_mode = value
                 .get("spacing")
@@ -315,57 +453,67 @@ fn load_file_config() -> Option<FileConfig> {
                     }
                 });
 
-            let max_label_width = value.get("max_label_width").and_then(|v| v.as_integer());
-            let max_edge_label_width = value
-                .get("max_edge_label_width")
-                .and_then(|v| v.as_integer())
-                .or_else(|| value.get("max_edge_label").and_then(|v| v.as_integer()));
-            let wrap_labels = value
-                .get("wrap")
-                .and_then(|v| v.as_bool())
-                .or_else(|| value.get("wrap_labels").and_then(|v| v.as_bool()));
-            let max_label_lines = value
-                .get("max_label_lines")
-                .and_then(|v| v.as_integer())
-                .or_else(|| value.get("max_lines").and_then(|v| v.as_integer()));
-            let crop = value
-                .get("crop")
-                .and_then(|v| v.as_bool())
-                .or_else(|| value.get("trim").and_then(|v| v.as_bool()));
-            let pad = value.get("pad").and_then(|v| v.as_integer());
-            let optimize_render = value
-                .get("optimize_render")
-                .and_then(|v| v.as_bool())
-                .or_else(|| value.get("optimize").and_then(|v| v.as_bool()));
-            let render_repair_passes = value
-                .get("render_repair_passes")
-                .and_then(|v| v.as_integer())
-                .or_else(|| value.get("repair_passes").and_then(|v| v.as_integer()));
-            let layout_repair_passes = value
-                .get("layout_repair_passes")
-                .and_then(|v| v.as_integer())
-                .or_else(|| value.get("layout_passes").and_then(|v| v.as_integer()));
-            let debug_critic = value
-                .get("debug_critic")
-                .and_then(|v| v.as_bool())
-                .or_else(|| value.get("critic_debug").and_then(|v| v.as_bool()));
             Some(FileConfig {
-                max_label_width: max_label_width.map(|n| n as usize),
-                max_edge_label_width: max_edge_label_width.map(|n| n as usize),
-                wrap_labels,
-                max_label_lines: max_label_lines.map(|n| n as usize),
-                crop,
-                pad: pad.map(|n| n as usize),
+                max_label_width: integer_alias(&value, path, &["max_label_width"]),
+                max_edge_label_width: integer_alias(
+                    &value,
+                    path,
+                    &["max_edge_label_width", "max_edge_label"],
+                ),
+                wrap_labels: bool_alias(&value, &["wrap", "wrap_labels"]),
+                max_label_lines: integer_alias(&value, path, &["max_label_lines", "max_lines"]),
+                crop: bool_alias(&value, &["crop", "trim"]),
+                pad: integer_alias(&value, path, &["pad"]),
                 spacing_mode,
-                optimize_render,
-                render_repair_passes: render_repair_passes.map(|n| (n as usize).max(1)),
-                layout_repair_passes: layout_repair_passes.map(|n| (n as usize).max(1)),
-                debug_critic,
+                optimize_render: bool_alias(&value, &["optimize_render", "optimize"]),
+                render_repair_passes: integer_alias(
+                    &value,
+                    path,
+                    &["render_repair_passes", "repair_passes"],
+                ),
+                layout_repair_passes: integer_alias(
+                    &value,
+                    path,
+                    &["layout_repair_passes", "layout_passes"],
+                ),
+                debug_critic: bool_alias(&value, &["debug_critic", "critic_debug"]),
                 composite_style,
             })
         }
         Err(e) => {
             eprintln!("termiflow: warning: {}: {}", path.display(), e);
+            None
+        }
+    }
+}
+
+fn bool_alias(value: &toml::Value, keys: &[&str]) -> Option<bool> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|v| v.as_bool()))
+}
+
+fn integer_alias(value: &toml::Value, path: &Path, keys: &[&str]) -> Option<usize> {
+    for key in keys {
+        let Some(number) = value.get(*key).and_then(|v| v.as_integer()) else {
+            continue;
+        };
+        if let Some(parsed) = checked_config_usize(path, key, number) {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
+fn checked_config_usize(path: &Path, key: &str, number: i64) -> Option<usize> {
+    match usize::try_from(number) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            eprintln!(
+                "termiflow: warning: {}: {} must be a non-negative usize; ignoring {}",
+                path.display(),
+                key,
+                number
+            );
             None
         }
     }
@@ -384,7 +532,7 @@ struct FileConfig {
     render_repair_passes: Option<usize>,
     layout_repair_passes: Option<usize>,
     debug_critic: Option<bool>,
-    composite_style: CompositeStyle,
+    composite_style: Option<CompositeStyle>,
 }
 
 #[cfg(test)]
@@ -432,5 +580,66 @@ mod tests {
         assert_eq!(cfg.render_repair_passes, 4);
         assert_eq!(cfg.layout_repair_passes, 3);
         assert!(cfg.debug_critic);
+    }
+
+    #[test]
+    fn resolver_preserves_source_presence_and_precedence() {
+        let file = parse_file_config(
+            Path::new("injected/config.toml"),
+            "wrap = true\npad = 4\nmax_label_width = 31\n",
+        )
+        .expect("injected config parses");
+        let directives = ParseConfig {
+            wrap_labels: Some(true),
+            max_label: Some(27),
+            ..Default::default()
+        };
+        let builder = Config::builder()
+            .wrap_labels(false)
+            .pad(0)
+            .max_label_width(19);
+
+        let resolved = resolve_config(Some(file), &directives, builder.into_patch());
+
+        assert!(!resolved.config.wrap_labels);
+        assert_eq!(resolved.config.pad, 0);
+        assert_eq!(resolved.config.max_label_width, 19);
+        assert!(resolved.records.iter().any(|record| {
+            record.source == ConfigSource::File
+                && record.field == ConfigField::WrapLabels
+                && record.effect == EffectClass::LayoutAndOutput
+        }));
+        assert!(resolved.records.iter().any(|record| {
+            record.source == ConfigSource::Builder
+                && record.field == ConfigField::WrapLabels
+                && record.action == ResolutionAction::Applied
+        }));
+    }
+
+    #[test]
+    fn resolver_normalizes_repair_passes_and_rejects_negative_file_values() {
+        let file = parse_file_config(
+            Path::new("injected/config.toml"),
+            "max_label_width = -1\nrender_repair_passes = -2\nlayout_repair_passes = 0\n",
+        )
+        .expect("injected config parses");
+        assert_eq!(file.max_label_width, None);
+        assert_eq!(file.render_repair_passes, None);
+        assert_eq!(file.layout_repair_passes, Some(0));
+
+        let directives = ParseConfig {
+            render_repair_passes: Some(0),
+            layout_repair_passes: Some(3),
+            ..Default::default()
+        };
+        let resolved = resolve_config(Some(file), &directives, ConfigPatch::default());
+
+        assert_eq!(resolved.config.render_repair_passes, 1);
+        assert_eq!(resolved.config.layout_repair_passes, 3);
+        assert!(resolved.records.iter().any(|record| {
+            record.source == ConfigSource::Directive
+                && record.field == ConfigField::RenderRepairPasses
+                && record.action == ResolutionAction::Normalized
+        }));
     }
 }

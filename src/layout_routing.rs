@@ -172,7 +172,7 @@ pub(super) fn carve_subgraph_portals(
     subgraphs: &HashMap<String, SubgraphEnvelope>,
     gutter: usize,
 ) {
-    let debug_timing = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
+    let debug_timing = crate::runtime::current().diagnostics.timing;
 
     let span = gutter.max(1) * 2 + 1;
     for (sg_id, bounds) in subgraphs {
@@ -794,7 +794,7 @@ fn route_with_obstacles(
     avoid_rects: &[Rect],
     coords: &OrientedCoords,
 ) -> Option<EdgeRoute> {
-    let debug_timing = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
+    let debug_timing = crate::runtime::current().diagnostics.timing;
     if start == end {
         let mut route = EdgeRoute::new();
         route.push_segment(start, end);

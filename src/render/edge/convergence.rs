@@ -133,7 +133,7 @@ fn route_convergent_from_subgraph_td(
             span_end.max(target_secondary),
         )
     };
-    if std::env::var("DEBUG_FANIN").is_ok() {
+    if crate::runtime::current().diagnostics.fan_in {
         eprintln!(
             "fanin merge_x={merge_x} merge_y={merge_y} span=({final_span_start}, {final_span_end}) target_sec={target_secondary} target=({target_x}, {target_y}) arrow=({arrow_x}, {arrow_y})"
         );
@@ -352,7 +352,7 @@ fn route_convergent_from_subgraph_td(
             &portal_columns,
             coords.secondary_edge_char(style),
         );
-        if std::env::var("DEBUG_FANIN").is_ok() {
+        if crate::runtime::current().diagnostics.fan_in {
             eprintln!(
                 "cleanup bottom_y={bottom_y} fill='{border_fill}' portals={portal_columns:?}"
             );
@@ -685,7 +685,7 @@ fn route_convergent_from_subgraph_lr(
             sg.bounds.y + sg.bounds.height.saturating_sub(2),
         )
     };
-    if std::env::var("DEBUG_FANIN").is_ok() {
+    if crate::runtime::current().diagnostics.fan_in {
         eprintln!(
             "horizontal fanin target={} dir={:?} sg={} span=({}, {}) arrow=({}, {}) border_x={} outside_x={} centered_merge_y={} merge_y={}",
             target.id,
@@ -760,7 +760,7 @@ fn route_convergent_from_subgraph_lr(
             _ => unreachable!(),
         };
         let going_before = merge_y > arrow_y;
-        if std::env::var("DEBUG_FANIN").is_ok() {
+        if crate::runtime::current().diagnostics.fan_in {
             eprintln!(
                 "horizontal fanin jog target={} dir={:?} turn_x={} going_before={}",
                 target.id, direction, turn_x, going_before
@@ -1078,7 +1078,7 @@ pub fn route_convergent_edges(
         kind: CellOwnerKind::EdgeSegment,
         id: fanin_owner_id.as_str(),
     };
-    let debug = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
+    let debug = crate::runtime::current().diagnostics.timing;
 
     // Filter to visible sources
     let visible_sources: Vec<&Node> = from_nodes

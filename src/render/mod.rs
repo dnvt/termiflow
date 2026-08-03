@@ -52,6 +52,7 @@ use crate::config::Config;
 use crate::graph::Graph;
 #[cfg(test)]
 use crate::graph::{Direction, Node};
+use crate::runtime;
 #[cfg(test)]
 use crate::style::BaseStyle;
 use anyhow::Result;
@@ -77,7 +78,7 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
 }
 /// Render a graph and return semantic/critic details for the final frame.
 pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutcome> {
-    pipeline::render_with_feedback(graph, config)
+    runtime::with_captured(|| pipeline::render_with_feedback(graph, config))
 }
 
 #[cfg(test)]

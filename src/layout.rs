@@ -95,10 +95,12 @@ impl CoarseLayoutConfig {
 }
 
 pub fn coarse_waterfall_with_config(graph: Graph, mut config: CoarseLayoutConfig) -> Result<Graph> {
-    if std::env::var("TERMIFLOW_DISABLE_PORTALS").is_ok() {
-        config.enable_portals = false;
-    }
-    apply_coarse_layout(graph, None, config)
+    crate::runtime::with_captured(|| {
+        if crate::runtime::current().compatibility.disable_portals {
+            config.enable_portals = false;
+        }
+        apply_coarse_layout(graph, None, config)
+    })
 }
 
 /// Preferred entry point for the coarse layout engine.
@@ -118,7 +120,7 @@ pub fn apply_coarse_layout(
     prior_positions: Option<HashMap<String, Point>>,
     config: CoarseLayoutConfig,
 ) -> Result<Graph> {
-    let debug_timing = std::env::var("TERMIFLOW_DEBUG_TIMING").is_ok();
+    let debug_timing = crate::runtime::current().diagnostics.timing;
     let t_start = std::time::Instant::now();
 
     // Ensure all nodes have valid dimensions before layout
