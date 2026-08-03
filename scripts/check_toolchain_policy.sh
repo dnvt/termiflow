@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fail-closed repository alignment checks for Rust, CI, and release policy.
 # This is intentionally offline: it does not claim that external registries or
-# upstream releases are still current after the dated currency audit.
+# upstream releases are still current after the dated currency audit. The
+# dependency currency receipt is the separate network-backed latest check.
 set -euo pipefail
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -11,15 +12,17 @@ ci_workflow="$root_dir/.github/workflows/ci.yml"
 release_workflow="$root_dir/.github/workflows/release.yml"
 toolchain_file="$root_dir/rust-toolchain.toml"
 cargo_file="$root_dir/Cargo.toml"
+currency_gate="$root_dir/scripts/dependency_currency_gate.sh"
 
 fail() {
   printf 'toolchain policy: ERROR: %s\n' "$*" >&2
   exit 1
 }
 
-for required_file in "$ci_workflow" "$release_workflow" "$toolchain_file" "$cargo_file"; do
+for required_file in "$ci_workflow" "$release_workflow" "$toolchain_file" "$cargo_file" "$currency_gate"; do
   [[ -f "$required_file" ]] || fail "required file is missing: ${required_file#$root_dir/}"
 done
+[[ -x "$currency_gate" ]] || fail "dependency currency gate is not executable"
 
 stable_channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' "$toolchain_file" | head -n 1)
 [[ -n "$stable_channel" ]] || fail "rust-toolchain.toml has no exact channel"
@@ -74,10 +77,10 @@ done <<< "$action_records"
 (( stable_toolchain_refs > 0 )) || fail "no workflow uses the declared stable toolchain '$stable_channel'"
 (( msrv_toolchain_refs > 0 )) || fail "no workflow uses the declared MSRV '$msrv'"
 
-tool_records=$(grep -hE 'cargo install[[:space:]]+(cargo-deny|cargo-audit|cross)([[:space:]]|$)' "$ci_workflow" "$release_workflow" || true)
-[[ -n "$tool_records" ]] || fail "no cargo-deny, cargo-audit, or cross install pins were found"
+tool_records=$(grep -hE 'cargo install[[:space:]]+(cargo-deny|cargo-audit|cargo-outdated|cross)([[:space:]]|$)' "$ci_workflow" "$release_workflow" || true)
+[[ -n "$tool_records" ]] || fail "no cargo-deny, cargo-audit, cargo-outdated, or cross install pins were found"
 
-for tool in cargo-deny cargo-audit cross; do
+for tool in cargo-deny cargo-audit cargo-outdated cross; do
   tool_lines=$(printf '%s\n' "$tool_records" | grep -E "cargo install[[:space:]]+$tool([[:space:]]|$)" || true)
   [[ -n "$tool_lines" ]] || fail "missing exact install pin for $tool"
   tool_line_count=$(printf '%s\n' "$tool_lines" | wc -l | tr -d ' ')
@@ -112,4 +115,4 @@ printf '  stable=%s msrv=%s components=rustfmt,clippy\n' "$stable_channel" "$msr
 printf '  toolchain workflow refs: stable=%s msrv=%s\n' "$stable_toolchain_refs" "$msrv_toolchain_refs"
 printf '  action pins:\n%s\n' "$(printf '%s\n' "$action_records" | sort -u | sed 's/\t/@/')"
 printf '  cargo tool pins:\n%s\n' "$(printf '%s\n' "$tool_records" | sed 's/^[[:space:]]*run:[[:space:]]*//' | sort -u)"
-printf '  scope=internal-alignment; external-latest-audit=separate\n'
+printf '  scope=internal-alignment; external-latest-audit=receipt-gated\n'
