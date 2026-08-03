@@ -1,0 +1,77 @@
+{
+  "schema": "termiflow.architecture_baseline.v1",
+  "observed_at": "2026-08-03",
+  "purpose": "A0 clean baseline for behavior/API ownership and modular-renderer changes",
+  "source": {
+    "checkout": "/Users/dnvt/Developer/termiflow-audit",
+    "branch": "audit/maestro-architecture-2026-08-03",
+    "commit": "fc4e888c72349c3caf4ba55008e8a51c81dbdaab",
+    "worktree_dirty": false,
+    "tracked_file_count": 858,
+    "tracked_tree_sha256": "d5a5d3f9a50c7012115293c5a89b34c77fb665cdf0f58f8abb9f0be7d366456b",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_file_count": 0
+  },
+  "toolchain": {
+    "rust_release": "1.97.1",
+    "rust_commit_date": "2026-07-14",
+    "rust_host": "aarch64-apple-darwin",
+    "target": "aarch64-apple-darwin",
+    "llvm_version": "22.1.6",
+    "rust_toolchain_sha256": "559f488c181e0e9e77cf17c29de663977f036ec7ff2e2060585714bf53c52d62",
+    "rustc_verbose_sha256": "e794146d99fad54562fdcbd4a7c8b22b0240d2b0312ff6d879d67939b3131850",
+    "declared_msrv": "1.88"
+  },
+  "manifest_and_lock": {
+    "Cargo.toml": "cb640cf49879c0167922c50ef73f6aaf0287284c9a50afba54b281b61d958f7e",
+    "Cargo.lock": "4a6e8efa6e7f51a328d938f7db17f7a8ee49d330b807ae2fdee57b9e027ab097",
+    "cargo_metadata_sha256": "cf1790ef05facc4cd324699e488bf3ef6d4fd56c09fe441378db85877ef35987"
+  },
+  "workload": {
+    "fixture_spec": "tests/fixtures/fixture_spec.json",
+    "fixture_spec_sha256": "2ce20d3e1651f8e92a6b5d6b94f46419226cc3f34a72c1e3fe3736bfbc0bef22",
+    "input_root": "tests/fixtures/inputs",
+    "inputs_sha256": "5fe3f0e4f2c866c94ba5e77ab5c38d097e99acf0a81821d1186f4a6448044530",
+    "metadata": "tests/fixtures/metadata.json",
+    "metadata_sha256": "fefc7dd9e1aeee3ec6ad687ab9c23ebe3c8e50f0843df4970aced8029e31d1aa",
+    "quality_baseline": "tests/fixtures/quality_baseline.json",
+    "quality_baseline_sha256": "5825113746da6e254190b66b2437a5c7a737cb54f28b324625ad74c95cfb4104",
+    "display_profile": "terminal-grid-v1",
+    "styles": ["ascii", "unicode"],
+    "modes": ["default", "optimized"]
+  },
+  "visual_packet": {
+    "command": "scripts/visual_audit.sh --out /private/tmp/termiflow-architecture-a0-visual-fc4-20260803 --styles ascii,unicode --modes default,optimized",
+    "evidence_path": "/private/tmp/termiflow-architecture-a0-visual-fc4-20260803",
+    "rows": 948,
+    "primary_rows": 936,
+    "warning_rows": 72,
+    "expected_error_rows": 12,
+    "strict_validation": "passed",
+    "complete_sha256": "048b17cd73f6b2d956b16bb540f996f467814e339e4265a5fab6dd21a80f1736",
+    "manifest_sha256": "28a780888164cf46fcb02496686f9cb50ebc3706a42ad33c1454c5e8bc99d449",
+    "identity_sha256": "2a7b27160ea27559774671d702043452ae9c8b20c19bbf334f4844112e280c3f",
+    "packet_sha256_file_sha256": "f12692f9a28afe9c21ffaa46343701e9666a39889f91e0ffaf03b043b060f5fc",
+    "effective_identity_sha256": "f6b10e157bcc0d14388005bec47a7bcf45a4c062c8ea1426cd69fb30882a6011",
+    "binary_sha256": "ce9b0e901f7931b9a9d01aaaa156c45671737c7e3d2e51fbb2491a8dcb8cc9d1"
+  },
+  "required_reproduction": [
+    "cargo fmt --check",
+    "cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "cargo test --locked --all-targets --all-features",
+    "cargo test --locked --doc --all-features",
+    "RUSTDOCFLAGS=-D warnings cargo doc --locked --no-deps --all-features",
+    "cargo bench --locked --no-run --all-features",
+    "cargo package --locked --list",
+    "bash -n scripts/*.sh",
+    "scripts/check_toolchain_policy.sh",
+    "scripts/visual_audit.sh --out <fresh-output> --styles ascii,unicode --modes default,optimized",
+    "scripts/visual_validate.sh --packet <fresh-output> --baseline tests/fixtures/quality_baseline.json --strict-quality"
+  ],
+  "change_policy": {
+    "refactor_only": "packet frames, quality baseline, and approved goldens must remain byte-identical",
+    "intentional_visual_change": "requires a separate reviewed rendering decision and explicit golden approval",
+    "dependency_refresh": "recheck Rust and every direct/dev/build/target/feature/reachable-transitive dependency at each dated latest boundary; majors included",
+    "unknown_external_consumers": "must be recorded before narrowing a public module, field, or documented behavior"
+  }
+}

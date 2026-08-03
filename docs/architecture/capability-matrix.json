@@ -1,0 +1,73 @@
+{
+  "schema": "termiflow.capability_matrix.v1",
+  "source_commit": "fc4e888c72349c3caf4ba55008e8a51c81dbdaab",
+  "scope": {
+    "diagram_family": "flowchart",
+    "status": "supported",
+    "explicitly_not_claimed": ["sequence", "state", "class", "er", "gantt", "mindmap"]
+  },
+  "source_adapters": {
+    "mermaid": {
+      "status": "supported",
+      "entrypoints": ["parse", "render", "termiflow", "tw"],
+      "accepted_headers": ["graph", "flowchart"],
+      "directions": ["TD", "TB", "LR", "RL", "BT"]
+    },
+    "json": {
+      "status": "supported",
+      "entrypoints": ["parse_json_graph", "render_json", "termiflow --from-json", "tw --from-json"],
+      "schema_owner": "docs/reference.md and src/json_input.rs"
+    }
+  },
+  "directions": {
+    "status": "supported",
+    "values": ["TD", "TB", "LR", "RL", "BT"],
+    "verification": ["tests/metamorphic_directions.rs", "tests/fixtures/fixture_spec.json"]
+  },
+  "styles": {
+    "status": "supported",
+    "base": ["ascii", "unicode", "double", "rounded", "heavy", "dots", "plus", "stars", "blocks"],
+    "composite_components": ["corner", "border", "arrow", "edge", "junction", "back", "subgraph"]
+  },
+  "node_shapes": {
+    "status": "supported",
+    "values": ["rectangle", "rounded", "diamond", "circle", "stadium", "asymmetric", "parallelogram", "parallelogram-alt", "trapezoid", "trapezoid-alt", "hexagon", "database", "subroutine", "double-circle"]
+  },
+  "edge_kinds": {
+    "status": "supported",
+    "syntax": ["-->", "---", "==>", "-.->", "<-->", "--o", "--x", "pipe-label", "text-label"]
+  },
+  "flowchart_features": {
+    "subgraphs": "supported_with_directional_portal_contract",
+    "nested_subgraphs": "supported_with_preserved_parent_child_metadata",
+    "edge_labels": "supported",
+    "multiline_labels": "supported_when_enabled",
+    "click_targets": "parsed_informational_only",
+    "cycles": "supported_with_back_edge_gutters_and_warnings",
+    "strict_warnings": "supported"
+  },
+  "unsupported_or_warned": [
+    {"feature": "style", "status": "warning_and_ignored"},
+    {"feature": "classDef", "status": "warning_and_ignored"},
+    {"feature": "class_suffix", "syntax": ":::", "status": "stripped_with_warning"},
+    {"feature": "edge_ids", "status": "unsupported"},
+    {"feature": "at_shape_syntax", "syntax": "@{}", "status": "unsupported"},
+    {"feature": "markdown_labels", "status": "unsupported"},
+    {"feature": "non_flowchart_diagrams", "status": "unsupported"}
+  ],
+  "configuration": {
+    "precedence": ["defaults", "config_file", "in_file_directives", "cli_or_api"],
+    "fields": ["style", "max_label_width", "max_edge_label_width", "wrap_labels", "max_label_lines", "crop", "pad", "strict", "spacing", "optimize_render", "render_repair_passes", "layout_repair_passes", "debug_critic"]
+  },
+  "future_adapter_contract": {
+    "status": "planned_internal_seam",
+    "must_preserve": ["stable_ids", "structured_labels", "node_and_edge_markers", "group_hierarchy", "direction", "source_spans", "diagnostics", "capability_metadata"],
+    "must_exclude": ["coordinates", "ranks", "bounds", "back_edge_flags", "route_maps"],
+    "acceptance": "equivalent Mermaid and JSON flowcharts produce equal canonical IR and current output before the seam expands"
+  },
+  "source_of_truth": {
+    "facts": "this machine-readable matrix plus the contract ledger",
+    "generated_diagrams": "must be reproducible from manifest facts and checked for drift before publication",
+    "goldens": "explicitly approved outputs only; no automatic golden update from a failed or unreviewed visual cycle"
+  }
+}
