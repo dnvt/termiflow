@@ -5,9 +5,17 @@
 
 use std::fs;
 use termiflow::{
-    layout_and_render_with_feedback, measure, parse, BaseStyle, Config, GeometryTrace, RectTrace,
-    RenderOptions,
+    layout_and_render_with_feedback, measure, parse, BaseStyle, CompositeStyle, Config,
+    GeometryTrace, RectTrace, RenderOptions,
 };
+
+fn secondary_center_for(x: usize, y: usize, width: usize, height: usize, direction: &str) -> usize {
+    match direction {
+        "TD" | "BT" => x + width / 2,
+        "LR" | "RL" => y + height / 2,
+        other => panic!("unsupported junction direction {other}"),
+    }
+}
 
 fn raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
     let parsed = parse(input, false).expect("parse oracle input");
@@ -26,6 +34,24 @@ fn raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
     }
 
     errors.extend(raw_topology_errors(frame, parsed.graph.edges.len()));
+    errors
+}
+
+fn junction_quad_raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
+    let parsed = parse(input, false).expect("parse junction quad oracle input");
+    let mut errors = Vec::new();
+    for node in &parsed.graph.nodes {
+        if !node.label.is_empty() && !frame.contains(&node.label) {
+            errors.push(format!(
+                "node label {:?} is absent from raw frame",
+                node.label
+            ));
+        }
+    }
+    // The two incoming semantic edges intentionally share one merge arrowhead;
+    // the independent geometry trace below still requires all four semantic
+    // edge records to survive alongside the raw-frame shaft/arrow checks.
+    errors.extend(raw_topology_errors(frame, 3));
     errors
 }
 
@@ -105,7 +131,7 @@ fn is_route_glyph(ch: char) -> bool {
     )
 }
 
-fn geometry_errors(trace: &GeometryTrace) -> Vec<String> {
+fn node_geometry_errors(trace: &GeometryTrace) -> Vec<String> {
     let mut errors = Vec::new();
     for node in &trace.nodes {
         if node.width == 0 || node.height == 0 {
@@ -135,6 +161,11 @@ fn geometry_errors(trace: &GeometryTrace) -> Vec<String> {
             }
         }
     }
+    errors
+}
+
+fn geometry_errors(trace: &GeometryTrace) -> Vec<String> {
+    let mut errors = node_geometry_errors(trace);
     for edge in &trace.edges {
         if !trace.nodes.iter().any(|node| node.id == edge.from)
             || !trace.nodes.iter().any(|node| node.id == edge.to)
@@ -286,5 +317,77 @@ fn full_fixture_corpus_geometry_traces_are_deterministic() {
             "non-deterministic geometry trace for {}",
             path.display()
         );
+    }
+}
+
+#[test]
+fn junction_quad_independent_oracle_covers_the_full_review_matrix() {
+    for direction in ["TD", "BT", "LR", "RL"] {
+        let input = fs::read_to_string(format!(
+            "tests/fixtures/inputs/junction_quad_{direction}.md"
+        ))
+        .expect("read junction quad fixture");
+
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let render_case = || {
+                    let mut graph = parse(&input, false)
+                        .expect("parse junction quad fixture")
+                        .graph;
+                    let mut config = Config::default();
+                    config.optimize_render = optimized;
+                    config.composite_style = CompositeStyle::from_base(style);
+                    config.spacing = config.spacing.for_direction(graph.direction);
+                    measure::measure_graph(&mut graph, &config);
+                    let (graph, outcome) = layout_and_render_with_feedback(graph, config)
+                        .expect("render junction quad fixture");
+                    (outcome.output, GeometryTrace::from_graph(&graph))
+                };
+
+                let (first_output, first_trace) = render_case();
+                let (second_output, second_trace) = render_case();
+                assert_eq!(
+                    first_output, second_output,
+                    "non-deterministic raw frame for {direction} {style:?} optimized={optimized}"
+                );
+                assert_eq!(
+                    first_trace, second_trace,
+                    "non-deterministic geometry for {direction} {style:?} optimized={optimized}"
+                );
+
+                let raw_errors = junction_quad_raw_frame_errors(&input, &first_output);
+                assert!(
+                    raw_errors.is_empty(),
+                    "raw-frame oracle failed for {direction} {style:?} optimized={optimized}: {raw_errors:?}\n{first_output}"
+                );
+                let node_errors = node_geometry_errors(&first_trace);
+                assert!(
+                    node_errors.is_empty(),
+                    "geometry oracle failed for {direction} {style:?} optimized={optimized}: {node_errors:?}"
+                );
+                assert_eq!(
+                    first_trace.edges.len(),
+                    4,
+                    "junction quad lost a semantic edge trace for {direction} {style:?} optimized={optimized}"
+                );
+
+                let center = |id: &str| {
+                    let node = first_trace
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == id)
+                        .unwrap_or_else(|| panic!("missing node {id}"));
+                    secondary_center_for(node.x, node.y, node.width, node.height, direction)
+                };
+                let target_midpoint = (center("D") + center("E")) / 2;
+                assert!(
+                    center("C").abs_diff(target_midpoint) <= 1,
+                    "dual-junction midpoint drift for {direction} {style:?} optimized={optimized}: C={} D={} E={}",
+                    center("C"),
+                    center("D"),
+                    center("E")
+                );
+            }
+        }
     }
 }
