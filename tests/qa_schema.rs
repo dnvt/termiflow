@@ -368,6 +368,29 @@ fn scoped_visual_packet_and_holdout_receipt_are_hash_bound() {
         .iter()
         .all(|row| row["status"] == "passed"));
 
+    let receipt_before_retry = fs::read(&receipt).expect("read receipt before retry");
+    let retry = qa_command()
+        .args([
+            "holdout",
+            "--spec",
+            spec_path(),
+            "--queue",
+            "junction-quad",
+            "--out",
+        ])
+        .arg(&holdout_packet)
+        .args(["--receipt"])
+        .arg(&receipt)
+        .output()
+        .expect("retry scoped holdout executor");
+    assert!(!retry.status.success());
+    assert!(String::from_utf8_lossy(&retry.stderr).contains("already exists"));
+    assert_eq!(
+        fs::read(&receipt).expect("read receipt after retry"),
+        receipt_before_retry,
+        "retry must not overwrite an authoritative holdout receipt"
+    );
+
     fs::remove_file(manifest).expect("remove scoped manifest");
     fs::remove_dir_all(packet).expect("remove scoped packet");
     fs::remove_dir_all(holdout_packet).expect("remove scoped holdout packet");

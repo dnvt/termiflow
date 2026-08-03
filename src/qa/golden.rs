@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use super::common;
+use super::{common, persist};
 
 #[derive(Debug)]
 pub struct GoldenArgs {
@@ -60,7 +60,7 @@ fn run_checks(
     let binary = common::discover_binary(root, stage, args.binary.as_deref())?;
     let mut changes = Vec::new();
     let mut failures = Vec::new();
-    let mut candidates: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut candidates: Vec<(PathBuf, Vec<u8>, Option<String>)> = Vec::new();
     for fixture in metadata.keys() {
         let input_path = input_paths
             .get(fixture)
@@ -114,7 +114,11 @@ fn run_checks(
                     "old_bytes": previous.as_ref().map(Vec::len),
                     "new_bytes": output.len(),
                 }));
-                candidates.push((expected, output));
+                candidates.push((
+                    expected,
+                    output,
+                    previous.as_deref().map(common::sha256_bytes),
+                ));
             }
         }
     }
@@ -126,8 +130,13 @@ fn run_checks(
         bail!("golden update renderer contract failed");
     }
     if args.approve {
-        for (path, output) in candidates {
-            common::atomic_replace(&path, &output)?;
+        let intent = args
+            .intent
+            .as_deref()
+            .filter(|intent| !intent.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("--approve requires --intent TEXT"))?;
+        for (path, output, old_sha256) in candidates {
+            persist::replace_with_intent(&path, old_sha256.as_deref(), &output, intent)?;
         }
         eprintln!(
             "golden update approved: wrote {} snapshot(s)",
@@ -271,7 +280,11 @@ fn run_manifest_checks(
                 "old_bytes": previous.as_ref().map(Vec::len),
                 "new_bytes": process.stdout.len(),
             }));
-            candidates.push((target, process.stdout));
+            candidates.push((
+                target,
+                process.stdout,
+                previous.as_deref().map(common::sha256_bytes),
+            ));
         }
     }
 
@@ -378,8 +391,13 @@ fn run_manifest_checks(
     }
 
     if args.approve {
-        for (path, output) in candidates {
-            common::atomic_replace(&path, &output)?;
+        let intent = args
+            .intent
+            .as_deref()
+            .filter(|intent| !intent.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("--approve requires --intent TEXT"))?;
+        for (path, output, old_sha256) in candidates {
+            persist::replace_with_intent(&path, old_sha256.as_deref(), &output, intent)?;
         }
         eprintln!(
             "golden manifest update approved: wrote {} snapshot(s)",

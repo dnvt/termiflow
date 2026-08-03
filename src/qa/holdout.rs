@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
-use super::{audit, common, spec};
+use super::{audit, common, persist, spec};
 
 const RECEIPT_SCHEMA: &str = "termiflow.holdout_receipt.v1";
 
@@ -31,9 +31,7 @@ pub fn run(args: HoldoutArgs) -> Result<()> {
         .ok_or_else(|| anyhow!("selected queue has no holdout rows"))?;
     let out = resolve(&root, &args.out);
     let receipt_path = resolve(&root, &args.receipt);
-    if receipt_path.exists() {
-        bail!("holdout receipt already exists: {}", receipt_path.display());
-    }
+    persist::reject_existing(&receipt_path, "holdout receipt")?;
     if let Some(parent) = receipt_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
@@ -59,7 +57,7 @@ pub fn run(args: HoldoutArgs) -> Result<()> {
     let _ = fs::remove_file(&temporary_manifest);
     let packet = packet?;
     let receipt = build_receipt(&root, &manifest, &manifest_bytes, &packet, holdouts)?;
-    common::write_json(&receipt_path, &receipt)?;
+    persist::publish_json(&receipt_path, &receipt)?;
     if receipt["status"] != "passed" {
         bail!(
             "holdout execution produced failed rows; receipt {}",

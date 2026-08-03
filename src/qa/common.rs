@@ -668,20 +668,6 @@ pub fn now_label() -> String {
         .unwrap_or_else(|_| format!("0-{}-{sequence}", std::process::id()))
 }
 
-pub fn atomic_replace(path: &Path, content: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("target has no parent: {}", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    let temporary = parent.join(format!(
-        ".{}.tmp-{}",
-        path.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    ));
-    write_bytes(&temporary, content)?;
-    fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

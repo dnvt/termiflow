@@ -2,6 +2,7 @@ pub(crate) mod audit;
 pub(crate) mod common;
 pub(crate) mod golden;
 pub(crate) mod holdout;
+pub(crate) mod persist;
 pub(crate) mod provenance;
 pub(crate) mod review;
 pub(crate) mod spec;

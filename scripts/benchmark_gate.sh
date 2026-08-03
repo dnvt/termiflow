@@ -59,6 +59,18 @@ if [[ "$receipt_path" != /* ]]; then
 fi
 receipt_dir="$(dirname "$receipt_path")"
 mkdir -p "$receipt_dir"
+[[ ! -e "$receipt_path" && ! -L "$receipt_path" ]] || {
+  echo "benchmark receipt already exists; refusing to rerun into an authoritative path: $receipt_path" >&2
+  exit 2
+}
+
+receipt_stage=""
+cleanup_receipt_stage() {
+  if [[ -n "${receipt_stage:-}" && -e "$receipt_stage" ]]; then
+    rm -f -- "$receipt_stage"
+  fi
+}
+trap cleanup_receipt_stage EXIT
 
 stdout_log="$receipt_dir/benchmark.stdout.log"
 stderr_log="$receipt_dir/benchmark.stderr.log"
@@ -188,6 +200,7 @@ host_arch="$(uname -m)"
 command_json="$(jq -cn --arg sample "$sample_size" \
   '["cargo","bench","--locked","--bench","rendering","--all-features","--","--noplot","--sample-size",$sample]')"
 
+receipt_stage="$(mktemp "${receipt_path}.tmp.XXXXXX")"
 jq -n \
   --arg schema "termiflow.benchmark_receipt.v1" \
   --arg started "$started_at" \
@@ -216,6 +229,8 @@ jq -n \
   --arg stdout_bytes "$stdout_bytes" \
   --arg stderr_bytes "$stderr_bytes" \
   --argjson allow_dirty "$allow_dirty" \
-  '{schema:$schema, status:"passed", comparability:(if $allow_dirty then "exploratory-dirty" else "clean" end), started_at:$started, finished_at:$finished, command:$command, benchmark:{name:"rendering", criterion_version:$criterion, all_features:true}, host:{os:$os, arch:$arch, target:$target, rustc_release:$rustc}, source_identity:$source, source_identity_sha256:$source_sha, build:{cargo_manifest_sha256:$manifest, cargo_lock_sha256:$lock, cargo_metadata_sha256:$metadata, cargo_metadata_path:$metadata_path, cargo_metadata_bytes:($metadata_bytes|tonumber), rust_toolchain_sha256:(if $toolchain == "" then null else $toolchain end), rustc_verbose_sha256:$rustc_sha, cargo_version_sha256:$cargo_sha}, workload_sha256:$workload, logs:{stdout:{path:$stdout_path, bytes:($stdout_bytes|tonumber), sha256:$stdout}, stderr:{path:$stderr_path, bytes:($stderr_bytes|tonumber), sha256:$stderr}}}' > "$receipt_path"
+  '{schema:$schema, status:"passed", comparability:(if $allow_dirty then "exploratory-dirty" else "clean" end), started_at:$started, finished_at:$finished, command:$command, benchmark:{name:"rendering", criterion_version:$criterion, all_features:true}, host:{os:$os, arch:$arch, target:$target, rustc_release:$rustc}, source_identity:$source, source_identity_sha256:$source_sha, build:{cargo_manifest_sha256:$manifest, cargo_lock_sha256:$lock, cargo_metadata_sha256:$metadata, cargo_metadata_path:$metadata_path, cargo_metadata_bytes:($metadata_bytes|tonumber), rust_toolchain_sha256:(if $toolchain == "" then null else $toolchain end), rustc_verbose_sha256:$rustc_sha, cargo_version_sha256:$cargo_sha}, workload_sha256:$workload, logs:{stdout:{path:$stdout_path, bytes:($stdout_bytes|tonumber), sha256:$stdout}, stderr:{path:$stderr_path, bytes:($stderr_bytes|tonumber), sha256:$stderr}}}' > "$receipt_stage"
+"$root/scripts/publish_receipt.sh" "$receipt_stage" "$receipt_path"
+receipt_stage=""
 
 echo "benchmark receipt: $receipt_path"

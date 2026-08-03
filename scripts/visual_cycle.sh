@@ -216,7 +216,14 @@ holdout_packet_checksum_sha256="$(hash_file "$holdout_packet_dir/PACKET.sha256")
   || die "holdout receipt packet checksum hash is stale"
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/termiflow-visual-cycle.XXXXXX")"
-trap 'rm -rf -- "$tmp_dir"' EXIT
+receipt_stage=""
+cleanup_visual_cycle() {
+  rm -rf -- "$tmp_dir"
+  if [[ -n "${receipt_stage:-}" && -e "$receipt_stage" ]]; then
+    rm -f -- "$receipt_stage"
+  fi
+}
+trap cleanup_visual_cycle EXIT
 
 if ! "$root_dir/scripts/visual_validate.sh" \
   --packet "$packet_dir" --queue-manifest "$queue_manifest_file" --strict-quality \
@@ -443,6 +450,7 @@ homolog_result_status="$(jq -er '.homolog_result.status | strings' "$record_file
 homolog_result_summary="$(jq -er '.homolog_result.summary | strings' "$record_file")"
 golden_approval_json="$(jq -ec '.golden_approval' "$record_file")"
 
+receipt_stage="$(mktemp "${output_file}.tmp.XXXXXX")"
 jq -S -n \
   --arg schema "termiflow.visual_cycle.v2" \
   --arg cycle_id "$cycle_id" \
@@ -572,7 +580,8 @@ jq -S -n \
       summary: $homolog_result_summary
     },
     golden_approval: "separate_review_required"
-  }' > "$tmp_dir/receipt.json"
+  }' > "$receipt_stage"
 
-mv -- "$tmp_dir/receipt.json" "$output_file"
+"$root_dir/scripts/publish_receipt.sh" "$receipt_stage" "$output_file"
+receipt_stage=""
 echo "visual cycle receipt: $output_file"

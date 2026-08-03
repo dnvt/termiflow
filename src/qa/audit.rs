@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
-use super::common;
 use super::provenance::{self, ProvenanceInputs};
+use super::{common, persist};
 
 #[derive(Debug)]
 pub struct AuditArgs {
@@ -110,21 +110,7 @@ pub fn run(args: AuditArgs) -> Result<()> {
     if out_canonical == expected_root || out_canonical.starts_with(&expected_root) {
         bail!("refusing to write a visual packet inside golden expected outputs");
     }
-    if out.exists() {
-        bail!("final packet already exists: {}", out.display());
-    }
-    if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    let stage = out.parent().unwrap_or(&root).join(format!(
-        ".{}.staging.{}.{}",
-        out.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id(),
-        common::now_label()
-    ));
-    if stage.exists() {
-        bail!("staging path already exists: {}", stage.display());
-    }
+    let stage = persist::claim_directory(&out)?;
     fs::create_dir_all(stage.join("frames"))?;
     fs::create_dir_all(stage.join("logs"))?;
     fs::create_dir_all(stage.join("evidence"))?;
@@ -147,7 +133,9 @@ pub fn run(args: AuditArgs) -> Result<()> {
         None,
     );
     if result.is_err() {
-        let _ = fs::remove_dir_all(&stage);
+        if let Err(cleanup) = persist::remove_incomplete_directory(&stage) {
+            eprintln!("visual audit recovery required: {cleanup}");
+        }
     }
     result
 }
@@ -378,7 +366,6 @@ fn build_packet(
             "packet_sha256": packet_digest,
         }),
     )?;
-    fs::rename(stage, out).with_context(|| format!("publish visual packet {}", out.display()))?;
     eprintln!(
         "visual audit complete: {} ({} rows)",
         out.display(),
@@ -433,7 +420,9 @@ pub fn run_schema_packet(
         let _ = fs::remove_file(path);
     }
     if result.is_err() {
-        let _ = fs::remove_dir_all(&stage);
+        if let Err(cleanup) = persist::remove_incomplete_directory(&stage) {
+            eprintln!("schema packet recovery required: {cleanup}");
+        }
     }
     result?;
     let manifest_sha256 = common::sha256_file(&out.join("manifest.jsonl"))?;
@@ -654,21 +643,7 @@ fn prepare_packet_output(root: &Path, out: &Path) -> Result<(PathBuf, PathBuf)> 
     if out_canonical == expected_root || out_canonical.starts_with(&expected_root) {
         bail!("refusing to write a visual packet inside golden expected outputs");
     }
-    if out.exists() {
-        bail!("final packet already exists: {}", out.display());
-    }
-    if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    let stage = out.parent().unwrap_or(root).join(format!(
-        ".{}.staging.{}.{}",
-        out.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id(),
-        common::now_label()
-    ));
-    if stage.exists() {
-        bail!("staging path already exists: {}", stage.display());
-    }
+    let stage = persist::claim_directory(out)?;
     fs::create_dir_all(stage.join("frames"))?;
     fs::create_dir_all(stage.join("logs"))?;
     fs::create_dir_all(stage.join("evidence"))?;

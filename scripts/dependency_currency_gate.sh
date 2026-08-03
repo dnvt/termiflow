@@ -54,6 +54,18 @@ mkdir -p "$receipt_dir"
   echo "dependency currency: receipt path must not be a symlink: $receipt_path" >&2
   exit 2
 }
+[[ ! -e "$receipt_path" ]] || {
+  echo "dependency currency: receipt already exists; refusing to rerun into an authoritative path: $receipt_path" >&2
+  exit 2
+}
+
+receipt_stage=""
+cleanup_receipt_stage() {
+  if [[ -n "${receipt_stage:-}" && -e "$receipt_stage" ]]; then
+    rm -f -- "$receipt_stage"
+  fi
+}
+trap cleanup_receipt_stage EXIT
 
 for command_name in jq cargo rustc rustup cargo-outdated cargo-deny cargo-audit; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -372,6 +384,7 @@ deny_command_json='["cargo","deny","--locked","check","advisories","bans","licen
 audit_command_json='["cargo","audit","--deny","warnings"]'
 rustup_check_command_json='["rustup","check"]'
 
+receipt_stage="$(mktemp "${receipt_path}.tmp.XXXXXX")"
 jq -n \
   --arg schema "termiflow.dependency_currency_receipt.v1" \
   --arg observed_at "$observed_at" \
@@ -436,7 +449,10 @@ jq -n \
     duplicate_tree:{sha256:$duplicate_tree_sha256, lines:$duplicate_tree_lines},
     non_root_lock_metadata:$non_root_lock_metadata,
     findings:$findings,
-    status:$overall_status}' > "$receipt_path"
+    status:$overall_status}' > "$receipt_stage"
+
+"$root_dir/scripts/publish_receipt.sh" "$receipt_stage" "$receipt_path"
+receipt_stage=""
 
 if ! jq -e '
   .schema == "termiflow.dependency_currency_receipt.v1" and

@@ -1,12 +1,10 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
-use super::common;
+use super::{common, persist};
 
 pub const DECISION_SCHEMA: &str = "termiflow.visual_review.decision.v3";
 const FRAME_SCHEMA: &str = "termiflow.visual_review.frame.v2";
@@ -32,6 +30,14 @@ impl DecisionState {
             STRUCTURAL_PRESCREEN => self.structural.is_some(),
             PERCEPTUAL_REVIEW => self.perceptual.is_some(),
             _ => false,
+        }
+    }
+
+    fn get(&self, kind: &str) -> Option<&Value> {
+        match kind {
+            STRUCTURAL_PRESCREEN => self.structural.as_ref(),
+            PERCEPTUAL_REVIEW => self.perceptual.as_ref(),
+            _ => None,
         }
     }
 
@@ -75,13 +81,22 @@ pub fn run(args: ReviewArgs) -> Result<()> {
         validate_decision(&decision, &rows)?;
         let case_id = non_empty_string(decision.get("case_id"), "decision case_id")?;
         let kind = review_kind(&decision)?;
-        if decisions
-            .get(&case_id)
-            .is_some_and(|state| state.contains(kind))
-        {
+        let outcome = persist::append_decision_checked(&decisions_path, &decision, || {
+            let fresh_decisions = load_decisions(&decisions_path, &rows)?;
+            if let Some(existing) = fresh_decisions
+                .get(&case_id)
+                .and_then(|state| state.get(kind))
+            {
+                if persist::semantically_equal_without_timestamp(existing, &decision) {
+                    return Ok(persist::PublishOutcome::EqualReplay);
+                }
+                bail!("conflicting {kind} decision for case_id: {case_id}");
+            }
+            Ok(persist::PublishOutcome::Published)
+        })?;
+        if outcome == persist::PublishOutcome::EqualReplay {
             bail!("duplicate {kind} decision for case_id: {case_id}");
         }
-        append_decision(&decisions_path, &decision)?;
         println!("{case_id}");
         return Ok(());
     }
@@ -378,7 +393,7 @@ fn prescreen_clean(
 
         let decision = structural_decision(row, packet, decisions_path)?;
         validate_decision(&decision, rows)?;
-        append_decision(decisions_path, &decision)?;
+        persist::append_decision(decisions_path, &decision)?;
         recorded += 1;
     }
 
@@ -620,20 +635,6 @@ fn holdout_input_source(packet: &Path, row: &Value) -> Result<Option<String>> {
     Ok(Some(source.to_owned()))
 }
 
-fn append_decision(path: &Path, decision: &Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut stream = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("open decision log {}", path.display()))?;
-    let mut line = serde_json::to_vec(decision)?;
-    line.push(b'\n');
-    stream.write_all(&line).context("append review decision")
-}
-
 fn non_empty_string(value: Option<&Value>, label: &str) -> Result<String> {
     value
         .and_then(Value::as_str)
@@ -645,6 +646,7 @@ fn non_empty_string(value: Option<&Value>, label: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn structural_predicate_rejects_every_machine_signal() {

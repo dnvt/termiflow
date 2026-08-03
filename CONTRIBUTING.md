@@ -102,6 +102,31 @@ The reusable agent procedure is documented in
 A layout-repair budget warning is intentionally a strict-gate failure until
 that one-frame review happens.
 
+### QA persistence and recovery
+
+QA packets, holdout receipts, review decisions, benchmark receipts, and
+dependency-currency receipts are fail-closed publication artifacts. Writers
+claim an absent final path or directory; they never overwrite an existing
+artifact through a check-then-rename fallback. Receipt scripts stage JSON in
+the final directory and use `scripts/publish_receipt.sh`, which requires a
+same-directory hard-link claim. A final receipt that already exists is a
+conflict and must be inspected or given a new run path before rerunning the
+gate.
+
+`COMPLETE.json` is the last packet write. A packet directory without a valid
+completion marker, manifest hash, and packet hash is incomplete and must fail
+validation. If an interrupted run leaves an incomplete packet or staged
+receipt, preserve it for inspection unless its ownership and safe cleanup are
+known; do not delete a guard or orphan solely because it is old. A conflicting
+complete artifact is not repaired in place—verify its identity, retain it, and
+rerun with an explicit new output path when the run is intentionally new.
+
+Review JSONL has a single writer. The private writer guard is create-new and
+manual recovery only; a stale guard must be investigated before removal.
+Malformed or partial JSONL is a hard failure and is never auto-trimmed. An
+equal semantic replay (all fields except `timestamp`) is a no-op, while a
+different decision for the same `(case_id, review_kind)` is a conflict.
+
 Repository automation is intentionally limited to Rust and Bash. Do not add
 Ruby or Python source files, generated helpers, or runtime requirements.
 
