@@ -9,6 +9,13 @@ published tag and link to the corresponding GitHub release.
   and maintenance.
 - Record intentional visual or schema changes with their reviewed decision.
 
+## [0.2.3] — 2026-08-11
+
+- Publish the public visual QA lesson index and reusable lesson template.
+- Document the full fixture-corpus denominator and the boundary between durable
+  human-eye lessons and private AI/packet evidence.
+- Remove developer-machine paths from public visual lesson evidence.
+
 ## [0.2.2] — 2026-08-11
 
 - Improve route ownership, junction ports, subgraph boundaries, and
