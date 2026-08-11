@@ -40,7 +40,7 @@ release_version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r 
 
 mutated_candidate="$test_root/mutated-candidate.json"
 jq '.candidate.sha=("0" * 40)' "$candidate" > "$mutated_candidate"
-if "$scripts/release_candidate.sh" verify --tag v0.2.1 --boundary "$mutated_candidate"; then
+if "$scripts/release_candidate.sh" verify --tag v0.2.2 --boundary "$mutated_candidate"; then
   printf '%s\n' 'candidate contract: source mismatch was accepted' >&2
   exit 1
 fi
