@@ -50,6 +50,10 @@
         "feature_status",
         "root_candidate_count",
         "feature_candidate_count",
+        "compatible_update_status",
+        "compatible_update_count",
+        "compatible_lock_count",
+        "compatible_update_records",
         "major_versions_checked"
       ],
       "properties": {
@@ -60,6 +64,13 @@
         "feature_status": {"enum": ["current", "candidate", "error"]},
         "root_candidate_count": {"type": "integer", "minimum": 0},
         "feature_candidate_count": {"type": "integer", "minimum": 0},
+        "compatible_update_status": {"enum": ["current", "candidate", "error"]},
+        "compatible_update_count": {"type": "integer", "minimum": 0},
+        "compatible_lock_count": {"type": "integer", "minimum": 0},
+        "compatible_update_records": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/compatible_update"}
+        },
         "major_versions_checked": {"const": true}
       }
     },
@@ -202,6 +213,16 @@
       "properties": {
         "name": {"type": "string", "minLength": 1},
         "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "compatible_update": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "current", "candidate"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "current": {"type": "string", "minLength": 1},
+        "candidate": {"type": "string", "minLength": 1}
       }
     },
     "lock_package": {

@@ -283,13 +283,93 @@ fn subgraph_title_uses_side_aware_entry_portal_td() {
 }
 
 #[test]
-fn converge_bt_uses_correct_merge_corners() {
+fn converge_bt_keeps_one_target_arrow_per_source() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     cmd.arg("tests/fixtures/inputs/edge_converge_bt.md")
         .assert()
         .success()
-        .stdout(predicate::str::contains("┌────────┴────────┐"))
-        .stdout(predicate::str::contains("└────────┴────────┘").not());
+        .stdout(predicate::str::contains("↑ ↑"))
+        .stdout(predicate::str::contains("┌───────┘ └───────┐"))
+        .stdout(predicate::str::contains("┌────────┴────────┐").not());
+}
+
+#[test]
+fn converge_td_keeps_one_target_arrow_per_source() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    cmd.arg("tests/fixtures/inputs/edge_converge_td.md")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("↓ ↓"))
+        .stdout(predicate::str::contains("└───────┐ ┌───────┘"))
+        .stdout(predicate::str::contains("└────────┬────────┘").not());
+}
+
+#[test]
+fn converge_deep_bt_keeps_all_wide_target_arrows() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .arg("tests/fixtures/inputs/converge_deep_bt.md")
+        .assert()
+        .success();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        output.matches('↑').count(),
+        8,
+        "expected one visible BT target arrow per source:\n{output}"
+    );
+    assert!(
+        output.lines().any(|line| line.matches('↑').count() == 8),
+        "expected the eight BT arrows to share one target-entry row:\n{output}"
+    );
+}
+
+#[test]
+fn converge_deep_td_keeps_all_wide_target_arrows() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .arg("tests/fixtures/inputs/converge_deep_td.md")
+        .assert()
+        .success();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        output.matches('↓').count(),
+        8,
+        "expected one visible TD target arrow per source:\n{output}"
+    );
+    assert!(
+        output.lines().any(|line| line.matches('↓').count() == 8),
+        "expected the eight TD arrows to share one target-entry row:\n{output}"
+    );
+}
+
+#[test]
+fn converge_deep_lr_keeps_all_wide_target_arrows() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .arg("tests/fixtures/inputs/converge_deep_lr.md")
+        .assert()
+        .success();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        output.matches('→').count(),
+        8,
+        "expected one visible LR target arrow per source:\n{output}"
+    );
+}
+
+#[test]
+fn converge_deep_rl_keeps_all_wide_target_arrows() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .arg("tests/fixtures/inputs/converge_deep_rl.md")
+        .assert()
+        .success();
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        output.matches('←').count(),
+        8,
+        "expected one visible RL target arrow per source:\n{output}"
+    );
 }
 
 #[test]

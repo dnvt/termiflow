@@ -3,7 +3,11 @@ set -euo pipefail
 
 # Dated, fail-closed Cargo/Rust currency evidence. This command observes the
 # reachable graph and records non-root Cargo lock metadata; it never edits
-# Cargo.toml or Cargo.lock.
+# Cargo.toml or Cargo.lock. Cargo.lock legitimately retains optional and
+# target-scoped package metadata that is not in the activated tree, so that
+# inventory is recorded but is not itself a currency failure. The
+# compatible-update probe is intentionally unscoped and unlocked so Cargo can
+# expose resolver-derived lockfile drift.
 
 usage() {
   cat >&2 <<'USAGE'
@@ -194,6 +198,43 @@ classify_pass() {
   fi
 }
 
+parse_compatible_update_probe() {
+  local stdout_log="$1"
+  local stderr_log="$2"
+  local exit_code="$3"
+  local lock_count=0
+  local records='[]'
+  local record_count=0
+  local status=error
+
+  if (( exit_code == 0 )); then
+    lock_count="$(sed -nE \
+      's/^[[:space:]]*Locking ([0-9]+) packages? to latest compatible versions.*$/\1/p' \
+      "$stdout_log" "$stderr_log" | head -n 1)"
+    lock_count="${lock_count:-0}"
+    if records="$(cat "$stdout_log" "$stderr_log" | jq -R -s \
+      'split("\n")
+       | map(select(length > 0)
+         | try capture("^[[:space:]]+Updating (?<name>[A-Za-z0-9_.-]+) v(?<current>[^[:space:]]+) -> v(?<candidate>[^[:space:]]+)$") catch empty)' \
+      )"; then
+      if record_count="$(jq 'length' <<< "$records")"; then
+        if (( lock_count == record_count )); then
+          if (( record_count == 0 )); then
+            status=current
+          else
+            status=candidate
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  compatible_lock_count="$lock_count"
+  compatible_update_records="$records"
+  compatible_update_count="$record_count"
+  compatible_update_status="$status"
+}
+
 capture_source "$receipt_dir/source-before.json"
 worktree_dirty="$(jq -r '.worktree_dirty' "$receipt_dir/source-before.json")"
 if [[ "$worktree_dirty" == true && "$allow_dirty" != true ]]; then
@@ -237,7 +278,7 @@ run_logged "$outdated_features_stdout" "$outdated_features_stderr" \
   cargo outdated --workspace --features 'golden qa' --aggressive --format json --color never --exit-code 1
 outdated_features_exit=$?
 run_logged "$update_stdout" "$update_stderr" \
-  cargo update --workspace --dry-run --locked --verbose
+  cargo update --dry-run --verbose
 update_exit=$?
 run_logged "$metadata_log" "$metadata_stderr" \
   cargo metadata --locked --all-features --format-version 1
@@ -259,6 +300,11 @@ set -e
 root_outdated_status="$(classify_outdated "$outdated_root_stdout" "$outdated_root_exit")"
 features_outdated_status="$(classify_outdated "$outdated_features_stdout" "$outdated_features_exit")"
 update_status="$(classify_pass "$update_exit")"
+compatible_lock_count=0
+compatible_update_count=0
+compatible_update_status=error
+compatible_update_records='[]'
+parse_compatible_update_probe "$update_stdout" "$update_stderr" "$update_exit"
 metadata_status="$(classify_pass "$metadata_exit")"
 tree_status="$(classify_pass "$tree_exit")"
 duplicates_status="$(classify_pass "$duplicates_exit")"
@@ -344,12 +390,16 @@ add_finding() {
 [[ "$root_outdated_status" == error ]] && add_finding "root cargo outdated command or JSON result was unavailable"
 [[ "$features_outdated_status" == error ]] && add_finding "feature cargo outdated command or JSON result was unavailable"
 [[ "$update_status" != pass ]] && add_finding "Cargo compatible update probe failed"
+[[ "$compatible_update_status" == error ]] && add_finding "Cargo compatible update probe output could not be reconciled with its lock count"
+(( compatible_update_count > 0 )) && add_finding "Cargo compatible update probe found $compatible_update_count resolver-derived lock updates"
 [[ "$metadata_status" != pass ]] && add_finding "Cargo metadata failed"
 [[ "$tree_status" != pass ]] && add_finding "reachable Cargo tree failed"
 [[ "$duplicates_status" != pass ]] && add_finding "duplicate-version Cargo tree failed"
 [[ "$deny_status" != pass ]] && add_finding "cargo deny failed"
 [[ "$audit_status" != pass ]] && add_finding "cargo audit failed"
-(( non_root_count > 0 )) && add_finding "Cargo reports $non_root_count lock records outside the activated reachable tree; these are recorded, not manually deleted"
+# Cargo.lock includes optional and target-scoped package metadata outside the
+# activated tree. Preserve the exact records in the receipt for auditability,
+# but do not turn expected lockfile inventory into a false currency blocker.
 
 capture_source "$receipt_dir/source-after.json"
 source_before_identity="$(jq -r '.identity_sha256' "$receipt_dir/source-before.json")"
@@ -361,7 +411,9 @@ overall_status=pass
 if [[ "$worktree_dirty" == true || "$source_before_identity" != "$source_after_identity" ||
   "$rust_currency_status" != pass ||
   "$root_outdated_status" != current || "$features_outdated_status" != current ||
-  "$update_status" != pass || "$metadata_status" != pass || "$tree_status" != pass ||
+  "$update_status" != pass || "$compatible_update_status" != current ||
+  "$compatible_update_count" != 0 || "$compatible_lock_count" != 0 ||
+  "$metadata_status" != pass || "$tree_status" != pass ||
   "$duplicates_status" != pass || "$deny_status" != pass || "$audit_status" != pass ]]; then
   overall_status=blocked
 fi
@@ -376,7 +428,7 @@ observed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 root_command_json='["cargo","outdated","--workspace","--aggressive","--format","json","--color","never","--exit-code","1"]'
 features_command_json='["cargo","outdated","--workspace","--features","golden qa","--aggressive","--format","json","--color","never","--exit-code","1"]'
-update_command_json='["cargo","update","--workspace","--dry-run","--locked","--verbose"]'
+update_command_json='["cargo","update","--dry-run","--verbose"]'
 metadata_command_json='["cargo","metadata","--locked","--all-features","--format-version","1"]'
 tree_command_json='["cargo","tree","--workspace","--locked","--all-features","--target","all","--edges","normal,build,dev","--format","{p}"]'
 duplicates_command_json='["cargo","tree","--workspace","--locked","--all-features","--target","all","--edges","normal,build,dev","--duplicates","--format","{p}"]'
@@ -419,6 +471,10 @@ jq -n \
   --argjson findings "$(cat "$findings_file")" \
   --argjson root_candidate_count "$root_candidate_count" \
   --argjson features_candidate_count "$features_candidate_count" \
+  --arg compatible_update_status "$compatible_update_status" \
+  --argjson compatible_update_count "$compatible_update_count" \
+  --argjson compatible_lock_count "$compatible_lock_count" \
+  --argjson compatible_update_records "$compatible_update_records" \
   --arg overall_status "$overall_status" \
   '{schema:$schema, observed_at:$observed_at,
     source:($source + {allow_dirty:($allow_dirty == "true"),
@@ -439,6 +495,10 @@ jq -n \
       feature_status:$features_command.status,
       root_candidate_count:$root_candidate_count,
       feature_candidate_count:$features_candidate_count,
+      compatible_update_status:$compatible_update_status,
+      compatible_update_count:$compatible_update_count,
+      compatible_lock_count:$compatible_lock_count,
+      compatible_update_records:$compatible_update_records,
       major_versions_checked:true},
     graph:{metadata_sha256:$metadata_command.stdout_sha256,
       reachable_tree_sha256:$tree_command.stdout_sha256,

@@ -3,10 +3,27 @@
 //! This module provides a single edge routing algorithm that works for all
 //! diagram orientations (TD, LR, BT, RL) using the orientation abstraction.
 
+mod boundary_fan_in;
+mod bt_multi_entry;
+mod bt_parallel;
+mod bt_parallel_sibling;
+mod bt_sibling_scene;
+mod bt_sibling_target;
 mod convergence;
+mod database_fan_in;
+mod dedicated_fan_in;
+mod dense_crossing;
+mod diamond;
 mod edge_primitives;
+mod fan_in_identity;
 mod fanout;
+mod lr_rl_sibling_chain;
+mod lr_rl_sibling_target;
+mod sibling_subgraph_fan_in;
 mod subgraph;
+mod td_sibling_target;
+mod vertical_fan_in;
+mod wide_terminal_fan_in;
 
 use crate::graph::{EdgeKind, Graph};
 use crate::style::StyleChars;
@@ -14,13 +31,35 @@ use crate::style::StyleChars;
 pub(super) use super::canvas;
 use super::canvas::Canvas;
 use super::provenance::edge_owner_id;
-use super::semantic::CellOwnerKind;
+use super::semantic::{CellOwnerKind, CellRole};
+pub(super) use boundary_fan_in::plan_boundary_fan_in_scene;
+pub(super) use bt_multi_entry::plan_bt_multi_entry_scene;
+pub(super) use bt_parallel::plan_bt_parallel_scene;
+pub(super) use bt_parallel_sibling::plan_bt_parallel_sibling_scene;
+pub(super) use bt_sibling_scene::plan_bt_sibling_scene;
+pub(super) use bt_sibling_target::plan_bt_sibling_target_scene;
 pub use convergence::route_convergent_edges;
+pub(super) use database_fan_in::{
+    repair_database_source_border, route_database_intermediate_scene,
+};
+pub(super) use dedicated_fan_in::route_dedicated_fan_in_edges;
+pub(super) use dense_crossing::plan_dense_crossing_scenes;
+pub(super) use diamond::plan_diamond_scenes;
 pub use edge_primitives::edge_exit_point;
 pub(super) use edge_primitives::{edge_entry_candidates, is_subgraph_title_cell};
 #[cfg(test)]
 use edge_primitives::{edge_entry_point, hits_foreign_subgraph_border};
+pub(super) use fan_in_identity::{
+    route_bt_parallel_identity_edges, route_fan_in_identity_edges,
+    route_vertical_branch_rejoin_identity_edges,
+};
 pub use fanout::route_divergent_edges;
+pub(super) use lr_rl_sibling_chain::plan_lr_rl_sibling_chain_scene;
+pub(super) use lr_rl_sibling_target::plan_lr_rl_sibling_target_scene;
+pub(super) use sibling_subgraph_fan_in::plan_sibling_subgraph_fan_in_scene;
+pub(super) use td_sibling_target::plan_td_sibling_target_scene;
+pub(super) use vertical_fan_in::route_vertical_fan_in_edges;
+pub(super) use wide_terminal_fan_in::route_wide_terminal_fan_in_edges;
 
 const ROUTE_Z_INDEX: u8 = 5;
 
@@ -37,11 +76,35 @@ fn set_route_char(
     ch: char,
     owner: Option<RouteOwner<'_>>,
 ) {
+    if canvas.fallback_route_cell_owned_by_other(x, y, owner.map(|route| route.id)) {
+        return;
+    }
     if let Some(owner) = owner {
         canvas.set_owned(x, y, ch, owner.kind, owner.id, ROUTE_Z_INDEX);
     } else {
         canvas.set(x, y, ch);
     }
+}
+
+fn set_route_endpoint_char(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    ch: char,
+    owner: RouteOwner<'_>,
+) {
+    if canvas.fallback_route_cell_owned_by_other(x, y, Some(owner.id)) {
+        return;
+    }
+    canvas.set_owned_with_role(
+        x,
+        y,
+        ch,
+        owner.kind,
+        owner.id,
+        CellRole::EndpointMarker,
+        ROUTE_Z_INDEX,
+    );
 }
 
 fn set_route_edge_char(
@@ -52,6 +115,9 @@ fn set_route_edge_char(
     style: &StyleChars,
     owner: Option<RouteOwner<'_>>,
 ) {
+    if canvas.fallback_route_cell_owned_by_other(x, y, owner.map(|route| route.id)) {
+        return;
+    }
     if let Some(owner) = owner {
         canvas.set_edge_char_owned(x, y, ch, style, owner.kind, owner.id, ROUTE_Z_INDEX);
     } else {
@@ -101,7 +167,7 @@ fn edge_route_owner_id(graph: &Graph, from_id: &str, to_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Direction, Graph, Node, Rectangle, Subgraph};
+    use crate::graph::{Direction, Graph, Node, NodeShape, Rectangle, Subgraph};
     use crate::style::{ASCII_CHARS, UNICODE_CHARS};
 
     #[test]
@@ -200,6 +266,49 @@ mod tests {
     fn entry_point_bt_is_below_center() {
         let n = make_node("a", 10, 5, 6, 3);
         // BT: center_x=13, bottom_y=8
+        assert_eq!(edge_entry_point(&n, Direction::BT), (13, 8));
+    }
+
+    #[test]
+    fn diamond_entry_point_has_one_cell_visual_clearance_in_all_directions() {
+        let mut n = make_node("diamond", 10, 5, 6, 3);
+        n.shape = NodeShape::Diamond;
+
+        assert_eq!(edge_entry_point(&n, Direction::TD), (13, 3));
+        assert_eq!(edge_entry_point(&n, Direction::BT), (13, 9));
+        assert_eq!(edge_entry_point(&n, Direction::LR), (8, 6));
+        assert_eq!(edge_entry_point(&n, Direction::RL), (17, 6));
+    }
+
+    #[test]
+    fn database_entry_point_uses_generic_one_cell_receiver_entry() {
+        let mut n = make_node("database", 10, 5, 6, 3);
+        n.shape = NodeShape::Database;
+
+        assert_eq!(edge_entry_point(&n, Direction::TD), (13, 4));
+        assert_eq!(edge_entry_point(&n, Direction::TB), (13, 4));
+        assert_eq!(edge_entry_point(&n, Direction::BT), (13, 8));
+        assert_eq!(edge_entry_point(&n, Direction::LR), (9, 6));
+        assert_eq!(edge_entry_point(&n, Direction::RL), (16, 6));
+    }
+
+    #[test]
+    fn diamond_entry_point_clearance_saturates_at_canvas_origin() {
+        let mut n = make_node("diamond", 0, 0, 1, 3);
+        n.shape = NodeShape::Diamond;
+
+        assert_eq!(edge_entry_point(&n, Direction::TD), (0, 0));
+        assert_eq!(edge_entry_point(&n, Direction::LR), (0, 1));
+    }
+
+    #[test]
+    fn asymmetric_lr_entry_point_separates_left_point_from_arrow() {
+        let mut n = make_node("flag", 10, 5, 6, 3);
+        n.shape = NodeShape::Asymmetric;
+
+        assert_eq!(edge_entry_point(&n, Direction::LR), (8, 6));
+        assert_eq!(edge_entry_point(&n, Direction::RL), (16, 6));
+        assert_eq!(edge_entry_point(&n, Direction::TD), (13, 4));
         assert_eq!(edge_entry_point(&n, Direction::BT), (13, 8));
     }
 

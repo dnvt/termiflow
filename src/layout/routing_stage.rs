@@ -7,6 +7,7 @@ use crate::graph::Graph;
 use crate::orientation::OrientedCoords;
 use crate::portals::SubgraphEnvelope;
 
+use super::dense_pipeline;
 use super::layout_routing;
 use super::placement::Placement;
 use super::CoarseLayoutConfig;
@@ -73,6 +74,14 @@ pub(super) fn route_stage(
         *outgoing_counts.entry(edge.from.as_str()).or_default() += 1;
         *incoming_counts.entry(edge.to.as_str()).or_default() += 1;
     }
+    dense_pipeline::reserve_bridge_routes(
+        graph,
+        &placement.ranks,
+        placement,
+        &mut grid,
+        &mut routes,
+        debug_timing,
+    );
     layout_routing::route_selective_horizontal_cross_subgraph_fanin_groups(
         graph,
         &placement.node_rects,
@@ -166,7 +175,12 @@ pub(super) fn route_stage(
         let to_sg = graph.get_node_subgraph(&edge.to);
 
         let start = layout_routing::edge_exit_point(from_rect, graph.direction);
-        let end = layout_routing::edge_entry_point(to_rect, graph.direction);
+        let target_shape = graph
+            .get_node(&edge.to)
+            .map(|node| node.shape)
+            .unwrap_or_default();
+        let end =
+            layout_routing::edge_entry_point_for_shape(to_rect, graph.direction, target_shape);
 
         if debug_timing {
             eprintln!(

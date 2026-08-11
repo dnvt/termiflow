@@ -177,9 +177,45 @@ pub fn subgraph_title_text(title: &str) -> String {
     format!(" {title} ")
 }
 
+/// Rendered subgraph title text with additional wrapper padding on both sides.
+///
+/// The ordinary title contract is one space on either side. Topology-aware
+/// portal policies may request extra visual gutter, but the visible title
+/// characters remain the same.
+pub fn subgraph_title_text_with_padding(title: &str, extra_padding: usize) -> String {
+    subgraph_title_text_with_padding_sides(title, extra_padding, extra_padding)
+}
+
+/// Render a title token with independent leading and trailing wrapper padding.
+pub fn subgraph_title_text_with_padding_sides(
+    title: &str,
+    leading_extra_padding: usize,
+    trailing_extra_padding: usize,
+) -> String {
+    let leading = " ".repeat(leading_extra_padding.saturating_add(1));
+    let trailing = " ".repeat(trailing_extra_padding.saturating_add(1));
+    format!("{leading}{title}{trailing}")
+}
+
 /// Display width of the rendered subgraph title token.
 pub fn subgraph_title_len(title: &str) -> usize {
     subgraph_title_text(title).chars().count()
+}
+
+/// Display width of a title token with additional wrapper padding.
+pub fn subgraph_title_len_with_padding(title: &str, extra_padding: usize) -> usize {
+    subgraph_title_len_with_padding_sides(title, extra_padding, extra_padding)
+}
+
+/// Display width of a title token with independent wrapper padding.
+pub fn subgraph_title_len_with_padding_sides(
+    title: &str,
+    leading_extra_padding: usize,
+    trailing_extra_padding: usize,
+) -> usize {
+    subgraph_title_text_with_padding_sides(title, leading_extra_padding, trailing_extra_padding)
+        .chars()
+        .count()
 }
 
 /// Interior row that carries the subgraph title for the given orientation.
@@ -222,6 +258,110 @@ pub fn subgraph_title_span(
     let start = subgraph_title_start_x(left_x, width, title, direction)?;
     let end = start + subgraph_title_len(title).saturating_sub(1);
     Some((start, end))
+}
+
+/// Inclusive x-span of a title token with additional wrapper padding.
+pub fn subgraph_title_span_with_padding(
+    left_x: usize,
+    width: usize,
+    title: &str,
+    direction: Direction,
+    extra_padding: usize,
+) -> Option<(usize, usize)> {
+    subgraph_title_span_with_padding_sides(
+        left_x,
+        width,
+        title,
+        direction,
+        extra_padding,
+        extra_padding,
+    )
+}
+
+/// Inclusive x-span of a title token with independent wrapper padding.
+pub fn subgraph_title_span_with_padding_sides(
+    left_x: usize,
+    width: usize,
+    title: &str,
+    direction: Direction,
+    leading_extra_padding: usize,
+    trailing_extra_padding: usize,
+) -> Option<(usize, usize)> {
+    if leading_extra_padding == 0 && trailing_extra_padding == 0 {
+        return subgraph_title_span(left_x, width, title, direction);
+    }
+
+    let len =
+        subgraph_title_len_with_padding_sides(title, leading_extra_padding, trailing_extra_padding);
+    // Keep the token inside the interior border. The extra wrapper cells are
+    // themselves the intentional visual gutter, so no further trailing cell
+    // is required beyond the right wrapper.
+    if len == 0 || len > width.saturating_sub(3) {
+        return None;
+    }
+
+    let start = match direction {
+        Direction::RL => left_x + width.saturating_sub(len + 2),
+        Direction::TD | Direction::TB | Direction::LR | Direction::BT => left_x + 2,
+    };
+    Some((start, start + len.saturating_sub(1)))
+}
+/// Inclusive x-span of the visible title characters, excluding the one-cell
+/// wrapper padding emitted by [`subgraph_title_text`].
+///
+/// Portal routing may use the wrapper cells as a deliberate gutter when a
+/// topology-owned lane would otherwise be flush with a subgraph wall. Keeping
+/// that distinction here lets layout, routing, and title restoration agree on
+/// what is text versus what is visual padding.
+pub fn subgraph_title_text_span(
+    left_x: usize,
+    width: usize,
+    title: &str,
+    direction: Direction,
+) -> Option<(usize, usize)> {
+    let (start, end) = subgraph_title_span(left_x, width, title, direction)?;
+    (end > start).then_some((start + 1, end.saturating_sub(1)))
+}
+
+/// Inclusive x-span of visible title characters for a padded title token.
+pub fn subgraph_title_text_span_with_padding(
+    left_x: usize,
+    width: usize,
+    title: &str,
+    direction: Direction,
+    extra_padding: usize,
+) -> Option<(usize, usize)> {
+    subgraph_title_text_span_with_padding_sides(
+        left_x,
+        width,
+        title,
+        direction,
+        extra_padding,
+        extra_padding,
+    )
+}
+
+/// Inclusive x-span of visible title characters for independently padded text.
+pub fn subgraph_title_text_span_with_padding_sides(
+    left_x: usize,
+    width: usize,
+    title: &str,
+    direction: Direction,
+    leading_extra_padding: usize,
+    trailing_extra_padding: usize,
+) -> Option<(usize, usize)> {
+    let (start, end) = subgraph_title_span_with_padding_sides(
+        left_x,
+        width,
+        title,
+        direction,
+        leading_extra_padding,
+        trailing_extra_padding,
+    )?;
+    let leading = leading_extra_padding.saturating_add(1);
+    let trailing = trailing_extra_padding.saturating_add(1);
+    (end >= start.saturating_add(leading).saturating_add(trailing))
+        .then_some((start.saturating_add(leading), end.saturating_sub(trailing)))
 }
 
 /// Subgraph grouping nodes together.
@@ -320,6 +460,23 @@ pub struct Graph {
     pub edge_routes: HashMap<usize, EdgeRoute>,
 }
 
+/// The narrow BT sibling scene whose target-side incoming edges need one
+/// explicit port per edge.  Keeping the selector result typed prevents the
+/// renderer from rediscovering this topology from fixture names or labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BtSiblingTargetEntryScene {
+    pub source_subgraph_id: String,
+    pub target_subgraph_id: String,
+    pub source_lower_node_id: String,
+    pub source_upper_node_id: String,
+    pub target_lower_node_id: String,
+    pub target_upper_node_id: String,
+    pub source_internal_edge_index: usize,
+    pub target_internal_edge_index: usize,
+    pub lower_cross_edge_index: usize,
+    pub upper_cross_edge_index: usize,
+}
+
 /// Graph direction (from Mermaid `graph TD/LR/TB/BT`)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub enum Direction {
@@ -330,6 +487,24 @@ pub enum Direction {
     LR, // Left to right
     RL, // Right to left
     BT, // Bottom to top
+}
+
+impl NodeShape {
+    /// Extra outward space required before an incoming arrow reaches a shape.
+    ///
+    /// Most contours can accept the generic one-cell target entry. Diamonds
+    /// need one more cell on every side because their visible contour tapers
+    /// toward the center. Mermaid's asymmetric Flag has a left-facing point,
+    /// so only a left-to-right approach needs the same visual separation.
+    /// Database/cylinder contours intentionally use the generic one-cell
+    /// entry: an extra shape-specific bridge places a terminal arrowhead before
+    /// its final shaft and makes the arrow look detached from the receiver.
+    pub(crate) fn incoming_edge_clearance(self, direction: Direction) -> usize {
+        usize::from(
+            self == NodeShape::Diamond
+                || (self == NodeShape::Asymmetric && direction == Direction::LR),
+        )
+    }
 }
 
 impl Graph {
@@ -462,6 +637,234 @@ impl Graph {
         )
     }
 
+    /// Return the exact flat titled parallel-TD scene whose external
+    /// attachments may share the internal portal lanes.
+    ///
+    /// This is intentionally a topology predicate rather than a fixture-name
+    /// or label predicate. Layout and render projection both consume the same
+    /// capability so a visual policy cannot drift away from the placement
+    /// policy that made the scene safe.
+    pub(crate) fn td_parallel_external_attachment_ids(
+        &self,
+    ) -> Option<(String, String, String, String, String)> {
+        if self.direction != Direction::TD
+            || self.subgraphs.len() != 1
+            || self.nodes.len() != 6
+            || self.edges.len() != 6
+        {
+            return None;
+        }
+
+        let subgraph = self.subgraphs.first()?;
+        if subgraph.parent_id.is_some()
+            || !subgraph.child_ids.is_empty()
+            || subgraph.title.is_none()
+            || subgraph.node_ids.len() != 4
+            || !subgraph.node_ids.iter().all(|node_id| {
+                self.get_node(node_id).is_some()
+                    && self.get_node_subgraph(node_id) == Some(subgraph.id.as_str())
+            })
+        {
+            return None;
+        }
+
+        let mut entries = Vec::new();
+        let mut exits = Vec::new();
+        for edge in &self.edges {
+            if edge.is_back_edge || edge.kind != EdgeKind::Arrow || edge.label.is_some() {
+                continue;
+            }
+            let (exit_subgraphs, enter_subgraphs) =
+                self.edge_boundary_crossings(&edge.from, &edge.to);
+            if self.get_node_subgraph(&edge.from).is_none()
+                && self.get_node_subgraph(&edge.to) == Some(subgraph.id.as_str())
+                && exit_subgraphs.is_empty()
+                && enter_subgraphs == vec![subgraph.id.as_str()]
+            {
+                entries.push((edge.from.clone(), edge.to.clone()));
+            }
+            if self.get_node_subgraph(&edge.from) == Some(subgraph.id.as_str())
+                && self.get_node_subgraph(&edge.to).is_none()
+                && exit_subgraphs == vec![subgraph.id.as_str()]
+                && enter_subgraphs.is_empty()
+            {
+                exits.push((edge.from.clone(), edge.to.clone()));
+            }
+        }
+        if entries.len() != 1 || exits.len() != 1 || entries[0].0 == exits[0].1 {
+            return None;
+        }
+
+        let (entry_external, entry_internal) = entries.pop()?;
+        let (exit_internal, exit_external) = exits.pop()?;
+        if entry_internal == exit_internal {
+            return None;
+        }
+
+        let branch_nodes: Vec<String> = subgraph
+            .node_ids
+            .iter()
+            .filter(|node_id| *node_id != &entry_internal && *node_id != &exit_internal)
+            .cloned()
+            .collect();
+        if branch_nodes.len() != 2 {
+            return None;
+        }
+
+        let internal_edges: Vec<_> = self
+            .edges
+            .iter()
+            .filter(|edge| {
+                !edge.is_back_edge
+                    && edge.kind == EdgeKind::Arrow
+                    && edge.label.is_none()
+                    && subgraph.node_ids.contains(&edge.from)
+                    && subgraph.node_ids.contains(&edge.to)
+            })
+            .collect();
+        if internal_edges.len() != 4 {
+            return None;
+        }
+
+        let actual_edges: HashSet<(String, String)> = internal_edges
+            .iter()
+            .map(|edge| (edge.from.clone(), edge.to.clone()))
+            .collect();
+        let expected_edges: HashSet<(String, String)> = branch_nodes
+            .iter()
+            .flat_map(|branch| {
+                [
+                    (entry_internal.clone(), branch.clone()),
+                    (branch.clone(), exit_internal.clone()),
+                ]
+            })
+            .collect();
+        if actual_edges != expected_edges {
+            return None;
+        }
+
+        Some((
+            subgraph.id.clone(),
+            entry_external,
+            entry_internal,
+            exit_internal,
+            exit_external,
+        ))
+    }
+
+    /// Return the exact flat two-sibling BT scene where the target's internal
+    /// incoming edge and one direct sibling crossing must retain independent
+    /// target-side arrowheads.  The match is intentionally structural and
+    /// excludes labels, back edges, nested containers, unsupported edge kinds,
+    /// and extra branches.
+    pub(crate) fn bt_sibling_target_entry_scene(&self) -> Option<BtSiblingTargetEntryScene> {
+        if self.direction != Direction::BT
+            || self.subgraphs.len() != 2
+            || self.nodes.len() != 4
+            || self.edges.len() != 4
+            || self.has_cycles()
+        {
+            return None;
+        }
+
+        let subgraphs = self.subgraphs.iter().collect::<Vec<_>>();
+        if subgraphs.iter().any(|subgraph| {
+            !subgraph.bounds.is_valid()
+                || subgraph.parent_id.is_some()
+                || !subgraph.child_ids.is_empty()
+                || subgraph.title.is_none()
+                || subgraph.node_ids.len() != 2
+                || !subgraph.node_ids.iter().all(|node_id| {
+                    self.get_node(node_id).is_some()
+                        && self.get_node_subgraph(node_id) == Some(subgraph.id.as_str())
+                })
+        }) {
+            return None;
+        }
+        if subgraphs[0].bounds.y == subgraphs[1].bounds.y {
+            return None;
+        }
+
+        let ordinary_edges: Vec<(usize, &Edge)> = self
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| {
+                !edge.is_back_edge && edge.kind == EdgeKind::Arrow && edge.label.is_none()
+            })
+            .collect();
+        if ordinary_edges.len() != 4 {
+            return None;
+        }
+        if self
+            .nodes
+            .iter()
+            .any(|node| node.shape != NodeShape::Rectangle)
+        {
+            return None;
+        }
+
+        let source_subgraph = subgraphs.iter().find(|subgraph| {
+            subgraph.bounds.y > subgraphs[0].bounds.y.min(subgraphs[1].bounds.y)
+        })?;
+        let target_subgraph = subgraphs
+            .iter()
+            .find(|subgraph| subgraph.id != source_subgraph.id)?;
+        if source_subgraph.bounds.y <= target_subgraph.bounds.y {
+            return None;
+        }
+
+        let internal_edge = |subgraph: &Subgraph| {
+            ordinary_edges
+                .iter()
+                .filter(|(_, edge)| {
+                    subgraph.node_ids.contains(&edge.from) && subgraph.node_ids.contains(&edge.to)
+                })
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        let source_internal = internal_edge(source_subgraph);
+        let target_internal = internal_edge(target_subgraph);
+        if source_internal.len() != 1 || target_internal.len() != 1 {
+            return None;
+        }
+
+        let source_lower_node_id = source_internal[0].1.from.clone();
+        let source_upper_node_id = source_internal[0].1.to.clone();
+        let target_lower_node_id = target_internal[0].1.from.clone();
+        let target_upper_node_id = target_internal[0].1.to.clone();
+        let cross_edges = ordinary_edges
+            .iter()
+            .filter(|(_, edge)| {
+                source_subgraph.node_ids.contains(&edge.from)
+                    && target_subgraph.node_ids.contains(&edge.to)
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if cross_edges.len() != 2 {
+            return None;
+        }
+
+        let lower_cross = cross_edges.iter().find(|(_, edge)| {
+            edge.from == source_lower_node_id && edge.to == target_lower_node_id
+        })?;
+        let upper_cross = cross_edges.iter().find(|(_, edge)| {
+            edge.from == source_upper_node_id && edge.to == target_upper_node_id
+        })?;
+        Some(BtSiblingTargetEntryScene {
+            source_subgraph_id: source_subgraph.id.clone(),
+            target_subgraph_id: target_subgraph.id.clone(),
+            source_lower_node_id,
+            source_upper_node_id,
+            target_lower_node_id,
+            target_upper_node_id,
+            source_internal_edge_index: source_internal[0].0,
+            target_internal_edge_index: target_internal[0].0,
+            lower_cross_edge_index: lower_cross.0,
+            upper_cross_edge_index: upper_cross.0,
+        })
+    }
+
     /// Check whether an edge crosses any subgraph boundary.
     pub fn edge_crosses_subgraph_boundary(&self, from_node_id: &str, to_node_id: &str) -> bool {
         let (exit_subgraphs, enter_subgraphs) =
@@ -576,6 +979,62 @@ mod tests {
         assert_eq!(n.bottom_y(), 5 + bh + 2);
     }
 
+    #[test]
+    #[cfg(feature = "maintainer-fixtures")]
+    fn bt_sibling_target_entry_selector_matches_only_the_typed_scene() {
+        let mut graph = crate::parser::parse(
+            include_str!("../tests/fixtures/inputs/collision_sibling_subgraphs_bt.md"),
+            false,
+        )
+        .expect("parse BT sibling target fixture")
+        .graph;
+        for subgraph in &mut graph.subgraphs {
+            let y = if subgraph.id == "Left" { 20 } else { 0 };
+            subgraph.bounds = Rectangle::new(0, y, 30, 18);
+        }
+
+        let scene = graph
+            .bt_sibling_target_entry_scene()
+            .expect("fixture should match the exact scene selector");
+        assert_eq!(scene.source_subgraph_id, "Left");
+        assert_eq!(scene.target_subgraph_id, "Right");
+        assert_eq!(scene.source_lower_node_id, "A");
+        assert_eq!(scene.source_upper_node_id, "B");
+        assert_eq!(scene.target_lower_node_id, "C");
+        assert_eq!(scene.target_upper_node_id, "D");
+        assert_eq!(
+            [
+                scene.source_internal_edge_index,
+                scene.target_internal_edge_index,
+                scene.lower_cross_edge_index,
+                scene.upper_cross_edge_index,
+            ],
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "maintainer-fixtures")]
+    fn bt_sibling_target_entry_selector_rejects_labels_and_other_directions() {
+        let mut graph = crate::parser::parse(
+            include_str!("../tests/fixtures/inputs/collision_sibling_subgraphs_bt.md"),
+            false,
+        )
+        .expect("parse BT sibling target fixture")
+        .graph;
+        for subgraph in &mut graph.subgraphs {
+            let y = if subgraph.id == "Left" { 20 } else { 0 };
+            subgraph.bounds = Rectangle::new(0, y, 30, 18);
+        }
+
+        graph.edges[2].label = Some("crossing".to_owned());
+        assert!(graph.bt_sibling_target_entry_scene().is_none());
+
+        graph.edges[2].label = None;
+        graph.direction = Direction::TD;
+        assert!(graph.bt_sibling_target_entry_scene().is_none());
+    }
+
     // =========================================================================
     // Edge
     // =========================================================================
@@ -608,6 +1067,50 @@ mod tests {
     // =========================================================================
     // Rectangle
     // =========================================================================
+
+    #[test]
+    fn subgraph_title_text_span_excludes_wrapper_padding() {
+        assert_eq!(
+            subgraph_title_span(0, 22, "Transform Stage", Direction::TD),
+            Some((2, 18))
+        );
+        assert_eq!(
+            subgraph_title_text_span(0, 22, "Transform Stage", Direction::TD),
+            Some((3, 17))
+        );
+    }
+
+    #[test]
+    fn padded_subgraph_title_span_keeps_a_two_sided_visual_gutter() {
+        assert_eq!(
+            subgraph_title_text_with_padding("Transform Stage", 1),
+            "  Transform Stage  "
+        );
+        assert_eq!(
+            subgraph_title_span_with_padding(0, 22, "Transform Stage", Direction::TD, 1),
+            Some((2, 20))
+        );
+        assert_eq!(
+            subgraph_title_text_span_with_padding(0, 22, "Transform Stage", Direction::TD, 1),
+            Some((4, 18))
+        );
+    }
+
+    #[test]
+    fn side_aware_title_padding_preserves_the_anchor_and_wall_gutter() {
+        assert_eq!(
+            subgraph_title_text_with_padding_sides("Group 3", 0, 1),
+            " Group 3  "
+        );
+        assert_eq!(
+            subgraph_title_span_with_padding_sides(0, 14, "Group 3", Direction::TD, 0, 1),
+            Some((2, 11))
+        );
+        assert_eq!(
+            subgraph_title_text_span_with_padding_sides(0, 14, "Group 3", Direction::TD, 0, 1),
+            Some((3, 9))
+        );
+    }
 
     #[test]
     fn rectangle_contains_inclusive_corners() {
@@ -971,6 +1474,44 @@ mod tests {
     #[test]
     fn direction_default_is_td() {
         assert_eq!(Direction::default(), Direction::TD);
+    }
+
+    #[test]
+    fn incoming_edge_clearance_is_direction_aware_for_flag() {
+        assert_eq!(
+            NodeShape::Asymmetric.incoming_edge_clearance(Direction::LR),
+            1
+        );
+        assert_eq!(
+            NodeShape::Asymmetric.incoming_edge_clearance(Direction::RL),
+            0
+        );
+        assert_eq!(
+            NodeShape::Asymmetric.incoming_edge_clearance(Direction::TD),
+            0
+        );
+        assert_eq!(
+            NodeShape::Asymmetric.incoming_edge_clearance(Direction::BT),
+            0
+        );
+        assert_eq!(NodeShape::Diamond.incoming_edge_clearance(Direction::RL), 1);
+        for direction in [
+            Direction::TD,
+            Direction::TB,
+            Direction::BT,
+            Direction::LR,
+            Direction::RL,
+        ] {
+            assert_eq!(
+                NodeShape::Database.incoming_edge_clearance(direction),
+                0,
+                "database entry must use the generic terminal clearance for {direction:?}"
+            );
+        }
+        assert_eq!(
+            NodeShape::Rectangle.incoming_edge_clearance(Direction::LR),
+            0
+        );
     }
 
     #[test]

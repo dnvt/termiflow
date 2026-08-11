@@ -2,16 +2,40 @@ use std::collections::{HashMap, HashSet};
 
 use crate::graph::{Direction, Graph, Node};
 use crate::layout_snapshot::LayoutSnapshot;
-use crate::portals::PortalSlots;
-use crate::style::{StyleChars, BOX_HEIGHT};
+use crate::portals::{PortalSlots, TitleGutter};
+use crate::style::{vertical_portal_seam, StyleChars, BOX_HEIGHT};
 
-use super::{canvas, semantic, Canvas};
+use super::provenance::edge_owner_id;
+use super::{canvas, semantic, topology, Canvas};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PortalAxis {
+    Horizontal,
+    Vertical,
+}
+
+impl PortalAxis {
+    fn glyph(self, chars: &StyleChars) -> char {
+        match self {
+            Self::Horizontal => chars.edge_h,
+            Self::Vertical => chars.edge_v,
+        }
+    }
+
+    fn from_direction(direction: Direction) -> Self {
+        match direction {
+            Direction::LR | Direction::RL => Self::Horizontal,
+            Direction::TD | Direction::TB | Direction::BT => Self::Vertical,
+        }
+    }
+}
 
 pub(crate) fn stamp_portal_opening(
     canvas: &mut Canvas,
     x: usize,
     y: usize,
     chars: &StyleChars,
+    axis: PortalAxis,
     owner_id: &str,
     z_index: u8,
 ) {
@@ -24,7 +48,7 @@ pub(crate) fn stamp_portal_opening(
     canvas.set_owned(
         x,
         y,
-        chars.portal_pierce,
+        axis.glyph(chars),
         semantic::CellOwnerKind::PortalOpening,
         owner_id,
         z_index,
@@ -85,14 +109,14 @@ fn stamp_side_aware_portal_opening(
 
     // A wall crossing is not a four-way junction. Keep the semantic portal owner,
     // but project the route shaft that is perpendicular to the crossed border.
-    let glyph = match side {
-        PortalSide::Top | PortalSide::Bottom => chars.edge_v,
-        PortalSide::Left | PortalSide::Right => chars.portal_pierce,
+    let axis = match side {
+        PortalSide::Top | PortalSide::Bottom => PortalAxis::Vertical,
+        PortalSide::Left | PortalSide::Right => PortalAxis::Horizontal,
     };
     canvas.set_owned(
         x,
         y,
-        glyph,
+        axis.glyph(chars),
         semantic::CellOwnerKind::PortalOpening,
         owner_id,
         z_index,
@@ -103,6 +127,7 @@ pub(super) fn annotate_subgraph_region(
     canvas: &mut Canvas,
     subgraph: &crate::graph::Subgraph,
     direction: Direction,
+    title_gutter: TitleGutter,
 ) {
     let bounds = &subgraph.bounds;
     if !bounds.is_valid() {
@@ -152,10 +177,19 @@ pub(super) fn annotate_subgraph_region(
     }
 
     if let Some(title) = subgraph.title.as_deref() {
-        let title_fmt = crate::graph::subgraph_title_text(title);
-        let Some(start_x) =
-            crate::graph::subgraph_title_start_x(bounds.x, bounds.width, title, direction)
-        else {
+        let title_fmt = crate::graph::subgraph_title_text_with_padding_sides(
+            title,
+            title_gutter.leading_extra_padding,
+            title_gutter.trailing_extra_padding,
+        );
+        let Some((start_x, _)) = crate::graph::subgraph_title_span_with_padding_sides(
+            bounds.x,
+            bounds.width,
+            title,
+            direction,
+            title_gutter.leading_extra_padding,
+            title_gutter.trailing_extra_padding,
+        ) else {
             return;
         };
         let title_y = subgraph_title_y(bounds, direction);
@@ -293,6 +327,9 @@ pub(super) fn reinforce_subgraph_portals(
 
     let mut sg_ids: Vec<&str> = slots.keys().map(|id| id.as_str()).collect();
     sg_ids.sort_unstable();
+    let td_parallel_seam_subgraph = graph
+        .td_parallel_external_attachment_ids()
+        .map(|(subgraph_id, ..)| subgraph_id);
 
     for sg_id in sg_ids {
         let Some(portals) = slots.get(sg_id) else {
@@ -314,6 +351,11 @@ pub(super) fn reinforce_subgraph_portals(
         let bottom_y = bounds.y + bounds.height.saturating_sub(1);
         let left_x = bounds.x;
         let right_x = bounds.x + bounds.width.saturating_sub(1);
+        let td_parallel_seam = (td_parallel_seam_subgraph.as_deref() == Some(sg_id)
+            && portals.top.len() == 1
+            && portals.bottom.len() == 1)
+            .then(|| vertical_portal_seam(chars, subgraph_chars))
+            .flatten();
 
         match direction {
             Direction::TD | Direction::TB => {
@@ -337,7 +379,18 @@ pub(super) fn reinforce_subgraph_portals(
                         && !is_textual(existing)
                         && !canvas::is_arrow(existing)
                     {
-                        canvas.set(px, ty, chars.edge_v);
+                        if let Some((top_seam, _)) = td_parallel_seam {
+                            canvas.set_owned(
+                                px,
+                                ty,
+                                top_seam,
+                                semantic::CellOwnerKind::PortalOpening,
+                                sg_id,
+                                4,
+                            );
+                        } else {
+                            canvas.set(px, ty, chars.edge_v);
+                        }
                     }
                 }
                 for x in bottom_slots {
@@ -355,9 +408,20 @@ pub(super) fn reinforce_subgraph_portals(
                     let used = is_verticalish(above, chars, subgraph_chars)
                         || is_verticalish(below, chars, subgraph_chars);
                     if used && bottom_y < canvas.height && !is_textual(canvas.get(px, bottom_y)) {
-                        // This is a portal "hole" on the border, not a T-junction.
-                        // Overwrite the horizontal border character instead of merging.
-                        canvas.set(px, bottom_y, chars.edge_v);
+                        // The exact parallel TD scene gets a topology-owned seam;
+                        // every other portal remains a clean one-cell hole.
+                        if let Some((_, bottom_seam)) = td_parallel_seam {
+                            canvas.set_owned(
+                                px,
+                                bottom_y,
+                                bottom_seam,
+                                semantic::CellOwnerKind::PortalOpening,
+                                sg_id,
+                                4,
+                            );
+                        } else {
+                            canvas.set(px, bottom_y, chars.edge_v);
+                        }
                     }
                 }
             }
@@ -557,6 +621,81 @@ pub(super) fn reinforce_subgraph_portals(
     }
 }
 
+/// Re-apply the topology-owned TD seam after final provenance and repair
+/// passes. Those passes intentionally normalize edge-owned junctions, so this
+/// explicit portal projection must be the last glyph owner before the semantic
+/// frame is captured.
+pub(super) fn finalize_td_parallel_portal_seams(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    slots: &HashMap<String, PortalSlots>,
+    chars: &StyleChars,
+    subgraph_chars: &StyleChars,
+) {
+    fn is_verticalish(c: char, chars: &StyleChars, subgraph_chars: &StyleChars) -> bool {
+        canvas::is_vertical(c, chars)
+            || canvas::is_junction(c, chars)
+            || canvas::is_junction(c, subgraph_chars)
+            || canvas::is_arrow(c)
+    }
+
+    let Some((subgraph_id, ..)) = graph.td_parallel_external_attachment_ids() else {
+        return;
+    };
+    let Some(portals) = slots.get(&subgraph_id) else {
+        return;
+    };
+    if portals.top.len() != 1 || portals.bottom.len() != 1 {
+        return;
+    }
+    let Some((top_seam, bottom_seam)) = vertical_portal_seam(chars, subgraph_chars) else {
+        return;
+    };
+    let Some(subgraph) = graph.get_subgraph(&subgraph_id) else {
+        return;
+    };
+    let bounds = &subgraph.bounds;
+    if !bounds.is_valid() {
+        return;
+    }
+
+    let top_y = bounds.y;
+    let bottom_y = bounds.y + bounds.height.saturating_sub(1);
+    for (slot, y, seam) in [
+        (portals.top.iter().copied().next(), top_y, top_seam),
+        (portals.bottom.iter().copied().next(), bottom_y, bottom_seam),
+    ] {
+        let Some(slot) = slot else {
+            continue;
+        };
+        let px = clamp_horizontal(bounds, slot);
+        if y >= canvas.height {
+            continue;
+        }
+        let above = if y > 0 { canvas.get(px, y - 1) } else { ' ' };
+        let below = if y + 1 < canvas.height {
+            canvas.get(px, y + 1)
+        } else {
+            ' '
+        };
+        let current = canvas.get(px, y);
+        if (is_verticalish(above, chars, subgraph_chars)
+            || is_verticalish(below, chars, subgraph_chars))
+            && !is_textual(current)
+            && !canvas::is_arrow(current)
+        {
+            canvas.set_owned(
+                px,
+                y,
+                seam,
+                semantic::CellOwnerKind::PortalOpening,
+                &subgraph_id,
+                4,
+            );
+        }
+    }
+}
+
 fn sorted_slot_positions(slots: &HashSet<usize>) -> Vec<usize> {
     let mut ordered: Vec<usize> = slots.iter().copied().collect();
     ordered.sort_unstable();
@@ -585,7 +724,15 @@ pub(super) fn finalize_horizontal_side_portals(
                 stamp_side_aware_portal_opening(canvas, x, y, chars, side, "final_side_portal", 4);
             }
             Some(PortalSide::Top | PortalSide::Bottom) | None => {
-                stamp_portal_opening(canvas, x, y, chars, "final_side_portal", 4);
+                stamp_portal_opening(
+                    canvas,
+                    x,
+                    y,
+                    chars,
+                    PortalAxis::Horizontal,
+                    "final_side_portal",
+                    4,
+                );
             }
         }
     };
@@ -621,7 +768,12 @@ pub(super) fn finalize_horizontal_side_portals(
             } else {
                 ' '
             };
-            if is_horizontalish(left) || is_horizontalish(right) {
+            // A side portal is a wall crossing, not merely a route that runs
+            // alongside the wall. Require horizontal route evidence on both
+            // sides of the boundary; otherwise an interior vertical collector
+            // or junction can incorrectly turn an entire wall band into
+            // horizontal portal markers.
+            if is_horizontalish(left) && is_horizontalish(right) {
                 stamp_side_portal(canvas, left_x, py);
             }
         }
@@ -638,7 +790,7 @@ pub(super) fn finalize_horizontal_side_portals(
             } else {
                 ' '
             };
-            if is_horizontalish(left) || is_horizontalish(right) {
+            if is_horizontalish(left) && is_horizontalish(right) {
                 stamp_side_portal(canvas, right_x, py);
             }
         }
@@ -659,6 +811,12 @@ pub(super) fn finalize_horizontal_side_portals(
         let max_y = bounds.y + bounds.height.saturating_sub(2);
 
         for edge_id in layout_snapshot.route_ids() {
+            let covered_by_fallback = graph.edges.get(edge_id.index()).is_some_and(|edge| {
+                canvas.fallback_route_covers_edge(&edge_owner_id(edge_id.index(), edge))
+            });
+            if covered_by_fallback {
+                continue;
+            }
             let Some(route) = layout_snapshot.route(edge_id) else {
                 continue;
             };
@@ -754,6 +912,29 @@ pub(super) fn finalize_dedicated_portal_markers(
 
     let mut markers: Vec<(usize, usize, String)> = Vec::new();
 
+    // Three or more direct sibling BT crossings repeatedly overwrite a
+    // horizontal border with a bare vertical shaft. Preserve the portal
+    // ownership, but compose both physical arms at the final border cell so
+    // the opening reads locally as a border junction rather than a fractured
+    // container wall. This is topology-derived and intentionally does not
+    // alter route geometry or exactly-two legacy sibling crossings.
+    let is_bt_parallel_border_junction = |x: usize, y: usize, owner_id: &str| {
+        graph.subgraphs.iter().any(|subgraph| {
+            if subgraph.id != owner_id {
+                return false;
+            }
+            if !subgraph.bounds.is_valid() {
+                return false;
+            }
+            let right_x = subgraph.bounds.x + subgraph.bounds.width.saturating_sub(1);
+            let bottom_y = subgraph.bounds.y + subgraph.bounds.height.saturating_sub(1);
+            if x <= subgraph.bounds.x || x >= right_x || (y != subgraph.bounds.y && y != bottom_y) {
+                return false;
+            }
+            topology::has_bt_parallel_boundary_junction(graph, &subgraph.id)
+        })
+    };
+
     for y in 0..canvas.height {
         for x in 0..canvas.width {
             let Some(meta) = canvas.get_meta(x, y) else {
@@ -821,9 +1002,10 @@ pub(super) fn finalize_dedicated_portal_markers(
             if bounds.width >= 3 {
                 let top_scan_y = bounds.y;
                 let bottom_scan_y = bounds.y + bounds.height.saturating_sub(1);
-                for (scan_y, preferred_slots) in
-                    [(top_scan_y, &portals.top), (bottom_scan_y, &portals.bottom)]
-                {
+                for (scan_y, preferred_slots, side) in [
+                    (top_scan_y, &portals.top, "top"),
+                    (bottom_scan_y, &portals.bottom, "bottom"),
+                ] {
                     let mut x = bounds.x + 1;
                     let scan_end = bounds.x + bounds.width.saturating_sub(1);
                     while x < scan_end {
@@ -846,7 +1028,10 @@ pub(super) fn finalize_dedicated_portal_markers(
                         let has_marker_in_run = markers
                             .iter()
                             .any(|(mx, my, _)| *my == scan_y && *mx >= run_start && *mx <= run_end);
-                        if !has_marker_in_run {
+                        let has_fallback_claim_in_run = (run_start..=run_end).any(|x| {
+                            canvas.fallback_route_claims_boundary(&subgraph.id, side, x, scan_y)
+                        });
+                        if !has_marker_in_run && !has_fallback_claim_in_run {
                             let midpoint = run_start + (run_end - run_start) / 2;
                             let marker_x = preferred_slots
                                 .iter()
@@ -866,7 +1051,10 @@ pub(super) fn finalize_dedicated_portal_markers(
             }
         }
 
-        if matches!(graph.direction, Direction::LR | Direction::RL) && bounds.height >= 3 {
+        if matches!(graph.direction, Direction::LR | Direction::RL)
+            && bounds.height >= 3
+            && !canvas.fallback_route_has_scene_boundary(&subgraph.id)
+        {
             let bottom_y = bounds.y + bounds.height.saturating_sub(1);
             for y in bounds.y.saturating_add(1)..bottom_y {
                 for border_x in [bounds.x, bounds.x + bounds.width.saturating_sub(1)] {
@@ -890,11 +1078,37 @@ pub(super) fn finalize_dedicated_portal_markers(
     }
 
     for (x, y, owner_id) in markers {
+        if is_bt_parallel_border_junction(x, y, &owner_id)
+            && x < canvas.width
+            && y < canvas.height
+            && !is_node_owned_cell(canvas, x, y)
+            && !is_textual(canvas.get(x, y))
+        {
+            canvas.set_owned(
+                x,
+                y,
+                chars.edge_v,
+                semantic::CellOwnerKind::PortalOpening,
+                &owner_id,
+                4,
+            );
+            continue;
+        }
         match portal_side_for_cell(graph, x, y) {
             Some(side) => stamp_side_aware_portal_opening(canvas, x, y, chars, side, &owner_id, 4),
-            None => stamp_portal_opening(canvas, x, y, chars, &owner_id, 4),
+            None => stamp_portal_opening(
+                canvas,
+                x,
+                y,
+                chars,
+                PortalAxis::from_direction(graph.direction),
+                &owner_id,
+                4,
+            ),
         }
     }
+
+    canvas.finalize_fallback_route_claims();
 }
 
 pub(super) fn is_node_owned_cell(canvas: &Canvas, x: usize, y: usize) -> bool {
@@ -995,10 +1209,69 @@ pub(crate) fn title_span(
 
 #[cfg(test)]
 mod tests {
-    use super::{stamp_side_aware_portal_opening, PortalSide};
+    use super::{stamp_portal_opening, stamp_side_aware_portal_opening, PortalAxis, PortalSide};
     use crate::render::semantic::CellOwnerKind;
     use crate::render::Canvas;
     use crate::style::{ASCII_CHARS, UNICODE_CHARS};
+
+    #[test]
+    fn generic_portals_use_the_explicit_route_axis() {
+        let mut canvas = Canvas::new(5, 3);
+
+        stamp_portal_opening(
+            &mut canvas,
+            1,
+            1,
+            &ASCII_CHARS,
+            PortalAxis::Horizontal,
+            "horizontal",
+            4,
+        );
+        stamp_portal_opening(
+            &mut canvas,
+            3,
+            1,
+            &UNICODE_CHARS,
+            PortalAxis::Vertical,
+            "vertical",
+            4,
+        );
+
+        assert_eq!(canvas.get(1, 1), ASCII_CHARS.edge_h);
+        assert_eq!(canvas.get(3, 1), UNICODE_CHARS.edge_v);
+        assert_eq!(
+            canvas.get_meta(1, 1).map(|meta| meta.owner_kind),
+            Some(CellOwnerKind::PortalOpening)
+        );
+        assert_eq!(
+            canvas.get_meta(3, 1).map(|meta| meta.owner_kind),
+            Some(CellOwnerKind::PortalOpening)
+        );
+    }
+
+    #[test]
+    fn graph_direction_maps_ambiguous_portals_to_the_route_axis() {
+        assert_eq!(
+            PortalAxis::from_direction(crate::graph::Direction::TD),
+            PortalAxis::Vertical
+        );
+        assert_eq!(
+            PortalAxis::from_direction(crate::graph::Direction::TB),
+            PortalAxis::Vertical
+        );
+        assert_eq!(
+            PortalAxis::from_direction(crate::graph::Direction::BT),
+            PortalAxis::Vertical
+        );
+        assert_eq!(
+            PortalAxis::from_direction(crate::graph::Direction::LR),
+            PortalAxis::Horizontal
+        );
+        assert_eq!(
+            PortalAxis::from_direction(crate::graph::Direction::RL),
+            PortalAxis::Horizontal
+        );
+    }
 
     #[test]
     fn portals_use_directional_route_glyphs_and_semantic_ownership() {

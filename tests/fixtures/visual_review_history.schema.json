@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "termiflow.visual_review.history_record.v1",
+  "title": "TermiFlow persistent visual-review history record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "history_id",
+    "status",
+    "severity",
+    "selector",
+    "dimensions",
+    "observation",
+    "hypothesis",
+    "expected_observation_if_true",
+    "falsifier",
+    "affected_homologs",
+    "next_command",
+    "created_at"
+  ],
+  "properties": {
+    "schema": {"const": "termiflow.visual_review.history_record.v1"},
+    "history_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["open", "falsified", "repaired", "superseded"]},
+    "severity": {"enum": ["P0", "P1", "P2", "P3"]},
+    "selector": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1},
+        "fixture": {"type": "string", "minLength": 1},
+        "style": {"type": "string", "minLength": 1},
+        "mode": {"type": "string", "minLength": 1},
+        "direction": {"type": "string", "minLength": 1}
+      }
+    },
+    "dimensions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["semantic", "containment", "route", "text", "readability"]}
+    },
+    "observation": {"type": "string", "minLength": 1},
+    "hypothesis": {"type": "string", "minLength": 1},
+    "expected_observation_if_true": {"type": "string", "minLength": 1},
+    "falsifier": {"type": "string", "minLength": 1},
+    "affected_homologs": {"type": "array", "items": {"type": "string"}},
+    "next_command": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "source": {"type": "string", "minLength": 1},
+    "prior_decision_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    }
+  }
+}

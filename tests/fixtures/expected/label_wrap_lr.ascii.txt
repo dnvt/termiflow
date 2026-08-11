@@ -1,5 +1,5 @@
 +---------------------+
 |  A long label that  |        +-------+
-|   should wrap to    +------->|  End  |
+|   should wrap to    +------->+  End  |
 |   multiple lines    |        +-------+
 +---------------------+

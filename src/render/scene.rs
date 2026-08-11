@@ -163,23 +163,51 @@ impl Scene {
             }
 
             match intent.mode {
-                SceneIntentMode::ReplaceOwned => canvas.set_owned(
-                    intent.x,
-                    intent.y,
-                    intent.glyph,
-                    intent.owner_kind,
-                    &intent.owner_id,
-                    intent.z_index,
-                ),
-                SceneIntentMode::ResolveEdgeOverlap => canvas.set_edge_char_owned(
-                    intent.x,
-                    intent.y,
-                    intent.glyph,
-                    chars,
-                    intent.owner_kind,
-                    &intent.owner_id,
-                    intent.z_index,
-                ),
+                SceneIntentMode::ReplaceOwned => {
+                    if intent.role == CellRole::EndpointMarker {
+                        canvas.set_owned_with_role(
+                            intent.x,
+                            intent.y,
+                            intent.glyph,
+                            intent.owner_kind,
+                            &intent.owner_id,
+                            intent.role,
+                            intent.z_index,
+                        );
+                    } else {
+                        canvas.set_owned(
+                            intent.x,
+                            intent.y,
+                            intent.glyph,
+                            intent.owner_kind,
+                            &intent.owner_id,
+                            intent.z_index,
+                        );
+                    }
+                }
+                SceneIntentMode::ResolveEdgeOverlap => {
+                    if intent.role == CellRole::EndpointMarker {
+                        canvas.set_owned_with_role(
+                            intent.x,
+                            intent.y,
+                            intent.glyph,
+                            intent.owner_kind,
+                            &intent.owner_id,
+                            intent.role,
+                            intent.z_index,
+                        );
+                    } else {
+                        canvas.set_edge_char_owned(
+                            intent.x,
+                            intent.y,
+                            intent.glyph,
+                            chars,
+                            intent.owner_kind,
+                            &intent.owner_id,
+                            intent.z_index,
+                        );
+                    }
+                }
                 SceneIntentMode::ResolveEdgeOverlapInferred => {
                     canvas.set_edge_char(intent.x, intent.y, intent.glyph, chars)
                 }

@@ -87,7 +87,7 @@ pub struct Cli {
     #[arg(short, long, value_name = "STYLE")]
     pub style: Option<String>,
 
-    /// Deprecated compatibility flag; ANSI title inversion is the default in TTY print mode
+    /// Legacy compatibility flag; ANSI title inversion is the default in TTY print mode
     #[arg(long, hide = true)]
     pub ansi_title_invert: bool,
 
@@ -131,8 +131,7 @@ pub struct Cli {
     #[arg(long, value_name = "N")]
     pub pad: Option<usize>,
 
-    /// Use a tighter layout spacing (less whitespace)
-    /// DEPRECATED: Use --spacing=compact instead
+    /// Use a tighter layout spacing (less whitespace); prefer --spacing=compact
     #[arg(long)]
     pub compact: bool,
 

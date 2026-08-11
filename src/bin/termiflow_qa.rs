@@ -4,7 +4,7 @@ mod qa;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -30,6 +30,8 @@ enum Command {
     Schema(SchemaArgs),
     /// Execute evaluator-owned holdout rows into a golden-free packet and receipt.
     Holdout(HoldoutArgs),
+    /// Review and validate intentional fixture failures separately from visual decisions.
+    ErrorPolicy(ErrorPolicyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -63,8 +65,14 @@ struct GoldenArgs {
     #[arg(long)]
     intent: Option<String>,
     /// Versioned schema manifest produced by `schema --emit-manifest`.
-    #[arg(long, conflicts_with_all = ["metadata", "input_root", "styles"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["metadata", "input_root", "styles", "fixtures"]
+    )]
     manifest: Option<PathBuf>,
+    /// Restrict the non-manifest check or approval to one or more fixture names.
+    #[arg(long = "fixture", value_name = "NAME", action = ArgAction::Append)]
+    fixtures: Vec<String>,
     /// Prebuilt renderer executable; skips Cargo discovery.
     #[arg(long)]
     binary: Option<PathBuf>,
@@ -90,6 +98,12 @@ struct ReviewArgs {
     /// JSONL decision log.
     #[arg(long)]
     decisions: PathBuf,
+    /// Hash-bound historical visual-risk ledger. Open records must be explicitly resolved before a pass.
+    #[arg(long)]
+    history: Option<PathBuf>,
+    /// Require a newly inspected perceptual ledger; reject machine and carry-forward decisions.
+    #[arg(long, conflicts_with_all = ["rebind_from_packet", "rebind_from_decisions", "prescreen_clean"])]
+    fresh: bool,
     #[arg(long)]
     fixture: Option<String>,
     #[arg(long, value_parser = ["ascii", "unicode"])]
@@ -104,6 +118,20 @@ struct ReviewArgs {
     /// Validate and append one decision JSON object.
     #[arg(long)]
     record: Option<PathBuf>,
+    /// Rebind exact successful perceptual decisions from a completed prior packet.
+    #[arg(
+        long,
+        requires = "rebind_from_decisions",
+        conflicts_with_all = ["next", "record", "prescreen_clean", "validate"]
+    )]
+    rebind_from_packet: Option<PathBuf>,
+    /// Prior packet JSONL perceptual decision log used for exact-hash rebinding.
+    #[arg(
+        long,
+        requires = "rebind_from_packet",
+        conflicts_with_all = ["next", "record", "prescreen_clean", "validate"]
+    )]
+    rebind_from_decisions: Option<PathBuf>,
     /// Append conservative structural pre-screen decisions for clean rows.
     #[arg(long, conflicts_with_all = ["next", "record", "validate"])]
     prescreen_clean: bool,
@@ -154,6 +182,25 @@ struct HoldoutArgs {
 }
 
 #[derive(Debug, Args)]
+struct ErrorPolicyArgs {
+    /// Complete visual-audit packet containing expected-error rows.
+    #[arg(long)]
+    packet: PathBuf,
+    /// JSONL expected-error policy ledger.
+    #[arg(long)]
+    records: PathBuf,
+    /// Emit exactly one unrecorded expected-error row as JSON.
+    #[arg(long)]
+    next: bool,
+    /// Validate and append one expected-error policy record JSON object.
+    #[arg(long)]
+    record: Option<PathBuf>,
+    /// Require one valid policy record for every expected-error row.
+    #[arg(long)]
+    validate: bool,
+}
+
+#[derive(Debug, Args)]
 struct VisualAuditArgs {
     /// Final packet directory.
     #[arg(long)]
@@ -182,6 +229,9 @@ struct VisualAuditArgs {
     /// Per-row process timeout in seconds.
     #[arg(long, default_value_t = 60.0)]
     timeout_seconds: f64,
+    /// Respect authored style directives in each input instead of injecting --style.
+    #[arg(long)]
+    respect_input_style: bool,
     /// Pause a private packet subprocess at a named persistence boundary (test-only).
     #[arg(long, hide = true, value_parser = ["stage-created", "writing", "ready", "before-publish", "after-publish"])]
     pause_at: Option<String>,
@@ -203,6 +253,7 @@ fn main() -> Result<()> {
             metadata: args.metadata,
             display_profile: args.display_profile,
             timeout_seconds: args.timeout_seconds,
+            respect_input_style: args.respect_input_style,
             pause_at: args.pause_at,
             pause_marker: args.pause_marker,
         }),
@@ -219,6 +270,7 @@ fn main() -> Result<()> {
                 approve: args.approve,
                 intent: args.intent,
                 manifest: args.manifest,
+                fixtures: args.fixtures,
                 binary: args.binary,
                 input_root: args.input_root,
                 metadata: args.metadata,
@@ -233,12 +285,16 @@ fn main() -> Result<()> {
         Command::Review(args) => qa::review::run(qa::review::ReviewArgs {
             packet: args.packet,
             decisions: args.decisions,
+            history: args.history,
+            fresh: args.fresh,
             fixture: args.fixture,
             style: args.style,
             mode: args.mode,
             reviewer: args.reviewer,
             next: args.next,
             record: args.record,
+            rebind_from_packet: args.rebind_from_packet,
+            rebind_from_decisions: args.rebind_from_decisions,
             prescreen_clean: args.prescreen_clean,
             validate: args.validate,
         }),
@@ -256,6 +312,13 @@ fn main() -> Result<()> {
             binary: args.binary,
             display_profile: args.display_profile,
             timeout_seconds: args.timeout_seconds,
+        }),
+        Command::ErrorPolicy(args) => qa::error_policy::run(qa::error_policy::ErrorPolicyArgs {
+            packet: args.packet,
+            records: args.records,
+            next: args.next,
+            record: args.record,
+            validate: args.validate,
         }),
     }
 }

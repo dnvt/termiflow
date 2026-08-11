@@ -10,6 +10,7 @@ use super::common;
 
 pub const PROVENANCE_SCHEMA: &str = "termiflow.source_provenance.v1";
 pub const POLICY_SET_SCHEMA: &str = "termiflow.effective_policy_set.v1";
+pub const ARGV_CONTRACT_SCHEMA: &str = "termiflow.visual_argv_contract.v1";
 
 pub struct ProvenanceInputs<'a> {
     pub input_root: &'a Path,
@@ -19,6 +20,7 @@ pub struct ProvenanceInputs<'a> {
     pub styles: &'a [String],
     pub modes: &'a [String],
     pub display_profile: &'a str,
+    pub argv_contract: &'a Value,
 }
 
 pub fn enrich_identity(
@@ -80,6 +82,7 @@ pub fn enrich_identity(
         "styles": inputs.styles,
         "modes": inputs.modes,
         "display_profile": inputs.display_profile,
+        "argv_contract": inputs.argv_contract,
     });
 
     let host = json!({
@@ -208,6 +211,9 @@ pub fn validate_identity(identity: &Value) -> Result<()> {
         workload.get("modes"),
         "identity.json.provenance.workload.modes",
     )?;
+    if let Some(argv_contract) = workload.get("argv_contract") {
+        validate_argv_contract(argv_contract)?;
+    }
 
     if let Some(policy_set) = object.get("policy_set") {
         validate_policy_set(policy_set)?;
@@ -221,6 +227,175 @@ pub fn validate_identity(identity: &Value) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// Build the stable, path-normalized command policy used by visual-audit
+/// packets. Packet-local evidence paths are deliberately excluded from the
+/// reduced row argv and represented by a fixed rule instead.
+pub fn argv_contract(program: &str, style_override: bool) -> Value {
+    json!({
+        "schema": ARGV_CONTRACT_SCHEMA,
+        "version": 1,
+        "program": program,
+        "program_kind": "native-termiflow",
+        "fixed_args": ["--print"],
+        "style_override": style_override,
+        "style_flag": "--style",
+        "optimized_flag": "--optimize-render",
+        "input_position": "last",
+        "audit_json": "packet-local-evidence-path-not-in-stable-argv",
+    })
+}
+
+pub fn validate_argv_contract(value: &Value) -> Result<()> {
+    let object = required_object(Some(value), "visual argv contract")?;
+    exact_keys(
+        object,
+        &[
+            "schema",
+            "version",
+            "program",
+            "program_kind",
+            "fixed_args",
+            "style_override",
+            "style_flag",
+            "optimized_flag",
+            "input_position",
+            "audit_json",
+        ],
+        "visual argv contract",
+    )?;
+    if object.get("schema").and_then(Value::as_str) != Some(ARGV_CONTRACT_SCHEMA)
+        || object.get("version").and_then(Value::as_u64) != Some(1)
+    {
+        bail!("visual argv contract schema/version is invalid");
+    }
+    let program = required_string(object.get("program"), "visual argv contract.program")?;
+    if Path::new(program).is_absolute() || program.split('/').any(|part| part == "..") {
+        bail!("visual argv contract.program must be repository-relative");
+    }
+    if required_string(
+        object.get("program_kind"),
+        "visual argv contract.program_kind",
+    )? != "native-termiflow"
+    {
+        bail!("visual argv contract.program_kind must be native-termiflow");
+    }
+    let fixed_args =
+        required_string_array(object.get("fixed_args"), "visual argv contract.fixed_args")?;
+    if fixed_args != [Value::String("--print".to_owned())] {
+        bail!("visual argv contract.fixed_args must be [--print]");
+    }
+    if !object.get("style_override").is_some_and(Value::is_boolean) {
+        bail!("visual argv contract.style_override must be boolean");
+    }
+    if required_string(object.get("style_flag"), "visual argv contract.style_flag")? != "--style"
+        || required_string(
+            object.get("optimized_flag"),
+            "visual argv contract.optimized_flag",
+        )? != "--optimize-render"
+    {
+        bail!("visual argv contract flag names are invalid");
+    }
+    if required_string(
+        object.get("input_position"),
+        "visual argv contract.input_position",
+    )? != "last"
+    {
+        bail!("visual argv contract.input_position must be last");
+    }
+    if required_string(object.get("audit_json"), "visual argv contract.audit_json")?
+        != "packet-local-evidence-path-not-in-stable-argv"
+    {
+        bail!("visual argv contract.audit_json rule is invalid");
+    }
+    if !object["style_override"].as_bool().unwrap_or(false) {
+        let lower = program.to_ascii_lowercase();
+        let basename = Path::new(program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(program)
+            .to_ascii_lowercase();
+        if lower.contains("wrapper")
+            || basename.ends_with(".sh")
+            || (!basename.starts_with("termiflow") && basename != "tw")
+        {
+            bail!("visual argv contract no-override program must be a native termiflow binary");
+        }
+    }
+    Ok(())
+}
+
+pub fn identity_argv_contract(identity: &Value) -> Result<Option<&Value>> {
+    let workload = identity
+        .get("provenance")
+        .and_then(|value| value.get("workload"))
+        .ok_or_else(|| anyhow!("identity.json.provenance.workload is required"))?;
+    let contract = workload.get("argv_contract");
+    if let Some(contract) = contract {
+        validate_argv_contract(contract)?;
+    }
+    Ok(contract)
+}
+
+pub fn validate_row_argv(contract: &Value, row: &Value, label: &str) -> Result<()> {
+    validate_argv_contract(contract)?;
+    let contract_object = contract
+        .as_object()
+        .expect("validated argv contract is an object");
+    let argv = row
+        .get("argv")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("{label}: argv must be an array"))?;
+    if !argv.iter().all(Value::is_string) {
+        bail!("{label}: argv must contain only strings");
+    }
+    let style = required_string(row.get("style"), &format!("{label}: style"))?;
+    let mode = required_string(row.get("mode"), &format!("{label}: mode"))?;
+    let input = required_string(row.get("input"), &format!("{label}: input"))?;
+    let mut expected = vec![
+        Value::String(
+            contract_object["program"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        Value::String("--print".to_owned()),
+    ];
+    if contract_object["style_override"].as_bool().unwrap_or(false) {
+        expected.push(Value::String("--style".to_owned()));
+        expected.push(Value::String(style.to_owned()));
+    }
+    if mode == "optimized" {
+        expected.push(Value::String("--optimize-render".to_owned()));
+    }
+    expected.push(Value::String(input.to_owned()));
+    if argv != &expected {
+        bail!("{label}: argv does not match its bound visual argv contract");
+    }
+    Ok(())
+}
+
+/// Resolve the conservative two-style route-oracle alphabet from the same
+/// policy the renderer emitted. Mixed or non-ASCII composites intentionally
+/// use Unicode so the oracle never assumes ASCII glyphs for a Unicode edge.
+pub fn effective_route_style(policy: &Value) -> Result<&'static str> {
+    validate_policy(policy)?;
+    let composite = policy["fields"]["config"]["composite_style"]
+        .as_object()
+        .ok_or_else(|| anyhow!("effective policy composite style is missing"))?;
+    let components = [
+        "corner", "border", "arrow", "edge", "junction", "back", "subgraph",
+    ];
+    let values = components
+        .iter()
+        .filter_map(|field| composite.get(*field).and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    if !values.is_empty() && values.iter().all(|value| *value == "Ascii") {
+        Ok("ascii")
+    } else {
+        Ok("unicode")
+    }
 }
 
 /// Bind the effective per-row render policies observed while a packet is
@@ -874,5 +1049,94 @@ mod tests {
         let mut unknown = policy.clone();
         unknown["fields"]["unknown"] = Value::Bool(true);
         assert!(validate_policy(&unknown).is_err());
+    }
+
+    #[test]
+    fn argv_contract_binds_canonical_and_native_no_override_rows() {
+        let canonical = argv_contract("target/debug/termiflow", true);
+        let native = argv_contract("target/debug/termiflow", false);
+        validate_argv_contract(&canonical).expect("canonical argv contract is valid");
+        validate_argv_contract(&native).expect("native argv contract is valid");
+        assert_ne!(canonical, native);
+
+        let canonical_row = json!({
+            "style": "ascii",
+            "mode": "optimized",
+            "input": "tests/fixtures/inputs/example.md",
+            "argv": [
+                "target/debug/termiflow",
+                "--print",
+                "--style",
+                "ascii",
+                "--optimize-render",
+                "tests/fixtures/inputs/example.md"
+            ]
+        });
+        validate_row_argv(&canonical, &canonical_row, "canonical")
+            .expect("canonical row argv is valid");
+
+        let native_row = json!({
+            "style": "ascii",
+            "mode": "optimized",
+            "input": "tests/fixtures/inputs/example.md",
+            "argv": [
+                "target/debug/termiflow",
+                "--print",
+                "--optimize-render",
+                "tests/fixtures/inputs/example.md"
+            ]
+        });
+        validate_row_argv(&native, &native_row, "native")
+            .expect("native no-override row argv is valid");
+
+        let mut tampered = native_row;
+        tampered["argv"] = json!([
+            "target/debug/termiflow",
+            "--print",
+            "--style",
+            "ascii",
+            "--optimize-render",
+            "tests/fixtures/inputs/example.md"
+        ]);
+        assert!(validate_row_argv(&native, &tampered, "tampered").is_err());
+    }
+
+    #[test]
+    fn no_override_contract_rejects_wrapper_programs() {
+        let contract = argv_contract("scripts/render-wrapper.sh", false);
+        assert!(validate_argv_contract(&contract).is_err());
+    }
+
+    #[test]
+    fn effective_route_style_is_conservative_for_composites() {
+        let ascii_config = termiflow::Config {
+            composite_style: termiflow::CompositeStyle::from_base(termiflow::BaseStyle::Ascii),
+            ..Default::default()
+        };
+        let ascii = termiflow::config::effective_render_policy(
+            &ascii_config,
+            termiflow::graph::Direction::TD,
+            "test-display",
+            "Fixed",
+            false,
+            false,
+        );
+        assert_eq!(
+            effective_route_style(&ascii).expect("ASCII route style"),
+            "ascii"
+        );
+
+        let unicode = termiflow::config::effective_render_policy(
+            &termiflow::Config::default(),
+            termiflow::graph::Direction::TD,
+            "test-display",
+            "Fixed",
+            false,
+            false,
+        );
+        assert_eq!(
+            effective_route_style(&unicode).expect("Unicode route style"),
+            "unicode"
+        );
     }
 }

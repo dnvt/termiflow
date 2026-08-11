@@ -9,6 +9,15 @@ published tag and link to the corresponding GitHub release.
   and maintenance.
 - Record intentional visual or schema changes with their reviewed decision.
 
+## [0.2.2] — 2026-08-11
+
+- Improve route ownership, junction ports, subgraph boundaries, and
+  direction-aware shape contours for difficult Mermaid diagrams.
+- Add full-corpus golden, expected-error, and perceptual review contracts for
+  all 237 fixture inputs across both canonical and authored-style lanes.
+- Keep Rust and dependency currency gates current while recording optional
+  Cargo lock metadata without treating it as a false blocker.
+
 ## [0.2.1] — 2026-08-03
 
 - Fail-closed, policy-bound visual QA persistence with crash recovery,

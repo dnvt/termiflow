@@ -3,6 +3,8 @@ use super::normalization::normalize_orientation_and_gutters;
 use super::routing_stage::route_stage;
 use super::*;
 
+use crate::render::sibling_subgraph_fan_in_identity;
+
 pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOutput> {
     let coords = OrientedCoords::new(input.graph.direction);
     let debug_timing = crate::runtime::current().diagnostics.timing;
@@ -231,6 +233,9 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     }
 
     normalize_orientation_and_gutters(input.graph, &config, &mut placement);
+    resolve_subgraph_envelopes(&input, &config, &mut placement, debug_timing);
+    reserve_sibling_subgraph_target_corridor(input.graph, &mut placement, &config);
+    reserve_nested_bt_external_entry_lanes(input.graph, &mut placement, &config);
     let subgraph_envelopes =
         resolve_subgraph_envelopes(&input, &config, &mut placement, debug_timing);
 
@@ -252,4 +257,202 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         warnings,
         ranks: placement.ranks,
     })
+}
+
+/// Reserve the primary-axis room required by the bounded sibling-subgraph
+/// target-entry scene.  External terminal targets are safe to move here: the
+/// topology gate proves they have no outgoing edges and the two selected
+/// source edges are the only incoming scene ownership.  Keeping this in the
+/// placement stage means the envelope, route planner, and renderer all see
+/// the same corridor instead of repairing a cramped frame after painting.
+fn reserve_sibling_subgraph_target_corridor(
+    graph: &Graph,
+    placement: &mut placement::Placement,
+    config: &CoarseLayoutConfig,
+) {
+    let required = sibling_subgraph_fan_in_identity::required_primary_gap(
+        sibling_subgraph_fan_in_identity::TARGET_PORT_COUNT,
+    );
+    if required == 0 {
+        return;
+    }
+
+    let envelopes = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
+    for scene in sibling_subgraph_fan_in_identity::scenes(graph) {
+        let Some(source) = envelopes
+            .get(&scene.source_subgraph_id)
+            .map(|env| env.outer)
+        else {
+            continue;
+        };
+        let Some(target) = placement.node_rects.get(&scene.target_id).copied() else {
+            continue;
+        };
+
+        let right = target.x >= source.right();
+        let left = target.right() <= source.x;
+        let below = target.y >= source.bottom();
+        let above = target.bottom() <= source.y;
+        let vertical_gap = if below {
+            target.y.saturating_sub(source.bottom())
+        } else if above {
+            source.y.saturating_sub(target.bottom())
+        } else {
+            usize::MAX
+        };
+        let horizontal_gap = if right {
+            target.x.saturating_sub(source.right())
+        } else if left {
+            source.x.saturating_sub(target.right())
+        } else {
+            usize::MAX
+        };
+
+        let vertical_preferred = matches!(
+            graph.direction,
+            Direction::TD | Direction::TB | Direction::BT
+        );
+        let use_horizontal = if right || left {
+            if below || above {
+                if vertical_preferred {
+                    vertical_gap < required || horizontal_gap <= vertical_gap
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
+        let (dx, dy) = if use_horizontal && right {
+            (required.saturating_sub(horizontal_gap) as isize, 0)
+        } else if use_horizontal && left {
+            (-(required.saturating_sub(horizontal_gap) as isize), 0)
+        } else if below {
+            (0, required.saturating_sub(vertical_gap) as isize)
+        } else if above {
+            (0, -(required.saturating_sub(vertical_gap) as isize))
+        } else {
+            (0, 0)
+        };
+        if dx == 0 && dy == 0 {
+            continue;
+        }
+
+        let Some(rect) = placement.node_rects.get_mut(&scene.target_id) else {
+            continue;
+        };
+        rect.x = shift_coordinate(rect.x, dx);
+        rect.y = shift_coordinate(rect.y, dy);
+        if let Some(position) = placement.positions.get_mut(&scene.target_id) {
+            position.x = rect.x;
+            position.y = rect.y;
+        }
+        placement.canvas.width = placement.canvas.width.max(rect.right());
+        placement.canvas.height = placement.canvas.height.max(rect.bottom());
+    }
+}
+
+fn shift_coordinate(value: usize, delta: isize) -> usize {
+    if delta.is_negative() {
+        value.saturating_sub(delta.unsigned_abs())
+    } else {
+        value.saturating_add(delta as usize)
+    }
+}
+
+/// Align a terminal external BT source with the one title-safe lane shared by
+/// a nested boundary chain.  A source node that exits one cell beside that
+/// lane has no spare row for a clean elbow: its turn is written onto the
+/// source box's top border and becomes a `+-+`/corner fusion.  The route and
+/// portal planners already derive the shared lane from the same topology; the
+/// placement stage makes the source centerline agree with it when the source
+/// is a single-edge terminal and the move is collision-free.
+fn reserve_nested_bt_external_entry_lanes(
+    graph: &Graph,
+    placement: &mut placement::Placement,
+    config: &CoarseLayoutConfig,
+) {
+    if graph.direction != Direction::BT {
+        return;
+    }
+
+    let envelopes = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
+    let bounds = envelopes
+        .iter()
+        .map(|(id, envelope)| (id.clone(), envelope.outer))
+        .collect::<HashMap<_, _>>();
+
+    for edge in &graph.edges {
+        if edge.is_back_edge || edge.kind != crate::graph::EdgeKind::Arrow {
+            continue;
+        }
+        if graph.get_node_subgraph(&edge.from).is_some()
+            || graph.get_node_subgraph(&edge.to).is_none()
+        {
+            continue;
+        }
+        if graph
+            .edges
+            .iter()
+            .filter(|candidate| !candidate.is_back_edge && candidate.from == edge.from)
+            .count()
+            != 1
+        {
+            continue;
+        }
+
+        let (exit_subgraphs, enter_subgraphs) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+        if !exit_subgraphs.is_empty() || enter_subgraphs.len() < 2 {
+            continue;
+        }
+        let Some(source_rect) = placement.node_rects.get(&edge.from).copied() else {
+            continue;
+        };
+        let desired_x = source_rect.x + source_rect.width / 2;
+        let Some(lane) = crate::portals::bt_nested_boundary_lane_with_bounds(
+            graph,
+            &enter_subgraphs,
+            desired_x,
+            Some(&bounds),
+        ) else {
+            continue;
+        };
+        if lane == desired_x {
+            continue;
+        }
+
+        let candidate = Rect::new(
+            lane.saturating_sub(source_rect.width / 2),
+            source_rect.y,
+            source_rect.width,
+            source_rect.height,
+        );
+        let collides = placement
+            .node_rects
+            .iter()
+            .filter(|(node_id, _)| node_id.as_str() != edge.from)
+            .any(|(_, other)| {
+                let candidate = candidate.inflate(1);
+                let other = other.inflate(1);
+                candidate.x < other.right()
+                    && other.x < candidate.right()
+                    && candidate.y < other.bottom()
+                    && other.y < candidate.bottom()
+            });
+        if collides {
+            continue;
+        }
+
+        if let Some(rect) = placement.node_rects.get_mut(&edge.from) {
+            *rect = candidate;
+        }
+        if let Some(position) = placement.positions.get_mut(&edge.from) {
+            position.x = candidate.x;
+            position.y = candidate.y;
+        }
+        placement.canvas.width = placement.canvas.width.max(candidate.right());
+    }
 }

@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn render_with_feedback_coordinates_bt_multi_entry_boundary_scene() {
+    let input =
+        std::fs::read_to_string("tests/fixtures/inputs/collision_edge_along_border_bt.md").unwrap();
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        for optimize in [false, true] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimize),
+            )
+            .unwrap();
+
+            for label in ["A", "B", "C", "X1", "X2", "X3", "Target Group"] {
+                assert!(
+                    outcome.output.contains(label),
+                    "expected {label:?} to remain visible for {style:?}, optimize={optimize}\n{}",
+                    outcome.output
+                );
+            }
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "expected clean BT multi-entry scene for {style:?}, optimize={optimize}\n{}",
+                outcome.output
+            );
+            if style == termiflow::BaseStyle::Ascii {
+                assert!(
+                    !outcome.output.contains("+-+") && !outcome.output.contains("+ -"),
+                    "expected no accidental ASCII boundary seam for optimize={optimize}\n{}",
+                    outcome.output
+                );
+            } else {
+                assert!(
+                    !outcome.output.contains("┌─┘") && !outcome.output.contains("┘┌"),
+                    "expected no adjacent Unicode boundary corners for optimize={optimize}\n{}",
+                    outcome.output
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn render_with_feedback_collapses_td_subgraph_fanout_to_single_entry_stem() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_fanout_td.md").unwrap();
 
@@ -45,6 +90,34 @@ fn render_with_feedback_collapses_td_subgraph_fanout_to_single_entry_stem() {
             style,
             stem_band.join("\n")
         );
+        let top_border = lines
+            .get(title_idx.saturating_sub(1))
+            .copied()
+            .expect("top border row");
+        assert!(
+            !top_border.contains(if style == termiflow::BaseStyle::Ascii {
+                "||"
+            } else {
+                "││"
+            }),
+            "expected one portal shaft on the TD top border for {:?}, got:\n{}",
+            style,
+            outcome.output
+        );
+        let approach_row = lines
+            .get(title_idx.saturating_sub(2))
+            .copied()
+            .expect("fan-out approach row");
+        assert!(
+            !approach_row.contains(if style == termiflow::BaseStyle::Ascii {
+                "++"
+            } else {
+                "└┐"
+            }),
+            "expected a clean single-lane fan-out approach for {:?}, got:\n{}",
+            style,
+            outcome.output
+        );
         assert_eq!(
             outcome.critic_report.audit_summary().verdict,
             termiflow::AuditVerdict::Clean,
@@ -52,6 +125,238 @@ fn render_with_feedback_collapses_td_subgraph_fanout_to_single_entry_stem() {
             style,
             outcome.output
         );
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_narrow_td_subgraph_portal_corners_separated() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_narrow_td.md").unwrap();
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        for optimize in [false, true] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimize),
+            )
+            .unwrap();
+
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "expected narrow TD subgraph portal route to be clean for {style:?}, optimize={optimize}\n{}",
+                outcome.output
+            );
+            if style == termiflow::BaseStyle::Ascii {
+                assert!(
+                    !outcome.output.contains("++"),
+                    "expected no doubled ASCII border cells for optimize={optimize}\n{}",
+                    outcome.output
+                );
+            } else {
+                assert!(
+                    !outcome.output.contains("└┐") && !outcome.output.contains("┌┘"),
+                    "expected no adjacent Unicode boundary corners for optimize={optimize}\n{}",
+                    outcome.output
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_direct_td_sibling_turn_in_the_gap() {
+    let fixtures = [
+        (
+            "tests/fixtures/inputs/collision_sibling_tight_td.md",
+            "S1",
+            "S2",
+            ["S1", "S2", "A", "B"],
+        ),
+        (
+            "tests/fixtures/inputs/subgraph_direct_td.md",
+            "Group 1",
+            "Group 2",
+            ["Group 1", "Group 2", "Node A", "Node B"],
+        ),
+    ];
+
+    for (fixture, upper_title, lower_title, labels) in fixtures {
+        let input = std::fs::read_to_string(fixture).expect("read direct TD fixture");
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            for optimize in [false, true] {
+                let outcome = termiflow::render_with_feedback(
+                    &input,
+                    termiflow::RenderOptions::new()
+                        .with_style(style)
+                        .with_optimize_render(optimize),
+                )
+                .unwrap();
+                let lines: Vec<&str> = outcome.output.lines().collect();
+                let horizontal = if style == termiflow::BaseStyle::Ascii {
+                    '-'
+                } else {
+                    '━'
+                };
+                let has_long_border =
+                    |line: &str| line.chars().filter(|ch| *ch == horizontal).count() >= 10;
+                let upper_title_row = lines
+                    .iter()
+                    .position(|line| line.contains(upper_title))
+                    .expect("upper title row");
+                let lower_title_row = lines
+                    .iter()
+                    .position(|line| line.contains(lower_title))
+                    .expect("lower title row");
+                let borders: Vec<usize> = (upper_title_row + 1..lower_title_row)
+                    .filter(|index| has_long_border(lines[*index]))
+                    .collect();
+                assert!(
+                    borders.len() >= 2,
+                    "expected both direct sibling borders for {fixture}, style={style:?}, optimize={optimize}\n{}",
+                    outcome.output
+                );
+                let upper_border = borders[0];
+                let lower_border = *borders.last().expect("lower sibling border");
+                let is_corridor_turn = |line: &str| {
+                    if style == termiflow::BaseStyle::Ascii {
+                        line.chars().filter(|ch| *ch == '+').count() >= 2
+                            && line.chars().any(|ch| ch == '-')
+                    } else {
+                        line.contains('└') && line.contains('┐') && line.contains('─')
+                    }
+                };
+                let turn_row = (upper_border + 1..lower_border)
+                    .find(|index| is_corridor_turn(lines[*index]))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "direct corridor turn row missing for {fixture}, style={style:?}, optimize={optimize}; borders=({upper_border}, {lower_border})\n{}",
+                            outcome.output
+                        )
+                    });
+
+                assert!(
+                    turn_row - upper_border >= 2 && lower_border - turn_row >= 2,
+                    "expected direct TD turn to have a straight row before each sibling border for {fixture}, style={style:?}, optimize={optimize}; turn={turn_row}, borders=({upper_border}, {lower_border})\n{}",
+                    outcome.output
+                );
+                for label in labels {
+                    assert!(
+                        outcome.output.contains(label),
+                        "expected {label:?} to remain visible for {fixture}, style={style:?}, optimize={optimize}\n{}",
+                        outcome.output
+                    );
+                }
+                assert_eq!(
+                    outcome.critic_report.audit_summary().verdict,
+                    termiflow::AuditVerdict::Clean,
+                    "expected clean direct TD sibling corridor for {fixture}, style={style:?}, optimize={optimize}\n{}",
+                    outcome.output
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn render_with_feedback_gives_stacked_td_siblings_two_connector_rows() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/collision_sibling_triple_td.md")
+        .expect("read triple sibling fixture");
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        for optimize in [false, true] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimize),
+            )
+            .unwrap();
+            let lines: Vec<&str> = outcome.output.lines().collect();
+            let horizontal = if style == termiflow::BaseStyle::Ascii {
+                '-'
+            } else {
+                '━'
+            };
+            let arrow = if style == termiflow::BaseStyle::Ascii {
+                'v'
+            } else {
+                '↓'
+            };
+            let has_long_border =
+                |line: &str| line.chars().filter(|ch| *ch == horizontal).count() >= 10;
+
+            for (upper, lower) in [("Group 1", "Group 2"), ("Group 2", "Group 3")] {
+                let upper_title = lines
+                    .iter()
+                    .position(|line| line.contains(upper))
+                    .expect("upper group title");
+                let lower_title = lines
+                    .iter()
+                    .position(|line| line.contains(lower))
+                    .expect("lower group title");
+                let borders: Vec<usize> = (upper_title + 1..lower_title)
+                    .filter(|index| has_long_border(lines[*index]))
+                    .collect();
+                assert!(
+                    borders.len() >= 2,
+                    "expected both sibling border rows for {upper}->{lower}, style={style:?}, optimize={optimize}\n{}",
+                    outcome.output
+                );
+                let gap = borders[borders.len() - 1]
+                    .saturating_sub(borders[0])
+                    .saturating_sub(1);
+                assert!(
+                    gap >= 2,
+                    "expected two connector rows for {upper}->{lower}, got {gap}, style={style:?}, optimize={optimize}\n{}",
+                    outcome.output
+                );
+            }
+
+            for label in [
+                "Group 1", "Group 2", "Group 3", "A1", "A2", "B1", "B2", "C1", "C2",
+            ] {
+                assert!(
+                    outcome.output.contains(label),
+                    "expected {label:?} to remain visible for {style:?}, optimize={optimize}\n{}",
+                    outcome.output
+                );
+            }
+            let title_edge = if style == termiflow::BaseStyle::Ascii {
+                '|'
+            } else {
+                '│'
+            };
+            for title in ["Group 2", "Group 3"] {
+                let title_line = lines
+                    .iter()
+                    .find(|line| line.contains(title))
+                    .expect("sibling title row");
+                let edge_count = title_line.chars().filter(|ch| *ch == title_edge).count();
+                let minimum = if style == termiflow::BaseStyle::Ascii {
+                    3
+                } else {
+                    1
+                };
+                assert!(
+                    edge_count >= minimum,
+                    "expected a visible title-safe sibling portal beside {title} for {style:?}, optimize={optimize}\n{}",
+                    outcome.output
+                );
+            }
+            assert!(
+                outcome.output.chars().filter(|ch| *ch == arrow).count() >= 5,
+                "expected all five TD arrows for {style:?}, optimize={optimize}\n{}",
+                outcome.output
+            );
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "expected clean stacked TD siblings for {style:?}, optimize={optimize}\n{}",
+                outcome.output
+            );
+        }
     }
 }
 
@@ -84,7 +389,7 @@ fn render_with_feedback_keeps_complex_td_subgraph_titles_clean() {
 }
 
 #[test]
-fn render_with_feedback_keeps_complex_td_data_layer_bottom_exit_to_one_portal() {
+fn render_with_feedback_keeps_complex_td_data_layer_bottom_exit_portals_distinct() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md").unwrap();
     let parsed = termiflow::parse(&input, false).unwrap();
     let graph = termiflow::coarse_waterfall(parsed.graph).unwrap();
@@ -105,8 +410,8 @@ fn render_with_feedback_keeps_complex_td_data_layer_bottom_exit_to_one_portal() 
         .count();
 
     assert_eq!(
-        portal_count, 1,
-        "expected the TD Data Layer fan-in to leave one clean bottom exit portal\n{}",
+        portal_count, 2,
+        "expected the TD Data Layer fan-in to leave two distinct bottom exit portals\n{}",
         outcome.output
     );
 }
@@ -819,6 +1124,97 @@ fn render_with_feedback_keeps_complex_bt_subgraph_connectors_clean() {
             style,
             outcome.output
         );
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_bt_parallel_scene_boundary_and_fanout_cells_clean() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_parallel_bt.md").unwrap();
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        let outcome = termiflow::render_with_feedback(
+            &input,
+            termiflow::RenderOptions::new().with_style(style),
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.critic_report.audit_summary().verdict,
+            termiflow::AuditVerdict::Clean,
+            "expected clean BT parallel-scene output for {:?}\n{}",
+            style,
+            outcome.output
+        );
+
+        match style {
+            termiflow::BaseStyle::Ascii => {
+                assert!(outcome
+                    .output
+                    .contains("+-----------------|----------------+"));
+                assert!(outcome.output.contains("+-------+-------+"));
+                assert!(!outcome.output.contains("+-+"));
+            }
+            termiflow::BaseStyle::Unicode => {
+                assert!(outcome
+                    .output
+                    .lines()
+                    .any(|line| line.contains("Process") && line.contains('│')));
+                assert!(outcome.output.contains("└───────┬───────┘"));
+                assert!(!outcome.output.contains("├─┘"));
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_bt_parallel_sibling_crossings_off_boundary_elbows() {
+    let input =
+        std::fs::read_to_string("tests/fixtures/inputs/collision_parallel_cross_bt.md").unwrap();
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        for optimize in [false, true] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimize),
+            )
+            .unwrap();
+
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "expected clean BT sibling-crossing output for {:?}, optimize={optimize}\n{}",
+                style,
+                outcome.output
+            );
+            assert!(
+                outcome.output.contains("A1")
+                    && outcome.output.contains("A2")
+                    && outcome.output.contains("B1")
+                    && outcome.output.contains("B2")
+                    && outcome.output.contains("Source")
+                    && outcome.output.contains("Target"),
+                "expected all sibling-crossing labels to remain readable for {:?}, optimize={optimize}\n{}",
+                style,
+                outcome.output
+            );
+
+            match style {
+                termiflow::BaseStyle::Ascii => assert!(
+                    !outcome.output.contains("+-+"),
+                    "expected no one-cell ASCII boundary elbow for optimize={optimize}\n{}",
+                    outcome.output
+                ),
+                termiflow::BaseStyle::Unicode => assert!(
+                    !outcome.output.contains("┌─┘"),
+                    "expected no one-cell Unicode boundary elbow for optimize={optimize}\n{}",
+                    outcome.output
+                ),
+                _ => unreachable!(),
+            }
+        }
     }
 }
 

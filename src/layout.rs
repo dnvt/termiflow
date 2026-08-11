@@ -1,8 +1,8 @@
 //! Coarse layout + Manhattan routing pipeline (default engine).
 //!
 //! This module owns the current coarse layout and Manhattan-routing pipeline.
-//! The deprecated waterfall/spike names below remain compatibility aliases for
-//! callers migrating to the coarse engine. The pipeline provides:
+//! The legacy waterfall/spike names below remain compatibility aliases for
+//! callers of the coarse engine. The pipeline provides:
 //! - Direction-agnostic layered placement on a coarse grid
 //! - Obstacle-aware Manhattan routing with simple detours
 //! - Subgraph gutter metadata for future avoidance/bundling
@@ -20,6 +20,7 @@ use crate::spacing::SpacingConfig;
 use crate::style::{box_width, BOX_MIN_WIDTH};
 
 mod constraints;
+mod dense_pipeline;
 mod dual_junction;
 mod envelope_stage;
 #[path = "layout_routing.rs"]
@@ -108,18 +109,34 @@ pub fn coarse_waterfall(graph: Graph) -> Result<Graph> {
     coarse_waterfall_with_config(graph, CoarseLayoutConfig::default())
 }
 
-/// Deprecated compatibility alias for [`coarse_waterfall`].
-#[deprecated(note = "Use coarse_waterfall; this alias runs the current coarse engine")]
+/// Legacy compatibility alias for [`coarse_waterfall`].
+///
+/// New code should prefer [`coarse_waterfall`]. This entry point remains
+/// supported for downstream callers of earlier TermiFlow releases.
 pub fn waterfall(graph: Graph) -> Result<Graph> {
     coarse_waterfall(graph)
 }
 
 /// Coarse layout engine entry point.
 pub fn apply_coarse_layout(
-    mut graph: Graph,
+    graph: Graph,
     prior_positions: Option<HashMap<String, Point>>,
     config: CoarseLayoutConfig,
 ) -> Result<Graph> {
+    Ok(apply_coarse_layout_with_contract(graph, prior_positions, config)?.0)
+}
+
+/// Internal layout entry point that preserves the immutable endpoint contract
+/// for the normal layout-and-render orchestration. The public graph-only API
+/// intentionally discards this sidecar for compatibility.
+pub(crate) fn apply_coarse_layout_with_contract(
+    mut graph: Graph,
+    prior_positions: Option<HashMap<String, Point>>,
+    config: CoarseLayoutConfig,
+) -> Result<(
+    Graph,
+    Option<crate::layout_render_contract::BtSiblingEndpointContract>,
+)> {
     let debug_timing = crate::runtime::current().diagnostics.timing;
     let t_start = std::time::Instant::now();
 
@@ -222,7 +239,8 @@ pub fn apply_coarse_layout(
         eprintln!("termiflow: apply {:?}", t_start.elapsed());
     }
 
-    Ok(graph)
+    let contract = crate::layout_render_contract::build_bt_sibling_endpoint_contract(&graph);
+    Ok((graph, contract))
 }
 
 fn adjust_portal_slots_for_title(envelopes: &mut HashMap<String, SubgraphEnvelope>, graph: &Graph) {
@@ -290,8 +308,10 @@ fn adjust_portal_slots_for_title(envelopes: &mut HashMap<String, SubgraphEnvelop
     }
 }
 
-/// Deprecated compatibility alias for [`apply_coarse_layout`].
-#[deprecated(note = "Use apply_coarse_layout; this alias runs the current coarse engine")]
+/// Legacy compatibility alias for [`apply_coarse_layout`].
+///
+/// New code should prefer [`apply_coarse_layout`]. This entry point remains
+/// supported for downstream callers of earlier TermiFlow releases.
 pub fn apply_spike_layout(
     graph: Graph,
     prior_positions: Option<HashMap<String, Point>>,

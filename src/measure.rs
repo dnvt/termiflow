@@ -4,7 +4,28 @@
 //! `BOX_HEIGHT` unless `Config.wrap_labels` is enabled.
 
 use crate::config::Config;
-use crate::graph::{Graph, NodeShape};
+use crate::graph::{Direction, EdgeKind, Graph, NodeShape};
+use crate::render::bt_parallel_identity::target_port_counts as bt_parallel_target_port_counts;
+use crate::render::dedicated_fan_in::{minimum_port_height, target_port_counts};
+use crate::render::dual_junction::target_port_counts as dual_junction_target_port_counts;
+use crate::render::fan_in_identity::{
+    minimum_port_span as identity_minimum_port_span,
+    target_port_counts as identity_target_port_counts,
+};
+use crate::render::sibling_subgraph_fan_in_identity::target_port_counts as sibling_subgraph_target_port_counts;
+use crate::render::sibling_target_entry_identity::horizontal_target_port_counts;
+use crate::render::subgraph_fan_in_identity::{
+    minimum_target_span as subgraph_minimum_target_span,
+    target_port_counts as subgraph_target_port_counts,
+};
+use crate::render::vertical_fan_in::{
+    minimum_port_width, nonterminal_target_port_counts,
+    target_port_counts as vertical_target_port_counts,
+};
+use crate::render::wide_terminal_fan_in::{
+    minimum_port_height as wide_minimum_port_height, minimum_port_width as wide_minimum_port_width,
+    target_port_counts as wide_target_port_counts,
+};
 use crate::style::{
     box_width, display_width, split_text_to_width_chunks, truncate_label, truncate_to_width,
     BOX_HEIGHT, BOX_MIN_WIDTH, BOX_PADDING,
@@ -279,6 +300,187 @@ pub fn measure_graph(graph: &mut Graph, config: &Config) {
             node.height = BOX_HEIGHT;
         }
     }
+
+    // Horizontal dense crossing scenes need two independent side ports per
+    // node. A three-row box exposes only one interior side cell, so a pair of
+    // routes would be forced to share the same arrow attachment. Increase the
+    // measured box height only for the topology family that the dense scene
+    // lowerer can prove safe; ordinary diagrams keep their compact boxes.
+    if dense_horizontal_crossing_candidate(graph) {
+        for node in &mut graph.nodes {
+            // Two source side ports and two target side ports need disjoint
+            // interior rows. A five-row box only exposes two interior rows,
+            // forcing source and target attachments onto the same corridor;
+            // Nine rows leave a full blank separator on both sides of the
+            // inner target ports in the raw frame.
+            node.height = node.height.max(9);
+        }
+    }
+
+    // Some horizontal fan-in families need a separate target-side row for
+    // every incoming edge. Keep this sizing decision coupled to the render
+    // policy so routing never asks a compact box for ports it cannot expose.
+    for (target_id, port_count) in target_port_counts(graph) {
+        if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == target_id) {
+            node.height = node.height.max(minimum_port_height(port_count));
+        }
+    }
+
+    // The bounded vertical fan-in scene attaches arrows to distinct interior
+    // columns on the target boundary. Reserve that width before layout so the
+    // target projection and route lowerer share one capacity contract.
+    let mut vertical_target_ports = vertical_target_port_counts(graph);
+    vertical_target_ports.extend(nonterminal_target_port_counts(graph));
+    vertical_target_ports.extend(dual_junction_target_port_counts(graph));
+    for (target_id, port_count) in vertical_target_ports {
+        if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == target_id) {
+            node.width = node.width.max(minimum_port_width(port_count));
+        }
+    }
+
+    // Ordinary identity fan-in uses the same centered, separated port
+    // contract in the render lowerer.  Reserve that capacity before layout
+    // so the lowerer never has to invent ports after node placement.
+    for (target_id, port_count) in identity_target_port_counts(graph) {
+        if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == target_id) {
+            if matches!(graph.direction, Direction::LR | Direction::RL) {
+                node.height = node.height.max(identity_minimum_port_span(port_count));
+            } else {
+                node.width = node.width.max(identity_minimum_port_span(port_count));
+            }
+        }
+    }
+
+    // Strict boundary-owned subgraph fan-in keeps the source portals distinct
+    // and now exposes one target-side port per incoming edge.  This capacity
+    // contract is intentionally separate from ordinary subgraph-free fan-in.
+    for (target_id, port_count) in subgraph_target_port_counts(graph) {
+        if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == target_id) {
+            if matches!(graph.direction, Direction::LR | Direction::RL) {
+                node.height = node.height.max(subgraph_minimum_target_span(port_count));
+            } else {
+                node.width = node.width.max(subgraph_minimum_target_span(port_count));
+            }
+        }
+    }
+
+    // The bounded sibling-subgraph scene owns two external target entries but
+    // is not eligible for the strict single-subgraph capacity policy above.
+    // Reserve the same centered target span before layout so LR/RL can expose
+    // two interior side rows instead of collapsing both edges onto the one
+    // row available in a default three-row box.
+    for (target_id, port_count) in sibling_subgraph_target_port_counts(graph) {
+        if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == target_id) {
+            let span = identity_minimum_port_span(port_count);
+            // BT can choose a horizontal side for a diagonal placement, as
+            // can LR/RL.  TD/TB use the top/bottom columns and stay compact
+            // vertically unless the physical scene later proves otherwise.
+            if matches!(
+                graph.direction,
+                Direction::BT | Direction::LR | Direction::RL
+            ) {
+                node.height = node.height.max(span);
+            } else {
+                node.width = node.width.max(span);
+            }
+        }
+    }
+    // The exact LR/RL mixed sibling-target scene owns one internal and one
+    // cross-subgraph arrival at D.  Reserve the same two horizontal entry
+    // rows that its scene lowerer consumes; otherwise a default three-row
+    // target would collapse both arrivals back onto the center row.
+    for (target_id, port_count) in horizontal_target_port_counts(graph) {
+        if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == target_id) {
+            node.height = node.height.max(identity_minimum_port_span(port_count));
+        }
+    }
+    // The bounded BT parallel subgraph scene owns two internal target entries.
+    // Reserve that capacity from the same topology selector used by the scene
+    // lowerer so measurement cannot collapse the entries back to one center.
+    for (target_id, port_count) in bt_parallel_target_port_counts(graph) {
+        if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == target_id) {
+            node.width = node.width.max(identity_minimum_port_span(port_count));
+        }
+    }
+    // The proof-gated wide terminal fan-in scene needs one separated interior
+    // target column per incoming edge. Keep its capacity contract separate
+    // from the narrow two/three-source experiment.
+    for (target_id, port_count) in wide_target_port_counts(graph) {
+        if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == target_id) {
+            if matches!(graph.direction, Direction::LR | Direction::RL) {
+                node.height = node.height.max(wide_minimum_port_height(port_count));
+            } else {
+                node.width = node.width.max(wide_minimum_port_width(port_count));
+            }
+        }
+    }
+}
+
+fn dense_horizontal_crossing_candidate(graph: &Graph) -> bool {
+    if !matches!(graph.direction, Direction::LR | Direction::RL)
+        || !graph.subgraphs.is_empty()
+        || graph
+            .nodes
+            .iter()
+            .any(|node| node.shape != NodeShape::Rectangle)
+        || graph
+            .edges
+            .iter()
+            .any(|edge| edge.is_back_edge || edge.kind != EdgeKind::Arrow || edge.label.is_some())
+    {
+        return false;
+    }
+
+    let sources: Vec<&str> = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            graph
+                .edges
+                .iter()
+                .filter(|edge| edge.from == node.id)
+                .count()
+                == 2
+        })
+        .map(|node| node.id.as_str())
+        .collect();
+    let targets: Vec<&str> = graph
+        .nodes
+        .iter()
+        .filter(|node| graph.edges.iter().filter(|edge| edge.to == node.id).count() == 2)
+        .map(|node| node.id.as_str())
+        .collect();
+    if sources.len() < 3 || targets.len() < 3 {
+        return false;
+    }
+
+    sources.iter().enumerate().any(|(first, a)| {
+        sources
+            .iter()
+            .enumerate()
+            .skip(first + 1)
+            .any(|(second, b)| {
+                sources.iter().enumerate().skip(second + 1).any(|(_, c)| {
+                    let source_set = [*a, *b, *c];
+                    let relation: Vec<(&str, &str)> = graph
+                        .edges
+                        .iter()
+                        .filter(|edge| source_set.contains(&edge.from.as_str()))
+                        .map(|edge| (edge.from.as_str(), edge.to.as_str()))
+                        .collect();
+                    let target_set: std::collections::HashSet<&str> =
+                        relation.iter().map(|(_, target)| *target).collect();
+                    target_set.len() == 3
+                        && relation.len() == 6
+                        && source_set.iter().all(|source| {
+                            relation.iter().filter(|(from, _)| from == source).count() == 2
+                        })
+                        && target_set.iter().all(|target| {
+                            relation.iter().filter(|(_, to)| to == target).count() == 2
+                        })
+                })
+            })
+    })
 }
 
 #[cfg(test)]

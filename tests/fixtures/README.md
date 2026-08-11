@@ -20,7 +20,9 @@ fixtures/
 
 The agent-facing perceptual procedure lives in
 `skills/termiflow-visual-review/SKILL.md`; it is Rust/Bash-only and keeps the
-machine pre-screen separate from one-frame human-visible review.
+machine pre-screen separate from one-frame human-visible review. Every existing
+input under `inputs/` is in scope for the full visual matrix and one-frame
+perceptual ledger; canaries and holdouts do not replace ordinary fixture rows.
 
 The versioned schema contract lives in `fixture_spec.json`. Each named queue
 owns its review canaries, negative variants, and evaluator-owned holdouts;
@@ -52,7 +54,27 @@ Regenerate them after intentional rendering changes.
 - **237 input files** (216 clean successes, 18 successes with warnings, 3
   expected errors); the typed contracts live in `metadata.json`
 - **474 expected outputs** (ASCII + Unicode per input)
+- **948 ordinary visual rows** (ASCII + Unicode × default + optimized per
+  input; expected-error rows follow their declared error policy)
 - **4 directions tested**: TD, LR, BT, RL
+
+The complete packet currently contains **936 renderable review rows** plus
+**12 expected-error policy rows**. Every renderable row receives a
+hash-bound `termiflow.route_clarity.v1` report before it can enter the
+one-frame reviewer queue. Route `risk` and `inconclusive` statuses are
+conservative signals, not approvals. The reviewer must eventually inspect
+and record one decision for every renderable row; canaries, holdouts,
+residual-only queues, and machine-clean prescreens do not replace that
+full-corpus pass.
+
+Renderer-wide work has a second full-corpus policy lane. The canonical packet
+injects the requested `--style` for comparable ASCII/Unicode homologs. The
+authored-policy packet is generated with `--respect-input-style` so native
+`%% termiflow:` style, wrapping, spacing, and composite directives are not
+overridden. It covers the same 237 inputs, 948 rows, 936 renderable decisions,
+and 12 expected-error policy decisions. The 20 directive-bearing inputs are
+high-risk, but every other input remains a no-override control; a row from
+one lane cannot cover the other.
 
 ## Checking and Updating Expected Outputs
 
@@ -71,6 +93,13 @@ scripts/render_fixtures.sh --ascii --unicode
 # Validate a completed full packet against the known quality baseline
 scripts/visual_validate.sh --packet /path/to/packet --strict-quality
 
+# Supplemental native-policy packet: do not inject --style into inputs
+scripts/visual_audit.sh --respect-input-style \
+  --out /tmp/termiflow-visual-no-override \
+  --styles ascii,unicode --modes default,optimized
+scripts/visual_validate.sh --packet /tmp/termiflow-visual-no-override \
+  --strict-quality
+
 # Validate or materialize the canonical smoke queue (16 review rows)
 cargo run --features qa --bin termiflow-qa -- schema \
   --spec tests/fixtures/fixture_spec.json \
@@ -88,6 +117,17 @@ cargo run --features qa --bin termiflow-qa -- schema \
 cargo run --features qa --bin termiflow-qa -- golden \
   --manifest /tmp/junction-quad-manifest.json --check
 
+# Compose the schema-bound candidate/packet/holdout boundary. This stops before
+# perceptual decisions and golden approval; both remain explicit next steps.
+scripts/schema_visual_cycle.sh \
+  --queue junction-quad \
+  --manifest /tmp/junction-quad-cycle-manifest.json \
+  --golden-report /tmp/junction-quad-golden-report.json \
+  --packet /tmp/junction-quad-cycle-packet \
+  --holdout-packet /tmp/junction-quad-cycle-holdout-packet \
+  --holdout-receipt /tmp/junction-quad-cycle-holdout-receipt.json \
+  --summary /tmp/junction-quad-schema-cycle.json
+
 # Execute the evaluator-owned holdout queue without creating goldens
 cargo run --features qa --bin termiflow-qa -- holdout \
   --spec tests/fixtures/fixture_spec.json \
@@ -101,11 +141,22 @@ scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review
 # Review residual frames one at a time; each record binds frame/evidence hashes
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --next
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --record /tmp/one-review.json
-# For a full perceptual pass, start with a fresh decisions file and omit
-# --prescreen-clean; repeat --next and --record until every frame is reviewed.
-scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --next
-scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --record /tmp/one-review.json
-scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --validate
+# Carry prior human watches/failures and hypotheses into the regenerated queue
+scripts/review_visual_packet.sh --packet /path/to/packet \
+  --decisions /tmp/full-review-decisions.jsonl \
+  --history /tmp/visual-review-history.jsonl --next
+# For the authoritative full-corpus perceptual pass, start with a fresh
+# decisions file for each packet/policy lane and omit --prescreen-clean; add
+# --fresh to every review command. Drain both the canonical and the
+# --respect-input-style packet; the latter's effective policy must be checked
+# in the evidence before judging style fidelity.
+# Fresh mode rejects machine structural and carry-forward decisions. Repeat
+# --fresh --next and --fresh --record until every existing input/style/mode
+# frame has a separate decision. Do not stop after residual, canary, or
+# machine-clean rows.
+scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --fresh --next
+scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --fresh --record /tmp/one-review.json
+scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --fresh --validate
 
 # Close one explicit fix/hold/lesson cycle without changing goldens
 scripts/visual_cycle.sh \
@@ -115,7 +166,8 @@ scripts/visual_cycle.sh \
   --holdout-receipt /tmp/junction-quad-holdout-receipt.json \
   --holdout-decisions /tmp/junction-quad-holdout-decisions.jsonl \
   --record /tmp/visual-cycle.json \
-  --output /tmp/visual-cycle-receipt.json
+  --output /tmp/visual-cycle-receipt.json \
+  --history /tmp/visual-review-history.jsonl
 
 # Single test
 cargo run -- --print tests/fixtures/inputs/flow_simple_td.md > tests/fixtures/expected/flow_simple_td.unicode.txt
@@ -170,6 +222,14 @@ and perceptual decisions remain separate evidence layers. A `hold` or
 command are explicit; a `fixed` cycle requires a localized fix and a passed
 holdout. The wrapper never appends decisions, changes source, updates
 expected outputs, or promotes a baseline.
+
+`schema_visual_cycle.sh` is the reusable boundary before that sequential
+review: it materializes the canonical Mermaid queue, checks exact golden
+candidates, creates strict main and evaluator-owned holdout packets, and emits
+`termiflow.schema_visual_cycle.v1`. It never appends decisions or approves
+goldens. Use its emitted one-frame review command, then `visual_cycle.sh`, and
+only afterward use the separate intent-bound golden approval command for an
+intentional rendering change.
 
 There is intentionally no structural-review escape hatch. A clean machine
 pre-screen is not a human-eye decision; a deliberate full perceptual pass uses

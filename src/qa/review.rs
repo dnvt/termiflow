@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
-use super::{common, persist};
+use super::{common, persist, visual_history::HistoryLedger};
 
 pub const DECISION_SCHEMA: &str = "termiflow.visual_review.decision.v3";
 const FRAME_SCHEMA: &str = "termiflow.visual_review.frame.v2";
@@ -59,12 +60,16 @@ impl DecisionState {
 pub struct ReviewArgs {
     pub packet: PathBuf,
     pub decisions: PathBuf,
+    pub history: Option<PathBuf>,
+    pub fresh: bool,
     pub fixture: Option<String>,
     pub style: Option<String>,
     pub mode: Option<String>,
     pub reviewer: String,
     pub next: bool,
     pub record: Option<PathBuf>,
+    pub rebind_from_packet: Option<PathBuf>,
+    pub rebind_from_decisions: Option<PathBuf>,
     pub prescreen_clean: bool,
     pub validate: bool,
 }
@@ -75,12 +80,50 @@ pub fn run(args: ReviewArgs) -> Result<()> {
     let rows = load_manifest(&packet)?;
     let decisions_path = resolve_decision_path(&root, &args.decisions);
     let decisions = load_decisions(&decisions_path, &rows)?;
+    let history_path = args.history.as_ref().map(|path| resolve(&root, path));
+    let history = HistoryLedger::load(history_path.as_deref())?;
+    history.validate_open_selectors(&rows)?;
+    history.validate_ordered_decisions(&decisions_path, &rows)?;
+    if args.fresh {
+        validate_fresh_decisions(&decisions)?;
+    }
+
+    if let (Some(prior_packet), Some(prior_decisions)) = (
+        args.rebind_from_packet.as_ref(),
+        args.rebind_from_decisions.as_ref(),
+    ) {
+        println!(
+            "{}",
+            rebind_exact_successful_decisions(
+                &packet,
+                &decisions_path,
+                &rows,
+                &decisions,
+                &resolve(&root, prior_packet),
+                &resolve(&root, prior_decisions),
+                &history,
+            )?
+        );
+        return Ok(());
+    }
 
     if let Some(record_path) = args.record {
         let decision = common::load_json(&resolve(&root, &record_path), "review decision")?;
         validate_decision(&decision, &rows)?;
+        if args.fresh {
+            validate_fresh_decision(&decision)?;
+        }
         let case_id = non_empty_string(decision.get("case_id"), "decision case_id")?;
+        let row = rows
+            .get(&case_id)
+            .ok_or_else(|| anyhow!("decision references unknown case_id: {case_id}"))?;
         let kind = review_kind(&decision)?;
+        let resolved_history_ids = history.resolved_ids(
+            decisions
+                .values()
+                .filter_map(|state| state.perceptual.as_ref()),
+        )?;
+        history.guard_decision(row, &decision, &resolved_history_ids)?;
         let outcome = persist::append_decision_checked(&decisions_path, &decision, || {
             let fresh_decisions = load_decisions(&decisions_path, &rows)?;
             if let Some(existing) = fresh_decisions
@@ -126,16 +169,38 @@ pub fn run(args: ReviewArgs) -> Result<()> {
                 missing.len()
             );
         }
+        let resolved_history_ids = history.resolved_ids(
+            decisions
+                .values()
+                .filter_map(|state| state.perceptual.as_ref()),
+        )?;
+        let unresolved_history = history
+            .records_for_rows(&selected)
+            .difference(&resolved_history_ids)
+            .cloned()
+            .collect::<Vec<_>>();
         println!(
             "{}",
-            json!({ "schema": COVERAGE_SCHEMA, "reviewed": selected.len() })
+            json!({
+                "schema": COVERAGE_SCHEMA,
+                "reviewed": selected.len(),
+                "history_open_unresolved": unresolved_history,
+            })
         );
         return Ok(());
     }
     if args.next {
-        let selected = selected_rows(&args, &rows, &decisions);
+        let resolved_history_ids = history.resolved_ids(
+            decisions
+                .values()
+                .filter_map(|state| state.perceptual.as_ref()),
+        )?;
+        let selected = selected_rows(&args, &rows, &decisions, &history, &resolved_history_ids);
         if let Some(row) = selected.first() {
-            println!("{}", frame_payload(&root, &packet, row)?);
+            println!(
+                "{}",
+                frame_payload(&root, &packet, row, &history, &resolved_history_ids)?
+            );
         } else {
             println!("{}", json!({ "schema": FRAME_SCHEMA, "done": true }));
         }
@@ -168,6 +233,15 @@ fn load_manifest(packet: &Path) -> Result<BTreeMap<String, Value>> {
             packet.join("COMPLETE.json").display()
         );
     }
+    let packet_identity = packet
+        .join("identity.json")
+        .is_file()
+        .then(|| common::load_json(&packet.join("identity.json"), "packet identity"))
+        .transpose()?;
+    let packet_identity_sha256 = packet_identity
+        .as_ref()
+        .map(|_| common::sha256_file(&packet.join("identity.json")))
+        .transpose()?;
     let bytes = common::require_file(&packet.join("manifest.jsonl"), "manifest")?;
     let text = String::from_utf8(bytes).context("manifest is not UTF-8")?;
     let mut rows = BTreeMap::new();
@@ -178,6 +252,9 @@ fn load_manifest(packet: &Path) -> Result<BTreeMap<String, Value>> {
         let row: Value = serde_json::from_str(line)
             .with_context(|| format!("manifest line {} is invalid JSON", number + 1))?;
         let case_id = non_empty_string(row.get("case_id"), "manifest case_id")?;
+        if !common::is_audit_schema(row.get("schema").unwrap_or(&Value::Null)) {
+            bail!("manifest line {} has the wrong schema", number + 1);
+        }
         if rows.contains_key(&case_id) {
             bail!("duplicate manifest case_id: {case_id}");
         }
@@ -199,6 +276,16 @@ fn load_manifest(packet: &Path) -> Result<BTreeMap<String, Value>> {
         let actual_hash = common::sha256_file(&frame)?;
         if actual_hash != expected_hash {
             bail!("frame hash mismatch for {case_id}: {actual_hash} != {expected_hash}");
+        }
+        if let (Some(identity), Some(identity_sha256)) =
+            (packet_identity.as_ref(), packet_identity_sha256.as_deref())
+        {
+            common::validate_row_identity(
+                &row,
+                identity,
+                identity_sha256,
+                &format!("manifest row {case_id} identity"),
+            )?;
         }
         rows.insert(case_id, row);
     }
@@ -229,6 +316,177 @@ fn load_decisions(path: &Path, rows: &BTreeMap<String, Value>) -> Result<Decisio
     Ok(decisions)
 }
 
+fn validate_fresh_decisions(decisions: &DecisionMap) -> Result<()> {
+    for (case_id, state) in decisions {
+        if state.structural.is_some() {
+            bail!(
+                "fresh perceptual review cannot include machine structural decision for {case_id}"
+            );
+        }
+        if let Some(decision) = state.perceptual.as_ref() {
+            validate_fresh_decision(decision)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_fresh_decision(decision: &Value) -> Result<()> {
+    let case_id = non_empty_string(decision.get("case_id"), "decision case_id")?;
+    if review_kind(decision)? != PERCEPTUAL_REVIEW {
+        bail!("fresh perceptual review cannot include machine structural decision for {case_id}");
+    }
+    if decision.get("carry_forward").is_some() {
+        bail!("fresh perceptual review cannot include carry-forward decision for {case_id}");
+    }
+    Ok(())
+}
+
+fn rebind_exact_successful_decisions(
+    current_packet: &Path,
+    current_decisions_path: &Path,
+    current_rows: &BTreeMap<String, Value>,
+    current_decisions: &DecisionMap,
+    prior_packet: &Path,
+    prior_decisions_path: &Path,
+    history: &HistoryLedger,
+) -> Result<Value> {
+    if !current_decisions.is_empty() {
+        bail!(
+            "rebind destination already contains decisions: {}",
+            current_decisions_path.display()
+        );
+    }
+    if current_decisions_path == prior_decisions_path {
+        bail!("rebind destination must differ from prior decisions path");
+    }
+
+    let prior_rows = load_manifest(prior_packet)?;
+    let prior_decisions = load_decisions(prior_decisions_path, &prior_rows)?;
+    history.validate_ordered_decisions(prior_decisions_path, &prior_rows)?;
+    let prior_resolved_history_ids = history.resolved_ids(
+        prior_decisions
+            .values()
+            .filter_map(|state| state.perceptual.as_ref()),
+    )?;
+    let mut candidates = Vec::new();
+    let mut rebound_warning = 0usize;
+    let mut skipped_changed = 0usize;
+    let mut skipped_missing_history = 0usize;
+    let mut skipped_without_perceptual = 0usize;
+
+    for current_row in current_rows.values() {
+        let case_id = current_row["case_id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("current manifest row has no case_id"))?;
+        if current_row["classification"] == "expected_error" {
+            continue;
+        }
+        if current_row["classification"] == "warning" {
+            rebound_warning += 1;
+        } else if current_row["classification"] != "success" {
+            continue;
+        }
+
+        let Some(prior_row) = prior_rows.get(case_id) else {
+            skipped_missing_history += 1;
+            continue;
+        };
+        let Some(prior_decision) = prior_decisions
+            .get(case_id)
+            .and_then(|state| state.perceptual.as_ref())
+        else {
+            skipped_without_perceptual += 1;
+            continue;
+        };
+
+        if !same_review_identity(current_row, prior_row)
+            || !same_review_hashes(current_row, prior_row)
+        {
+            skipped_changed += 1;
+            continue;
+        }
+
+        let mut rebound = prior_decision.clone();
+        rebound["frame_sha256"] = current_row["stdout"]["sha256"].clone();
+        rebound["evidence_sha256"] = current_row["evidence"]["sha256"].clone();
+        rebound["policy_sha256"] = current_row["policy"]["sha256"].clone();
+        if let Some(run_id) = row_run_id(current_row) {
+            rebound["run_id"] = Value::String(run_id.to_owned());
+        } else if let Some(object) = rebound.as_object_mut() {
+            object.remove("run_id");
+        }
+        let prior_bytes = serde_json::to_vec(prior_decision).context("serialize prior decision")?;
+        rebound["carry_forward"] = json!({
+            "schema": "termiflow.visual_review.carry_forward.v1",
+            "prior_packet": prior_packet.display().to_string(),
+            "prior_decision_sha256": common::sha256_bytes(&prior_bytes),
+            "prior_frame_sha256": prior_row["stdout"]["sha256"],
+            "prior_evidence_sha256": prior_row["evidence"]["sha256"],
+            "prior_policy_sha256": prior_row["policy"]["sha256"],
+            "reason": "exact fixture/style/mode, frame, evidence, and effective-policy equality",
+        });
+        rebound["timestamp"] = Value::String(common::now_label());
+        validate_decision(&rebound, current_rows)?;
+        history.guard_decision(current_row, &rebound, &prior_resolved_history_ids)?;
+        candidates.push(rebound);
+    }
+
+    for decision in &candidates {
+        persist::append_decision_checked(current_decisions_path, decision, || {
+            let fresh = load_decisions(current_decisions_path, current_rows)?;
+            let case_id = non_empty_string(decision.get("case_id"), "decision case_id")?;
+            if fresh
+                .get(&case_id)
+                .and_then(|state| state.get(PERCEPTUAL_REVIEW))
+                .is_some()
+            {
+                bail!("duplicate perceptual decision for case_id: {case_id}");
+            }
+            Ok(persist::PublishOutcome::Published)
+        })?;
+    }
+
+    Ok(json!({
+        "schema": "termiflow.visual_review.rebind.v1",
+        "rebound": candidates.len(),
+        "rebound_warning": rebound_warning,
+        "skipped_changed": skipped_changed,
+        "skipped_missing_history": skipped_missing_history,
+        "skipped_without_perceptual": skipped_without_perceptual,
+        "current_packet": current_packet.display().to_string(),
+        "prior_packet": prior_packet.display().to_string(),
+        "next": format!(
+            "scripts/review_visual_packet.sh --packet {} --decisions {} --next",
+            current_packet.display(),
+            current_decisions_path.display()
+        ),
+    }))
+}
+
+fn same_review_identity(current: &Value, prior: &Value) -> bool {
+    [
+        "case_id",
+        "fixture",
+        "style",
+        "mode",
+        "direction",
+        "classification",
+        "input",
+    ]
+    .iter()
+    .all(|field| current.get(*field) == prior.get(*field))
+}
+
+fn same_review_hashes(current: &Value, prior: &Value) -> bool {
+    [
+        ("stdout", "sha256"),
+        ("evidence", "sha256"),
+        ("policy", "sha256"),
+    ]
+    .iter()
+    .all(|(section, field)| current[*section][*field] == prior[*section][*field])
+}
+
 fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result<()> {
     if decision["schema"].as_str() != Some(DECISION_SCHEMA) {
         bail!("decision schema must be {DECISION_SCHEMA}");
@@ -237,7 +495,7 @@ fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result
     let row = rows
         .get(&case_id)
         .ok_or_else(|| anyhow!("decision references unknown case_id: {case_id}"))?;
-    if let Some(run_id) = row["identity"]["run_identity"]["run_id"].as_str() {
+    if let Some(run_id) = row_run_id(row) {
         if decision.get("run_id").and_then(Value::as_str) != Some(run_id) {
             bail!("decision run_id is stale for {case_id}");
         }
@@ -308,6 +566,19 @@ fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result
     Ok(())
 }
 
+fn row_run_id(row: &Value) -> Option<&str> {
+    row.get("identity_ref")
+        .and_then(|value| value.get("run_identity"))
+        .and_then(|value| value.get("run_id"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            row.get("identity")
+                .and_then(|value| value.get("run_identity"))
+                .and_then(|value| value.get("run_id"))
+                .and_then(Value::as_str)
+        })
+}
+
 fn review_kind(decision: &Value) -> Result<&'static str> {
     let reviewer = non_empty_string(decision.get("reviewer"), "decision reviewer")?;
     if !REVIEWERS.contains(&reviewer.as_str()) {
@@ -334,8 +605,11 @@ fn selected_rows(
     args: &ReviewArgs,
     rows: &BTreeMap<String, Value>,
     decisions: &DecisionMap,
+    history: &HistoryLedger,
+    resolved_history_ids: &BTreeSet<String>,
 ) -> Vec<Value> {
-    rows.values()
+    let mut selected = rows
+        .values()
         .filter(|row| {
             if row["classification"] == "expected_error" || !matches_filter(args, row) {
                 return false;
@@ -345,7 +619,15 @@ fn selected_rows(
             !perceptual
         })
         .cloned()
-        .collect()
+        .collect::<Vec<_>>();
+    selected.sort_by_key(|row| {
+        let unresolved = history.unresolved_open_ids(row, resolved_history_ids).len();
+        (
+            Reverse(unresolved),
+            row["case_id"].as_str().unwrap_or_default().to_owned(),
+        )
+    });
+    selected
 }
 
 fn covers_row(state: &DecisionState) -> bool {
@@ -470,6 +752,16 @@ fn evidence_is_structurally_clean(evidence: &Value) -> bool {
     else {
         return false;
     };
+    let route_clarity_clean = evidence
+        .get("route_clarity")
+        .and_then(|value| value.get("schema").and_then(Value::as_str))
+        .is_some_and(|schema| schema == "termiflow.route_clarity.v1")
+        && evidence["route_clarity"]["status"]
+            .as_str()
+            .is_some_and(|status| matches!(status, "clean" | "not_applicable"))
+        && evidence["route_clarity"]["findings"]
+            .as_array()
+            .is_some_and(Vec::is_empty);
     let optional_errors_are_empty = evidence
         .get("errors")
         .is_none_or(|value| matches!(value, Value::Array(values) if values.is_empty()));
@@ -479,6 +771,7 @@ fn evidence_is_structurally_clean(evidence: &Value) -> bool {
         && raw_errors.is_empty()
         && findings.is_empty()
         && geometry_errors.is_empty()
+        && route_clarity_clean
         && owner_counts.values().all(Value::is_u64)
         && warnings.iter().all(Value::is_string)
         && raw_errors.iter().all(Value::is_string)
@@ -489,6 +782,7 @@ fn evidence_is_structurally_clean(evidence: &Value) -> bool {
         })
         && geometry_errors.iter().all(Value::is_string)
         && untraced_fallback_edges.iter().all(Value::is_string)
+        && untraced_fallback_edges.is_empty()
 }
 
 fn structural_decision(row: &Value, packet: &Path, decisions_path: &Path) -> Result<Value> {
@@ -527,13 +821,19 @@ fn structural_decision(row: &Value, packet: &Path, decisions_path: &Path) -> Res
         "reviewer": "machine",
         "timestamp": common::now_label(),
     });
-    if let Some(run_id) = row["identity"]["run_identity"]["run_id"].as_str() {
+    if let Some(run_id) = row_run_id(row) {
         decision["run_id"] = Value::String(run_id.to_owned());
     }
     Ok(decision)
 }
 
-fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
+fn frame_payload(
+    root: &Path,
+    packet: &Path,
+    row: &Value,
+    history: &HistoryLedger,
+    resolved_history_ids: &BTreeSet<String>,
+) -> Result<Value> {
     let input_source = manifest_input_source(root, packet, row)?;
     let frame = common::validate_blob_ref(packet, &row["stdout"], "frame")?;
     let evidence_ref = row
@@ -547,7 +847,7 @@ fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
     Ok(json!({
         "schema": FRAME_SCHEMA,
         "case_id": row["case_id"],
-        "run_id": row["identity"]["run_identity"]["run_id"],
+        "run_id": row_run_id(row).unwrap_or_default(),
         "policy_sha256": row["policy"]["sha256"],
         "fixture": row["fixture"],
         "style": row["style"],
@@ -561,7 +861,9 @@ fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
         "raw": evidence["raw"],
         "geometry": evidence["geometry"],
         "semantic": evidence["semantic"],
+        "route_clarity": evidence["route_clarity"],
         "warnings": evidence["warnings"],
+        "history": history.context(row, resolved_history_ids),
         "repair": {
             "optimized": evidence["optimized"],
             "repair_passes": evidence["repair_passes"],
@@ -582,7 +884,13 @@ fn frame_payload(root: &Path, packet: &Path, row: &Value) -> Result<Value> {
             "next_command": "targeted test or review command",
             "reviewer": "ai|human",
             "review_kind": "perceptual",
-            "run_id": row["identity"]["run_identity"]["run_id"],
+            "history_resolution": {
+                "schema": super::visual_history::HISTORY_RESOLUTION_SCHEMA,
+                "status": "falsified|repaired|superseded",
+                "history_ids": [],
+                "note": "required to pass an open historical risk; otherwise record watch or fail",
+            },
+            "run_id": row_run_id(row).unwrap_or_default(),
             "policy_sha256": row["policy"]["sha256"],
         },
     }))
@@ -676,7 +984,12 @@ mod tests {
             "critic": {"findings": []},
             "raw": {"errors": []},
             "geometry": {"errors": [], "untraced_fallback_edges": []},
-            "semantic": {"owner_counts": {"Unknown": 0}}
+            "semantic": {"owner_counts": {"Unknown": 0}},
+            "route_clarity": {
+                "schema": "termiflow.route_clarity.v1",
+                "status": "not_applicable",
+                "findings": []
+            }
         });
         assert!(evidence_is_structurally_clean(&clean));
 
@@ -699,7 +1012,11 @@ mod tests {
             assert!(!evidence_is_structurally_clean(&evidence));
         }
 
-        let mut incomplete = clean;
+        let mut untraced = clean.clone();
+        untraced["geometry"]["untraced_fallback_edges"] = json!(["edge:0:A->B"]);
+        assert!(!evidence_is_structurally_clean(&untraced));
+
+        let mut incomplete = clean.clone();
         incomplete["raw"] = json!({});
         assert!(!evidence_is_structurally_clean(&incomplete));
 
@@ -721,6 +1038,14 @@ mod tests {
             "geometry": {"errors": [], "untraced_fallback_edges": []}
         });
         assert!(!evidence_is_structurally_clean(&missing_owners));
+
+        let mut route_risk = clean;
+        route_risk["route_clarity"] = json!({
+            "schema": "termiflow.route_clarity.v1",
+            "status": "risk",
+            "findings": [{"code": "declared_edge_missing"}]
+        });
+        assert!(!evidence_is_structurally_clean(&route_risk));
     }
 
     #[test]
@@ -837,16 +1162,30 @@ mod tests {
         let args = ReviewArgs {
             packet: PathBuf::new(),
             decisions: PathBuf::new(),
+            history: None,
+            fresh: false,
             fixture: None,
             style: None,
             mode: None,
             reviewer: "ai".to_owned(),
             next: true,
             record: None,
+            rebind_from_packet: None,
+            rebind_from_decisions: None,
             prescreen_clean: false,
             validate: false,
         };
-        assert_eq!(selected_rows(&args, &rows, &decisions).len(), 1);
+        assert_eq!(
+            selected_rows(
+                &args,
+                &rows,
+                &decisions,
+                &HistoryLedger::default(),
+                &BTreeSet::new()
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]

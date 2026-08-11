@@ -2,7 +2,7 @@
 |  Auth Flow                                     |
 |                                                |
 | +--------------+          +----------------+   |       +-------------+
-| |  Login Form  + submit ->|  Authenticate  + success ->|  Dashboard  |
+| |  Login Form  + submit ->+  Authenticate  + success ->+  Dashboard  |
 | +--------------+          +----------------+   |       +-------------+
 |                                                |
 |                                                |

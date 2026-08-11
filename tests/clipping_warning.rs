@@ -1,5 +1,3 @@
-use assert_cmd::Command;
-
 /// Phase 4 raised canvas limits to 10000×5000 and silenced clipping warnings.
 /// Wide graphs now render fully without any "Graph too wide" stderr noise.
 #[test]
@@ -11,9 +9,7 @@ fn wide_graphs_no_longer_emit_clipping_warnings() {
         input.push_str(&format!("A --> N{i}\n"));
     }
 
-    #[allow(deprecated)]
-    let assert = Command::cargo_bin("termiflow")
-        .expect("binary exists")
+    let assert = assert_cmd::cargo::cargo_bin_cmd!("termiflow")
         .args(["--print", "--style", "unicode"])
         .write_stdin(input)
         .assert()

@@ -899,10 +899,11 @@ pub(super) fn rebalance_side_by_side_horizontal_top_level_sibling_gaps(
     gutter: usize,
     canvas_width: &mut usize,
 ) {
-    if graph.direction != Direction::LR || graph.subgraphs.is_empty() {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) || graph.subgraphs.is_empty() {
         return;
     }
 
+    const MIN_VISUAL_GAP: usize = 2;
     const MIN_INTER_GAP: usize = 6;
     const IMBALANCE_TOLERANCE: usize = 2;
 
@@ -928,8 +929,7 @@ pub(super) fn rebalance_side_by_side_horizontal_top_level_sibling_gaps(
             let is_side_by_side_row = ordered.windows(2).all(|pair| {
                 let left_outer = pair[0].1;
                 let right_outer = pair[1].1;
-                rects_overlap_vertically(left_outer, right_outer)
-                    && !rects_overlap_horizontally(left_outer, right_outer)
+                rects_overlap_vertically(left_outer, right_outer) && left_outer.x <= right_outer.x
             });
             if !is_side_by_side_row {
                 continue;
@@ -938,6 +938,36 @@ pub(super) fn rebalance_side_by_side_horizontal_top_level_sibling_gaps(
             for pair in ordered.windows(2) {
                 let (_left_id, left_outer) = (&pair[0].0, pair[0].1);
                 let (right_id, right_outer) = (&pair[1].0, pair[1].1);
+                let required_right_x = left_outer.right().saturating_add(MIN_VISUAL_GAP);
+                let delta_to_minimum = required_right_x.saturating_sub(right_outer.x);
+
+                if delta_to_minimum > 0 {
+                    let delta_x = delta_to_minimum;
+                    let candidate = Rect::new(
+                        right_outer.x.saturating_add(delta_x),
+                        right_outer.y,
+                        right_outer.width,
+                        right_outer.height,
+                    );
+                    if candidate_introduces_foreign_node_overlap_for_subgraph(
+                        graph,
+                        node_rects,
+                        right_id,
+                        right_outer,
+                        candidate,
+                    ) {
+                        continue;
+                    }
+
+                    if best_shift
+                        .as_ref()
+                        .is_none_or(|(_, _, best_delta)| delta_x > *best_delta)
+                    {
+                        best_shift = Some((right_id.clone(), delta_x as isize, delta_x));
+                    }
+                    continue;
+                }
+
                 let inter_gap = right_outer.x.saturating_sub(left_outer.right());
                 if inter_gap <= MIN_INTER_GAP {
                     continue;

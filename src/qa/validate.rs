@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use super::common;
 use super::persist;
 use super::provenance;
+use super::route_clarity;
 
 const BASELINE_SCHEMA: &str = "termiflow.quality_baseline.v1";
 const COMPLETE_SCHEMA: &str = "termiflow.visual_audit.complete.v1";
@@ -191,7 +192,7 @@ fn load_manifest(packet: &Path) -> Result<Vec<Value>> {
         if !row.is_object() {
             bail!("manifest line {} must be an object", number + 1);
         }
-        if row.get("schema").and_then(Value::as_str) != Some(common::AUDIT_SCHEMA) {
+        if !common::is_audit_schema(row.get("schema").unwrap_or(&Value::Null)) {
             bail!("manifest line {} has the wrong schema", number + 1);
         }
         rows.push(row);
@@ -280,6 +281,9 @@ fn validate_evidence(
     row: &Value,
     classification: &str,
     strict: bool,
+    input: &[u8],
+    frame: &[u8],
+    argv_contract: Option<&Value>,
 ) -> Result<(Vec<Signature>, BTreeSet<String>)> {
     let fixture = row["fixture"].as_str().unwrap_or("unknown");
     let evidence_ref = row.get("evidence");
@@ -307,6 +311,30 @@ fn validate_evidence(
     } else if row.get("policy").is_some_and(|value| !value.is_null()) {
         bail!("{fixture}: manifest policy is present but evidence policy is missing");
     }
+    let route_report = evidence
+        .get("route_clarity")
+        .ok_or_else(|| anyhow!("{fixture}: successful row is missing route-clarity evidence"))?;
+    let route_style = if argv_contract.is_some() {
+        let policy = evidence
+            .get("policy")
+            .filter(|policy| !policy.is_null())
+            .ok_or_else(|| anyhow!("{fixture}: new packet evidence is missing policy"))?;
+        let effective = provenance::effective_route_style(policy)?;
+        if route_report.get("style").and_then(Value::as_str) != Some(effective) {
+            bail!("{fixture}: route-clarity style is not the effective resolved style");
+        }
+        effective
+    } else {
+        row["style"].as_str().unwrap_or_default()
+    };
+    route_clarity::validate_report(
+        route_report,
+        input,
+        frame,
+        route_style,
+        row["mode"].as_str().unwrap_or_default(),
+        &format!("{fixture}: route-clarity"),
+    )?;
     let warnings = evidence
         .get("warnings")
         .and_then(Value::as_array)
@@ -422,8 +450,10 @@ fn validate_rows(
     rows: &[Value],
     metadata: &BTreeMap<String, common::FixtureMetadata>,
     packet_identity: &Value,
+    packet_identity_sha256: &str,
     styles: &[String],
     modes: &[String],
+    argv_contract: Option<&Value>,
     strict: bool,
 ) -> Result<(BTreeSet<Signature>, BTreeSet<String>)> {
     let expected_ids = expected_case_ids(root, metadata, styles, modes)?;
@@ -460,15 +490,23 @@ fn validate_rows(
             bail!("{fixture}: stderr policy mismatch");
         }
         let input_path = common::repository_file(root, &row["input"], &format!("{fixture} input"))?;
-        let actual_case_id = common::case_id(&fs::read(&input_path)?, &fixture, &style, &mode);
+        let input_bytes = fs::read(&input_path)
+            .with_context(|| format!("read {fixture} input {}", input_path.display()))?;
+        let actual_case_id = common::case_id(&input_bytes, &fixture, &style, &mode);
         if actual_case_id != case_id {
             bail!("{fixture}: case_id does not match its input/style/mode");
         }
         if !expected_ids.contains(&case_id) {
             bail!("{fixture}: case_id is outside the declared packet matrix");
         }
-        if row.get("identity") != Some(packet_identity) {
-            bail!("{fixture}: row identity differs from identity.json");
+        common::validate_row_identity(
+            row,
+            packet_identity,
+            packet_identity_sha256,
+            &format!("{fixture} row identity"),
+        )?;
+        if let Some(argv_contract) = argv_contract {
+            provenance::validate_row_argv(argv_contract, row, &format!("{fixture} row argv"))?;
         }
         let stdout =
             common::validate_blob_ref(packet, &row["stdout"], &format!("{fixture} stdout"))?;
@@ -509,7 +547,15 @@ fn validate_rows(
             }
             _ => {}
         }
-        let (row_signatures, row_codes) = validate_evidence(packet, row, &classification, strict)?;
+        let (row_signatures, row_codes) = validate_evidence(
+            packet,
+            row,
+            &classification,
+            strict,
+            &input_bytes,
+            &stdout,
+            argv_contract,
+        )?;
         if classification == "expected_error"
             && row.get("findings")
                 != Some(&json!({"critic": 0, "geometry_errors": 0, "raw_errors": 0}))
@@ -636,6 +682,8 @@ fn validate_packet_integrity(
     }
     let packet_identity = common::load_json(&packet.join("identity.json"), "identity")?;
     validate_identity(root, &packet_identity, baseline, strict)?;
+    let argv_contract = provenance::identity_argv_contract(&packet_identity)?;
+    let packet_identity_sha256 = common::sha256_file(&packet.join("identity.json"))?;
     validate_packet_run_state(packet, &packet_identity)?;
     let metadata = validate_packet_metadata(root, packet)?;
     let summary = common::load_json(&packet.join("summary.json"), "summary")?;
@@ -718,8 +766,10 @@ fn validate_packet_integrity(
         &rows,
         &metadata,
         &packet_identity,
+        &packet_identity_sha256,
         &styles,
         &modes,
+        argv_contract,
         strict,
     )?;
     validate_quality(baseline, &metadata, &observed, &codes, strict)?;
@@ -764,6 +814,8 @@ fn validate_schema_packet(
     }
     let packet_identity = common::load_json(&packet.join("identity.json"), "identity")?;
     validate_identity(root, &packet_identity, baseline, strict)?;
+    let argv_contract = provenance::identity_argv_contract(&packet_identity)?;
+    let packet_identity_sha256 = common::sha256_file(&packet.join("identity.json"))?;
     validate_packet_run_state(packet, &packet_identity)?;
 
     let manifest_bytes = common::require_file(queue_manifest_path, "queue manifest")?;
@@ -825,8 +877,10 @@ fn validate_schema_packet(
         &rows,
         &queue.rows,
         &packet_identity,
+        &packet_identity_sha256,
         &styles,
         &modes,
+        argv_contract,
         strict,
         holdouts,
     )?;
@@ -960,8 +1014,10 @@ fn validate_schema_rows(
     packet_rows: &[Value],
     expected_rows: &BTreeMap<String, Value>,
     packet_identity: &Value,
+    packet_identity_sha256: &str,
     styles: &[String],
     modes: &[String],
+    argv_contract: Option<&Value>,
     strict: bool,
     holdouts: bool,
 ) -> Result<(BTreeSet<Signature>, BTreeSet<String>)> {
@@ -982,7 +1038,7 @@ fn validate_schema_rows(
         if !seen.insert(key) {
             bail!("schema packet contains a duplicate row {fixture}.{style}.{mode}");
         }
-        if row.get("schema").and_then(Value::as_str) != Some(common::AUDIT_SCHEMA)
+        if !common::is_audit_schema(row.get("schema").unwrap_or(&Value::Null))
             || row.get("classification").and_then(Value::as_str) != Some("success")
             || row.get("holdout").and_then(Value::as_str) == Some("evaluator_owned")
         {
@@ -1029,8 +1085,18 @@ fn validate_schema_rows(
         if row["case_id"].as_str() != Some(actual_case_id.as_str()) {
             bail!("schema packet case_id does not match its input/style/mode for {fixture}");
         }
-        if row.get("identity") != Some(packet_identity) {
-            bail!("schema packet row identity differs from identity.json");
+        common::validate_row_identity(
+            row,
+            packet_identity,
+            packet_identity_sha256,
+            &format!("schema packet {fixture} row identity"),
+        )?;
+        if let Some(argv_contract) = argv_contract {
+            provenance::validate_row_argv(
+                argv_contract,
+                row,
+                &format!("schema packet {fixture} row argv"),
+            )?;
         }
         let stdout = common::validate_blob_ref(packet, &row["stdout"], "schema packet stdout")?;
         let stderr = common::validate_blob_ref(packet, &row["stderr"], "schema packet stderr")?;
@@ -1043,7 +1109,15 @@ fn validate_schema_rows(
                 bail!("schema packet dimensions mismatch for {fixture}");
             }
         }
-        let (row_observed, row_codes) = validate_evidence(packet, row, "success", strict)?;
+        let (row_observed, row_codes) = validate_evidence(
+            packet,
+            row,
+            "success",
+            strict,
+            &input_bytes,
+            &stdout,
+            argv_contract,
+        )?;
         observed.extend(row_observed);
         codes.extend(row_codes);
     }
@@ -1154,7 +1228,38 @@ mod tests {
             "findings": {"critic": 0, "geometry_errors": 0, "raw_errors": 0},
             "evidence": {"path": "evidence.json", "bytes": bytes.len(), "sha256": common::sha256_bytes(&bytes)}
         });
-        assert!(validate_evidence(&root, &row, "success", true).is_err());
+        assert!(validate_evidence(&root, &row, "success", true, b"input", b"frame", None).is_err());
         fs::remove_dir_all(root).expect("remove evidence directory");
+    }
+
+    #[test]
+    fn successful_evidence_requires_route_clarity_report() {
+        let root =
+            std::env::temp_dir().join(format!("termiflow-qa-route-report-{}", std::process::id()));
+        fs::create_dir_all(&root).expect("create route report directory");
+        let evidence = json!({
+            "schema": common::EVIDENCE_SCHEMA,
+            "display": {"width": 5, "height": 1, "non_space_cells": 5},
+            "warnings": [],
+            "raw": {"errors": []},
+            "critic": {"findings": []},
+            "geometry": {"errors": [], "untraced_fallback_edges": []},
+            "semantic": {"owner_counts": {"Unknown": 0}}
+        });
+        let path = root.join("evidence.json");
+        let bytes = serde_json::to_vec(&evidence).expect("serialize evidence");
+        fs::write(&path, &bytes).expect("write evidence");
+        let row = json!({
+            "fixture": "fixture_td",
+            "style": "ascii",
+            "mode": "default",
+            "dimensions": {"display": evidence["display"]},
+            "findings": {"critic": 0, "geometry_errors": 0, "raw_errors": 0},
+            "evidence": {"path": "evidence.json", "bytes": bytes.len(), "sha256": common::sha256_bytes(&bytes)}
+        });
+        assert!(
+            validate_evidence(&root, &row, "success", false, b"input", b"frame", None).is_err()
+        );
+        fs::remove_dir_all(root).expect("remove route report directory");
     }
 }

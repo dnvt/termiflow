@@ -13,6 +13,7 @@ pub struct GoldenArgs {
     pub approve: bool,
     pub intent: Option<String>,
     pub manifest: Option<PathBuf>,
+    pub fixtures: Vec<String>,
     pub binary: Option<PathBuf>,
     pub input_root: PathBuf,
     pub metadata: PathBuf,
@@ -26,6 +27,9 @@ pub fn run(args: GoldenArgs) -> Result<i32> {
     }
     if args.approve && args.intent.as_deref().is_none_or(str::is_empty) {
         bail!("--approve requires --intent TEXT");
+    }
+    if args.manifest.is_some() && !args.fixtures.is_empty() {
+        bail!("--fixture cannot be combined with --manifest");
     }
     let root = std::env::current_dir().context("resolve repository root")?;
     if let Some(manifest) = args.manifest.as_deref() {
@@ -42,9 +46,18 @@ pub fn run(args: GoldenArgs) -> Result<i32> {
     let metadata_path = resolve(&root, &args.metadata);
     let (metadata, _) = common::load_metadata(&metadata_path, &input_root)?;
     let input_paths = common::collect_inputs(&input_root)?;
+    let selected_fixtures = select_fixtures(&metadata, &input_paths, &args.fixtures)?;
     let stage = std::env::temp_dir().join(format!("termiflow-golden-{}", common::now_label()));
     fs::create_dir_all(&stage)?;
-    let result = run_checks(&root, &stage, &metadata, &input_paths, &styles, &args);
+    let result = run_checks(
+        &root,
+        &stage,
+        &metadata,
+        &input_paths,
+        &selected_fixtures,
+        &styles,
+        &args,
+    );
     let _ = fs::remove_dir_all(&stage);
     result
 }
@@ -54,6 +67,7 @@ fn run_checks(
     stage: &Path,
     metadata: &std::collections::BTreeMap<String, common::FixtureMetadata>,
     input_paths: &std::collections::BTreeMap<String, PathBuf>,
+    selected_fixtures: &[String],
     styles: &[String],
     args: &GoldenArgs,
 ) -> Result<i32> {
@@ -61,7 +75,7 @@ fn run_checks(
     let mut changes = Vec::new();
     let mut failures = Vec::new();
     let mut candidates: Vec<(PathBuf, Vec<u8>, Option<String>)> = Vec::new();
-    for fixture in metadata.keys() {
+    for fixture in selected_fixtures {
         let input_path = input_paths
             .get(fixture)
             .with_context(|| format!("missing input for {fixture}"))?;
@@ -155,7 +169,8 @@ fn run_checks(
         "mode": if args.approve { "approve" } else { "check" },
         "intent": args.intent,
         "source_commit": common::run_text(&["git", "rev-parse", "HEAD"], root),
-        "checked_files": metadata.len() * styles.len(),
+        "selected_fixtures": selected_fixtures,
+        "checked_files": selected_fixtures.len() * styles.len(),
         "changes": changes,
         "created_at": common::now_label(),
     });
@@ -176,6 +191,30 @@ fn run_checks(
             0
         },
     )
+}
+
+fn select_fixtures(
+    metadata: &std::collections::BTreeMap<String, common::FixtureMetadata>,
+    input_paths: &std::collections::BTreeMap<String, PathBuf>,
+    requested: &[String],
+) -> Result<Vec<String>> {
+    if requested.is_empty() {
+        return Ok(metadata.keys().cloned().collect());
+    }
+
+    let mut selected = BTreeSet::new();
+    for fixture in requested {
+        if fixture.trim().is_empty() {
+            bail!("--fixture values must be non-empty");
+        }
+        if !selected.insert(fixture.clone()) {
+            bail!("--fixture contains duplicate value {fixture}");
+        }
+        if !metadata.contains_key(fixture) || !input_paths.contains_key(fixture) {
+            bail!("unknown --fixture value {fixture}");
+        }
+    }
+    Ok(selected.into_iter().collect())
 }
 
 const MANIFEST_SCHEMA: &str = "termiflow.fixture_manifest.v2";
@@ -801,5 +840,62 @@ fn resolve(root: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         root.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_fixtures;
+    use crate::qa::common::FixtureMetadata;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn corpus() -> (BTreeMap<String, FixtureMetadata>, BTreeMap<String, PathBuf>) {
+        let record = || FixtureMetadata {
+            kind: "success".to_owned(),
+            direction: "TD".to_owned(),
+            stderr_policy: "empty".to_owned(),
+            stderr_contains: Vec::new(),
+            expected_stderr: None,
+        };
+        let metadata = BTreeMap::from([
+            ("zeta".to_owned(), record()),
+            ("alpha".to_owned(), record()),
+        ]);
+        let inputs = metadata
+            .keys()
+            .map(|name| (name.clone(), PathBuf::from(format!("{name}.md"))))
+            .collect();
+        (metadata, inputs)
+    }
+
+    #[test]
+    fn empty_selection_preserves_sorted_full_corpus() {
+        let (metadata, inputs) = corpus();
+        assert_eq!(
+            select_fixtures(&metadata, &inputs, &[]).unwrap(),
+            vec!["alpha", "zeta"]
+        );
+    }
+
+    #[test]
+    fn requested_selection_is_sorted_and_deduplicated_only_by_ordering() {
+        let (metadata, inputs) = corpus();
+        assert_eq!(
+            select_fixtures(&metadata, &inputs, &["zeta".to_owned(), "alpha".to_owned()]).unwrap(),
+            vec!["alpha", "zeta"]
+        );
+    }
+
+    #[test]
+    fn duplicate_or_unknown_selection_fails_closed() {
+        let (metadata, inputs) = corpus();
+        assert!(select_fixtures(
+            &metadata,
+            &inputs,
+            &["alpha".to_owned(), "alpha".to_owned()]
+        )
+        .is_err());
+        assert!(select_fixtures(&metadata, &inputs, &["missing".to_owned()]).is_err());
     }
 }

@@ -1,9 +1,13 @@
 pub(crate) mod audit;
 pub(crate) mod common;
+pub(crate) mod error_policy;
 pub(crate) mod golden;
 pub(crate) mod holdout;
 pub(crate) mod persist;
+pub(crate) mod persist_ops;
 pub(crate) mod provenance;
 pub(crate) mod review;
+pub(crate) mod route_clarity;
 pub(crate) mod spec;
 pub(crate) mod validate;
+pub(crate) mod visual_history;

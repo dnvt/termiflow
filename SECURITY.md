@@ -2,9 +2,9 @@
 
 ## Supported Versions
 
-The latest tagged release is v0.2.1, and the supported release line is 0.2.x.
+The latest tagged release is v0.2.2, and the supported release line is 0.2.x.
 Security fixes are applied to the latest released 0.2.x version. The current
-repository source targets version 0.2.1 and may include changes after the
+repository source targets version 0.2.2 and may include changes after the
 latest tag; when reporting an issue, include the commit SHA as well as the
 affected TermiFlow version and toolchain.
 

@@ -23,6 +23,15 @@ for required_file in "$ci_workflow" "$release_workflow" "$toolchain_file" "$carg
   [[ -f "$required_file" ]] || fail "required file is missing: ${required_file#$root_dir/}"
 done
 [[ -x "$currency_gate" ]] || fail "dependency currency gate is not executable"
+grep -Eq '^[[:space:]]+cargo update --dry-run --verbose[[:space:]]*$' "$currency_gate" \
+  || fail "dependency currency gate must use the unscoped unlocked cargo update dry-run"
+if grep -Eq '^[[:space:]]+cargo update .*--(workspace|locked)' "$currency_gate"; then
+  fail "dependency currency gate must not scope or lock its compatible-update probe"
+fi
+grep -Fq 'update_command_json=' "$currency_gate" \
+  || fail "dependency currency gate must record its compatible-update argv"
+grep -Fq '"cargo","update","--dry-run","--verbose"' "$currency_gate" \
+  || fail "dependency currency gate receipt argv is not aligned with its probe"
 
 stable_channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' "$toolchain_file" | head -n 1)
 [[ -n "$stable_channel" ]] || fail "rust-toolchain.toml has no exact channel"

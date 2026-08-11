@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 use termiflow::{parse, Graph};
 
 fn assert_same_layout(expected: &Graph, actual: &Graph) {
@@ -45,7 +43,7 @@ fn assert_same_layout(expected: &Graph, actual: &Graph) {
 }
 
 #[test]
-fn deprecated_layout_aliases_match_preferred_coarse_entry_points() {
+fn legacy_layout_aliases_match_preferred_coarse_entry_points() {
     for direction in ["TD", "LR", "BT", "RL"] {
         let input = format!(
             "graph {direction}\nsubgraph X [X]\n    A[A]\nend\nB[In] --> A\nA --> C[Out]\n"

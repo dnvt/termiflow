@@ -127,6 +127,7 @@ fn build_watch_frame_includes_status_row() {
             repair_passes: 0,
             layout_attempts: 1,
             layout_repairs_applied: 0,
+            portal_trace: termiflow::render::trace::PortalTrace::default(),
         },
         policy: serde_json::json!({}),
     };
@@ -195,6 +196,7 @@ fn build_watch_frame_inverts_subgraph_titles() {
             repair_passes: 0,
             layout_attempts: 1,
             layout_repairs_applied: 0,
+            portal_trace: termiflow::render::trace::PortalTrace::default(),
         },
         policy: serde_json::json!({}),
     };
@@ -392,6 +394,7 @@ fn printable_output_inverts_titles_by_default_for_tty_print_mode() {
             repair_passes: 0,
             layout_attempts: 1,
             layout_repairs_applied: 0,
+            portal_trace: termiflow::render::trace::PortalTrace::default(),
         },
         policy: serde_json::json!({}),
     };
@@ -450,6 +453,7 @@ fn printable_output_uses_display_aligned_semantic_frame() {
             repair_passes: 0,
             layout_attempts: 1,
             layout_repairs_applied: 0,
+            portal_trace: termiflow::render::trace::PortalTrace::default(),
         },
         policy: serde_json::json!({}),
     };

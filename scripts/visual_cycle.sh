@@ -8,7 +8,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/visual_cycle.sh --packet DIR --decisions FILE \
   --queue-manifest FILE --holdout-receipt FILE \
-  --holdout-decisions FILE --record FILE --output FILE
+  --holdout-decisions FILE --record FILE --output FILE [--history FILE]
 
 Validate a strict visual packet and its complete one-frame review ledger, then
 validate the separate evaluator-owned holdout packet/ledger, then emit one
@@ -30,6 +30,7 @@ holdout_receipt_path=""
 holdout_decisions_path=""
 record_path=""
 output_path=""
+history_path=""
 
 while (($# > 0)); do
   case "$1" in
@@ -66,6 +67,11 @@ while (($# > 0)); do
     --output)
       (($# >= 2)) || die "--output requires a file"
       output_path="$2"
+      shift 2
+      ;;
+    --history)
+      (($# >= 2)) || die "--history requires a JSONL ledger"
+      history_path="$2"
       shift 2
       ;;
     --help|-h)
@@ -145,6 +151,11 @@ holdout_receipt_file="$(resolve_file "$holdout_receipt_path" holdout-receipt)"
 holdout_decisions_file="$(resolve_file "$holdout_decisions_path" holdout-decisions)"
 record_file="$(resolve_file "$record_path" cycle-record)"
 output_file="$(resolve_output "$output_path")"
+history_args=()
+if [[ -n "$history_path" ]]; then
+  history_file="$(resolve_file "$history_path" visual-history)"
+  history_args=(--history "$history_file")
+fi
 
 for required in COMPLETE.json manifest.jsonl identity.json PACKET.sha256; do
   [[ -f "$packet_dir/$required" && ! -L "$packet_dir/$required" ]] \
@@ -234,7 +245,7 @@ if ! "$root_dir/scripts/visual_validate.sh" \
 fi
 
 if ! "$root_dir/scripts/review_visual_packet.sh" \
-  --packet "$packet_dir" --decisions "$decisions_file" --validate \
+  --packet "$packet_dir" --decisions "$decisions_file" "${history_args[@]}" --validate \
   >"$tmp_dir/review.stdout" 2>"$tmp_dir/review.stderr"; then
   cat "$tmp_dir/review.stderr" >&2
   cat "$tmp_dir/review.stdout" >&2
@@ -263,7 +274,7 @@ if ! "$root_dir/scripts/visual_validate.sh" \
   die "strict holdout visual validation failed"
 fi
 if ! "$root_dir/scripts/review_visual_packet.sh" \
-  --packet "$holdout_packet_dir" --decisions "$holdout_decisions_file" --validate \
+  --packet "$holdout_packet_dir" --decisions "$holdout_decisions_file" "${history_args[@]}" --validate \
   >"$tmp_dir/holdout-review.stdout" 2>"$tmp_dir/holdout-review.stderr"; then
   cat "$tmp_dir/holdout-review.stderr" >&2
   cat "$tmp_dir/holdout-review.stdout" >&2

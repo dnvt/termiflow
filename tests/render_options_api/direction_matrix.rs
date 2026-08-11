@@ -1,5 +1,47 @@
 use super::*;
 
+fn contains_unicode_degenerate_cross_corner_hook(row: &str) -> bool {
+    let glyphs: Vec<char> = row.chars().collect();
+    for (start, left) in glyphs.iter().enumerate() {
+        if !matches!(left, '┌' | '└') {
+            continue;
+        }
+        for end in (start + 2)..glyphs.len() {
+            let right = glyphs[end];
+            let crossed = (*left == '┌' && right == '┘') || (*left == '└' && right == '┐');
+            if crossed && end == start + 2 && glyphs[start + 1] == '─' {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Detect the detached ASCII boundary elbow without mistaking a node's
+/// legitimate top-border junction (for example `+---+--+`) for a route hook.
+/// A boundary elbow is an isolated corner pair outside the framed subgraph;
+/// the frame border itself therefore must not appear on the same row.
+fn contains_ascii_degenerate_detached_corner_hook(row: &str) -> bool {
+    if row.contains('|') {
+        return false;
+    }
+    let pluses: Vec<usize> = row
+        .chars()
+        .enumerate()
+        .filter_map(|(index, glyph)| (glyph == '+').then_some(index))
+        .collect();
+    if pluses.len() != 2 {
+        return false;
+    }
+    let glyphs: Vec<char> = row.chars().collect();
+    let start = pluses[0];
+    let end = pluses[1];
+    if start == 0 && end == glyphs.len().saturating_sub(1) {
+        return false;
+    }
+    end == start + 2 && glyphs[start + 1] == '-'
+}
+
 #[test]
 fn render_with_feedback_keeps_horizontal_sibling_semantics_consistent_across_styles() {
     for fixture in [
@@ -214,6 +256,50 @@ fn render_with_feedback_keeps_td_edge_labels_off_final_arrow_shaft() {
         "expected clean labeled TD output\n{}",
         outcome.output
     );
+}
+
+#[test]
+fn render_with_feedback_keeps_vertical_boundary_labels_off_titled_borders() {
+    for (fixture, border_tokens) in [
+        (
+            "tests/fixtures/inputs/subgraph_labels_td.md",
+            vec!["+", "-", "┏", "┓", "┗", "┛", "┃", "━"],
+        ),
+        (
+            "tests/fixtures/inputs/subgraph_labels_bt.md",
+            vec!["+", "-", "┏", "┓", "┗", "┛", "┃", "━"],
+        ),
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new().with_style(style),
+            )
+            .unwrap();
+            let label_line = outcome
+                .output
+                .lines()
+                .find(|line| line.contains("success"))
+                .expect("external edge label row");
+
+            assert!(
+                !border_tokens.iter().any(|token| label_line.contains(token)),
+                "expected external label to stay off the titled border for {} in {:?}:\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "expected clean vertical boundary label output for {} in {:?}:\n{}",
+                fixture,
+                style,
+                outcome.output
+            );
+        }
+    }
 }
 
 #[test]
@@ -473,6 +559,248 @@ fn render_with_feedback_keeps_bt_titled_subgraph_entries_clear_of_title_row() {
             style,
             outcome.output
         );
+    }
+}
+
+#[test]
+fn render_with_feedback_keeps_bt_title_portals_continuous_for_collision_homologs() {
+    fn is_vertical(c: char) -> bool {
+        matches!(c, '|' | '│' | '║')
+    }
+
+    fn is_portal_marker(c: char) -> bool {
+        is_vertical(c) || matches!(c, '+' | '┼' | '╋')
+    }
+
+    fn assert_title_portals_are_connected(output: &str, titles: &[&str]) {
+        let lines: Vec<Vec<char>> = output.lines().map(|line| line.chars().collect()).collect();
+        for title in titles {
+            let title_row = lines
+                .iter()
+                .position(|line| line.iter().copied().collect::<String>().contains(title))
+                .unwrap_or_else(|| panic!("missing BT title {title:?}\n{output}"));
+            let border_row = title_row + 1;
+            assert!(
+                border_row < lines.len(),
+                "missing BT border below title {title:?}\n{output}"
+            );
+
+            let portal_columns: Vec<usize> = lines[border_row]
+                .iter()
+                .enumerate()
+                .filter_map(|(x, c)| {
+                    (x > 0 && x + 1 < lines[border_row].len() && is_portal_marker(*c)).then_some(x)
+                })
+                .collect();
+            assert!(
+                !portal_columns.is_empty(),
+                "expected an interior BT portal below title {title:?}\n{output}"
+            );
+
+            for x in portal_columns {
+                assert!(
+                    lines[title_row].get(x).copied().is_some_and(is_vertical),
+                    "BT title-safe portal column {x} is not continuous through title row {title_row} for {title:?}\n{output}"
+                );
+            }
+        }
+    }
+
+    for (fixture, titles) in [
+        (
+            "tests/fixtures/inputs/collision_parallel_edges_bt.md",
+            &["Target"][..],
+        ),
+        (
+            "tests/fixtures/inputs/collision_sibling_triple_bt.md",
+            &["Group 3", "Group 2"][..],
+        ),
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            for optimize_render in [false, true] {
+                let outcome = termiflow::render_with_feedback(
+                    &input,
+                    termiflow::RenderOptions::new()
+                        .with_style(style)
+                        .with_optimize_render(optimize_render),
+                )
+                .unwrap();
+
+                assert_title_portals_are_connected(&outcome.output, titles);
+                for title in titles {
+                    assert!(
+                        outcome.output.contains(title),
+                        "BT title {title:?} was corrupted for {fixture} in {style:?}, optimize={optimize_render}\n{}",
+                        outcome.output
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn render_bt_parallel_edges_avoids_adjacent_title_route_corners() {
+    fn is_vertical(c: char) -> bool {
+        matches!(c, '|' | '│' | '║')
+    }
+
+    fn is_portal_marker(c: char) -> bool {
+        is_vertical(c) || matches!(c, '+' | '┼' | '╋')
+    }
+
+    let input = std::fs::read_to_string("tests/fixtures/inputs/collision_parallel_edges_bt.md")
+        .expect("read BT parallel-edge fixture");
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        for optimize_render in [false, true] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimize_render),
+            )
+            .expect("render BT parallel-edge fixture");
+            let lines: Vec<Vec<char>> = outcome
+                .output
+                .lines()
+                .map(|line| line.chars().collect())
+                .collect();
+            let title = "Target";
+            let title_row = lines
+                .iter()
+                .position(|line| {
+                    line.windows(title.chars().count())
+                        .any(|window| window.iter().copied().collect::<String>() == title)
+                })
+                .expect("BT target title row");
+            let title_start = lines[title_row]
+                .windows(title.chars().count())
+                .position(|window| window.iter().copied().collect::<String>() == title)
+                .expect("BT target title start");
+            let title_end = title_start + title.chars().count() - 1;
+            let border_row = title_row + 1;
+            let first_portal = lines[border_row]
+                .iter()
+                .enumerate()
+                .filter_map(|(x, c)| {
+                    (x > 0 && x + 1 < lines[border_row].len() && is_portal_marker(*c)).then_some(x)
+                })
+                .next()
+                .expect("first BT target portal");
+            let portal_count = lines[border_row]
+                .iter()
+                .enumerate()
+                .filter(|(x, c)| {
+                    *x > 0 && *x + 1 < lines[border_row].len() && is_portal_marker(**c)
+                })
+                .count();
+
+            assert_eq!(lines[title_row][title_end + 1], ' ');
+            assert!(
+                first_portal >= title_end + 2,
+                "first portal x={first_portal} overlaps the title wrapper ending at x={title_end} for {style:?}, optimize={optimize_render}\n{}",
+                outcome.output
+            );
+            assert_eq!(
+                portal_count, 3,
+                "BT parallel target boundary must retain three explicit portal openings for {style:?}, optimize={optimize_render}\n{}",
+                outcome.output
+            );
+            for portal_x in lines[border_row].iter().enumerate().filter_map(|(x, c)| {
+                (x > 0 && x + 1 < lines[border_row].len() && is_portal_marker(*c)).then_some(x)
+            }) {
+                assert!(
+                    is_vertical(lines[border_row][portal_x]),
+                    "BT parallel portal at x={portal_x} is not a local vertical seam for {style:?}, optimize={optimize_render}\n{}",
+                    outcome.output
+                );
+                assert!(
+                    is_vertical(lines[title_row][portal_x]),
+                    "BT portal x={portal_x} is not continuous through the title row for {style:?}, optimize={optimize_render}\n{}",
+                    outcome.output
+                );
+            }
+
+            for row in [title_row.saturating_sub(1), border_row + 1] {
+                let row_text: String = lines[row].iter().collect();
+                assert!(
+                    !row_text.contains("└┐")
+                        && !row_text.contains("┌┘")
+                        && !row_text.contains("++"),
+                    "adjacent route corners remain near the title for {style:?}, optimize={optimize_render}, row={row}\n{}",
+                    outcome.output
+                );
+            }
+
+            assert!(
+                !outcome.output.lines().any(|row| {
+                    row.contains("└─┐") || row.contains("┌─┘") || row.contains("+-+")
+                }),
+                "aligned BT parallel rails must not form a title-boundary hook for {style:?}, optimize={optimize_render}\n{}",
+                outcome.output
+            );
+        }
+    }
+}
+
+#[test]
+fn render_bt_sibling_chain_separates_middle_boundary_roles() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/collision_sibling_triple_bt.md")
+        .expect("read BT sibling-chain fixture");
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        for optimize_render in [false, true] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimize_render),
+            )
+            .expect("render BT sibling-chain fixture");
+            let lines: Vec<&str> = outcome.output.lines().collect();
+
+            for title in ["Group 3", "Group 2", "Group 1"] {
+                let title_row = lines
+                    .iter()
+                    .position(|line| line.contains(title))
+                    .expect("BT sibling title row");
+                let first_row = title_row.saturating_sub(3);
+                let last_row = (title_row + 1).min(lines.len().saturating_sub(1));
+                for row in &lines[first_row..=last_row] {
+                    assert!(
+                        !contains_unicode_degenerate_cross_corner_hook(row)
+                            && !contains_ascii_degenerate_detached_corner_hook(row),
+                        "BT sibling title boundary retained a degenerate route hook for {title:?}, {style:?}, optimize={optimize_render}:\n{}",
+                        outcome.output
+                    );
+                }
+            }
+
+            assert!(
+                !outcome.output.lines().any(|row| {
+                    contains_unicode_degenerate_cross_corner_hook(row)
+                        || contains_ascii_degenerate_detached_corner_hook(row)
+                }),
+                "BT sibling frame contains a degenerate cross-corner hook outside the title window for {style:?}, optimize={optimize_render}:\n{}",
+                outcome.output
+            );
+            let middle_lanes = outcome
+                .portal_trace
+                .boundaries
+                .iter()
+                .filter(|boundary| {
+                    boundary.boundary_id == "G2"
+                        && (boundary.crossing == "enter" || boundary.crossing == "exit")
+                })
+                .filter_map(|boundary| boundary.slot_x)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(
+                middle_lanes.len() == 2,
+                "BT sibling transitions should expose separate middle boundary roles for {style:?}, optimize={optimize_render}:\n{}",
+                outcome.output
+            );
+        }
     }
 }
 
@@ -849,12 +1177,12 @@ fn render_matches_verified_collision_parallel_cross_bt_snapshots() {
     for (style, target_crossing, source_crossing) in [
         (
             termiflow::BaseStyle::Unicode,
-            "┗━━━━━━━━━━━│━━━━━━━━━│━━━━━━━━┛",
+            "┗━━━━━━━━━│━━━━━━━━━━━│━━━━━━━━┛",
             "┏━━━━━━━━━│━━━━━━━━━━━│━━━━━━━━┓",
         ),
         (
             termiflow::BaseStyle::Ascii,
-            "+-----------|---------|--------+",
+            "+---------|-----------|--------+",
             "+---------|-----------|--------+",
         ),
     ] {

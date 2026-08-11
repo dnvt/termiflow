@@ -6,18 +6,22 @@ use crate::spacing::SpacingConfig;
 use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
-use super::super::edge_policy::title_safe_td_entry_x;
-use super::super::semantic::CellOwnerKind;
+use super::super::edge_policy::{
+    td_single_incoming_route_x, td_single_outgoing_route_x, title_safe_td_entry_x,
+};
+use super::super::fallback_route::FallbackRoutePlan;
+use super::super::semantic::{CellOwnerKind, CellRole};
 use super::edge_primitives::{
     adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, edge_exit_point,
     get_node_center,
 };
 use super::subgraph::{
     route_cross_subgraph_bt, route_cross_subgraph_td, route_divergent_into_subgraph_bt,
-    route_divergent_into_subgraph_td,
+    route_divergent_into_subgraph_horizontal, route_divergent_into_subgraph_td, BtRouteOutcome,
 };
 use super::{
-    edge_route_owner_id, set_route_char, set_route_edge_char, style_for_edge_kind, RouteOwner,
+    edge_route_owner_id, set_route_char, set_route_edge_char, set_route_endpoint_char,
+    style_for_edge_kind, RouteOwner,
 };
 
 pub(super) fn route_fanout_into_subgraph_td(
@@ -403,9 +407,32 @@ pub fn route_divergent_edges(
         }
     }
 
+    // A source can contribute to a downstream fan-in while also branching to
+    // another target.  Convergence is rendered before this pass, so keep the
+    // later LR/RL spine away from an already-owned fan-in junction when the
+    // complete measured candidate route has room.  This is deliberately
+    // topology-gated; ordinary single-target L-routes retain their existing
+    // geometry.
+    if target_positions.len() == 1 && matches!(direction, Direction::LR | Direction::RL) {
+        let target = target_positions[0].2;
+        let request = MixedBranchRequest {
+            from,
+            target,
+            stem_start: (stem_start_x, stem_start_y),
+            junction: (junction_x, junction_y),
+            canvas,
+            direction,
+            graph,
+        };
+        if let Some((candidate_x, candidate_y)) = mixed_branch_junction(request) {
+            junction_x = candidate_x;
+            junction_y = candidate_y;
+        }
+    }
+
     // Single target: direct route
     if target_positions.len() == 1 {
-        let (target_x, target_y, target) = (
+        let (mut target_x, target_y, target) = (
             target_positions[0].0,
             target_positions[0].1,
             target_positions[0].2,
@@ -416,13 +443,23 @@ pub fn route_divergent_edges(
             id: route_owner_id.as_str(),
         };
 
-        let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+        let (mut arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
 
         if matches!(direction, Direction::TD | Direction::TB) {
             let from_sg = graph.get_node_subgraph(&from.id);
             let to_sg = graph.get_node_subgraph(&target.id);
+            if from_sg.is_some() && to_sg.is_none() {
+                if let Some(transaction_x) =
+                    td_single_outgoing_route_x(from, target, stem_start_x, arrow_y, graph)
+                {
+                    arrow_x = transaction_x;
+                    target_x = transaction_x;
+                }
+            }
             let cross_arrow_x = if from_sg != to_sg {
-                title_safe_td_entry_x(target, arrow_x, arrow_y, stem_start_y, graph)
+                td_single_incoming_route_x(from, target, arrow_x, arrow_y, graph).unwrap_or_else(
+                    || title_safe_td_entry_x(target, arrow_x, arrow_y, stem_start_y, graph),
+                )
             } else {
                 arrow_x
             };
@@ -458,8 +495,8 @@ pub fn route_divergent_edges(
         } else if direction == Direction::BT {
             let from_sg = graph.get_node_subgraph(&from.id);
             let to_sg = graph.get_node_subgraph(&target.id);
-            if from_sg != to_sg
-                && route_cross_subgraph_bt(
+            if from_sg != to_sg {
+                match route_cross_subgraph_bt(
                     from,
                     target,
                     stem_start_x,
@@ -470,16 +507,19 @@ pub fn route_divergent_edges(
                     style,
                     graph,
                     Some(route_owner),
-                )
-            {
-                set_route_char(
-                    canvas,
-                    arrow_x,
-                    arrow_y,
-                    coords.arrow_end(style),
-                    Some(route_owner),
-                );
-                return;
+                ) {
+                    BtRouteOutcome::Handled | BtRouteOutcome::Rejected => {
+                        set_route_char(
+                            canvas,
+                            arrow_x,
+                            arrow_y,
+                            coords.arrow_end(style),
+                            Some(route_owner),
+                        );
+                        return;
+                    }
+                    BtRouteOutcome::NotApplicable => {}
+                }
             }
         }
 
@@ -847,6 +887,39 @@ pub fn route_divergent_edges(
         }
     }
 
+    // Horizontal fan-out into one subgraph is one boundary scene: enter through
+    // a single owned portal, keep a collector rail inside the boundary, and
+    // branch to each target from that rail.  The generic fan-out below routes
+    // each target independently and can leave the off-axis branches as
+    // detached stubs when the source is outside a titled subgraph.
+    if matches!(direction, Direction::LR | Direction::RL) && target_positions.len() > 1 {
+        if let Some(target_sg_id) = target_positions
+            .first()
+            .and_then(|(_, _, n)| graph.get_node_subgraph(&n.id))
+        {
+            let source_sg = graph.get_node_subgraph(&from.id);
+            let all_targets_same_sg = target_positions
+                .iter()
+                .all(|(_, _, n)| graph.get_node_subgraph(&n.id) == Some(target_sg_id));
+
+            if all_targets_same_sg && source_sg != Some(target_sg_id) {
+                if let Some(sg) = graph.get_subgraph(target_sg_id) {
+                    if route_divergent_into_subgraph_horizontal(
+                        from,
+                        &visible_targets,
+                        canvas,
+                        style,
+                        direction,
+                        sg,
+                        graph,
+                    ) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     // Multiple targets: draw branching structure
     let fanout_owner_id = format!("fanout:{}", from.id);
     let fanout_owner = RouteOwner {
@@ -1031,7 +1104,11 @@ pub fn route_divergent_edges(
             EdgeKind::Open => coords.primary_edge_char(&branch_style), // no arrowhead
             _ => coords.arrow_end(style),
         };
-        set_route_char(canvas, arrow_x, arrow_y, tip, Some(branch_owner));
+        if matches!(edge_kind, EdgeKind::CircleEnd | EdgeKind::CrossEnd) {
+            set_route_endpoint_char(canvas, arrow_x, arrow_y, tip, branch_owner);
+        } else {
+            set_route_char(canvas, arrow_x, arrow_y, tip, Some(branch_owner));
+        }
 
         // A custom branch shaft can otherwise downgrade the shared fan-out
         // junction while overlap resolution sees only the branch style. Restore
@@ -1039,11 +1116,22 @@ pub fn route_divergent_edges(
         // not erase topology at the merge point.
         let (junction_cell_x, junction_cell_y) =
             coords.with_secondary(junction_x, junction_y, target_secondary);
-        let junction = match direction {
-            Direction::TD | Direction::TB => style.junction_down,
-            Direction::BT => style.junction_up,
-            Direction::LR => style.junction_right,
-            Direction::RL => style.junction_left,
+        // A drop at either end of the span is an elbow, not a tee.  The
+        // branch still terminates at the target arrow, but there is no arm
+        // continuing past the endpoint.  Keeping the endpoint corner here
+        // prevents the later branch write from turning a truthful `┌`/`┐`
+        // (or its ASCII equivalent) into an ambiguous three-way junction.
+        let junction = if target_secondary == span_start && span_start != junction_secondary {
+            start_corner
+        } else if target_secondary == span_end && span_end != junction_secondary {
+            end_corner
+        } else {
+            match direction {
+                Direction::TD | Direction::TB => style.junction_down,
+                Direction::BT => style.junction_up,
+                Direction::LR => style.junction_right,
+                Direction::RL => style.junction_left,
+            }
         };
         set_route_char(
             canvas,
@@ -1097,5 +1185,388 @@ pub fn route_divergent_edges(
                 Some(fanout_owner),
             );
         }
+    }
+
+    // The generic horizontal fanout is still a renderer-owned fallback route,
+    // even though its visible geometry is assembled from shared and branch
+    // owners above. Record the exact primitive coverage after lowering so the
+    // final evidence can validate every edge against the post-repair canvas.
+    // This is intentionally limited to LR/RL here; vertical fallback scenes
+    // have their own specialized route-plan seams.
+    let mut edge_kinds = Vec::new();
+    for (_, _, target) in &target_positions {
+        if let Some(edge) = graph
+            .edges
+            .iter()
+            .find(|edge| !edge.is_back_edge && edge.from == from.id && edge.to == target.id)
+        {
+            if !edge_kinds.contains(&edge.kind) {
+                edge_kinds.push(edge.kind);
+            }
+        }
+    }
+    let can_record_fallback_plan = edge_kinds.len() >= 2
+        && graph.subgraphs.is_empty()
+        && matches!(direction, Direction::LR | Direction::RL)
+        && target_positions.iter().all(|(_, _, target)| {
+            graph
+                .edges
+                .iter()
+                .find(|edge| !edge.is_back_edge && edge.from == from.id && edge.to == target.id)
+                .is_some_and(|edge| edge.label.is_none())
+        });
+    if can_record_fallback_plan {
+        let mut plan = FallbackRoutePlan::new(fanout_owner_id, "generic-horizontal-fanout");
+        plan.set_scene_coverage(
+            target_positions
+                .iter()
+                .map(|(_, _, target)| edge_route_owner_id(graph, &from.id, &target.id))
+                .collect::<Vec<_>>(),
+        );
+
+        if stem_length > 0 {
+            let (stem_end_x, _) = coords.advance(stem_start_x, stem_start_y, stem_length - 1);
+            plan.push_horizontal(
+                stem_start_y,
+                stem_start_x,
+                stem_end_x,
+                coords.primary_edge_char(style),
+            );
+            if stem_length == 1 {
+                plan.push_paint(
+                    stem_start_x,
+                    stem_start_y,
+                    canvas.get(stem_start_x, stem_start_y),
+                );
+            }
+        }
+
+        plan.push_vertical(
+            junction_x,
+            span_start,
+            span_end,
+            coords.secondary_edge_char(style),
+        );
+        if span_start == span_end {
+            let (span_x, span_y) = coords.with_secondary(junction_x, junction_y, span_start);
+            plan.push_paint(span_x, span_y, canvas.get(span_x, span_y));
+        }
+
+        if junction_secondary != src_secondary {
+            plan.push_vertical(
+                junction_x,
+                src_secondary,
+                junction_secondary,
+                coords.secondary_edge_char(style),
+            );
+        }
+
+        for (_, _, target) in &target_positions {
+            let edge_kind = graph
+                .edges
+                .iter()
+                .find(|e| e.from == from.id && e.to == target.id && !e.is_back_edge)
+                .map(|e| e.kind)
+                .unwrap_or(EdgeKind::Arrow);
+            let branch_style = style_for_edge_kind(style, edge_kind);
+            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
+            let (drop_x, drop_y) = coords.with_secondary(junction_x, junction_y, target_secondary);
+            let (drop_start_x, drop_start_y) = coords.advance(drop_x, drop_y, 1);
+            if drop_start_x != arrow_x || drop_start_y != arrow_y {
+                plan.push_horizontal(drop_start_y, drop_start_x, arrow_x, branch_style.edge_h);
+            }
+            plan.push_paint(arrow_x, arrow_y, canvas.get(arrow_x, arrow_y));
+        }
+
+        canvas.record_fallback_route_plan(plan);
+    }
+}
+
+const MIXED_BRANCH_JUNCTION_SEPARATION: usize = 3;
+const MIXED_BRANCH_TARGET_CLEARANCE: usize = 3;
+
+struct MixedBranchRequest<'a> {
+    from: &'a Node,
+    target: &'a Node,
+    stem_start: (usize, usize),
+    junction: (usize, usize),
+    canvas: &'a Canvas,
+    direction: Direction,
+    graph: &'a Graph,
+}
+
+struct MixedBranchGeometry<'a> {
+    stem_start: (usize, usize),
+    arrow: (usize, usize),
+    source_secondary: usize,
+    target_secondary: usize,
+    source_primary: usize,
+    direction: Direction,
+    canvas: &'a Canvas,
+}
+
+/// Select a measured LR/RL fan-out spine when the source also contributes to
+/// another fan-in.  The fan-in pass runs first, so a candidate can be rejected
+/// from the current canvas without teaching generic routes about a particular
+/// fixture.  Returning `None` is the fail-closed path: the caller keeps its
+/// ordinary L-route and does not claim a partial scene.
+fn mixed_branch_junction(request: MixedBranchRequest<'_>) -> Option<(usize, usize)> {
+    if !mixed_branch_topology_supported(request.from, request.target, request.graph)
+        || !matches!(request.direction, Direction::LR | Direction::RL)
+    {
+        return None;
+    }
+
+    let coords = OrientedCoords::new(request.direction);
+    let (source_x, source_y) = get_node_center(request.from);
+    let (target_x, target_y) = get_node_center(request.target);
+    let source_secondary = coords.secondary_coord(source_x, source_y);
+    let target_secondary = coords.secondary_coord(target_x, target_y);
+    if source_secondary == target_secondary {
+        return None;
+    }
+
+    let arrow = adjusted_edge_entry_point(request.target, request.direction, request.graph);
+    let source_primary = coords.primary_coord(request.stem_start.0, request.stem_start.1);
+    let current_primary = coords.primary_coord(request.junction.0, request.junction.1);
+    let arrow_primary = coords.primary_coord(arrow.0, arrow.1);
+    let target_limit = match request.direction {
+        Direction::LR => arrow_primary.saturating_sub(MIXED_BRANCH_TARGET_CLEARANCE),
+        Direction::RL => arrow_primary.saturating_add(MIXED_BRANCH_TARGET_CLEARANCE),
+        _ => return None,
+    };
+
+    let current_in_range = match request.direction {
+        Direction::LR => current_primary > source_primary && current_primary <= target_limit,
+        Direction::RL => current_primary < source_primary && current_primary >= target_limit,
+        _ => false,
+    };
+    if !current_in_range {
+        return None;
+    }
+
+    let primary_span = match request.direction {
+        Direction::LR => target_limit.saturating_sub(current_primary),
+        Direction::RL => current_primary.saturating_sub(target_limit),
+        _ => return None,
+    };
+
+    for delta in 0..=primary_span {
+        let candidate_primary = match request.direction {
+            Direction::LR => current_primary.saturating_add(delta),
+            Direction::RL => current_primary.saturating_sub(delta),
+            _ => return None,
+        };
+        let mut candidate = request.junction;
+        coords.set_primary(&mut candidate.0, &mut candidate.1, candidate_primary);
+
+        let geometry = MixedBranchGeometry {
+            stem_start: request.stem_start,
+            arrow,
+            source_secondary,
+            target_secondary,
+            source_primary,
+            direction: request.direction,
+            canvas: request.canvas,
+        };
+        if mixed_branch_candidate_is_clear(candidate, &geometry) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+/// The candidate is intentionally narrower than a generic graph-family
+/// detector.  Unsupported visual semantics remain on their existing route
+/// owners instead of being partially claimed by this helper.
+fn mixed_branch_topology_supported(from: &Node, target: &Node, graph: &Graph) -> bool {
+    if !graph.subgraphs.is_empty()
+        || graph.nodes.iter().any(|node| {
+            !matches!(
+                node.shape,
+                crate::graph::NodeShape::Rectangle | crate::graph::NodeShape::Database
+            )
+        })
+        || graph
+            .edges
+            .iter()
+            .any(|edge| edge.is_back_edge || edge.label.is_some() || edge.kind != EdgeKind::Arrow)
+    {
+        return false;
+    }
+
+    let outgoing: Vec<&str> = graph
+        .edges
+        .iter()
+        .filter(|edge| !edge.is_back_edge && edge.from == from.id)
+        .map(|edge| edge.to.as_str())
+        .collect();
+    if outgoing.len() < 2 || !outgoing.iter().any(|id| *id == target.id) {
+        return false;
+    }
+
+    // The selected branch is mixed only when another outgoing target has a
+    // real fan-in.  The current target itself is the remaining divergence
+    // edge after the convergence pass, so it normally has one incoming edge.
+    outgoing.iter().any(|id| {
+        *id != target.id.as_str()
+            && graph
+                .edges
+                .iter()
+                .filter(|edge| !edge.is_back_edge && edge.to == *id)
+                .count()
+                > 1
+    })
+}
+
+fn mixed_branch_candidate_is_clear(
+    candidate: (usize, usize),
+    geometry: &MixedBranchGeometry<'_>,
+) -> bool {
+    let coords = OrientedCoords::new(geometry.direction);
+    let candidate_primary = coords.primary_coord(candidate.0, candidate.1);
+
+    // A foreign fan-in junction may remain on the shared source shaft, but a
+    // new fan-out corner cannot be adjacent to it: that is the exact visual
+    // ambiguity this candidate is meant to remove.
+    let source_end_primary = coords.primary_coord(geometry.arrow.0, geometry.stem_start.1);
+    let source_span_start = geometry.source_primary.min(source_end_primary);
+    let source_span_end = geometry.source_primary.max(source_end_primary);
+    for primary in source_span_start..=source_span_end {
+        let mut point = geometry.stem_start;
+        coords.set_primary(&mut point.0, &mut point.1, primary);
+        if geometry
+            .canvas
+            .get_meta(point.0, point.1)
+            .is_some_and(|meta| matches!(meta.role, CellRole::Junction | CellRole::Corner))
+            && point.0.abs_diff(candidate.0) + point.1.abs_diff(candidate.1)
+                < MIXED_BRANCH_JUNCTION_SEPARATION
+        {
+            return false;
+        }
+    }
+
+    // The candidate spine and its target-row bend must be empty.  The source
+    // row is excluded here because the source shaft can legitimately share a
+    // horizontal fan-in corridor; the junction-separation check above keeps
+    // that sharing visually attributable.
+    let secondary_start = geometry.source_secondary.min(geometry.target_secondary);
+    let secondary_end = geometry.source_secondary.max(geometry.target_secondary);
+    for secondary in secondary_start..=secondary_end {
+        let point = coords.with_secondary(candidate.0, candidate.1, secondary);
+        if secondary != geometry.source_secondary && geometry.canvas.get(point.0, point.1) != ' ' {
+            return false;
+        }
+    }
+
+    // Keep the final target-row approach clear through the arrow.  The arrow
+    // cell itself is still empty at this stage, but including it here makes
+    // the capacity proof explicit and direction-neutral.
+    let final_start = match geometry.direction {
+        Direction::LR => candidate_primary.saturating_add(1),
+        Direction::RL => candidate_primary.saturating_sub(1),
+        _ => return false,
+    };
+    let final_end = coords.primary_coord(geometry.arrow.0, geometry.arrow.1);
+    let (low, high) = (final_start.min(final_end), final_start.max(final_end));
+    for primary in low..=high {
+        let mut point = (candidate.0, geometry.arrow.1);
+        coords.set_primary(&mut point.0, &mut point.1, primary);
+        if geometry.canvas.get(point.0, point.1) != ' ' {
+            return false;
+        }
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod mixed_branch_tests {
+    use super::{mixed_branch_junction, mixed_branch_topology_supported, MixedBranchRequest};
+    use crate::graph::Direction;
+    use crate::graph::{Edge, Graph, Node, NodeShape};
+    use crate::render::canvas::Canvas;
+    use crate::render::semantic::CellOwnerKind;
+
+    fn mixed_graph() -> Graph {
+        let mut graph = Graph::new();
+        graph.direction = Direction::LR;
+
+        let mut gateway = Node::new("Gateway", "API Gateway");
+        gateway.x = 0;
+        gateway.y = 4;
+        gateway.width = 17;
+        gateway.height = 3;
+        let mut auth = Node::new("Auth", "Auth Service");
+        auth.x = 27;
+        auth.y = 6;
+        auth.width = 18;
+        auth.height = 3;
+        let mut api = Node::new("API", "Main API");
+        api.x = 27;
+        api.y = 2;
+        api.width = 14;
+        api.height = 3;
+        let mut cache = Node::new("Cache", "Redis Cache");
+        cache.x = 55;
+        cache.y = 0;
+        cache.width = 17;
+        cache.height = 3;
+        let mut database = Node::with_shape("DB", "Database", NodeShape::Database);
+        database.x = 55;
+        database.y = 4;
+        database.width = 14;
+        database.height = 3;
+
+        for node in [gateway, auth, api, cache, database] {
+            graph.add_node(node);
+        }
+        graph.add_edge(Edge::new("Gateway", "Auth"));
+        graph.add_edge(Edge::new("Gateway", "API"));
+        graph.add_edge(Edge::new("Auth", "DB"));
+        graph.add_edge(Edge::new("API", "DB"));
+        graph.add_edge(Edge::new("API", "Cache"));
+        graph
+    }
+
+    #[test]
+    fn mixed_role_predicate_accepts_database_target_family() {
+        let graph = mixed_graph();
+        let api = graph.get_node("API").expect("API node");
+        let cache = graph.get_node("Cache").expect("Cache node");
+        assert!(mixed_branch_topology_supported(api, cache, &graph));
+    }
+
+    #[test]
+    fn mixed_role_predicate_rejects_labeled_variants() {
+        let mut graph = mixed_graph();
+        graph.edges[4].label = Some("cache".to_owned());
+        let api = graph.get_node("API").expect("API node");
+        let cache = graph.get_node("Cache").expect("Cache node");
+        assert!(!mixed_branch_topology_supported(api, cache, &graph));
+    }
+
+    #[test]
+    fn mixed_role_candidate_leaves_two_cells_between_foreign_junctions() {
+        let graph = mixed_graph();
+        let api = graph.get_node("API").expect("API node");
+        let cache = graph.get_node("Cache").expect("Cache node");
+        let mut canvas = Canvas::new(80, 10);
+        canvas.set_owned(48, 3, '+', CellOwnerKind::EdgeSegment, "fanin:DB", 5);
+
+        assert_eq!(
+            mixed_branch_junction(MixedBranchRequest {
+                from: api,
+                target: cache,
+                stem_start: (41, 3),
+                junction: (47, 3),
+                canvas: &canvas,
+                direction: Direction::LR,
+                graph: &graph,
+            }),
+            Some((51, 3))
+        );
     }
 }
