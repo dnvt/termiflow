@@ -69,19 +69,12 @@ contract plus the 16-row holdout.
 
 ## Evidence references
 
-- Packet: `/var/folders/n_/fn0_190d2rgbq7kxy6cfkh4w0000gn/T/tmp.FLGzqm2zx0/packet/COMPLETE.json`
-  — SHA-256 `30f286981b731a2850fbc57c0fcbb0a90d4aaad578610ddde6ed1c36d94a94b7`
-- Primary ledger: `/var/folders/n_/fn0_190d2rgbq7kxy6cfkh4w0000gn/T/tmp.Wm84xSVZwM/decisions.XXXXXX.jsonl`
-  — SHA-256 `b7372930a45aafaa4bc7fb40fb28ccb231d5d5717dce08d932902b9beb00abc2`
-- Expected-error ledger: `/tmp/termiflow-h21-errors.XkrucB/records.jsonl`
-  — SHA-256 `9b3a7b02deb0be6d058cb46e072bfc89bbde4e4da5ab7356c545fd7bd0e27af1`
-- Holdout receipt: `/tmp/termiflow-h21-holdout.uGRF1x/receipt.json`
-  — SHA-256 `868ea0c9b371e12832fb64e18b38f2187a127155a5829495a01b5d6dc6fdae7d`
-- Holdout ledger: `/tmp/termiflow-h21-holdout.uGRF1x/holdout-decisions.jsonl`
-  — SHA-256 `05500fa07d54a03228480f77443ae16bcdf38a7714897594d36ae888d33f81f1`
-- Golden check: `/tmp/termiflow-h21-golden-check.json`
-  — SHA-256 `af0ecfd79649b87772324c63a39b56dad9259640389daa02d4d0854d7cd84ac3`
-- Strict-quality stderr: `/tmp/termiflow-h21-gates.3R68jv/strict_quality.stderr`
-  — SHA-256 `621f3cae1cb5b40c429963a117a1cdc041a7d3896660a129fa6d4906697177a0`
+- Packet: H21 complete packet (private run artifact).
+- Primary ledger: H21 primary perceptual ledger (private run artifact).
+- Expected-error ledger: H21 expected-error ledger (private run artifact).
+- Holdout receipt: H21 holdout receipt (private run artifact).
+- Holdout ledger: H21 holdout ledger (private run artifact).
+- Golden check: H21 intent-bound golden report (private run artifact).
+- Strict-quality stderr: H21 strict-quality diagnostic (private run artifact).
 - Source hashes: `src/render/shapes.rs` `fec1eabd41406d0f72377c124fed03c3d433987a75f99534c4269357d1fca9be`;
   `tests/independent_oracles.rs` `f0ed37818edd8ebdb43054f49fb36b0faf75891cbd67a084a97526b50beb9f19`.

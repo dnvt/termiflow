@@ -1,9 +1,9 @@
 # Visual lesson: full-corpus subgraph boundaries and target entries
 
 Date: 2026-08-08
-Source packet: `/tmp/termiflow-h37-sibling-final`
-Review ledger: `/tmp/termiflow-h37-review.jsonl`
-Expected-error ledger: `/Users/dnvt/Developer/termiflow-audit/.tmp-error-policy.jsonl`
+Source packet: H37 sibling complete packet (private run artifact)
+Review ledger: H37 perceptual ledger (private run artifact)
+Expected-error ledger: H37 expected-error policy ledger (private run artifact)
 
 ## Corpus scope and validation
 

@@ -59,7 +59,7 @@ diagram visually less legible.
   `intermediate_database_entry_is_terminal_across_direction_style_and_mode_matrix`
   passes across four directions, two styles, and two modes.
 - Focused unit and build checks pass for the database fan-in planner.
-- Fresh packet: `/tmp/termiflow-h35-target-entry-final-v3`.
+- Fresh packet: H35 target-entry complete packet (private run artifact; reproduce from the contributor workflow).
 - Packet completion SHA256:
   `682860367333050356024d6881cd39b998228e2299cf0ae96ddb4c18a88eb9a8`.
 - The current H84 perceptual ledger identified the P1 terminal ordering in

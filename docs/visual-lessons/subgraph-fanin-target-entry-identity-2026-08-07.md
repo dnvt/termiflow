@@ -38,7 +38,7 @@ The implementation therefore:
 
 - Focused independent oracle: `strict_subgraph_fan_in_preserves_boundary_lanes_and_target_ports` passes.
 - Strict selector and orientation unit tests pass.
-- Fresh packet: `/tmp/termiflow-h32-final`.
+- Fresh packet: H32 complete packet (private run artifact; reproduce from the contributor workflow).
 - Packet result: 948/948 rows generated with no packet failures; the four
   strict directions are critic-clean in the reviewed Unicode/default rows,
   and their route-clarity reports are clean.
