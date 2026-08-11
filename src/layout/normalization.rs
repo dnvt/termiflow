@@ -167,6 +167,56 @@ pub(super) fn normalize_orientation_and_gutters(
                         }
                     }
                 }
+
+                // A top-level node can sit between two side-by-side
+                // subgraphs without sharing an edge with the subgraph whose
+                // wall it overlaps.  The edge-driven pass above cannot see
+                // that collision, so the later renderer receives overlapping
+                // node/subgraph rectangles and loses target-entry ownership.
+                // Treat only direct top-level nodes and top-level envelopes as
+                // foreign here; declared parent/child content is intentionally
+                // allowed to occupy its parent's interior composition.
+                let Some(subgraph) = graph.get_subgraph(subgraph_id) else {
+                    continue;
+                };
+                if subgraph.parent_id.is_some() {
+                    continue;
+                }
+                for (node_id, external_rect) in &placement.node_rects {
+                    if graph.get_node_subgraph(node_id).is_some()
+                        || graph.is_node_in_subgraph_tree(node_id, subgraph_id)
+                        || external_rect.y >= env.outer.bottom()
+                        || env.outer.y >= external_rect.bottom()
+                    {
+                        continue;
+                    }
+
+                    if external_rect.x < env.outer.x {
+                        if external_rect.right() <= env.outer.x {
+                            continue;
+                        }
+                        let required_env_x = external_rect.right().saturating_add(2);
+                        let threshold_x = env.outer.x;
+                        let delta_x = required_env_x.saturating_sub(env.outer.x);
+                        match required_env_shift {
+                            Some((best_x, best_delta)) => {
+                                if threshold_x < best_x
+                                    || (threshold_x == best_x && delta_x > best_delta)
+                                {
+                                    required_env_shift = Some((threshold_x, delta_x));
+                                }
+                            }
+                            None => required_env_shift = Some((threshold_x, delta_x)),
+                        }
+                    } else if external_rect.x < env.outer.right() {
+                        let required_external_x = env.outer.right().saturating_add(2);
+                        let delta_x = required_external_x.saturating_sub(external_rect.x);
+                        external_node_shifts
+                            .entry(node_id.clone())
+                            .and_modify(|existing| *existing = (*existing).max(delta_x))
+                            .or_insert(delta_x);
+                    }
+                }
             }
 
             if required_env_shift.is_none() && external_node_shifts.is_empty() {

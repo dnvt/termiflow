@@ -27,7 +27,10 @@
 - `--crop` / `--no-crop`: crop empty margins around output (default on).
 - `--pad N`: add padding (spaces/lines) around output (default 0).
 - `--spacing`: choose `compact`, `default`, or `spacious` layout spacing.
-- `--compact`: legacy alias for `--spacing=compact`; deprecated.
+- `--compact`: supported legacy alias for `--spacing=compact`; new scripts
+  should use the canonical `--spacing=compact` spelling.
+- `--ansi-title-invert`: hidden legacy compatibility flag. TTY print mode
+  already uses ANSI title inversion by default.
 - `--scaling`: choose `auto` or `fixed` canvas scaling (default `fixed`).
 - `--fit-terminal`: constrain the canvas to current terminal dimensions.
 - `--optimize-render`: enable bounded render/layout repair after the initial draw.

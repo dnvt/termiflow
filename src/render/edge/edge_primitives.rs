@@ -14,11 +14,23 @@ pub(super) fn get_node_center(node: &Node) -> (usize, usize) {
 
 /// Where an incoming edge enters a target node (arrow position).
 pub(super) fn edge_entry_point(node: &Node, direction: Direction) -> (usize, usize) {
+    let shape_clearance = node.shape.incoming_edge_clearance(direction);
+
     match direction {
-        Direction::TD | Direction::TB => (node.center_x(), node.y.saturating_sub(1)),
-        Direction::LR => (node.x.saturating_sub(1), node.center_y()),
-        Direction::RL => (node.x + node.width, node.center_y()),
-        Direction::BT => (node.center_x(), node.bottom_y()),
+        Direction::TD | Direction::TB => {
+            (node.center_x(), node.y.saturating_sub(1 + shape_clearance))
+        }
+        Direction::LR => (node.x.saturating_sub(1 + shape_clearance), node.center_y()),
+        Direction::RL => (
+            node.x
+                .saturating_add(node.width)
+                .saturating_add(shape_clearance),
+            node.center_y(),
+        ),
+        Direction::BT => (
+            node.center_x(),
+            node.bottom_y().saturating_add(shape_clearance),
+        ),
     }
 }
 

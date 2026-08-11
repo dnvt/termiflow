@@ -6,7 +6,7 @@
 
 use super::critic::CriticReport;
 use super::semantic::{CellOwnerKind, CellRole, SemanticFrame};
-use super::trace::GeometryTrace;
+use super::trace::{GeometryTrace, PortalTrace};
 use super::RenderOutcome;
 use crate::graph::Graph;
 use anyhow::{Context, Result};
@@ -26,6 +26,7 @@ pub struct RenderEvidence {
     pub raw: RawFrameReport,
     pub geometry: GeometryReport,
     pub geometry_trace: GeometryTrace,
+    pub portal_trace: PortalTrace,
     pub critic: CriticReport,
     pub warnings: Vec<String>,
     pub optimized: bool,
@@ -77,14 +78,18 @@ pub struct GeometryReport {
 
 pub fn build(graph: &Graph, outcome: &RenderOutcome) -> RenderEvidence {
     let geometry_trace = GeometryTrace::from_graph(graph);
+    let portal_trace = outcome.portal_trace.clone();
+    let mut geometry = geometry_report(graph, &geometry_trace);
+    apply_fallback_geometry_trace(&mut geometry, &portal_trace);
     RenderEvidence {
         schema: EVIDENCE_SCHEMA,
         canvas: frame_dimensions(&outcome.semantic_frame),
         display: frame_dimensions(&outcome.display_semantic_frame),
         semantic: semantic_summary(&outcome.semantic_frame),
         raw: raw_frame_report(graph, &outcome.semantic_frame),
-        geometry: geometry_report(graph, &geometry_trace),
+        geometry,
         geometry_trace,
+        portal_trace,
         critic: canonical_critic_report(&outcome.critic_report),
         warnings: outcome.warnings.clone(),
         optimized: outcome.optimized,
@@ -92,6 +97,41 @@ pub fn build(graph: &Graph, outcome: &RenderOutcome) -> RenderEvidence {
         layout_attempts: outcome.layout_attempts,
         layout_repairs_applied: outcome.layout_repairs_applied,
         policy: None,
+    }
+}
+
+fn apply_fallback_geometry_trace(geometry: &mut GeometryReport, portal_trace: &PortalTrace) {
+    for rejection in &portal_trace.fallback_route_rejections {
+        geometry.errors.push(format!(
+            "fallback {} rejected by {}: {}",
+            rejection.owner_id, rejection.strategy, rejection.reason
+        ));
+    }
+    for fallback in &portal_trace.fallback_routes {
+        if fallback.mismatches.is_empty() {
+            let covered_edge_ids = if fallback.covered_edge_ids.is_empty() {
+                vec![fallback.owner_id.clone()]
+            } else {
+                fallback.covered_edge_ids.clone()
+            };
+            for edge_id in covered_edge_ids {
+                if let Some(index) = geometry
+                    .untraced_fallback_edges
+                    .iter()
+                    .position(|owner_id| owner_id == &edge_id)
+                {
+                    geometry.untraced_fallback_edges.remove(index);
+                    geometry.traced_edges += 1;
+                }
+            }
+            geometry.segment_count += fallback.planned_segments.len() + fallback.paints.len();
+        } else {
+            for mismatch in &fallback.mismatches {
+                geometry
+                    .errors
+                    .push(format!("fallback {}: {mismatch}", fallback.owner_id));
+            }
+        }
     }
 }
 
@@ -271,6 +311,10 @@ fn is_route_glyph(ch: char) -> bool {
             | '┤'
             | '┬'
             | '┴'
+            | '┯'
+            | '┷'
+            | '┰'
+            | '┸'
             | '┼'
             | '═'
             | '║'
@@ -282,6 +326,10 @@ fn is_route_glyph(ch: char) -> bool {
             | '╣'
             | '╦'
             | '╩'
+            | '╤'
+            | '╧'
+            | '╥'
+            | '╨'
             | '╬'
             | '━'
             | '┃'
@@ -482,11 +530,13 @@ mod tests {
             repair_passes: 0,
             layout_attempts: 1,
             layout_repairs_applied: 0,
+            portal_trace: PortalTrace::default(),
         };
         let evidence = build(&Graph::new(), &outcome);
         let json = serde_json::to_value(evidence).expect("serialize evidence");
         assert_eq!(json["schema"], EVIDENCE_SCHEMA);
         assert!(json.get("critic").is_some());
         assert!(json.get("geometry_trace").is_some());
+        assert!(json.get("portal_trace").is_some());
     }
 }

@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::geom::{EdgeRoute, Point, Rect};
-use crate::graph::{Direction, Graph};
+use crate::graph::{Direction, Graph, NodeShape};
 use crate::orientation::{Axis, OrientedCoords};
 use crate::portals::SubgraphEnvelope;
 
@@ -104,7 +104,11 @@ pub(super) fn carve_node_portals(
     let ring_zones: Vec<&SubgraphEnvelope> = subgraph_envelopes.values().collect();
 
     for (node_id, rect) in node_rects {
-        let entry = edge_entry_point(*rect, coords.direction);
+        let shape = graph
+            .get_node(node_id)
+            .map(|node| node.shape)
+            .unwrap_or_default();
+        let entry = edge_entry_point_for_shape(*rect, coords.direction, shape);
         let exit = edge_exit_point(*rect, coords.direction);
 
         let (allowed_rect, in_subgraph) = graph
@@ -413,7 +417,7 @@ pub(super) fn route_selective_horizontal_cross_subgraph_fanin_groups(
             .get(target_id)
             .copied()
             .unwrap_or_else(|| Rect::new(target.x, target.y, target.width, target.height));
-        let arrow = edge_entry_point(target_rect, graph.direction);
+        let arrow = edge_entry_point_for_shape(target_rect, graph.direction, target.shape);
 
         let mut starts = Vec::new();
         let mut all_from_same_subgraph = true;
@@ -1111,13 +1115,29 @@ pub(super) fn edge_exit_point(rect: Rect, direction: Direction) -> Point {
     }
 }
 
-pub(super) fn edge_entry_point(rect: Rect, direction: Direction) -> Point {
+pub(super) fn edge_entry_point_for_shape(
+    rect: Rect,
+    direction: Direction,
+    shape: NodeShape,
+) -> Point {
+    let shape_clearance = shape.incoming_edge_clearance(direction);
+
     match direction {
-        Direction::TD | Direction::TB => {
-            Point::new(rect.x + rect.width / 2, rect.y.saturating_sub(1))
-        }
-        Direction::BT => Point::new(rect.x + rect.width / 2, rect.y + rect.height),
-        Direction::LR => Point::new(rect.x.saturating_sub(1), rect.y + rect.height / 2),
-        Direction::RL => Point::new(rect.x + rect.width, rect.y + rect.height / 2),
+        Direction::TD | Direction::TB => Point::new(
+            rect.x + rect.width / 2,
+            rect.y.saturating_sub(1 + shape_clearance),
+        ),
+        Direction::BT => Point::new(
+            rect.x + rect.width / 2,
+            rect.y + rect.height + shape_clearance,
+        ),
+        Direction::LR => Point::new(
+            rect.x.saturating_sub(1 + shape_clearance),
+            rect.y + rect.height / 2,
+        ),
+        Direction::RL => Point::new(
+            rect.x + rect.width + shape_clearance,
+            rect.y + rect.height / 2,
+        ),
     }
 }

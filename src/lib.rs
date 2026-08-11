@@ -31,6 +31,7 @@ pub mod graph;
 pub(crate) mod indexed_graph;
 pub mod json_input;
 pub mod layout;
+pub(crate) mod layout_render_contract;
 mod layout_repair;
 pub(crate) mod layout_snapshot;
 pub mod measure;
@@ -331,8 +332,12 @@ fn layout_and_render_with_feedback_inner(
     config: Config,
 ) -> Result<(Graph, RenderOutcome)> {
     let mut best_config = config.clone();
-    let mut best_graph = layout_graph(graph.clone(), &best_config.spacing, None)?;
-    let mut best_outcome = render::render_with_feedback(&best_graph, &best_config)?;
+    let (mut best_graph, best_contract) = layout_graph(graph.clone(), &best_config.spacing, None)?;
+    let mut best_outcome = render::render_with_feedback_with_contract(
+        &best_graph,
+        &best_config,
+        best_contract.as_ref(),
+    )?;
     best_outcome.warnings = best_graph.warnings.clone();
     best_outcome.layout_attempts = 1;
 
@@ -360,7 +365,12 @@ fn layout_and_render_with_feedback_inner(
                 budget_warnings.push(layout_repair::budget_warning(candidate_batch.omitted));
             }
 
-            let mut improved: Option<(Config, Graph, RenderOutcome)> = None;
+            let mut improved: Option<(
+                Config,
+                Graph,
+                Option<crate::layout_render_contract::BtSiblingEndpointContract>,
+                RenderOutcome,
+            )> = None;
 
             for candidate in candidate_batch.candidates {
                 attempts += 1;
@@ -369,28 +379,38 @@ fn layout_and_render_with_feedback_inner(
                 let candidate_prior_positions = candidate
                     .prior_positions
                     .or_else(|| prior_positions.clone());
-                let candidate_graph = layout_graph(
+                let (candidate_graph, candidate_contract) = layout_graph(
                     graph.clone(),
                     &candidate_config.spacing,
                     candidate_prior_positions,
                 )?;
-                let mut candidate_outcome =
-                    render::render_with_feedback(&candidate_graph, &candidate_config)?;
+                let mut candidate_outcome = render::render_with_feedback_with_contract(
+                    &candidate_graph,
+                    &candidate_config,
+                    candidate_contract.as_ref(),
+                )?;
                 candidate_outcome.warnings = candidate_graph.warnings.clone();
 
                 let should_promote = improved.as_ref().map_or_else(
                     || layout_repair::is_better_outcome(&candidate_outcome, &best_outcome),
-                    |(_, _, current_best)| {
+                    |(_, _, _, current_best)| {
                         layout_repair::is_better_outcome(&candidate_outcome, current_best)
                     },
                 );
 
                 if should_promote {
-                    improved = Some((candidate_config, candidate_graph, candidate_outcome));
+                    improved = Some((
+                        candidate_config,
+                        candidate_graph,
+                        candidate_contract,
+                        candidate_outcome,
+                    ));
                 }
             }
 
-            let Some((candidate_config, candidate_graph, candidate_outcome)) = improved else {
+            let Some((candidate_config, candidate_graph, _candidate_contract, candidate_outcome)) =
+                improved
+            else {
                 break;
             };
 
@@ -419,9 +439,12 @@ fn layout_graph(
     graph: Graph,
     spacing: &SpacingConfig,
     prior_positions: Option<std::collections::HashMap<String, geom::Point>>,
-) -> Result<Graph> {
+) -> Result<(
+    Graph,
+    Option<crate::layout_render_contract::BtSiblingEndpointContract>,
+)> {
     let layout_config = layout::CoarseLayoutConfig::from_spacing(spacing);
-    layout::apply_coarse_layout(graph, prior_positions, layout_config)
+    layout::apply_coarse_layout_with_contract(graph, prior_positions, layout_config)
 }
 
 #[cfg(test)]
@@ -444,6 +467,7 @@ mod tests {
             repair_passes: 0,
             layout_attempts: 1,
             layout_repairs_applied: 0,
+            portal_trace: render::trace::PortalTrace::default(),
         }
     }
 

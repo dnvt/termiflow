@@ -1,9 +1,36 @@
 //! Shared routing-topology helpers for criticism and repair.
 
+use crate::graph::{Direction, Graph};
 use crate::style::StyleChars;
 
 use super::canvas::Canvas;
 use super::semantic::{CellOwnerKind, SemanticFrame};
+
+/// Return whether a subgraph participates in a direct BT boundary pair with
+/// three or more non-back edges. The predicate identifies the topology that
+/// needs an explicit local portal seam; projection policy decides its glyph.
+pub(crate) fn has_bt_parallel_boundary_junction(graph: &Graph, subgraph_id: &str) -> bool {
+    if graph.direction != Direction::BT {
+        return false;
+    }
+
+    let mut pair_counts = std::collections::HashMap::<(&str, &str), usize>::new();
+    for edge in &graph.edges {
+        if edge.is_back_edge {
+            continue;
+        }
+        let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+        if exits.len() != 1
+            || enters.len() != 1
+            || (exits[0] != subgraph_id && enters[0] != subgraph_id)
+        {
+            continue;
+        }
+        *pair_counts.entry((exits[0], enters[0])).or_default() += 1;
+    }
+
+    pair_counts.values().any(|count| *count >= 3)
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Connections {
@@ -48,11 +75,15 @@ fn frame_connects_up(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     let Some(above) = frame.get(x, y - 1) else {
         return false;
     };
-    if above.owner_kind == CellOwnerKind::EdgeLabel {
-        if y >= 2 {
-            return char_connects_down(frame.get(x, y - 2).map(|cell| cell.ch).unwrap_or(' '));
+    match above.owner_kind {
+        CellOwnerKind::EdgeLabel => {
+            if y >= 2 {
+                return char_connects_down(frame.get(x, y - 2).map(|cell| cell.ch).unwrap_or(' '));
+            }
+            return false;
         }
-        return false;
+        CellOwnerKind::NodeLabel | CellOwnerKind::SubgraphTitle => return false,
+        _ => {}
     }
 
     char_connects_down(above.ch)
@@ -66,11 +97,15 @@ fn frame_connects_down(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     let Some(below) = frame.get(x, y + 1) else {
         return false;
     };
-    if below.owner_kind == CellOwnerKind::EdgeLabel {
-        if y + 2 < frame.height {
-            return char_connects_up(frame.get(x, y + 2).map(|cell| cell.ch).unwrap_or(' '));
+    match below.owner_kind {
+        CellOwnerKind::EdgeLabel => {
+            if y + 2 < frame.height {
+                return char_connects_up(frame.get(x, y + 2).map(|cell| cell.ch).unwrap_or(' '));
+            }
+            return false;
         }
-        return false;
+        CellOwnerKind::NodeLabel | CellOwnerKind::SubgraphTitle => return false,
+        _ => {}
     }
 
     char_connects_up(below.ch)
@@ -84,11 +119,15 @@ fn frame_connects_left(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     let Some(left) = frame.get(x - 1, y) else {
         return false;
     };
-    if left.owner_kind == CellOwnerKind::EdgeLabel {
-        if x >= 2 {
-            return char_connects_right(frame.get(x - 2, y).map(|cell| cell.ch).unwrap_or(' '));
+    match left.owner_kind {
+        CellOwnerKind::EdgeLabel => {
+            if x >= 2 {
+                return char_connects_right(frame.get(x - 2, y).map(|cell| cell.ch).unwrap_or(' '));
+            }
+            return false;
         }
-        return false;
+        CellOwnerKind::NodeLabel | CellOwnerKind::SubgraphTitle => return false,
+        _ => {}
     }
 
     char_connects_right(left.ch)
@@ -102,11 +141,15 @@ fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     let Some(right) = frame.get(x + 1, y) else {
         return false;
     };
-    if right.owner_kind == CellOwnerKind::EdgeLabel {
-        if x + 2 < frame.width {
-            return char_connects_left(frame.get(x + 2, y).map(|cell| cell.ch).unwrap_or(' '));
+    match right.owner_kind {
+        CellOwnerKind::EdgeLabel => {
+            if x + 2 < frame.width {
+                return char_connects_left(frame.get(x + 2, y).map(|cell| cell.ch).unwrap_or(' '));
+            }
+            return false;
         }
-        return false;
+        CellOwnerKind::NodeLabel | CellOwnerKind::SubgraphTitle => return false,
+        _ => {}
     }
 
     char_connects_left(right.ch)
@@ -117,14 +160,15 @@ fn canvas_connects_up(canvas: &Canvas, x: usize, y: usize) -> bool {
         return false;
     }
 
-    if matches!(
-        canvas.get_meta(x, y - 1).map(|meta| meta.owner_kind),
-        Some(CellOwnerKind::EdgeLabel)
-    ) {
-        if y >= 2 {
-            return char_connects_down(canvas.get(x, y - 2));
+    match canvas.get_meta(x, y - 1).map(|meta| meta.owner_kind) {
+        Some(CellOwnerKind::EdgeLabel) => {
+            if y >= 2 {
+                return char_connects_down(canvas.get(x, y - 2));
+            }
+            return false;
         }
-        return false;
+        Some(CellOwnerKind::NodeLabel | CellOwnerKind::SubgraphTitle) => return false,
+        _ => {}
     }
 
     char_connects_down(canvas.get(x, y - 1))
@@ -135,14 +179,15 @@ fn canvas_connects_down(canvas: &Canvas, x: usize, y: usize) -> bool {
         return false;
     }
 
-    if matches!(
-        canvas.get_meta(x, y + 1).map(|meta| meta.owner_kind),
-        Some(CellOwnerKind::EdgeLabel)
-    ) {
-        if y + 2 < canvas.height {
-            return char_connects_up(canvas.get(x, y + 2));
+    match canvas.get_meta(x, y + 1).map(|meta| meta.owner_kind) {
+        Some(CellOwnerKind::EdgeLabel) => {
+            if y + 2 < canvas.height {
+                return char_connects_up(canvas.get(x, y + 2));
+            }
+            return false;
         }
-        return false;
+        Some(CellOwnerKind::NodeLabel | CellOwnerKind::SubgraphTitle) => return false,
+        _ => {}
     }
 
     char_connects_up(canvas.get(x, y + 1))
@@ -153,14 +198,15 @@ fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
         return false;
     }
 
-    if matches!(
-        canvas.get_meta(x - 1, y).map(|meta| meta.owner_kind),
-        Some(CellOwnerKind::EdgeLabel)
-    ) {
-        if x >= 2 {
-            return char_connects_right(canvas.get(x - 2, y));
+    match canvas.get_meta(x - 1, y).map(|meta| meta.owner_kind) {
+        Some(CellOwnerKind::EdgeLabel) => {
+            if x >= 2 {
+                return char_connects_right(canvas.get(x - 2, y));
+            }
+            return false;
         }
-        return false;
+        Some(CellOwnerKind::NodeLabel | CellOwnerKind::SubgraphTitle) => return false,
+        _ => {}
     }
 
     char_connects_right(canvas.get(x - 1, y))
@@ -171,14 +217,15 @@ fn canvas_connects_right(canvas: &Canvas, x: usize, y: usize) -> bool {
         return false;
     }
 
-    if matches!(
-        canvas.get_meta(x + 1, y).map(|meta| meta.owner_kind),
-        Some(CellOwnerKind::EdgeLabel)
-    ) {
-        if x + 2 < canvas.width {
-            return char_connects_left(canvas.get(x + 2, y));
+    match canvas.get_meta(x + 1, y).map(|meta| meta.owner_kind) {
+        Some(CellOwnerKind::EdgeLabel) => {
+            if x + 2 < canvas.width {
+                return char_connects_left(canvas.get(x + 2, y));
+            }
+            return false;
         }
-        return false;
+        Some(CellOwnerKind::NodeLabel | CellOwnerKind::SubgraphTitle) => return false,
+        _ => {}
     }
 
     char_connects_left(canvas.get(x + 1, y))

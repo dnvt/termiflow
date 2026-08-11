@@ -25,12 +25,33 @@ fn vertical_long_edge_label_is_bounded_without_silent_clipping() {
     .unwrap();
 
     assert!(
-        output.contains('…'),
-        "expected a visible ellipsis when the vertical label exceeds the canvas width:\n{output}"
+        output.contains("This is a very long…"),
+        "expected the vertical label to honor its configured width budget with a visible ellipsis:\n{output}"
     );
     assert!(
         !output.lines().any(|line| line.trim() == "This is a very"),
         "the edge label must not be silently clipped to a misleading prefix:\n{output}"
+    );
+}
+
+#[test]
+fn vertical_long_edge_label_honors_expanded_budget() {
+    let input = "graph BT\nA[Start] -->|This is a very long edge label text| B[End]";
+    let output = termiflow::render(
+        input,
+        termiflow::RenderOptions::new()
+            .with_style(termiflow::BaseStyle::Ascii)
+            .with_max_edge_label_width(40),
+    )
+    .unwrap();
+
+    assert!(
+        output.contains("This is a very long edge label text"),
+        "expanded vertical label budget should preserve the full label:\n{output}"
+    );
+    assert!(
+        output.contains("Start") && output.contains("End") && output.contains('^'),
+        "expanded label must not remove the nodes or arrow:\n{output}"
     );
 }
 

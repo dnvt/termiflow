@@ -268,7 +268,9 @@ impl CompositeStyle {
             // End marker components (from arrow style)
             circle_end: arrow_chars.circle_end,
             cross_end: arrow_chars.cross_end,
-            portal_pierce: arrow_chars.cross,
+            // A portal is a route projection, so its side-wall marker follows
+            // the edge shaft rather than the arrow style's junction glyph.
+            portal_pierce: edge_chars.edge_h,
         }
     }
 
@@ -279,6 +281,34 @@ impl CompositeStyle {
     pub fn to_subgraph_chars(&self) -> &'static StyleChars {
         // Default to Heavy for subgraphs (bold visual distinction from nodes)
         self.subgraph.unwrap_or(BaseStyle::Heavy).chars()
+    }
+}
+
+/// Return a direction-aware seam for a vertical subgraph portal when the
+/// active edge and subgraph border components can represent it truthfully.
+///
+/// The seam combines the route's vertical weight with the subgraph border's
+/// horizontal weight. Unsupported component combinations return `None` so the
+/// caller can retain the existing one-cell shaft instead of inventing a
+/// misleading Unicode literal.
+pub(crate) fn vertical_portal_seam(
+    chars: &StyleChars,
+    subgraph_chars: &StyleChars,
+) -> Option<(char, char)> {
+    if chars.edge_v == subgraph_chars.v && chars.edge_h == subgraph_chars.h {
+        return Some((chars.junction_down, chars.junction_up));
+    }
+
+    match (chars.edge_v, subgraph_chars.h) {
+        // ASCII has one unweighted structural junction vocabulary.
+        ('|', '-') => Some(('+', '+')),
+        // Unicode light/heavy and single/double combinations supported by the
+        // box-drawing block.
+        ('│', '━') => Some(('┯', '┷')),
+        ('┃', '─') => Some(('┰', '┸')),
+        ('│', '═') => Some(('╤', '╧')),
+        ('║', '─') => Some(('╥', '╨')),
+        _ => None,
     }
 }
 
@@ -310,7 +340,7 @@ pub static ASCII_CHARS: StyleChars = StyleChars {
     dotted_v: ':',
     circle_end: 'o',
     cross_end: 'x',
-    portal_pierce: '+',
+    portal_pierce: '-',
 };
 
 pub static UNICODE_CHARS: StyleChars = StyleChars {
@@ -341,7 +371,7 @@ pub static UNICODE_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '┼',
+    portal_pierce: '─',
 };
 
 pub static DOUBLE_CHARS: StyleChars = StyleChars {
@@ -372,7 +402,7 @@ pub static DOUBLE_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '╬',
+    portal_pierce: '═',
 };
 
 pub static ROUNDED_CHARS: StyleChars = StyleChars {
@@ -403,7 +433,7 @@ pub static ROUNDED_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '┼',
+    portal_pierce: '─',
 };
 
 pub static HEAVY_CHARS: StyleChars = StyleChars {
@@ -434,7 +464,7 @@ pub static HEAVY_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '╋',
+    portal_pierce: '━',
 };
 
 pub static DOTS_CHARS: StyleChars = StyleChars {
@@ -465,7 +495,7 @@ pub static DOTS_CHARS: StyleChars = StyleChars {
     dotted_v: ':',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '┼',
+    portal_pierce: '─',
 };
 
 pub static PLUS_CHARS: StyleChars = StyleChars {
@@ -496,7 +526,7 @@ pub static PLUS_CHARS: StyleChars = StyleChars {
     dotted_v: ':',
     circle_end: 'o',
     cross_end: 'x',
-    portal_pierce: '+',
+    portal_pierce: '-',
 };
 
 pub static STARS_CHARS: StyleChars = StyleChars {
@@ -527,7 +557,7 @@ pub static STARS_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '┼',
+    portal_pierce: '─',
 };
 
 pub static BLOCKS_CHARS: StyleChars = StyleChars {
@@ -558,7 +588,7 @@ pub static BLOCKS_CHARS: StyleChars = StyleChars {
     dotted_v: '╎',
     circle_end: '○',
     cross_end: '✕',
-    portal_pierce: '┼',
+    portal_pierce: '─',
 };
 
 /// Truncate label to fit within max display columns
@@ -696,6 +726,92 @@ mod tests {
 
         // Lines should fall back to unicode
         assert_eq!(chars.edge_h, '─');
+    }
+
+    #[test]
+    fn portal_pierce_follows_edge_shaft_and_stays_one_cell_wide() {
+        let styles = [
+            BaseStyle::Ascii,
+            BaseStyle::Unicode,
+            BaseStyle::Double,
+            BaseStyle::Rounded,
+            BaseStyle::Heavy,
+            BaseStyle::Dots,
+            BaseStyle::Plus,
+            BaseStyle::Stars,
+            BaseStyle::Blocks,
+        ];
+
+        for style in styles {
+            let chars = style.chars();
+            assert_eq!(
+                chars.portal_pierce, chars.edge_h,
+                "portal marker must follow the edge shaft for {style:?}"
+            );
+            assert_eq!(display_char_width(chars.portal_pierce), 1);
+            assert_ne!(
+                chars.portal_pierce, chars.cross,
+                "portal marker must not be a junction glyph for {style:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_style_portal_pierce_follows_edge_component_not_arrow_component() {
+        let composite = CompositeStyle {
+            edge: Some(BaseStyle::Double),
+            arrow: Some(BaseStyle::Unicode),
+            ..Default::default()
+        };
+
+        let chars = composite.to_style_chars(BaseStyle::Unicode);
+
+        assert_eq!(chars.edge_h, DOUBLE_CHARS.edge_h);
+        assert_eq!(chars.arrow_right, UNICODE_CHARS.arrow_right);
+        assert_eq!(chars.portal_pierce, DOUBLE_CHARS.edge_h);
+        assert_ne!(chars.portal_pierce, UNICODE_CHARS.cross);
+    }
+
+    #[test]
+    fn vertical_portal_seam_preserves_matching_style_components() {
+        assert_eq!(
+            vertical_portal_seam(&UNICODE_CHARS, &UNICODE_CHARS),
+            Some(('┬', '┴'))
+        );
+        assert_eq!(
+            vertical_portal_seam(&ASCII_CHARS, &ASCII_CHARS),
+            Some(('+', '+'))
+        );
+        assert_eq!(
+            vertical_portal_seam(&HEAVY_CHARS, &HEAVY_CHARS),
+            Some(('┳', '┻'))
+        );
+    }
+
+    #[test]
+    fn vertical_portal_seam_composes_supported_mixed_weights() {
+        assert_eq!(
+            vertical_portal_seam(&UNICODE_CHARS, &HEAVY_CHARS),
+            Some(('┯', '┷'))
+        );
+        assert_eq!(
+            vertical_portal_seam(&HEAVY_CHARS, &UNICODE_CHARS),
+            Some(('┰', '┸'))
+        );
+        assert_eq!(
+            vertical_portal_seam(&UNICODE_CHARS, &DOUBLE_CHARS),
+            Some(('╤', '╧'))
+        );
+        assert_eq!(
+            vertical_portal_seam(&DOUBLE_CHARS, &UNICODE_CHARS),
+            Some(('╥', '╨'))
+        );
+    }
+
+    #[test]
+    fn vertical_portal_seam_fails_closed_for_unsupported_components() {
+        assert_eq!(vertical_portal_seam(&ASCII_CHARS, &HEAVY_CHARS), None);
+        assert_eq!(vertical_portal_seam(&BLOCKS_CHARS, &BLOCKS_CHARS), None);
     }
 
     #[test]

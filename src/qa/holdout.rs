@@ -83,10 +83,13 @@ pub fn run(args: HoldoutArgs) -> Result<()> {
         &root,
         &temporary_manifest,
         &out,
-        true,
-        args.binary.as_deref(),
-        &args.display_profile,
-        args.timeout_seconds,
+        audit::SchemaPacketOptions {
+            holdouts: true,
+            supplied_binary: args.binary.as_deref(),
+            display_profile: &args.display_profile,
+            timeout_seconds: args.timeout_seconds,
+            respect_input_style: false,
+        },
     );
     let _ = fs::remove_file(&temporary_manifest);
     let packet = packet?;

@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
 use super::provenance::{self, ProvenanceInputs};
-use super::{common, persist};
+use super::{common, persist, route_clarity};
 
 #[derive(Debug)]
 pub struct AuditArgs {
@@ -20,6 +20,7 @@ pub struct AuditArgs {
     pub metadata: PathBuf,
     pub display_profile: String,
     pub timeout_seconds: f64,
+    pub respect_input_style: bool,
     pub pause_at: Option<String>,
     pub pause_marker: Option<PathBuf>,
 }
@@ -36,6 +37,14 @@ pub struct SchemaPacketResult {
     pub queue_sha256: String,
     pub row_count: usize,
     pub run_identity: Value,
+}
+
+pub struct SchemaPacketOptions<'a> {
+    pub holdouts: bool,
+    pub supplied_binary: Option<&'a Path>,
+    pub display_profile: &'a str,
+    pub timeout_seconds: f64,
+    pub respect_input_style: bool,
 }
 
 struct SchemaPacketIdentity<'a> {
@@ -82,10 +91,13 @@ pub fn run(args: AuditArgs) -> Result<()> {
             &root,
             &resolve_from_root(&root, schema_manifest),
             &out,
-            false,
-            args.binary.as_deref(),
-            &args.display_profile,
-            args.timeout_seconds,
+            SchemaPacketOptions {
+                holdouts: false,
+                supplied_binary: args.binary.as_deref(),
+                display_profile: &args.display_profile,
+                timeout_seconds: args.timeout_seconds,
+                respect_input_style: args.respect_input_style,
+            },
         )
         .map(|_| ());
     }
@@ -144,6 +156,7 @@ pub fn run(args: AuditArgs) -> Result<()> {
         &args.display_profile,
         Duration::from_secs_f64(args.timeout_seconds),
         planned_count,
+        !args.respect_input_style,
         None,
     );
     match result {
@@ -185,9 +198,12 @@ fn build_packet(
     display_profile: &str,
     timeout: Duration,
     planned_count: usize,
+    style_override: bool,
     schema: Option<&SchemaPacketIdentity<'_>>,
 ) -> Result<()> {
     let binary = common::discover_binary(root, stage, supplied_binary)?;
+    let argv_contract =
+        provenance::argv_contract(&common::relative_to_root(&binary, root), style_override);
     let base_identity = common::source_identity(root, &binary, display_profile)?;
     let mut identity = provenance::enrich_identity(
         root,
@@ -201,6 +217,7 @@ fn build_packet(
             styles,
             modes,
             display_profile,
+            argv_contract: &argv_contract,
         },
     )?;
     let role = schema.map(|value| value.role).unwrap_or("visual-audit");
@@ -216,6 +233,7 @@ fn build_packet(
         "styles": styles,
         "modes": modes,
         "display_profile": display_profile,
+        "argv_contract": argv_contract,
         "schema_queue": schema.map(|value| json!({
             "queue_id": value.queue_id,
             "manifest_sha256": value.manifest_sha256,
@@ -294,24 +312,25 @@ fn build_packet(
                 let frame_path = stage.join(&frame_rel);
                 let log_path = stage.join(&log_rel);
                 let evidence_path = stage.join(&evidence_rel);
-                let mut command = vec![
-                    binary.to_string_lossy().to_string(),
-                    "--print".to_owned(),
-                    "--style".to_owned(),
-                    style.clone(),
-                    "--audit-json".to_owned(),
-                    evidence_path.to_string_lossy().to_string(),
-                ];
-                if mode == "optimized" {
-                    command.insert(4, "--optimize-render".to_owned());
+                let mut command = vec![binary.to_string_lossy().to_string(), "--print".to_owned()];
+                if style_override {
+                    command.push("--style".to_owned());
+                    command.push(style.clone());
                 }
+                if mode == "optimized" {
+                    command.push("--optimize-render".to_owned());
+                }
+                command.push("--audit-json".to_owned());
+                command.push(evidence_path.to_string_lossy().to_string());
                 command.push(input_path.to_string_lossy().to_string());
                 let mut argv = vec![
                     common::relative_to_root(&binary, root),
                     "--print".to_owned(),
-                    "--style".to_owned(),
-                    style.clone(),
                 ];
+                if style_override {
+                    argv.push("--style".to_owned());
+                    argv.push(style.clone());
+                }
                 if mode == "optimized" {
                     argv.push("--optimize-render".to_owned());
                 }
@@ -354,6 +373,50 @@ fn build_packet(
                 }
 
                 if record.kind != "expected_error" {
+                    if let Some(mut value) = evidence.take() {
+                        let route_style = value
+                            .get("policy")
+                            .filter(|policy| !policy.is_null())
+                            .map(provenance::effective_route_style)
+                            .transpose()
+                            .with_context(|| {
+                                format!("{stem}: effective route-clarity style is invalid")
+                            })?
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| style.clone());
+                        let route_report = route_clarity::analyze(
+                            &input_bytes,
+                            &process.stdout,
+                            &route_style,
+                            mode,
+                        )
+                        .with_context(|| format!("{stem}: route-clarity analysis failed"))?;
+                        let route_status = route_report
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("inconclusive");
+                        if matches!(route_status, "risk" | "inconclusive") {
+                            let warnings = value
+                                .get_mut("warnings")
+                                .and_then(Value::as_array_mut)
+                                .ok_or_else(|| {
+                                    anyhow!("{stem}: evidence.warnings is not a string list")
+                                })?;
+                            for code in route_report["findings"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|finding| finding["code"].as_str())
+                            {
+                                warnings.push(Value::String(format!(
+                                    "route_clarity:{route_status}:{code}"
+                                )));
+                            }
+                        }
+                        value["route_clarity"] = route_report;
+                        common::write_json(&evidence_path, &value)?;
+                        evidence = Some(value);
+                    }
                     match evidence.as_ref().and_then(|value| value.get("policy")) {
                         Some(policy) => {
                             provenance::validate_policy(policy)
@@ -421,7 +484,7 @@ fn build_packet(
                         "raw_errors": evidence.as_ref().and_then(|value| value["raw"]["errors"].as_array()).map_or(0, Vec::len),
                         "geometry_errors": evidence.as_ref().and_then(|value| value["geometry"]["errors"].as_array()).map_or(0, Vec::len),
                     },
-                    "identity": identity,
+                    "identity_ref": Value::Null,
                     "timing": { "path": "timings.jsonl", "case_id": case_id },
                 }));
                 timings.push(json!({ "case_id": case_id, "duration_ns": duration_ns }));
@@ -450,10 +513,12 @@ fn build_packet(
         &policy_set_sha256,
     );
     identity["run_identity"] = run_identity.clone();
-    for row in &mut rows {
-        row["identity"] = identity.clone();
-    }
     common::write_json(&stage.join("identity.json"), &identity)?;
+    let identity_sha256 = common::sha256_file(&stage.join("identity.json"))?;
+    let row_identity_ref = common::identity_ref(&identity, &identity_sha256)?;
+    for row in &mut rows {
+        row["identity_ref"] = row_identity_ref.clone();
+    }
     write_jsonl(&stage.join("manifest.jsonl"), &rows)?;
     write_jsonl(&stage.join("timings.jsonl"), &timings)?;
     let mut summary = json!({
@@ -536,6 +601,7 @@ fn validate_packet_for_publication(
     persist::validate_run_spec(&run_spec)?;
     let identity = common::load_json(&stage.join("identity.json"), "staged identity")?;
     provenance::validate_identity(&identity)?;
+    let identity_sha256 = common::sha256_file(&stage.join("identity.json"))?;
     let run_identity = identity
         .get("run_identity")
         .ok_or_else(|| anyhow!("staged identity is missing run_identity"))?;
@@ -545,6 +611,16 @@ fn validate_packet_for_publication(
         || run_identity.get("run_spec_id") != run_spec.get("run_spec_id")
     {
         bail!("staged packet role or run-spec identity is inconsistent");
+    }
+    let requested_contract = run_spec
+        .get("requested_policy_context")
+        .and_then(|context| context.get("argv_contract"))
+        .ok_or_else(|| anyhow!("staged run spec is missing argv_contract"))?;
+    provenance::validate_argv_contract(requested_contract)?;
+    let identity_contract = provenance::identity_argv_contract(&identity)?
+        .ok_or_else(|| anyhow!("staged identity is missing argv_contract"))?;
+    if requested_contract != identity_contract {
+        bail!("staged run spec and identity argv contracts differ");
     }
 
     let state = common::load_json(&stage.join("run_state.json"), "staged run state")?;
@@ -576,18 +652,23 @@ fn validate_packet_for_publication(
         }
         let row: Value = serde_json::from_str(line)
             .with_context(|| format!("parse staged manifest line {}", line_number + 1))?;
-        if row.get("schema").and_then(Value::as_str) != Some(common::AUDIT_SCHEMA) {
+        if !common::is_audit_schema(row.get("schema").unwrap_or(&Value::Null)) {
             bail!(
                 "staged manifest line {} has the wrong schema",
                 line_number + 1
             );
         }
-        if row.get("identity") != Some(&identity) {
-            bail!(
-                "staged manifest line {} has a different identity",
-                line_number + 1
-            );
-        }
+        common::validate_row_identity(
+            &row,
+            &identity,
+            &identity_sha256,
+            &format!("staged manifest line {} identity", line_number + 1),
+        )?;
+        provenance::validate_row_argv(
+            identity_contract,
+            &row,
+            &format!("staged manifest line {}", line_number + 1),
+        )?;
         common::validate_blob_ref(stage, &row["stdout"], "staged frame")?;
         common::validate_blob_ref(stage, &row["stderr"], "staged stderr")?;
         if row.get("evidence").is_some_and(|value| !value.is_null()) {
@@ -638,11 +719,15 @@ pub fn run_schema_packet(
     root: &Path,
     manifest_path: &Path,
     out: &Path,
-    holdouts: bool,
-    supplied_binary: Option<&Path>,
-    display_profile: &str,
-    timeout_seconds: f64,
+    options: SchemaPacketOptions<'_>,
 ) -> Result<SchemaPacketResult> {
+    let SchemaPacketOptions {
+        holdouts,
+        supplied_binary,
+        display_profile,
+        timeout_seconds,
+        respect_input_style,
+    } = options;
     if !timeout_seconds.is_finite() || timeout_seconds <= 0.0 {
         bail!("timeout-seconds must be a finite positive number");
     }
@@ -673,6 +758,7 @@ pub fn run_schema_packet(
         display_profile,
         Duration::from_secs_f64(timeout_seconds),
         workload.planned_count,
+        !respect_input_style,
         Some(&identity),
     );
     for path in &workload.temporary_inputs {

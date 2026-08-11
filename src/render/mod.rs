@@ -17,15 +17,20 @@
 //! - `trace` - Normalized geometry traces for non-glyph inspection
 //! - `shapes` - Box drawing for all 9 node shapes
 
+pub(crate) mod bt_parallel_identity;
 pub mod canvas;
 pub mod contract;
 pub mod critic;
 pub mod cycle;
+pub(crate) mod dedicated_fan_in;
 #[cfg(test)]
 mod determinism;
+pub(crate) mod dual_junction;
 pub mod edge;
 mod edge_policy;
 pub mod evidence;
+pub(crate) mod fallback_route;
+pub(crate) mod fan_in_identity;
 mod labels;
 mod outcome;
 mod pipeline;
@@ -37,8 +42,13 @@ pub mod repair;
 pub(crate) mod scene;
 pub mod semantic;
 pub mod shapes;
+pub(crate) mod sibling_subgraph_fan_in_identity;
+pub(crate) mod sibling_target_entry_identity;
+pub(crate) mod subgraph_fan_in_identity;
 pub mod topology;
 pub mod trace;
+pub(crate) mod vertical_fan_in;
+pub(crate) mod wide_terminal_fan_in;
 
 // Re-exports
 pub use canvas::Canvas;
@@ -47,7 +57,8 @@ pub use contract::{
 };
 pub use outcome::RenderOutcome;
 pub use trace::{
-    EdgeTrace, GeometryTrace, NodeTrace, RectTrace, SegmentAxis, SegmentTrace, SubgraphTrace,
+    EdgeTrace, GeometryTrace, NodeTrace, PortalBoundaryTrace, PortalCellTrace, PortalTrace,
+    RectTrace, SegmentAxis, SegmentTrace, SubgraphTrace,
 };
 
 use crate::config::Config;
@@ -81,6 +92,17 @@ pub fn render(graph: &Graph, config: &Config) -> Result<String> {
 /// Render a graph and return semantic/critic details for the final frame.
 pub fn render_with_feedback(graph: &Graph, config: &Config) -> Result<RenderOutcome> {
     runtime::with_captured(|| pipeline::render_with_feedback(graph, config))
+}
+
+/// Internal render entry point for the normal layout pipeline. The endpoint
+/// contract is deliberately optional so direct graph callers retain an
+/// explicit conservative fallback instead of receiving stale public metadata.
+pub(crate) fn render_with_feedback_with_contract(
+    graph: &Graph,
+    config: &Config,
+    contract: Option<&crate::layout_render_contract::BtSiblingEndpointContract>,
+) -> Result<RenderOutcome> {
+    runtime::with_captured(|| pipeline::render_with_feedback_with_contract(graph, config, contract))
 }
 
 #[cfg(test)]

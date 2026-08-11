@@ -4,14 +4,14 @@
 //! it can improve local glyph correctness and portal/border integrity without
 //! adding a second full layout engine.
 
-use super::canvas::{is_horizontal, is_vertical, Canvas};
+use super::canvas::{is_explicit_crossing_marker, is_horizontal, is_vertical, Canvas};
 use super::critic::{analyze, CriticReport, FindingCode};
 use super::provenance::{refresh_provenance, EdgeLabelPlacement};
 use super::semantic::{CellOwnerKind, CellRole, SemanticFrame};
 use super::subgraph_title_y;
 use super::topology::{canonical_routing_glyph, canvas_connections};
 use crate::graph::{Direction, Graph};
-use crate::portals::PortalSlots;
+use crate::portals::{td_sibling_title_gutter, PortalSlots};
 use crate::style::StyleChars;
 use std::collections::HashMap;
 
@@ -123,16 +123,22 @@ pub fn stabilize_routing_topology(canvas: &mut Canvas, chars: &StyleChars) -> bo
 
     for y in 0..canvas.height {
         for x in 0..canvas.width {
+            if canvas.fallback_route_claims_cell(x, y) {
+                continue;
+            }
             let Some(meta) = canvas.get_meta(x, y).cloned() else {
                 continue;
             };
+            if is_explicit_crossing_marker(canvas.get(x, y), chars) {
+                continue;
+            }
             if !matches!(
                 meta.owner_kind,
                 CellOwnerKind::EdgeSegment | CellOwnerKind::CycleEdge | CellOwnerKind::Junction
             ) {
                 continue;
             }
-            if meta.role == CellRole::ArrowTip {
+            if matches!(meta.role, CellRole::ArrowTip | CellRole::EndpointMarker) {
                 continue;
             }
 
@@ -179,16 +185,22 @@ pub fn stabilize_straight_segments(canvas: &mut Canvas, chars: &StyleChars) -> b
 
     for y in 0..canvas.height {
         for x in 0..canvas.width {
+            if canvas.fallback_route_claims_cell(x, y) {
+                continue;
+            }
             let Some(meta) = canvas.get_meta(x, y).cloned() else {
                 continue;
             };
+            if is_explicit_crossing_marker(canvas.get(x, y), chars) {
+                continue;
+            }
             if !matches!(
                 meta.owner_kind,
                 CellOwnerKind::EdgeSegment | CellOwnerKind::CycleEdge | CellOwnerKind::Junction
             ) {
                 continue;
             }
-            if meta.role == CellRole::ArrowTip {
+            if matches!(meta.role, CellRole::ArrowTip | CellRole::EndpointMarker) {
                 continue;
             }
 
@@ -239,13 +251,19 @@ pub fn stabilize_junction_cells(canvas: &mut Canvas, chars: &StyleChars) -> bool
 
     for y in 0..canvas.height {
         for x in 0..canvas.width {
+            if canvas.fallback_route_claims_cell(x, y) {
+                continue;
+            }
             let Some(meta) = canvas.get_meta(x, y).cloned() else {
                 continue;
             };
+            if is_explicit_crossing_marker(canvas.get(x, y), chars) {
+                continue;
+            }
             if meta.owner_kind != CellOwnerKind::Junction {
                 continue;
             }
-            if meta.role == CellRole::ArrowTip {
+            if matches!(meta.role, CellRole::ArrowTip | CellRole::EndpointMarker) {
                 continue;
             }
 
@@ -286,16 +304,22 @@ pub fn stabilize_degree_mismatches(canvas: &mut Canvas, chars: &StyleChars) -> b
 
     for y in 0..canvas.height {
         for x in 0..canvas.width {
+            if canvas.fallback_route_claims_cell(x, y) {
+                continue;
+            }
             let Some(meta) = canvas.get_meta(x, y).cloned() else {
                 continue;
             };
+            if is_explicit_crossing_marker(canvas.get(x, y), chars) {
+                continue;
+            }
             if !matches!(
                 meta.owner_kind,
                 CellOwnerKind::EdgeSegment | CellOwnerKind::CycleEdge | CellOwnerKind::Junction
             ) {
                 continue;
             }
-            if meta.role == CellRole::ArrowTip {
+            if matches!(meta.role, CellRole::ArrowTip | CellRole::EndpointMarker) {
                 continue;
             }
 
@@ -463,12 +487,19 @@ fn restore_subgraph_title(
         return false;
     }
 
-    let title_fmt = crate::graph::subgraph_title_text(title);
-    let Some(start_x) = crate::graph::subgraph_title_start_x(
+    let title_gutter = td_sibling_title_gutter(graph, subgraph_id);
+    let title_fmt = crate::graph::subgraph_title_text_with_padding_sides(
+        title,
+        title_gutter.leading_extra_padding,
+        title_gutter.trailing_extra_padding,
+    );
+    let Some((start_x, _)) = crate::graph::subgraph_title_span_with_padding_sides(
         subgraph.bounds.x,
         subgraph.bounds.width,
         title,
         direction,
+        title_gutter.leading_extra_padding,
+        title_gutter.trailing_extra_padding,
     ) else {
         return false;
     };
@@ -490,10 +521,16 @@ fn restore_subgraph_title(
 }
 
 fn normalize_routing_glyph(canvas: &mut Canvas, x: usize, y: usize, chars: &StyleChars) -> bool {
+    if canvas.fallback_route_claims_cell(x, y) {
+        return false;
+    }
     let owner_kind = canvas
         .get_meta(x, y)
         .map(|cell| cell.owner_kind)
         .unwrap_or_default();
+    if is_explicit_crossing_marker(canvas.get(x, y), chars) {
+        return false;
+    }
     let Some(replacement) =
         canonical_routing_glyph(canvas_connections(canvas, x, y), chars, owner_kind)
     else {
@@ -564,6 +601,32 @@ mod tests {
 
         assert!(stabilize_arrow_shafts(&mut canvas, &chars));
         assert_eq!(canvas.get(2, 0), chars.edge_h);
+    }
+
+    #[test]
+    fn topology_stabilization_preserves_endpoint_markers() {
+        let chars = unicode_chars();
+        let mut canvas = Canvas::new(3, 3);
+        canvas.set(1, 0, chars.edge_v);
+        canvas.set_owned_with_role(
+            1,
+            1,
+            chars.circle_end,
+            CellOwnerKind::EdgeSegment,
+            "edge:4:A->F",
+            CellRole::EndpointMarker,
+            5,
+        );
+        canvas.set(1, 2, chars.edge_v);
+
+        assert!(!stabilize_straight_segments(&mut canvas, &chars));
+        assert!(!stabilize_degree_mismatches(&mut canvas, &chars));
+        assert!(!stabilize_routing_topology(&mut canvas, &chars));
+        assert_eq!(canvas.get(1, 1), chars.circle_end);
+        assert_eq!(
+            canvas.get_meta(1, 1).map(|meta| meta.role),
+            Some(CellRole::EndpointMarker)
+        );
     }
 
     #[test]

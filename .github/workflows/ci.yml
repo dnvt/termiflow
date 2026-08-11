@@ -35,8 +35,14 @@ jobs:
       - name: Validate visual cycle contract
         run: |
           bash -n scripts/visual_cycle.sh
+          bash -n scripts/schema_visual_cycle.sh
+          bash -n scripts/review_expected_errors.sh
           jq empty tests/fixtures/visual_cycle_record.schema.json
+          jq empty tests/fixtures/schema_visual_cycle_summary.schema.json
+          jq empty tests/fixtures/error_policy_record.schema.json
           scripts/visual_cycle.sh --help >/dev/null
+          scripts/schema_visual_cycle.sh --help >/dev/null
+          scripts/review_expected_errors.sh --help >/dev/null
 
       - name: Validate QA architecture contracts
         run: scripts/check_qa_contracts.sh

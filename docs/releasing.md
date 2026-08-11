@@ -43,6 +43,15 @@ Maestro state directory.
 6. Publish only after preflight passes. The GitHub release includes the target
    archives and finalized candidate manifest.
 
+## Compatibility boundaries
+
+`layout::waterfall`, `layout::apply_spike_layout`, `--compact`, and the hidden
+`--ansi-title-invert` flag are retained as legacy compatibility surfaces. Do
+not remove them as part of a patch or routine cleanup. Removal requires
+downstream-impact evidence, an explicit semver/version decision, migration
+guidance, and a separately reviewed release slice with API, CLI, and visual
+regression evidence.
+
 ## Recovery and rollback
 
 A missing, mismatched, dirty, or incomplete candidate is a failed release

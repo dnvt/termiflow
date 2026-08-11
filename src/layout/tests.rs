@@ -81,6 +81,96 @@ fn gutter_avoids_external_edges() {
 }
 
 #[test]
+fn titled_vertical_labeled_terminal_exit_aligns_to_its_portal_lane() {
+    for (direction_name, direction) in [("TD", Direction::TD), ("BT", Direction::BT)] {
+        let input = format!(
+            "graph {direction_name}\nsubgraph SG [Group]\nA[Inside] --> B[Exit]\nend\nB -->|handoff| C[Outside]"
+        );
+        let parsed = parse(&input, false).expect("parse labeled terminal exit fixture");
+        let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+            .expect("layout labeled terminal exit fixture");
+
+        assert_eq!(
+            graph.get_node("B").expect("internal exit node").center_x(),
+            graph
+                .get_node("C")
+                .expect("external terminal target")
+                .center_x(),
+            "vertical labeled terminal exit must share the portal lane for {direction:?}"
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "maintainer-fixtures")]
+fn td_parallel_external_portals_align_to_internal_centers() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_parallel_td.md")
+        .expect("read TD parallel fixture");
+    let parsed = parse(&input, false).expect("parse TD parallel fixture");
+    let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+        .expect("layout TD parallel fixture");
+
+    let input_node = graph.get_node("In").expect("external input node");
+    let entry_node = graph.get_node("A").expect("internal entry node");
+    let exit_node = graph.get_node("D").expect("internal exit node");
+    let output_node = graph.get_node("Out").expect("external output node");
+
+    assert_eq!(
+        input_node.center_x(),
+        entry_node.center_x(),
+        "TD external entry must share the selected internal portal lane"
+    );
+    assert_eq!(
+        output_node.center_x(),
+        exit_node.center_x(),
+        "TD external exit must share the selected internal portal lane"
+    );
+}
+
+#[test]
+fn side_by_side_sibling_envelopes_keep_a_visual_gap_in_both_horizontal_directions() {
+    for direction in [Direction::LR, Direction::RL] {
+        let mut graph = Graph::new();
+        graph.direction = direction;
+
+        for (node_id, subgraph_id, title) in [
+            ("A", "G1", "Group 1"),
+            ("B", "G2", "Group 2"),
+            ("C", "G3", "Group 3"),
+        ] {
+            graph.nodes.push(Node::new(node_id, node_id));
+            let mut subgraph = Subgraph::new(subgraph_id, Some(title.to_string()));
+            subgraph.add_node(node_id);
+            graph.add_subgraph(subgraph);
+            graph.associate_node_with_subgraph(node_id, subgraph_id);
+        }
+        graph.edges.push(Edge::new("A", "B"));
+        graph.edges.push(Edge::new("B", "C"));
+
+        let output = layout(
+            LayoutInput {
+                graph: &graph,
+                prior_positions: None,
+            },
+            CoarseLayoutConfig::default(),
+        )
+        .expect("horizontal sibling layout");
+
+        let mut envelopes: Vec<_> = output.subgraph_envelopes.values().collect();
+        envelopes.sort_by_key(|envelope| envelope.outer.x);
+        for pair in envelopes.windows(2) {
+            let gap = pair[1].outer.x.saturating_sub(pair[0].outer.right());
+            assert!(
+                gap >= 2,
+                "{direction:?} sibling envelopes need two blank columns: left={:?} right={:?}",
+                pair[0].outer,
+                pair[1].outer
+            );
+        }
+    }
+}
+
+#[test]
 fn inner_bounds_persist_on_graph() {
     let mut graph = Graph::new();
     graph.direction = Direction::TD;
@@ -585,7 +675,6 @@ fn stacked_top_level_td_sibling_subgraphs_stay_vertically_compact() {
         .bounds
         .y
         .saturating_sub(service.bounds.y.saturating_add(service.bounds.height));
-
     assert!(
             service.bounds.height <= 18,
             "expected Service Layer to stay vertically compact after mixed boundary fan-out compaction: service={:?}",
@@ -597,7 +686,32 @@ fn stacked_top_level_td_sibling_subgraphs_stay_vertically_compact() {
             service.bounds,
             data.bounds,
             inter_subgraph_gap
+    );
+}
+
+#[test]
+#[cfg(feature = "maintainer-fixtures")]
+fn stacked_td_sibling_crossings_keep_two_connector_rows() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/collision_sibling_triple_td.md")
+        .expect("read triple sibling fixture");
+    let parsed = parse(&input, false).expect("parse triple sibling fixture");
+    let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+        .expect("layout triple sibling fixture");
+
+    for (upper_id, lower_id) in [("G1", "G2"), ("G2", "G3")] {
+        let upper = graph.get_subgraph(upper_id).expect("upper sibling");
+        let lower = graph.get_subgraph(lower_id).expect("lower sibling");
+        let gap = lower
+            .bounds
+            .y
+            .saturating_sub(upper.bounds.y.saturating_add(upper.bounds.height));
+        assert!(
+            gap >= 2,
+            "expected two connector rows between {upper_id} and {lower_id}: upper={:?} lower={:?} gap={gap}",
+            upper.bounds,
+            lower.bounds
         );
+    }
 }
 
 #[test]
@@ -768,6 +882,56 @@ fn side_by_side_lr_top_level_siblings_balance_trailing_response_gap() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
+fn sibling_bt_external_corridor_reservation_moves_response_outside_lane() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_bt.md")
+        .expect("read fixture");
+    let parsed = parse(&input, false).expect("parse fixture");
+    let graph =
+        apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default()).expect("layout");
+
+    let service = graph.get_subgraph("SG1").expect("service layer");
+    let data = graph.get_subgraph("SG2").expect("data layer");
+    let response = graph.get_node("Response").expect("response");
+    let sibling_right = service
+        .bounds
+        .x
+        .saturating_add(service.bounds.width)
+        .max(data.bounds.x.saturating_add(data.bounds.width));
+
+    assert!(
+        response.x >= sibling_right.saturating_add(2),
+        "expected the topology-connected external response node to leave a two-column sibling BT corridor: service={:?} data={:?} response=({}, {}, {}x{})",
+        service.bounds,
+        data.bounds,
+        response.x,
+        response.y,
+        response.width,
+        response.height,
+    );
+    assert!(
+        response.x >= service.bounds.x.saturating_add(service.bounds.width)
+            || response.x.saturating_add(response.width) <= service.bounds.x,
+        "response must remain disjoint from Service Layer after corridor reservation: service={:?} response=({}, {}, {}x{})",
+        service.bounds,
+        response.x,
+        response.y,
+        response.width,
+        response.height,
+    );
+    assert!(
+        response.x >= data.bounds.x.saturating_add(data.bounds.width)
+            || response.x.saturating_add(response.width) <= data.bounds.x,
+        "response must remain disjoint from Data Layer after corridor reservation: data={:?} response=({}, {}, {}x{})",
+        data.bounds,
+        response.x,
+        response.y,
+        response.width,
+        response.height,
+    );
+}
+
+#[test]
 fn explicit_nested_child_route_budget_adds_horizontal_border_clearance() {
     let input = "graph TD\nA[API Gateway]\nsubgraph SG1[Service Layer]\nS1[User Service]\nS2[Order Service]\nsubgraph SG2[Data Layer]\nD1[(User DB)]\nD2[(Order DB)]\nend\nResponse[Response Builder]\nS1 --> S2\nS1 --> D1\nS2 --> D2\nD1 --> Response\nD2 --> Response\nend\nA --> S1\n";
     let parsed = parse(input, false).expect("parse");
@@ -803,6 +967,92 @@ fn explicit_nested_child_route_budget_adds_horizontal_border_clearance() {
             order_db.width,
             order_db.height,
         );
+}
+
+#[test]
+fn lr_sibling_terminal_target_aligns_to_source_envelope_centerline() {
+    let input = r#"graph LR
+API[API Gateway]
+subgraph SG1 [Service Layer]
+S1[User Service]
+S2[Order Service]
+S1 --> S2
+end
+subgraph SG2 [Data Layer]
+D1[(User DB)]
+D2[(Order DB)]
+end
+Response[Response Builder]
+API --> S1
+S1 --> D1
+S2 --> D2
+D1 --> Response
+D2 --> Response
+"#;
+    let parsed = parse(input, false).expect("parse LR sibling terminal fixture");
+    let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+        .expect("layout LR sibling terminal fixture");
+
+    let source = graph.get_subgraph("SG2").expect("data layer");
+    let response = graph.get_node("Response").expect("response builder");
+    let source_center_y = source.bounds.y + source.bounds.height / 2;
+    let response_center_y = response.y + response.height / 2;
+
+    assert!(
+        response_center_y.abs_diff(source_center_y) <= 1,
+        "expected LR terminal target to align to the source envelope centerline: source={:?} response=({}, {}, {}x{})",
+        source.bounds,
+        response.x,
+        response.y,
+        response.width,
+        response.height,
+    );
+}
+
+#[test]
+fn rl_sibling_terminal_centerline_candidate_is_rejected_when_it_hits_peer_subgraph() {
+    let input = r#"graph RL
+API[API Gateway]
+subgraph SG1 [Service Layer]
+S1[User Service]
+S2[Order Service]
+S1 --> S2
+end
+subgraph SG2 [Data Layer]
+D1[(User DB)]
+D2[(Order DB)]
+end
+Response[Response Builder]
+API --> S1
+S1 --> D1
+S2 --> D2
+D1 --> Response
+D2 --> Response
+"#;
+    let parsed = parse(input, false).expect("parse RL sibling terminal fixture");
+    let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+        .expect("layout RL sibling terminal fixture");
+
+    let data = graph.get_subgraph("SG2").expect("data layer");
+    let service = graph.get_subgraph("SG1").expect("service layer");
+    let response = graph.get_node("Response").expect("response builder");
+    let aligned_y = data.bounds.y + data.bounds.height / 2 - response.height / 2;
+    let candidate = crate::geom::Rect::new(response.x, aligned_y, response.width, response.height);
+    let keepout = candidate.inflate(1);
+    let overlaps_service = keepout.x < service.bounds.x + service.bounds.width
+        && service.bounds.x < keepout.right()
+        && keepout.y < service.bounds.y + service.bounds.height
+        && service.bounds.y < keepout.bottom();
+
+    assert!(
+        overlaps_service,
+        "fixture must keep the RL centerline candidate blocked by the peer subgraph: service={:?} candidate={candidate:?}",
+        service.bounds,
+    );
+    assert_ne!(
+        response.y, aligned_y,
+        "blocked RL candidate must not move the response target onto the peer subgraph"
+    );
 }
 
 #[test]

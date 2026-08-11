@@ -4,6 +4,7 @@
 //! local repairs. The current rule set is intentionally bounded and only
 //! targets defects that can be fixed on the rendered canvas without relayout.
 
+use super::canvas::is_explicit_crossing_marker;
 use super::semantic::{CellOwnerKind, CellRole, SemanticFrame};
 use super::subgraph_title_y;
 use super::topology::{
@@ -11,6 +12,7 @@ use super::topology::{
     char_connects_up, frame_connections,
 };
 use crate::graph::{Direction, Graph};
+use crate::portals::td_sibling_title_gutter;
 use crate::style::StyleChars;
 
 #[path = "critic_report.rs"]
@@ -53,6 +55,9 @@ pub fn analyze(
     findings.extend(find_arrow_touching_node_borders(graph, frame));
     findings.extend(find_arrow_touching_subgraph_borders(graph, frame));
     findings.extend(find_subgraph_border_portal_artifacts(
+        graph, frame, direction, chars,
+    ));
+    findings.extend(find_portal_marker_mismatches(
         graph, frame, direction, chars,
     ));
     findings.extend(find_route_crossing_node_interiors(graph, frame));
@@ -128,6 +133,9 @@ fn find_junction_topology_mismatches(
                 continue;
             };
             if cell.role == CellRole::Junction {
+                if is_explicit_crossing_marker(cell.ch, chars) {
+                    continue;
+                }
                 let connections = frame_connections(frame, x, y);
                 let arms = connections.arm_count();
                 if arms < 3 && !(arms >= 2 && glyph_is_ambiguous_topology(cell.ch, chars)) {
@@ -632,12 +640,19 @@ fn find_subgraph_title_corruption(
             continue;
         }
 
-        let title_fmt = crate::graph::subgraph_title_text(title);
-        let Some(start_x) = crate::graph::subgraph_title_start_x(
+        let title_gutter = td_sibling_title_gutter(graph, &subgraph.id);
+        let title_fmt = crate::graph::subgraph_title_text_with_padding_sides(
+            title,
+            title_gutter.leading_extra_padding,
+            title_gutter.trailing_extra_padding,
+        );
+        let Some((start_x, _)) = crate::graph::subgraph_title_span_with_padding_sides(
             subgraph.bounds.x,
             subgraph.bounds.width,
             title,
             direction,
+            title_gutter.leading_extra_padding,
+            title_gutter.trailing_extra_padding,
         ) else {
             continue;
         };
@@ -650,7 +665,18 @@ fn find_subgraph_title_corruption(
             let Some(cell) = frame.get(x, title_y) else {
                 continue;
             };
-            if cell.ch != expected_ch {
+            let is_wrapper_padding = offset == 0 || offset + 1 == title_len;
+            let is_owned_route_padding = is_wrapper_padding
+                && cell.z_index > 0
+                && matches!(
+                    cell.owner_kind,
+                    CellOwnerKind::EdgeSegment
+                        | CellOwnerKind::ArrowHead
+                        | CellOwnerKind::Junction
+                        | CellOwnerKind::CycleEdge
+                        | CellOwnerKind::PortalOpening
+                );
+            if cell.ch != expected_ch && !is_owned_route_padding {
                 cells.push((x, title_y));
             }
         }
@@ -784,6 +810,111 @@ fn find_subgraph_border_portal_artifacts(
     findings
 }
 
+fn find_portal_marker_mismatches(
+    graph: &Graph,
+    frame: &SemanticFrame,
+    _direction: Direction,
+    chars: &StyleChars,
+) -> Vec<CriticFinding> {
+    let mut findings = Vec::new();
+
+    for subgraph in &graph.subgraphs {
+        if !subgraph.bounds.is_valid() || subgraph.bounds.width < 3 || subgraph.bounds.height < 3 {
+            continue;
+        }
+
+        // The exact TD parallel scene deliberately composes the vertical
+        // route with the horizontal subgraph border at the portal cell.  Its
+        // topology-owned `┬`/`┴` (or ASCII `+`) seam is not a route junction
+        // defect; it is the truthful representation of a border crossing.
+        let td_parallel_seam = graph
+            .td_parallel_external_attachment_ids()
+            .is_some_and(|(scene_id, ..)| scene_id == subgraph.id);
+
+        let left_x = subgraph.bounds.x;
+        let right_x = subgraph.bounds.x + subgraph.bounds.width.saturating_sub(1);
+        let top_y = subgraph.bounds.y;
+        let bottom_y = subgraph.bounds.y + subgraph.bounds.height.saturating_sub(1);
+        let mut cells = Vec::new();
+
+        for y in top_y..=bottom_y {
+            for x in left_x..=right_x {
+                let side = if y == top_y && x > left_x && x < right_x {
+                    Some("top")
+                } else if y == bottom_y && x > left_x && x < right_x {
+                    Some("bottom")
+                } else if x == left_x && y > top_y && y < bottom_y {
+                    Some("left")
+                } else if x == right_x && y > top_y && y < bottom_y {
+                    Some("right")
+                } else {
+                    None
+                };
+                let Some(side) = side else {
+                    continue;
+                };
+                let Some(cell) = frame.get(x, y) else {
+                    continue;
+                };
+                if cell.owner_kind != CellOwnerKind::PortalOpening {
+                    continue;
+                }
+
+                let connections = frame_connections(frame, x, y);
+                let route_uses_portal = match side {
+                    "top" | "bottom" => connections.up || connections.down,
+                    "left" | "right" => connections.left || connections.right,
+                    _ => false,
+                };
+                if !route_uses_portal {
+                    continue;
+                }
+                let valid = match side {
+                    "top" | "bottom" => {
+                        cell.ch == chars.edge_v
+                            || is_vertical_portal_marker(cell.ch, chars)
+                            || (td_parallel_seam
+                                && ((side == "top" && cell.ch == chars.junction_down)
+                                    || (side == "bottom" && cell.ch == chars.junction_up)))
+                    }
+                    "left" | "right" => {
+                        cell.ch == chars.portal_pierce && (connections.left || connections.right)
+                    }
+                    _ => false,
+                };
+                if !valid {
+                    cells.push((x, y));
+                }
+            }
+        }
+
+        cells.sort_unstable();
+        cells.dedup();
+        if !cells.is_empty() {
+            findings.push(CriticFinding {
+                code: FindingCode::RouteTopologyMismatch,
+                severity: FindingSeverity::Warning,
+                penalty: 10,
+                message: format!(
+                    "subgraph {} has portal openings with invalid side-aware markers",
+                    subgraph.id
+                ),
+                cells,
+                owner_ids: vec![subgraph.id.clone()],
+            });
+        }
+    }
+
+    findings
+}
+
+/// Box-drawing seams combine the edge shaft weight with the subgraph border
+/// weight. They are still truthful vertical portal markers even though they
+/// are not one of the active edge component's ordinary `edge_v` glyphs.
+fn is_vertical_portal_marker(ch: char, chars: &StyleChars) -> bool {
+    ch == chars.edge_v || matches!(ch, '┯' | '┷' | '┰' | '┸' | '╤' | '╧' | '╥' | '╨')
+}
+
 fn has_crowding_neighbor(frame: &SemanticFrame, x: usize, y: usize, owner_id: &str) -> bool {
     let min_y = y.saturating_sub(1);
     let max_y = (y + 1).min(frame.height.saturating_sub(1));
@@ -809,6 +940,7 @@ fn has_crowding_neighbor(frame: &SemanticFrame, x: usize, y: usize, owner_id: &s
                     | CellRole::Corner
                     | CellRole::Junction
                     | CellRole::ArrowTip
+                    | CellRole::EndpointMarker
             ) {
                 foreign_line_neighbors.push((xx, yy, neighbor.role));
             }

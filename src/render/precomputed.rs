@@ -3,6 +3,8 @@
 //! This module owns the route-plan-to-canvas adapter for callers that provide
 //! axis-aligned segments. Fallback routing remains in the legacy pipeline.
 
+use std::collections::HashSet;
+
 use super::canvas;
 use super::provenance::edge_owner_id;
 use super::scene::{Scene, SceneIntent, SceneRecorder};
@@ -202,6 +204,7 @@ pub(super) fn draw_routes(
     canvas: &mut Canvas,
     chars: &StyleChars,
     recorder: &mut SceneRecorder,
+    skipped_edge_indices: &HashSet<usize>,
 ) {
     let debug_timing = crate::runtime::current().diagnostics.timing;
     let mut edge_ids: Vec<EdgeId> = layout_snapshot.route_ids().collect();
@@ -210,6 +213,9 @@ pub(super) fn draw_routes(
 
     for edge_id in edge_ids {
         let edge_idx = edge_id.index();
+        if skipped_edge_indices.contains(&edge_idx) {
+            continue;
+        }
         let Some(route) = layout_snapshot.route(edge_id) else {
             continue;
         };
@@ -449,6 +455,8 @@ pub(super) fn draw_routes(
                 };
                 let role = if canvas::is_arrow(tip) {
                     CellRole::ArrowTip
+                } else if matches!(edge.kind, EdgeKind::CircleEnd | EdgeKind::CrossEnd) {
+                    CellRole::EndpointMarker
                 } else if canvas::is_horizontal(tip, &route_chars) {
                     CellRole::Horizontal
                 } else if canvas::is_vertical(tip, &route_chars) {

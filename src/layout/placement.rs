@@ -3,10 +3,15 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::geom::{Point, Rect};
-use crate::graph::{Direction, Graph};
+use crate::graph::{Direction, Graph, NodeShape};
 use crate::orientation::{Axis, OrientedCoords};
+use crate::render::fan_in_identity;
+use crate::render::sibling_subgraph_fan_in_identity;
+use crate::render::subgraph_fan_in_identity;
+use crate::render::wide_terminal_fan_in;
 use crate::style::BOX_HEIGHT;
 
+use super::dense_pipeline;
 use super::dual_junction::balance_dual_junctions;
 use super::optimization::{balance_coordinates, node_extent_primary, node_extent_secondary};
 use super::pure_fan_in::balance_pure_fan_in_targets;
@@ -26,7 +31,8 @@ const SPACING_FANIN: usize = 3;
 const SPACING_FANOUT: usize = 1;
 /// Row spacing for multi-target edges with labels (stem → junction → label → arrow)
 const SPACING_MULTI_LABELED: usize = 4;
-
+const DENSE_EDGE_COUNT: usize = 6;
+const DENSE_LANE_PITCH: usize = 2;
 #[derive(Debug)]
 pub(super) struct Placement {
     pub(super) positions: HashMap<String, Point>,
@@ -171,10 +177,91 @@ impl LayoutSpacingPolicy {
             SPACING_MINIMAL
         };
 
+        // Database/Cylinder targets need one additional primary cell because
+        // the renderer's shape-owned entry policy places their arrowhead one
+        // cell farther from the contour. Keep this local to the preceding
+        // rank so ordinary rectangles and unrelated ranks retain compact
+        // spacing.
+        if database_target_requires_headroom(graph, layers, layer_idx) {
+            spacing = spacing.max(SPACING_MINIMAL + 1);
+        }
+
+        // Vertical diamond targets consume one additional primary cell before
+        // their arrow entry. Reserve that corridor locally so the arrowhead
+        // cannot collapse onto the source contour. Horizontal layouts already
+        // receive their direction-specific primary-axis multiplier; keep this
+        // surcharge vertical-only to avoid perturbing established LR/RL
+        // spacing.
+        if vertical_diamond_target_requires_headroom(graph, layers, layer_idx) {
+            spacing = spacing.max(SPACING_MINIMAL + 1);
+        }
+
         // When a boundary simultaneously contains fan-out and fan-in (diamond-ish shapes),
         // keep extra rows/cols so merge/junction bars don't collide with boxes.
         if has_fan_out && has_fan_in && !has_labels {
             spacing = spacing.max(SPACING_FANIN + 1);
+        }
+
+        // Wide terminal fan-in is lowered with one independent horizontal
+        // channel per source. Reserve the exact corridor consumed by that
+        // proof-gated renderer; ordinary convergence keeps its compact gap.
+        if matches!(graph.direction, Direction::TD | Direction::BT) {
+            if let Some(count) = self.wide_terminal_fan_in_count(graph, layers, layer_idx) {
+                spacing = spacing.max(wide_terminal_fan_in::required_primary_gap(count));
+            }
+            if let Some(count) = self.identity_fan_in_count(graph, layers, layer_idx) {
+                spacing = spacing.max(fan_in_identity::required_primary_gap(count));
+            }
+            if let Some(count) = self.subgraph_identity_fan_in_count(graph, layers, layer_idx) {
+                spacing = spacing.max(subgraph_fan_in_identity::required_primary_gap(count));
+            }
+            if let Some(count) =
+                self.sibling_subgraph_identity_fan_in_count(graph, layers, layer_idx)
+            {
+                spacing = spacing.max(sibling_subgraph_fan_in_identity::required_primary_gap(
+                    count,
+                ));
+            }
+        }
+
+        // Dense crossing fan-ins need one independent merge lane per target
+        // group.  The fallback convergence renderer cannot preserve edge
+        // identity when several overlapping target spans are forced onto one
+        // row/column, so reserve only the minimum additional primary gap for
+        // that shape.  Ordinary fan-in and non-overlapping fan-outs keep the
+        // existing compact spacing policy.
+        let dense_fan_in_lanes = self.overlapping_fan_in_lane_count(graph, layers, layer_idx);
+        if dense_fan_in_lanes > 1 {
+            spacing = spacing.max(SPACING_FANIN + dense_fan_in_lanes);
+        }
+
+        // A small dense bipartite rank pair is lowered by the renderer as six
+        // independent routes rather than one shared collector. Reserve two
+        // additional primary cells so every route can receive a distinct
+        // lane without borrowing the source/target attachment rows. The
+        // topology test is structural and intentionally independent of fixture
+        // names or rendered glyphs.
+        if dense_crossing_pair(graph, layers, layer_idx) {
+            let dense_primary_gap = DENSE_EDGE_COUNT
+                .saturating_mul(DENSE_LANE_PITCH)
+                .saturating_add(2);
+            if matches!(
+                graph.direction,
+                Direction::TD | Direction::TB | Direction::BT
+            ) {
+                spacing = spacing.max(dense_primary_gap);
+            } else {
+                spacing = spacing.max(SPACING_FANIN + dense_fan_in_lanes + 2);
+            }
+        }
+
+        // The layered dense pipeline has six singleton bridge edges whose
+        // source and target ranks otherwise leave only a border-adjacent cell
+        // for a turn. Reserve one additional primary cell for a visible stem
+        // and corridor; the scene detector remains topology-only and
+        // fail-closed for all near-miss graphs.
+        if dense_pipeline::needs_bridge_headroom(graph, layers, layer_idx) {
+            spacing = spacing.max(SPACING_MINIMAL + 1);
         }
 
         // Subgraph boundary inflation between this layer and the next
@@ -230,6 +317,15 @@ impl LayoutSpacingPolicy {
                 } else {
                     let extra = if fanout_targets_same_subgraph {
                         self.gutter.saturating_sub(1)
+                    } else if has_fan_out
+                        && external_boundary_target_count <= 1
+                        && matches!(graph.direction, Direction::TD | Direction::TB)
+                    {
+                        // A single external target already contributes local database or
+                        // shape headroom above. Do not stack the full multi-boundary fan-out
+                        // surcharge on that rank; the destination subgraph reserves the
+                        // connector corridor itself.
+                        self.gutter
                     } else if has_fan_out && has_fan_in {
                         self.gutter
                     } else if has_fan_out {
@@ -260,8 +356,29 @@ impl LayoutSpacingPolicy {
             }
         }
 
+        // Multiple external entries into a titled vertical subgraph need a
+        // dedicated approach row. Without it, the generic convergence bar is
+        // forced onto the target envelope's top-border row, visually fusing
+        // edge ownership with the container boundary. Keep this surcharge
+        // limited to the preceding rank and the multi-entry topology, after
+        // the boundary policy has selected its base spacing.
+        if vertical_titled_subgraph_entry_requires_headroom(graph, layers, layer_idx) {
+            spacing = spacing.max(SPACING_MINIMAL + 2);
+        }
+
+        // A labeled edge that crosses a titled subgraph boundary needs one
+        // additional approach row even when it is a single entry or exits the
+        // subgraph.  Without this row, the route-aware label chooser has no
+        // legal vertical cell between the arrow and the envelope and falls
+        // back to painting the label on the top/bottom border.  Keep the rule
+        // structural: it applies to any titled boundary in the vertical
+        // directions, not to a fixture or node name.
         if boundary_crosses_subgraph && has_labels && !has_fan_out && !has_fan_in {
             spacing = spacing.saturating_sub(2).max(SPACING_LABELED + 1);
+        }
+
+        if vertical_titled_subgraph_boundary_label_requires_headroom(graph, layers, layer_idx) {
+            spacing = spacing.max(SPACING_LABELED + 3);
         }
 
         if fanout_targets_same_subgraph {
@@ -318,6 +435,145 @@ impl LayoutSpacingPolicy {
 
         spacing
     }
+
+    fn overlapping_fan_in_lane_count(
+        &self,
+        graph: &Graph,
+        layers: &[Vec<usize>],
+        layer_idx: usize,
+    ) -> usize {
+        let Some(next_layer) = layers.get(layer_idx + 1) else {
+            return 0;
+        };
+        let layer = &layers[layer_idx];
+        let mut spans = Vec::new();
+
+        for &target_idx in next_layer {
+            let target_id = &graph.nodes[target_idx].id;
+            if graph.get_node_subgraph(target_id).is_some() {
+                continue;
+            }
+            let source_positions: Vec<usize> = layer
+                .iter()
+                .enumerate()
+                .filter_map(|(position, &source_idx)| {
+                    let source_id = &graph.nodes[source_idx].id;
+                    if graph.get_node_subgraph(source_id).is_some() {
+                        return None;
+                    }
+                    graph
+                        .edges
+                        .iter()
+                        .any(|edge| {
+                            !edge.is_back_edge && edge.from == *source_id && edge.to == *target_id
+                        })
+                        .then_some(position)
+                })
+                .collect();
+            if source_positions.len() > 1 {
+                spans.push((
+                    source_positions.iter().copied().min().unwrap_or(0),
+                    source_positions.iter().copied().max().unwrap_or(0),
+                ));
+            }
+        }
+
+        if spans.len() < 2 {
+            return 0;
+        }
+
+        // Count the largest connected interval component. Inclusive overlap
+        // is intentional: a shared endpoint is still a visually shared stem.
+        let mut visited = vec![false; spans.len()];
+        let mut largest = 0;
+        for start in 0..spans.len() {
+            if visited[start] {
+                continue;
+            }
+            visited[start] = true;
+            let mut component = vec![start];
+            let mut cursor = 0;
+            while cursor < component.len() {
+                let current = spans[component[cursor]];
+                for candidate in 0..spans.len() {
+                    if visited[candidate] {
+                        continue;
+                    }
+                    let overlaps =
+                        spans[candidate].0 <= current.1 && current.0 <= spans[candidate].1;
+                    if overlaps {
+                        visited[candidate] = true;
+                        component.push(candidate);
+                    }
+                }
+                cursor += 1;
+            }
+            largest = largest.max(component.len());
+        }
+        largest
+    }
+
+    fn wide_terminal_fan_in_count(
+        &self,
+        graph: &Graph,
+        layers: &[Vec<usize>],
+        layer_idx: usize,
+    ) -> Option<usize> {
+        let next_layer = layers.get(layer_idx + 1)?;
+        next_layer.iter().find_map(|target_idx| {
+            let target_id = graph.nodes.get(*target_idx)?.id.as_str();
+            wide_terminal_fan_in::target_port_count(graph, target_id)
+        })
+    }
+
+    fn identity_fan_in_count(
+        &self,
+        graph: &Graph,
+        layers: &[Vec<usize>],
+        layer_idx: usize,
+    ) -> Option<usize> {
+        let next_layer = layers.get(layer_idx + 1)?;
+        next_layer.iter().find_map(|target_idx| {
+            let target_id = graph.nodes.get(*target_idx)?.id.as_str();
+            fan_in_identity::target_port_count(graph, target_id)
+        })
+    }
+
+    fn subgraph_identity_fan_in_count(
+        &self,
+        graph: &Graph,
+        layers: &[Vec<usize>],
+        layer_idx: usize,
+    ) -> Option<usize> {
+        let next_layer = layers.get(layer_idx + 1)?;
+        next_layer.iter().find_map(|target_idx| {
+            let target_id = graph.nodes.get(*target_idx)?.id.as_str();
+            subgraph_fan_in_identity::target_port_count(graph, target_id)
+        })
+    }
+
+    fn sibling_subgraph_identity_fan_in_count(
+        &self,
+        graph: &Graph,
+        layers: &[Vec<usize>],
+        layer_idx: usize,
+    ) -> Option<usize> {
+        let current_layer = layers.get(layer_idx)?;
+        let next_layer = layers.get(layer_idx + 1)?;
+        next_layer.iter().find_map(|target_idx| {
+            let target_id = graph.nodes.get(*target_idx)?.id.as_str();
+            let count = sibling_subgraph_fan_in_identity::target_port_counts(graph)
+                .into_iter()
+                .find_map(|(candidate_id, count)| (candidate_id == target_id).then_some(count))?;
+            let has_current_source = graph.edges.iter().any(|edge| {
+                edge.to == target_id
+                    && current_layer
+                        .iter()
+                        .any(|source_idx| graph.nodes[*source_idx].id == edge.from)
+            });
+            has_current_source.then_some(count)
+        })
+    }
 }
 
 fn compute_primary_gaps(
@@ -339,6 +595,165 @@ fn compute_primary_gaps(
     gaps
 }
 
+fn database_target_requires_headroom(
+    graph: &Graph,
+    layers: &[Vec<usize>],
+    layer_idx: usize,
+) -> bool {
+    let Some(next_layer) = layers.get(layer_idx + 1) else {
+        return false;
+    };
+
+    let current_layer_ids: HashSet<&str> = layers[layer_idx]
+        .iter()
+        .filter_map(|index| graph.nodes.get(*index))
+        .map(|node| node.id.as_str())
+        .collect();
+
+    next_layer.iter().any(|target_idx| {
+        let Some(target) = graph.nodes.get(*target_idx) else {
+            return false;
+        };
+        target.shape == NodeShape::Database
+            && graph.edges.iter().any(|edge| {
+                !edge.is_back_edge
+                    && edge.to == target.id
+                    && current_layer_ids.contains(edge.from.as_str())
+            })
+    })
+}
+
+fn vertical_diamond_target_requires_headroom(
+    graph: &Graph,
+    layers: &[Vec<usize>],
+    layer_idx: usize,
+) -> bool {
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) {
+        return false;
+    }
+
+    let Some(next_layer) = layers.get(layer_idx + 1) else {
+        return false;
+    };
+
+    let current_layer_ids: HashSet<&str> = layers[layer_idx]
+        .iter()
+        .filter_map(|index| graph.nodes.get(*index))
+        .map(|node| node.id.as_str())
+        .collect();
+
+    next_layer.iter().any(|target_idx| {
+        let Some(target) = graph.nodes.get(*target_idx) else {
+            return false;
+        };
+        target.shape == NodeShape::Diamond
+            && graph.edges.iter().any(|edge| {
+                !edge.is_back_edge
+                    && edge.to == target.id
+                    && current_layer_ids.contains(edge.from.as_str())
+            })
+    })
+}
+
+fn vertical_titled_subgraph_entry_requires_headroom(
+    graph: &Graph,
+    layers: &[Vec<usize>],
+    layer_idx: usize,
+) -> bool {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) {
+        return false;
+    }
+
+    let Some(next_layer) = layers.get(layer_idx + 1) else {
+        return false;
+    };
+    let current_layer_ids: HashSet<&str> = layers[layer_idx]
+        .iter()
+        .filter_map(|index| graph.nodes.get(*index))
+        .map(|node| node.id.as_str())
+        .collect();
+
+    let mut external_entries = 0;
+    for target_idx in next_layer {
+        let Some(target) = graph.nodes.get(*target_idx) else {
+            continue;
+        };
+        let Some(subgraph_id) = graph.get_node_subgraph(&target.id) else {
+            continue;
+        };
+        let Some(subgraph) = graph.get_subgraph(subgraph_id) else {
+            continue;
+        };
+        if subgraph.title.is_none() {
+            continue;
+        }
+        external_entries += graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                !edge.is_back_edge
+                    && edge.to == target.id
+                    && current_layer_ids.contains(edge.from.as_str())
+                    && graph.get_node_subgraph(&edge.from) != Some(subgraph_id)
+            })
+            .count();
+    }
+
+    external_entries >= 2
+}
+
+fn vertical_titled_subgraph_boundary_label_requires_headroom(
+    graph: &Graph,
+    layers: &[Vec<usize>],
+    layer_idx: usize,
+) -> bool {
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) {
+        return false;
+    }
+
+    let Some(next_layer) = layers.get(layer_idx + 1) else {
+        return false;
+    };
+
+    layers[layer_idx].iter().any(|source_idx| {
+        let Some(source) = graph.nodes.get(*source_idx) else {
+            return false;
+        };
+        let source_subgraph = graph.get_node_subgraph(&source.id);
+
+        next_layer.iter().any(|target_idx| {
+            let Some(target) = graph.nodes.get(*target_idx) else {
+                return false;
+            };
+            let target_subgraph = graph.get_node_subgraph(&target.id);
+            if source_subgraph == target_subgraph {
+                return false;
+            }
+
+            let crosses_titled_boundary = source_subgraph
+                .and_then(|id| graph.get_subgraph(id))
+                .is_some_and(|subgraph| subgraph.title.is_some())
+                || target_subgraph
+                    .and_then(|id| graph.get_subgraph(id))
+                    .is_some_and(|subgraph| subgraph.title.is_some());
+
+            crosses_titled_boundary
+                && graph.edges.iter().any(|edge| {
+                    !edge.is_back_edge
+                        && edge.label.is_some()
+                        && edge.from == source.id
+                        && edge.to == target.id
+                })
+        })
+    })
+}
+
 pub(super) fn place_nodes(
     graph: &Graph,
     layers: &[Vec<usize>],
@@ -353,7 +768,6 @@ pub(super) fn place_nodes(
 
     // 1. Calculate Primary Positions (Ranks)
     let primary_gaps = compute_primary_gaps(graph, layers, coords, config);
-
     // Compute primary offsets per layer (cumulative max extent + gap)
     let mut primary_offsets: Vec<usize> = Vec::with_capacity(layers.len());
     let mut primary_cursor = 0usize;
@@ -374,7 +788,11 @@ pub(super) fn place_nodes(
         primary_cursor = primary_cursor + max_extent + gap;
     }
 
-    let secondary_gap = gap_for_axis(coords.secondary, config);
+    let secondary_gap = if has_dense_crossing_family(graph, layers) {
+        gap_for_axis(coords.secondary, config).max(3)
+    } else {
+        gap_for_axis(coords.secondary, config)
+    };
 
     // 2. Calculate Secondary Positions (Barycenter / Median Alignment)
     for (layer_idx, layer) in layers.iter().enumerate() {
@@ -495,6 +913,21 @@ pub(super) fn place_nodes(
 
     balance_dual_junctions(graph, layers, coords, &mut positions, &mut node_rects);
 
+    if has_dense_crossing_family(graph, layers) {
+        // A dense rank pair is easier to inspect when the secondary-axis
+        // slots remain stable across the whole flow. Barycenter balancing can
+        // otherwise stagger the middle rank between its neighbors, forcing
+        // every reserved lane to make an extra hook beside a node border.
+        align_dense_rank_slots(
+            graph,
+            layers,
+            coords,
+            secondary_gap,
+            &mut positions,
+            &mut node_rects,
+        );
+    }
+
     if debug_fan_in {
         if let Some(rect) = node_rects.get("Merge") {
             eprintln!("post-balance Merge rect {rect:?}");
@@ -562,5 +995,259 @@ pub(super) fn place_nodes(
         node_rects,
         canvas,
         ranks,
+    }
+}
+
+fn has_dense_crossing_family(graph: &Graph, layers: &[Vec<usize>]) -> bool {
+    (0..layers.len().saturating_sub(1))
+        .any(|layer_idx| dense_crossing_pair(graph, layers, layer_idx))
+}
+
+fn align_dense_rank_slots(
+    graph: &Graph,
+    layers: &[Vec<usize>],
+    coords: &OrientedCoords,
+    secondary_gap: usize,
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+) {
+    let max_extent = graph
+        .nodes
+        .iter()
+        .map(|node| node_extent_secondary(node, coords))
+        .max()
+        .unwrap_or(BOX_HEIGHT);
+    let pitch = max_extent + secondary_gap.max(3);
+
+    for layer in layers {
+        for (slot, &node_idx) in layer.iter().enumerate() {
+            let Some(node) = graph.nodes.get(node_idx) else {
+                continue;
+            };
+            let Some(rect) = node_rects.get_mut(&node.id) else {
+                continue;
+            };
+            let mut x = rect.x;
+            let mut y = rect.y;
+            coords.set_secondary(&mut x, &mut y, slot.saturating_mul(pitch));
+            rect.x = x;
+            rect.y = y;
+            if let Some(position) = positions.get_mut(&node.id) {
+                position.x = x;
+                position.y = y;
+            }
+        }
+    }
+}
+
+fn dense_crossing_pair(graph: &Graph, layers: &[Vec<usize>], layer_idx: usize) -> bool {
+    let Some(next_layer) = layers.get(layer_idx + 1) else {
+        return false;
+    };
+    let layer_ids: HashSet<&str> = layers[layer_idx]
+        .iter()
+        .filter_map(|index| graph.nodes.get(*index))
+        .map(|node| node.id.as_str())
+        .collect();
+    let next_ids: HashSet<&str> = next_layer
+        .iter()
+        .filter_map(|index| graph.nodes.get(*index))
+        .map(|node| node.id.as_str())
+        .collect();
+    if layer_ids.is_empty() || next_ids.is_empty() {
+        return false;
+    }
+
+    let mut source_ids = HashSet::new();
+    let mut target_ids = HashSet::new();
+    let mut relation = HashSet::new();
+    for edge in &graph.edges {
+        if edge.is_back_edge || !layer_ids.contains(edge.from.as_str()) {
+            continue;
+        }
+        if !next_ids.contains(edge.to.as_str()) {
+            continue;
+        }
+        source_ids.insert(edge.from.as_str());
+        target_ids.insert(edge.to.as_str());
+        relation.insert((edge.from.as_str(), edge.to.as_str()));
+    }
+    if source_ids.len() != 3 || target_ids.len() != 3 || relation.len() != 6 {
+        return false;
+    }
+    source_ids
+        .iter()
+        .all(|source| relation.iter().filter(|(from, _)| from == source).count() == 2)
+        && target_ids
+            .iter()
+            .all(|target| relation.iter().filter(|(_, to)| to == target).count() == 2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{Edge, Node};
+
+    fn two_layer_graph(target_shape: NodeShape) -> (Graph, Vec<Vec<usize>>) {
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("source", "Source"));
+        graph.add_node(Node::with_shape("target", "Target", target_shape));
+        graph.add_edge(Edge::new("source", "target"));
+        (graph, vec![vec![0], vec![1]])
+    }
+
+    #[test]
+    fn database_target_headroom_is_local_to_the_preceding_rank() {
+        let (database_graph, database_layers) = two_layer_graph(NodeShape::Database);
+        let (rectangle_graph, rectangle_layers) = two_layer_graph(NodeShape::Rectangle);
+        let config = CoarseLayoutConfig::default();
+        let policy = LayoutSpacingPolicy::new(
+            config.subgraph_gutter,
+            config.node_padding,
+            config.min_horizontal_spacing,
+            config.min_vertical_spacing,
+        );
+
+        assert_eq!(
+            policy.spacing_for_layer(&database_graph, &database_layers, 0),
+            SPACING_MINIMAL + 1
+        );
+        assert_eq!(
+            policy.spacing_for_layer(&rectangle_graph, &rectangle_layers, 0),
+            SPACING_MINIMAL
+        );
+        assert!(!database_target_requires_headroom(
+            &database_graph,
+            &database_layers,
+            1
+        ));
+    }
+
+    #[test]
+    fn vertical_diamond_target_headroom_is_local_and_direction_gated() {
+        let (mut diamond_graph, diamond_layers) = two_layer_graph(NodeShape::Diamond);
+        let (mut rectangle_graph, rectangle_layers) = two_layer_graph(NodeShape::Rectangle);
+        let config = CoarseLayoutConfig::default();
+        let policy = LayoutSpacingPolicy::new(
+            config.subgraph_gutter,
+            config.node_padding,
+            config.min_horizontal_spacing,
+            config.min_vertical_spacing,
+        );
+
+        assert_eq!(
+            policy.spacing_for_layer(&diamond_graph, &diamond_layers, 0),
+            SPACING_MINIMAL + 1
+        );
+        assert_eq!(
+            policy.spacing_for_layer(&rectangle_graph, &rectangle_layers, 0),
+            SPACING_MINIMAL
+        );
+
+        for direction in [Direction::LR, Direction::RL] {
+            diamond_graph.direction = direction;
+            rectangle_graph.direction = direction;
+            assert!(!vertical_diamond_target_requires_headroom(
+                &diamond_graph,
+                &diamond_layers,
+                0
+            ));
+            assert_eq!(
+                policy.spacing_for_layer(&diamond_graph, &diamond_layers, 0),
+                policy.spacing_for_layer(&rectangle_graph, &rectangle_layers, 0),
+                "horizontal diamond spacing must remain the existing control spacing for {direction:?}"
+            );
+        }
+
+        let mut three_layer = Graph::new();
+        three_layer.add_node(Node::new("source", "Source"));
+        three_layer.add_node(Node::new("middle", "Middle"));
+        three_layer.add_node(Node::with_shape("target", "Target", NodeShape::Diamond));
+        three_layer.add_edge(Edge::new("source", "middle"));
+        three_layer.add_edge(Edge::new("middle", "target"));
+        let three_layers = vec![vec![0], vec![1], vec![2]];
+
+        assert!(!vertical_diamond_target_requires_headroom(
+            &three_layer,
+            &three_layers,
+            0
+        ));
+        assert!(vertical_diamond_target_requires_headroom(
+            &three_layer,
+            &three_layers,
+            1
+        ));
+        assert!(!vertical_diamond_target_requires_headroom(
+            &three_layer,
+            &three_layers,
+            2
+        ));
+    }
+
+    #[test]
+    fn titled_vertical_subgraph_multi_entry_headroom_is_local_and_direction_gated() {
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("x1", "X1"));
+        graph.add_node(Node::new("x2", "X2"));
+        graph.add_node(Node::new("a", "A"));
+        graph.add_node(Node::new("b", "B"));
+        graph.add_edge(Edge::new("x1", "a"));
+        graph.add_edge(Edge::new("x2", "b"));
+        let mut subgraph = crate::graph::Subgraph::new("sg", Some("Target Group".to_owned()));
+        subgraph.add_node("a");
+        subgraph.add_node("b");
+        graph.add_subgraph(subgraph);
+        graph.associate_node_with_subgraph("a", "sg");
+        graph.associate_node_with_subgraph("b", "sg");
+        let layers = vec![vec![0, 1], vec![2, 3]];
+        let config = CoarseLayoutConfig::default();
+        let policy = LayoutSpacingPolicy::new(
+            config.subgraph_gutter,
+            config.node_padding,
+            config.min_horizontal_spacing,
+            config.min_vertical_spacing,
+        );
+
+        assert_eq!(graph.get_node_subgraph("a"), Some("sg"));
+        assert!(vertical_titled_subgraph_entry_requires_headroom(
+            &graph, &layers, 0
+        ));
+        assert_eq!(
+            policy.spacing_for_layer(&graph, &layers, 0),
+            SPACING_MINIMAL + 2
+        );
+        graph.direction = Direction::LR;
+        assert!(!vertical_titled_subgraph_entry_requires_headroom(
+            &graph, &layers, 0
+        ));
+    }
+
+    #[test]
+    fn titled_vertical_subgraph_labeled_boundary_headroom_is_topology_gated() {
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("inside", "Inside"));
+        graph.add_node(Node::new("outside", "Outside"));
+        let mut edge = Edge::new("inside", "outside");
+        edge.label = Some("handoff".to_owned());
+        graph.add_edge(edge);
+
+        let mut subgraph = crate::graph::Subgraph::new("sg", Some("Group".to_owned()));
+        subgraph.add_node("inside");
+        graph.add_subgraph(subgraph);
+        graph.associate_node_with_subgraph("inside", "sg");
+        let layers = vec![vec![0], vec![1]];
+
+        for direction in [Direction::TD, Direction::TB, Direction::BT] {
+            graph.direction = direction;
+            assert!(
+                vertical_titled_subgraph_boundary_label_requires_headroom(&graph, &layers, 0),
+                "expected labeled titled boundary headroom for {direction:?}"
+            );
+        }
+
+        graph.direction = Direction::LR;
+        assert!(!vertical_titled_subgraph_boundary_label_requires_headroom(
+            &graph, &layers, 0
+        ));
     }
 }

@@ -10,7 +10,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-pub const AUDIT_SCHEMA: &str = "termiflow.visual_audit.row.v2";
+pub const AUDIT_SCHEMA: &str = "termiflow.visual_audit.row.v3";
+pub const LEGACY_AUDIT_SCHEMA: &str = "termiflow.visual_audit.row.v2";
+pub const IDENTITY_REF_SCHEMA: &str = "termiflow.visual_audit.identity_ref.v1";
 pub const SUMMARY_SCHEMA: &str = "termiflow.visual_audit.summary.v2";
 pub const METADATA_SCHEMA: &str = "termiflow.fixture_metadata.v1";
 pub const EVIDENCE_SCHEMA: &str = "termiflow.render_evidence.v1";
@@ -23,6 +25,73 @@ pub const STDERR_POLICIES: &[&str] = &["empty", "warning", "error"];
 pub const DIRECTIONS: &[&str] = &["TD", "LR", "RL", "BT", "none"];
 
 static LABEL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+pub fn is_audit_schema(value: &Value) -> bool {
+    matches!(
+        value.as_str(),
+        Some(AUDIT_SCHEMA) | Some(LEGACY_AUDIT_SCHEMA)
+    )
+}
+
+pub fn identity_ref(identity: &Value, identity_sha256: &str) -> Result<Value> {
+    let source_commit = identity
+        .get("source_commit")
+        .cloned()
+        .ok_or_else(|| anyhow!("identity.source_commit is required for row identity"))?;
+    let run_spec_id = identity
+        .get("run_spec_id")
+        .cloned()
+        .ok_or_else(|| anyhow!("identity.run_spec_id is required for row identity"))?;
+    let run_identity = identity
+        .get("run_identity")
+        .cloned()
+        .ok_or_else(|| anyhow!("identity.run_identity is required for row identity"))?;
+    let effective_sha256 = identity
+        .get("provenance")
+        .and_then(|value| value.get("effective_sha256"))
+        .cloned()
+        .ok_or_else(|| {
+            anyhow!("identity.provenance.effective_sha256 is required for row identity")
+        })?;
+    Ok(json!({
+        "schema": IDENTITY_REF_SCHEMA,
+        "path": "identity.json",
+        "sha256": identity_sha256,
+        "source_commit": source_commit,
+        "run_spec_id": run_spec_id,
+        "run_identity": run_identity,
+        "provenance_effective_sha256": effective_sha256,
+    }))
+}
+
+pub fn validate_identity_ref(
+    reference: Option<&Value>,
+    identity: &Value,
+    identity_sha256: &str,
+    label: &str,
+) -> Result<()> {
+    let reference = reference.ok_or_else(|| anyhow!("{label} is missing"))?;
+    let expected = identity_ref(identity, identity_sha256)?;
+    if reference != &expected {
+        bail!("{label} does not match identity.json");
+    }
+    Ok(())
+}
+
+pub fn validate_row_identity(
+    row: &Value,
+    identity: &Value,
+    identity_sha256: &str,
+    label: &str,
+) -> Result<()> {
+    if row.get("identity_ref").is_some() {
+        return validate_identity_ref(row.get("identity_ref"), identity, identity_sha256, label);
+    }
+    if row.get("identity") == Some(identity) {
+        return Ok(());
+    }
+    bail!("{label} does not match identity.json");
+}
 
 #[derive(Debug, Clone)]
 pub struct FixtureMetadata {
@@ -724,5 +793,27 @@ mod tests {
         let first = now_label();
         let second = now_label();
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn identity_reference_is_compact_and_hash_bound() {
+        let identity = json!({
+            "source_commit": "commit",
+            "run_spec_id": "spec",
+            "run_identity": {"run_id": "run", "policy_sha256": "policy"},
+            "provenance": {"effective_sha256": "effective"}
+        });
+        let reference = identity_ref(&identity, &"a".repeat(64)).expect("identity reference");
+        assert_eq!(reference["schema"], IDENTITY_REF_SCHEMA);
+        assert!(reference.to_string().len() < 1024);
+        validate_identity_ref(Some(&reference), &identity, &"a".repeat(64), "row identity")
+            .expect("valid identity reference");
+
+        let mut tampered = reference.clone();
+        tampered["sha256"] = Value::String("b".repeat(64));
+        assert!(
+            validate_identity_ref(Some(&tampered), &identity, &"a".repeat(64), "row identity")
+                .is_err()
+        );
     }
 }

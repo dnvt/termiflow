@@ -6,7 +6,9 @@ use crate::spacing::SpacingConfig;
 use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
-use super::super::portal_projection::{is_textual, stamp_portal_opening};
+use super::super::fallback_route::FallbackRoutePlan;
+use super::super::fan_in_identity::is_vertical_branch_rejoin_target;
+use super::super::portal_projection::{is_textual, stamp_portal_opening, PortalAxis};
 use super::super::semantic::CellOwnerKind;
 use super::edge_primitives::{
     adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, edge_entry_candidates,
@@ -14,6 +16,23 @@ use super::edge_primitives::{
 };
 use super::subgraph::{preferred_portal_x, smallest_visual_container};
 use super::{edge_route_owner_id, set_route_char, set_route_edge_char, RouteOwner, ROUTE_Z_INDEX};
+
+fn strict_simple_subgraph_fanin(sources: &[&Node], target: &Node, graph: &Graph) -> bool {
+    graph.subgraphs.len() == 1
+        && sources.len() >= 3
+        && graph.edges.len() == sources.len()
+        && sources
+            .iter()
+            .all(|source| source.shape == crate::graph::NodeShape::Rectangle)
+        && target.shape == crate::graph::NodeShape::Rectangle
+        && graph.edges.iter().all(|edge| {
+            !edge.is_back_edge
+                && edge.label.is_none()
+                && matches!(edge.kind, crate::graph::EdgeKind::Arrow)
+                && edge.to == target.id
+                && sources.iter().any(|source| source.id == edge.from)
+        })
+}
 
 fn route_convergent_from_subgraph_td(
     sources: &[&Node],
@@ -53,6 +72,11 @@ fn route_convergent_from_subgraph_td(
         })
         .collect();
     source_positions.sort_by_key(|(x, y, _)| coords.secondary_coord(*x, *y));
+    let median_source_x = source_positions
+        .get(source_positions.len() / 2)
+        .map(|(x, _, _)| *x);
+    let can_coalesce_vertical_collector =
+        outer_container.is_none() && strict_simple_subgraph_fanin(sources, target, graph);
     let nested_source_center = if matches!(direction, Direction::TD | Direction::TB)
         && outer_container.is_some()
         && !source_positions.is_empty()
@@ -89,6 +113,23 @@ fn route_convergent_from_subgraph_td(
                 .clamp(min_x, max_x.max(min_x))
         }
         _ => sg.bounds.x + sg.bounds.width / 2,
+    };
+    let preferred_merge_x = if can_coalesce_vertical_collector {
+        median_source_x
+            .filter(|candidate_x| {
+                *candidate_x > sg.bounds.x
+                    && *candidate_x < sg.bounds.x + sg.bounds.width.saturating_sub(1)
+                    && !is_subgraph_title_cell(graph, *candidate_x, merge_y)
+                    && edge_entry_candidates(target, direction)
+                        .iter()
+                        .any(|(x, y)| {
+                            *x == *candidate_x
+                                && !hits_foreign_subgraph_border(target, *x, *y, graph)
+                        })
+            })
+            .unwrap_or(preferred_merge_x)
+    } else {
+        preferred_merge_x
     };
     let (arrow_x, arrow_y) = edge_entry_candidates(target, direction)
         .into_iter()
@@ -417,7 +458,7 @@ fn route_convergent_from_subgraph_bt(
         return;
     }
     let coords = OrientedCoords::new(direction);
-    let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+    let (default_arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
     let fanin_owner_id = format!("fanin:{}", target.id);
     let fanin_owner = RouteOwner {
         kind: CellOwnerKind::EdgeSegment,
@@ -439,10 +480,10 @@ fn route_convergent_from_subgraph_bt(
     let mut merge_y = min_exit_y.saturating_sub(2);
     merge_y = merge_y.max(inside_top.saturating_add(1));
 
-    let merge_x = preferred_portal_x(
+    let default_merge_x = preferred_portal_x(
         &sg.bounds,
         sg.title.as_deref(),
-        arrow_x,
+        default_arrow_x,
         canvas,
         direction,
         false,
@@ -456,6 +497,35 @@ fn route_convergent_from_subgraph_bt(
         })
         .collect();
     source_positions.sort_by_key(|(x, y, _)| coords.secondary_coord(*x, *y));
+
+    let merge_x = if strict_simple_subgraph_fanin(sources, target, graph) {
+        source_positions
+            .get(source_positions.len() / 2)
+            .map(|(x, _, _)| *x)
+            .filter(|candidate_x| {
+                *candidate_x > sg.bounds.x
+                    && *candidate_x < sg.bounds.x + sg.bounds.width.saturating_sub(1)
+                    && !is_subgraph_title_cell(graph, *candidate_x, top_y)
+                    && edge_entry_candidates(target, direction)
+                        .iter()
+                        .any(|(x, y)| {
+                            *x == *candidate_x
+                                && !hits_foreign_subgraph_border(target, *x, *y, graph)
+                        })
+            })
+            .unwrap_or(default_merge_x)
+    } else {
+        default_merge_x
+    };
+    let arrow_x = if merge_x != default_merge_x {
+        edge_entry_candidates(target, direction)
+            .into_iter()
+            .find(|(x, y)| *x == merge_x && !hits_foreign_subgraph_border(target, *x, *y, graph))
+            .map(|(x, _)| x)
+            .unwrap_or(default_arrow_x)
+    } else {
+        default_arrow_x
+    };
 
     let (span_start, span_end) = draw_source_lines_to_merge(
         &source_positions,
@@ -574,7 +644,15 @@ fn route_convergent_from_subgraph_bt(
         // leave it alone.  A plain │ through the subgraph border is correct here;
         // the degree-mismatch stabilizer would otherwise upgrade it to ┼.
         if merge_x < canvas.width && !is_textual(canvas.get(merge_x, top_y)) {
-            stamp_portal_opening(canvas, merge_x, top_y, style, "merge_portal", ROUTE_Z_INDEX);
+            stamp_portal_opening(
+                canvas,
+                merge_x,
+                top_y,
+                style,
+                PortalAxis::Vertical,
+                "merge_portal",
+                ROUTE_Z_INDEX,
+            );
         }
     }
 
@@ -645,10 +723,16 @@ fn route_convergent_from_subgraph_lr(
                 .map(|n| edge_exit_point(n, direction).0)
                 .max()
                 .unwrap_or(min_inside_x);
-            right_border_x
-                .saturating_sub(2)
-                .max(max_exit_x.saturating_add(1))
-                .clamp(min_inside_x, max_inside_x)
+            if strict_simple_subgraph_fanin(sources, target, graph)
+                && max_inside_x >= max_exit_x.saturating_add(2)
+            {
+                max_inside_x
+            } else {
+                right_border_x
+                    .saturating_sub(2)
+                    .max(max_exit_x.saturating_add(1))
+                    .clamp(min_inside_x, max_inside_x)
+            }
         }
         Direction::RL => {
             let min_exit_x = sources
@@ -656,10 +740,16 @@ fn route_convergent_from_subgraph_lr(
                 .map(|n| edge_exit_point(n, direction).0)
                 .min()
                 .unwrap_or(max_inside_x);
-            left_border_x
-                .saturating_add(2)
-                .min(min_exit_x.saturating_sub(1))
-                .clamp(min_inside_x, max_inside_x)
+            if strict_simple_subgraph_fanin(sources, target, graph)
+                && min_exit_x >= min_inside_x.saturating_add(1)
+            {
+                min_inside_x
+            } else {
+                left_border_x
+                    .saturating_add(2)
+                    .min(min_exit_x.saturating_sub(1))
+                    .clamp(min_inside_x, max_inside_x)
+            }
         }
         _ => unreachable!(),
     };
@@ -751,12 +841,22 @@ fn route_convergent_from_subgraph_lr(
         );
     } else {
         let turn_x = match direction {
-            Direction::LR => arrow_x
-                .saturating_sub(2)
-                .clamp(outside_x, arrow_x.saturating_sub(1)),
-            Direction::RL => arrow_x
-                .saturating_add(2)
-                .clamp(arrow_x.saturating_add(1), outside_x),
+            Direction::LR => {
+                let lower = outside_x;
+                let upper = arrow_x.saturating_sub(1);
+                if lower > upper {
+                    return false;
+                }
+                arrow_x.saturating_sub(2).clamp(lower, upper)
+            }
+            Direction::RL => {
+                let lower = arrow_x.saturating_add(1);
+                let upper = outside_x;
+                if lower > upper {
+                    return false;
+                }
+                arrow_x.saturating_add(2).clamp(lower, upper)
+            }
             _ => unreachable!(),
         };
         let going_before = merge_y > arrow_y;
@@ -839,6 +939,7 @@ fn route_convergent_from_subgraph_lr(
             border_x,
             merge_y,
             style,
+            PortalAxis::Horizontal,
             "merge_portal",
             ROUTE_Z_INDEX,
         );
@@ -1059,6 +1160,7 @@ fn draw_merge_line(
 }
 
 /// Route edges from multiple sources to a single target (convergence)
+#[allow(clippy::too_many_arguments)]
 pub fn route_convergent_edges(
     from_nodes: &[&Node],
     to: &Node,
@@ -1067,6 +1169,7 @@ pub fn route_convergent_edges(
     spacing: &SpacingConfig,
     direction: Direction,
     graph: &Graph,
+    merge_lane: Option<(usize, usize)>,
 ) {
     if from_nodes.is_empty() || !canvas.is_visible(to) {
         return;
@@ -1079,6 +1182,8 @@ pub fn route_convergent_edges(
         id: fanin_owner_id.as_str(),
     };
     let debug = crate::runtime::current().diagnostics.timing;
+    let branch_rejoin_baseline =
+        is_vertical_branch_rejoin_target(graph, &to.id).then(|| canvas.clone());
 
     // Filter to visible sources
     let visible_sources: Vec<&Node> = from_nodes
@@ -1099,6 +1204,54 @@ pub fn route_convergent_edges(
             "render: convergent -> {} from {:?} merge_base=({}, {})",
             to.id, ids, arrow_x, arrow_y
         );
+    }
+
+    // Layout repair can place a terminal target on the opposite physical
+    // side from the requested graph orientation (notably an RL target below
+    // a sibling subgraph).  Route that bounded case using the physical axis
+    // rather than feeding an invalid primary interval to the RL lowerer.
+    let source_primary_min = visible_sources
+        .iter()
+        .map(|source| {
+            coords.primary_coord(
+                edge_exit_point(source, direction).0,
+                edge_exit_point(source, direction).1,
+            )
+        })
+        .min()
+        .unwrap_or(0);
+    let source_primary_max = visible_sources
+        .iter()
+        .map(|source| {
+            coords.primary_coord(
+                edge_exit_point(source, direction).0,
+                edge_exit_point(source, direction).1,
+            )
+        })
+        .max()
+        .unwrap_or(0);
+    let physical_orientation_mismatch = match direction {
+        Direction::LR => arrow_x < source_primary_min,
+        Direction::RL => arrow_x > source_primary_max,
+        _ => false,
+    };
+    if physical_orientation_mismatch {
+        let physical_direction = match direction {
+            Direction::LR => Direction::RL,
+            Direction::RL => Direction::LR,
+            _ => unreachable!(),
+        };
+        route_convergent_edges(
+            from_nodes,
+            to,
+            canvas,
+            style,
+            spacing,
+            physical_direction,
+            graph,
+            merge_lane,
+        );
+        return;
     }
 
     // Merge inside the source subgraph before exiting when all parents share one.
@@ -1253,12 +1406,38 @@ pub fn route_convergent_edges(
             merge_primary = min_merge.min(limit);
         }
         Direction::BT => {
-            // Merge above the highest source (leave a full row for stems), but below the target.
-            let max_merge = min_exit.saturating_sub(2);
-            // Leave a full cell between merge and arrow so the arrow isn't adjacent to a junction.
-            let limit = arrow_primary.saturating_add(2);
+            // Merge one row above the source exits.  Using the source-exit row
+            // itself collapses the fan-in corners, source junctions, and merge
+            // bar into the same BT seam (for example, the parallel-path
+            // subgraph).  Keep one shaft cell below the merge whenever the
+            // source/target span has room.
+            let max_merge = min_exit.saturating_sub(1);
+            let limit = arrow_primary.saturating_add(1);
             merge_primary = max_merge.max(limit);
         }
+    }
+
+    if let Some((lane_index, lane_count)) = merge_lane {
+        if let Some(lane_primary) = merge_lane_primary(
+            direction,
+            arrow_primary,
+            min_exit,
+            max_exit,
+            lane_index,
+            lane_count,
+        ) {
+            merge_primary = lane_primary;
+        }
+    }
+    if direction == Direction::BT && is_vertical_branch_rejoin_target(graph, &to.id) {
+        // The shared collector needs one visible shaft row before the target
+        // arrow. The generic BT clamp can otherwise place the collector
+        // directly adjacent to the arrow, making the target entry look
+        // detached even though the route is topologically connected.
+        let maximum_collector = min_exit;
+        merge_primary = merge_primary
+            .max(arrow_primary.saturating_add(2))
+            .min(maximum_collector);
     }
     coords.set_primary(&mut merge_x, &mut merge_y, merge_primary);
 
@@ -1333,6 +1512,36 @@ pub fn route_convergent_edges(
         style,
         Some(fanin_owner),
     );
+
+    // ASCII box corners are represented by `+`, which connects in every
+    // direction.  When the BT branch/rejoin collector sits directly above
+    // the two source boxes, preserve those source-column junctions on the
+    // collector row as well.  Unicode corners are directional and do not
+    // need this extra lowering.
+    if direction == Direction::BT
+        && is_vertical_branch_rejoin_target(graph, &to.id)
+        && style.edge_h == '-'
+        && style.edge_v == '|'
+    {
+        for (source_x, source_y, source) in &source_positions {
+            let source_secondary = coords.secondary_coord(*source_x, *source_y);
+            let boundary_secondary = if source_secondary <= target_secondary {
+                source.x.saturating_add(source.width.saturating_sub(1))
+            } else {
+                source.x
+            };
+            let (junction_x, junction_y) =
+                coords.with_secondary(merge_x, merge_y, boundary_secondary);
+            set_route_edge_char(
+                canvas,
+                junction_x,
+                junction_y,
+                style.junction_up,
+                style,
+                Some(fanin_owner),
+            );
+        }
+    }
 
     let junction_char = match direction {
         Direction::TD | Direction::TB => style.junction_down,
@@ -1451,6 +1660,111 @@ pub fn route_convergent_edges(
         coords.arrow_end(style),
         Some(fanin_owner),
     );
+
+    if let Some(baseline) = branch_rejoin_baseline {
+        let covered_edge_ids: Vec<String> = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.to == to.id)
+            .map(|edge| edge_route_owner_id(graph, &edge.from, &edge.to))
+            .collect();
+        let mut plan = FallbackRoutePlan::new(fanin_owner_id.clone(), "branch-rejoin-convergence");
+        plan.set_scene_coverage(covered_edge_ids.clone());
+        for paint in canvas.non_space_delta(&baseline) {
+            let inside_node = graph.nodes.iter().any(|node| {
+                paint.point.x >= node.x
+                    && paint.point.x < node.x.saturating_add(node.width)
+                    && paint.point.y >= node.y
+                    && paint.point.y < node.y.saturating_add(node.height)
+            });
+            if inside_node {
+                continue;
+            }
+            let owner_id = canvas
+                .get_meta(paint.point.x, paint.point.y)
+                .and_then(|meta| meta.owner_id.as_deref());
+            if owner_id == Some(fanin_owner_id.as_str())
+                || covered_edge_ids
+                    .iter()
+                    .any(|edge_id| Some(edge_id.as_str()) == owner_id)
+            {
+                plan.push_paint(paint.point.x, paint.point.y, paint.glyph);
+            }
+        }
+        if let Some(reason) = plan.validation_error(canvas.width, canvas.height) {
+            canvas.record_fallback_route_rejection(
+                plan.owner_id.clone(),
+                plan.strategy.clone(),
+                reason,
+            );
+        } else {
+            canvas.record_fallback_route_plan(plan);
+        }
+    }
+}
+
+fn merge_lane_primary(
+    direction: Direction,
+    arrow_primary: usize,
+    min_exit: usize,
+    max_exit: usize,
+    lane_index: usize,
+    lane_count: usize,
+) -> Option<usize> {
+    if lane_count < 2 {
+        return None;
+    }
+    let (start, end) = match direction {
+        Direction::TD | Direction::TB | Direction::LR => {
+            (max_exit.saturating_add(2), arrow_primary.saturating_sub(1))
+        }
+        Direction::BT | Direction::RL => {
+            (arrow_primary.saturating_add(2), min_exit.saturating_sub(1))
+        }
+    };
+    if end < start || end - start + 1 < lane_count {
+        return None;
+    }
+    let horizontal = matches!(direction, Direction::LR | Direction::RL);
+    let stride_two_capacity = lane_count
+        .saturating_sub(1)
+        .saturating_mul(2)
+        .saturating_add(1);
+    let stride = if horizontal && end - start + 1 >= stride_two_capacity {
+        2
+    } else {
+        1
+    };
+    let index = lane_index.min(lane_count - 1);
+    start.checked_add(index.saturating_mul(stride))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_lane_primary;
+    use crate::graph::Direction;
+
+    #[test]
+    fn horizontal_merge_lanes_prefer_a_two_cell_stride() {
+        assert_eq!(merge_lane_primary(Direction::LR, 30, 0, 12, 0, 3), Some(14));
+        assert_eq!(merge_lane_primary(Direction::LR, 30, 0, 12, 1, 3), Some(16));
+        assert_eq!(merge_lane_primary(Direction::LR, 30, 0, 12, 2, 3), Some(18));
+        assert_eq!(merge_lane_primary(Direction::RL, 10, 20, 0, 2, 3), Some(16));
+    }
+
+    #[test]
+    fn horizontal_merge_lanes_fall_back_when_stride_two_does_not_fit() {
+        assert_eq!(merge_lane_primary(Direction::LR, 16, 0, 10, 0, 3), Some(12));
+        assert_eq!(merge_lane_primary(Direction::LR, 16, 0, 10, 1, 3), Some(13));
+        assert_eq!(merge_lane_primary(Direction::LR, 16, 0, 10, 2, 3), Some(14));
+    }
+
+    #[test]
+    fn vertical_merge_lanes_remain_consecutive() {
+        assert_eq!(merge_lane_primary(Direction::TD, 20, 0, 10, 0, 3), Some(12));
+        assert_eq!(merge_lane_primary(Direction::TD, 20, 0, 10, 2, 3), Some(14));
+        assert_eq!(merge_lane_primary(Direction::BT, 10, 20, 0, 2, 3), Some(14));
+    }
 }
 
 // ============================================================================

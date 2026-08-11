@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "termiflow.schema_visual_cycle.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "queue_id",
+    "queue_sha256",
+    "spec_sha256",
+    "manifest",
+    "golden",
+    "packet",
+    "holdout",
+    "review_required",
+    "commands"
+  ],
+  "properties": {
+    "schema": {"const": "termiflow.schema_visual_cycle.v1"},
+    "status": {"const": "ready_for_perceptual_review"},
+    "queue_id": {"type": "string", "minLength": 1},
+    "queue_sha256": {"$ref": "#/$defs/sha256"},
+    "spec_sha256": {"$ref": "#/$defs/sha256"},
+    "manifest": {"$ref": "#/$defs/file"},
+    "golden": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "report_path", "report_sha256", "approval"],
+      "properties": {
+        "status": {"const": "current"},
+        "report_path": {"type": "string", "minLength": 1},
+        "report_sha256": {"$ref": "#/$defs/sha256"},
+        "approval": {"const": "separate_explicit_command"}
+      }
+    },
+    "packet": {"$ref": "#/$defs/packet"},
+    "holdout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_path",
+        "identity_sha256",
+        "complete_sha256",
+        "receipt_path",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "packet_path": {"type": "string", "minLength": 1},
+        "identity_sha256": {"$ref": "#/$defs/sha256"},
+        "complete_sha256": {"$ref": "#/$defs/sha256"},
+        "receipt_path": {"type": "string", "minLength": 1},
+        "receipt_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "review_required": {"const": true},
+    "commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review_one_frame", "close_cycle", "approve_golden"],
+      "properties": {
+        "review_one_frame": {"type": "string", "minLength": 1},
+        "close_cycle": {"type": "string", "minLength": 1},
+        "approve_golden": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "identity_sha256", "complete_sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "identity_sha256": {"$ref": "#/$defs/sha256"},
+        "complete_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

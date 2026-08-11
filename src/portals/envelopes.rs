@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::geom::Rect;
-use crate::graph::{Direction, Graph};
+use crate::graph::{Direction, Graph, NodeShape};
 
 use super::{collect_portal_slots_with_bounds, PortalSlots, SubgraphEnvelope};
 
@@ -730,6 +730,22 @@ pub fn compute_envelopes(
     harmonize_stacked_vertical_top_level_sibling_widths(graph, node_rects, &mut envelopes);
     harmonize_side_by_side_horizontal_top_level_sibling_heights(graph, node_rects, &mut envelopes);
 
+    // Reserve the target-title row as one atomic scene transaction. The BT
+    // renderer consumes the same live-topology predicate and routes the turn
+    // one row farther from the title; ordinary sibling layouts retain their
+    // established envelope geometry.
+    let chain_bounds: HashMap<String, Rect> = envelopes
+        .iter()
+        .map(|(id, env)| (id.clone(), env.outer))
+        .collect();
+    if let Some(target_ids) = super::bt_sibling_chain_target_ids(graph, &chain_bounds) {
+        for target_id in target_ids {
+            if let Some(env) = envelopes.get_mut(&target_id) {
+                env.outer.height = env.outer.height.saturating_add(1);
+            }
+        }
+    }
+
     // Populate portals after envelopes are defined so we can clamp coordinates.
     let current_bounds: HashMap<String, Rect> = envelopes
         .iter()
@@ -822,6 +838,44 @@ fn direct_subgraph_content(
     (content, max_exit_y)
 }
 
+fn strict_simple_horizontal_subgraph_fanin(graph: &Graph, subgraph_id: &str) -> bool {
+    if !matches!(graph.direction, Direction::LR | Direction::RL)
+        || graph.subgraphs.len() != 1
+        || graph.edges.len() < 3
+    {
+        return false;
+    }
+
+    let Some(target_id) = graph.edges.first().map(|edge| edge.to.as_str()) else {
+        return false;
+    };
+    let Some(target) = graph.get_node(target_id) else {
+        return false;
+    };
+    if target.shape != NodeShape::Rectangle {
+        return false;
+    }
+
+    let mut source_ids = HashSet::new();
+    for edge in &graph.edges {
+        if edge.is_back_edge
+            || edge.label.is_some()
+            || edge.kind != crate::graph::EdgeKind::Arrow
+            || edge.to != target_id
+            || graph.get_node_subgraph(&edge.from) != Some(subgraph_id)
+            || graph.get_node_subgraph(&edge.to) == Some(subgraph_id)
+            || graph
+                .get_node(&edge.from)
+                .is_none_or(|source| source.shape != NodeShape::Rectangle)
+        {
+            return false;
+        }
+        source_ids.insert(edge.from.as_str());
+    }
+
+    source_ids.len() >= 3
+}
+
 fn build_envelope(
     graph: &Graph,
     subgraph: &crate::graph::Subgraph,
@@ -872,6 +926,15 @@ fn build_envelope(
         // enter or leave across the child border. Without this pre-envelope
         // budget, render has to squeeze merge/entry geometry against the wall.
         side_hard_pad = side_hard_pad.max(gutter.saturating_add(nested_route_lane_budget - 1));
+    }
+
+    // A strict horizontal subgraph fan-in needs three distinct visual events
+    // after each source box: its exit stem, the shared collector shaft, and
+    // the wall portal. Reserve one additional side cell for that corridor;
+    // unrelated, labeled, nested, or mixed topologies retain the existing
+    // envelope budget.
+    if strict_simple_horizontal_subgraph_fanin(graph, &subgraph.id) {
+        side_hard_pad = side_hard_pad.max(4);
     }
 
     // Ensure titled subgraphs are wide enough to display the anchored title plus
@@ -1049,5 +1112,64 @@ fn build_envelope(
         outer,
         inner,
         portals: PortalSlots::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{Edge, Node, Subgraph};
+
+    fn horizontal_fanin_graph(labeled: bool) -> (Graph, HashMap<String, Rect>) {
+        let mut graph = Graph::new();
+        graph.direction = Direction::LR;
+        for id in ["S1", "S2", "S3", "Merge"] {
+            graph.add_node(Node::new(id, id));
+        }
+        for source in ["S1", "S2", "S3"] {
+            graph.add_edge(if labeled {
+                Edge::with_label(source, "Merge", "edge")
+            } else {
+                Edge::new(source, "Merge")
+            });
+        }
+
+        let mut subgraph = Subgraph::new("SG1", Some("Data Sources".into()));
+        for source in ["S1", "S2", "S3"] {
+            subgraph.add_node(source);
+        }
+        graph.add_subgraph(subgraph);
+        for source in ["S1", "S2", "S3"] {
+            graph.associate_node_with_subgraph(source, "SG1");
+        }
+
+        let node_rects = HashMap::from([
+            ("S1".to_string(), Rect::new(2, 5, 14, 3)),
+            ("S2".to_string(), Rect::new(2, 9, 14, 3)),
+            ("S3".to_string(), Rect::new(2, 13, 14, 3)),
+            ("Merge".to_string(), Rect::new(26, 9, 16, 3)),
+        ]);
+        (graph, node_rects)
+    }
+
+    #[test]
+    fn strict_horizontal_fanin_reserves_one_extra_side_cell() {
+        let (graph, node_rects) = horizontal_fanin_graph(false);
+        let envelope = compute_envelopes(&graph, &node_rects, 1)
+            .remove("SG1")
+            .expect("fan-in envelope");
+
+        assert_eq!(envelope.inner, Rect::new(2, 5, 14, 11));
+        assert_eq!(envelope.outer, Rect::new(0, 2, 22, 17));
+    }
+
+    #[test]
+    fn labeled_horizontal_fanin_keeps_the_existing_side_budget() {
+        let (graph, node_rects) = horizontal_fanin_graph(true);
+        let envelope = compute_envelopes(&graph, &node_rects, 1)
+            .remove("SG1")
+            .expect("fan-in envelope");
+
+        assert_eq!(envelope.outer, Rect::new(0, 2, 20, 17));
     }
 }

@@ -37,6 +37,11 @@ pub enum CellRole {
     Vertical,
     Junction,
     ArrowTip,
+    /// A non-directional edge terminal such as CircleEnd or CrossEnd.
+    ///
+    /// These cells are route-owned endpoints, not ordinary shafts and not
+    /// directional arrows. Topology stabilization must preserve them.
+    EndpointMarker,
     Corner,
     Fill,
     Border,

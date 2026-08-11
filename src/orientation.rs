@@ -139,10 +139,10 @@ impl OrientedCoords {
         match (self.direction, going_before) {
             (Direction::TD | Direction::TB, true) => style.corner_ur, // down then left
             (Direction::TD | Direction::TB, false) => style.corner_ul, // down then right
-            (Direction::LR, true) => style.corner_dl,                 // ┌ (right to up)
-            (Direction::LR, false) => style.corner_ul,                // ┌ (right to down)
-            (Direction::RL, true) => style.corner_dr,                 // ┘ (left to up)
-            (Direction::RL, false) => style.corner_ur,                // ┐ (left to down)
+            (Direction::LR, true) => style.corner_ur,                 // left to up
+            (Direction::LR, false) => style.corner_dr,                // left to down
+            (Direction::RL, true) => style.corner_ul,                 // right to up
+            (Direction::RL, false) => style.corner_dl,                // right to down
             (Direction::BT, true) => style.corner_dr,                 // up then left
             (Direction::BT, false) => style.corner_dl,                // up then right
         }
@@ -154,10 +154,10 @@ impl OrientedCoords {
         match (self.direction, coming_from_before) {
             (Direction::TD | Direction::TB, true) => style.corner_dl, // left to down
             (Direction::TD | Direction::TB, false) => style.corner_dr, // right to down
-            (Direction::LR, true) => style.corner_ur,                 // ┘ (up to right)
-            (Direction::LR, false) => style.corner_dr,                // ┘ (down to right)
-            (Direction::RL, true) => style.corner_ul,                 // ┌ (up to left)
-            (Direction::RL, false) => style.corner_dl,                // └ (down to left)
+            (Direction::LR, true) => style.corner_dl,                 // down to right
+            (Direction::LR, false) => style.corner_ul,                // up to right
+            (Direction::RL, true) => style.corner_dr,                 // down to left
+            (Direction::RL, false) => style.corner_ur,                // up to left
             (Direction::BT, true) => style.corner_ul,                 // left to up
             (Direction::BT, false) => style.corner_ur,                // right to up
         }
@@ -241,5 +241,22 @@ mod tests {
         assert_eq!(coords.primary_coord(10, 20), 10);
         // Secondary coord should return y for LR
         assert_eq!(coords.secondary_coord(10, 20), 20);
+    }
+
+    #[test]
+    fn horizontal_turns_use_physical_arms_for_lr_and_rl() {
+        let style = crate::style::BaseStyle::Unicode.chars();
+
+        let lr = OrientedCoords::new(Direction::LR);
+        assert_eq!(lr.corner_start_to_secondary(true, style), style.corner_ur);
+        assert_eq!(lr.corner_start_to_secondary(false, style), style.corner_dr);
+        assert_eq!(lr.corner_secondary_to_end(true, style), style.corner_dl);
+        assert_eq!(lr.corner_secondary_to_end(false, style), style.corner_ul);
+
+        let rl = OrientedCoords::new(Direction::RL);
+        assert_eq!(rl.corner_start_to_secondary(true, style), style.corner_ul);
+        assert_eq!(rl.corner_start_to_secondary(false, style), style.corner_dl);
+        assert_eq!(rl.corner_secondary_to_end(true, style), style.corner_dr);
+        assert_eq!(rl.corner_secondary_to_end(false, style), style.corner_ur);
     }
 }

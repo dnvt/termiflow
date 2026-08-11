@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::geom::Segment;
 use crate::graph::{Direction, Graph, Node};
-use crate::portals::PortalSlots;
+use crate::portals::{td_sibling_title_gutter, PortalSlots, TitleGutter};
 use crate::style::{StyleChars, BOX_HEIGHT};
 
 use super::canvas;
@@ -31,11 +31,11 @@ pub fn refresh_provenance(
 ) {
     let preserved_edge_meta = canvas.explicit_edge_meta();
     canvas.refresh_inferred_meta();
-    for (x, y, meta) in preserved_edge_meta {
-        if canvas.get(x, y) == meta.ch {
+    for (x, y, meta) in &preserved_edge_meta {
+        if canvas.get(*x, *y) == meta.ch {
             canvas.set_meta_only(
-                x,
-                y,
+                *x,
+                *y,
                 meta.owner_kind,
                 meta.owner_id.as_deref(),
                 meta.role,
@@ -45,12 +45,35 @@ pub fn refresh_provenance(
     }
 
     for subgraph in &graph.subgraphs {
-        annotate_subgraph_region(canvas, subgraph, direction);
+        annotate_subgraph_region(
+            canvas,
+            subgraph,
+            direction,
+            td_sibling_title_gutter(graph, &subgraph.id),
+        );
     }
     for node in &graph.nodes {
         annotate_node_region(canvas, node, chars);
     }
     annotate_edge_routes(canvas, graph, chars);
+    // A fallback scene may deliberately split one graph edge into several
+    // source-owned lanes.  The graph's inferred route can still contain the
+    // old shared collector geometry, so it must not overwrite the explicit
+    // owner metadata that the scene planner just lowered.  Reapply the
+    // explicit edge stream after inference while keeping labels and portal
+    // annotations as later, higher-level metadata stages.
+    for (x, y, meta) in &preserved_edge_meta {
+        if canvas.get(*x, *y) == meta.ch {
+            canvas.set_meta_only(
+                *x,
+                *y,
+                meta.owner_kind,
+                meta.owner_id.as_deref(),
+                meta.role,
+                meta.z_index,
+            );
+        }
+    }
     annotate_edge_labels(canvas, edge_label_placements);
     annotate_portal_openings(canvas, graph, portal_slots);
 }
@@ -59,6 +82,7 @@ fn annotate_subgraph_region(
     canvas: &mut Canvas,
     subgraph: &crate::graph::Subgraph,
     direction: Direction,
+    title_gutter: TitleGutter,
 ) {
     let bounds = &subgraph.bounds;
     if !bounds.is_valid() {
@@ -108,10 +132,19 @@ fn annotate_subgraph_region(
     }
 
     if let Some(title) = subgraph.title.as_deref() {
-        let title_fmt = crate::graph::subgraph_title_text(title);
-        if let Some(start_x) =
-            crate::graph::subgraph_title_start_x(bounds.x, bounds.width, title, direction)
-        {
+        let title_fmt = crate::graph::subgraph_title_text_with_padding_sides(
+            title,
+            title_gutter.leading_extra_padding,
+            title_gutter.trailing_extra_padding,
+        );
+        if let Some((start_x, _)) = crate::graph::subgraph_title_span_with_padding_sides(
+            bounds.x,
+            bounds.width,
+            title,
+            direction,
+            title_gutter.leading_extra_padding,
+            title_gutter.trailing_extra_padding,
+        ) {
             let title_y = super::subgraph_title_y(bounds, direction);
             for (i, _) in title_fmt.chars().enumerate() {
                 let x = start_x + i;
@@ -311,6 +344,15 @@ fn annotate_edge_point(
     ) {
         return;
     }
+    // A topology-owned portal is the semantic boundary crossing itself. The
+    // graph route may occupy the same physical cell, but generic route
+    // provenance must not demote the opening back to EdgeSegment/ArrowHead.
+    // Keeping this precedence local avoids raising portal z-indices globally
+    // and preserves the distinction between a wall crossing and a route that
+    // merely runs beside a wall.
+    if existing.owner_kind == CellOwnerKind::PortalOpening {
+        return;
+    }
     if matches!(
         existing.owner_kind,
         CellOwnerKind::NodeBorder | CellOwnerKind::SubgraphBorder
@@ -322,6 +364,8 @@ fn annotate_edge_point(
 
     let role = if canvas::is_arrow(ch) {
         CellRole::ArrowTip
+    } else if canvas::is_endpoint_marker(ch, chars) {
+        CellRole::EndpointMarker
     } else if canvas::is_junction(ch, chars) {
         CellRole::Junction
     } else if allow_corner && canvas::is_corner(ch, chars) {
@@ -469,5 +513,34 @@ mod tests {
             canvas.get_meta(1, 0).map(|cell| cell.owner_kind),
             Some(CellOwnerKind::EdgeSegment)
         );
+    }
+
+    #[test]
+    fn refresh_provenance_preserves_portal_owner_when_route_crosses_boundary_cell() {
+        let chars = unicode_chars();
+        let mut graph = Graph::new();
+        graph.direction = Direction::LR;
+        graph.add_edge(Edge::new("A", "B"));
+
+        let mut route = EdgeRoute::new();
+        route.push_segment(Point::new(0, 0), Point::new(2, 0));
+        graph.edge_routes.insert(0, route);
+
+        let mut canvas = Canvas::new(3, 1);
+        canvas.set_owned(1, 0, chars.edge_h, CellOwnerKind::PortalOpening, "SG2", 4);
+
+        refresh_provenance(
+            &mut canvas,
+            &graph,
+            &chars,
+            &HashMap::new(),
+            Direction::LR,
+            &[],
+        );
+
+        let meta = canvas.get_meta(1, 0).expect("portal metadata");
+        assert_eq!(meta.owner_kind, CellOwnerKind::PortalOpening);
+        assert_eq!(meta.owner_id.as_deref(), Some("SG2"));
+        assert_eq!(meta.ch, chars.edge_h);
     }
 }

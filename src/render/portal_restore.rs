@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::graph::{Direction, Graph};
-use crate::portals::PortalSlots;
+use crate::portals::{PortalSlots, TitleGutter};
 use crate::style::StyleChars;
 
 use super::portal_projection::{
     clamp_horizontal, clamp_vertical, is_node_owned_cell, is_textual, should_restore_corner,
     should_restore_horizontal_border, should_restore_vertical_border, stamp_portal_opening,
-    subgraph_title_y, title_span,
+    subgraph_title_y, title_span, PortalAxis,
 };
 use super::{canvas, topology, Canvas};
 
@@ -113,10 +113,12 @@ pub(super) fn restore_subgraph_borders(
             if x >= canvas.width {
                 continue;
             }
+            let fallback_top_claim =
+                canvas.fallback_route_claims_boundary(&subgraph.id, "top", x, top_y);
             let top_slot_is_used = top_slots.contains(&x)
                 && ((top_y > 0 && is_verticalish(canvas.get(x, top_y - 1)))
                     || (top_y + 1 < canvas.height && is_verticalish(canvas.get(x, top_y + 1))));
-            if top_slot_is_used {
+            if fallback_top_claim || top_slot_is_used {
                 continue;
             }
             if top_y < canvas.height
@@ -125,11 +127,13 @@ pub(super) fn restore_subgraph_borders(
             {
                 canvas.set(x, top_y, subgraph_chars.h);
             }
+            let fallback_bottom_claim =
+                canvas.fallback_route_claims_boundary(&subgraph.id, "bottom", x, bottom_y);
             let bottom_slot_is_used = bottom_slots.contains(&x)
                 && ((bottom_y > 0 && is_verticalish(canvas.get(x, bottom_y - 1)))
                     || (bottom_y + 1 < canvas.height
                         && is_verticalish(canvas.get(x, bottom_y + 1))));
-            if bottom_slot_is_used {
+            if fallback_bottom_claim || bottom_slot_is_used {
                 continue;
             }
             let bottom_existing = canvas.get(x, bottom_y);
@@ -170,7 +174,15 @@ pub(super) fn restore_subgraph_borders(
                     || is_horizontalish(left)
                     || is_horizontalish(right)
                 {
-                    stamp_portal_opening(canvas, left_x, y, chars, "side_portal_band", 4);
+                    stamp_portal_opening(
+                        canvas,
+                        left_x,
+                        y,
+                        chars,
+                        PortalAxis::Horizontal,
+                        "side_portal_band",
+                        4,
+                    );
                     continue;
                 }
             }
@@ -205,7 +217,15 @@ pub(super) fn restore_subgraph_borders(
                     || is_horizontalish(left)
                     || is_horizontalish(right)
                 {
-                    stamp_portal_opening(canvas, right_x, y, chars, "side_portal_band", 4);
+                    stamp_portal_opening(
+                        canvas,
+                        right_x,
+                        y,
+                        chars,
+                        PortalAxis::Horizontal,
+                        "side_portal_band",
+                        4,
+                    );
                     continue;
                 }
             }
@@ -229,6 +249,7 @@ pub(super) fn draw_subgraph_title(
     rect: &crate::graph::Rectangle,
     title: Option<&str>,
     direction: Direction,
+    title_gutter: TitleGutter,
 ) {
     let Some(t) = title else {
         return;
@@ -236,17 +257,44 @@ pub(super) fn draw_subgraph_title(
     if !rect.is_valid() {
         return;
     }
-    let title_fmt = crate::graph::subgraph_title_text(t);
-    let Some(start_x) = crate::graph::subgraph_title_start_x(rect.x, rect.width, t, direction)
-    else {
+    let title_fmt = crate::graph::subgraph_title_text_with_padding_sides(
+        t,
+        title_gutter.leading_extra_padding,
+        title_gutter.trailing_extra_padding,
+    );
+    let Some((start_x, _)) = crate::graph::subgraph_title_span_with_padding_sides(
+        rect.x,
+        rect.width,
+        t,
+        direction,
+        title_gutter.leading_extra_padding,
+        title_gutter.trailing_extra_padding,
+    ) else {
         return;
     };
     let title_y = subgraph_title_y(rect, direction);
     if title_y >= canvas.height {
         return;
     }
+    let title_last_index = title_fmt.chars().count().saturating_sub(1);
     for (i, c) in title_fmt.chars().enumerate() {
         if start_x + i < canvas.width {
+            let is_wrapper_padding = i == 0 || i == title_last_index;
+            let preserves_route = is_wrapper_padding
+                && canvas.get_meta(start_x + i, title_y).is_some_and(|meta| {
+                    meta.z_index > 0
+                        && matches!(
+                            meta.owner_kind,
+                            crate::render::semantic::CellOwnerKind::EdgeSegment
+                                | crate::render::semantic::CellOwnerKind::ArrowHead
+                                | crate::render::semantic::CellOwnerKind::Junction
+                                | crate::render::semantic::CellOwnerKind::CycleEdge
+                                | crate::render::semantic::CellOwnerKind::PortalOpening
+                        )
+                });
+            if preserves_route {
+                continue;
+            }
             canvas.set(start_x + i, title_y, c);
         }
     }
@@ -287,21 +335,45 @@ pub(super) fn cleanup_bt_title_rows(
                     .collect()
             })
             .unwrap_or_default();
+        let has_exact_sibling_entry =
+            graph
+                .edges
+                .iter()
+                .filter(|edge| !edge.is_back_edge)
+                .any(|edge| {
+                    let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+                    exits.len() == 1 && enters.len() == 1 && enters[0] == subgraph.id
+                });
 
         for x in inner_left..=inner_right {
             if x >= title_start && x <= title_end {
                 continue;
             }
 
-            let current = canvas.get(x, title_y);
-            if current == ' ' || is_textual(current) {
+            if canvas.fallback_route_claims_cell(x, title_y) {
                 continue;
             }
 
+            let current = canvas.get(x, title_y);
             let has_vertical_above =
                 title_y > 0 && topology::char_connects_down(canvas.get(x, title_y - 1));
             let has_vertical_below = title_y + 1 < canvas.height
                 && topology::char_connects_up(canvas.get(x, title_y + 1));
+
+            // Title redraw intentionally restores a trailing padding cell to a
+            // space. If that cell is also a declared BT bottom portal, retain
+            // the clean vertical pierce instead of losing continuity merely
+            // because the title pass ran after routing.
+            if has_exact_sibling_entry
+                && (bottom_slots.contains(&x) || has_vertical_below)
+                && (has_vertical_above || has_vertical_below)
+            {
+                canvas.set(x, title_y, chars.edge_v);
+                continue;
+            }
+            if current == ' ' || is_textual(current) {
+                continue;
+            }
 
             if title_y == bottom_y {
                 if bottom_slots.contains(&x) && (has_vertical_above || has_vertical_below) {
