@@ -69,9 +69,9 @@ artifacts disappear.
 
 ## Evidence references
 
-- Packet: `/tmp/termiflow-h20-cycle.ONErQu/packet`
-- Primary decisions: `/var/folders/n_/fn0_190d2rgbq7kxy6cfkh4w0000gn/T/tmp.6AxbWfqR3q/decisions.jsonl`
-- Expected errors: `/var/folders/n_/fn0_190d2rgbq7kxy6cfkh4w0000gn/T/tmp.FPfBVDVUk0/records.jsonl`
-- Holdout receipt: `/var/folders/n_/fn0_190d2rgbq7kxy6cfkh4w0000gn/T/tmp.Y8JaTCjhYV/receipt.json`
-- Holdout decisions: `/var/folders/n_/fn0_190d2rgbq7kxy6cfkh4w0000gn/T/tmp.Y8JaTCjhYV/holdout-decisions.jsonl`
-- Golden check: `/tmp/termiflow-h20-golden-check.json`
+- Packet: H20 complete packet (private run artifact; reproduce from the contributor workflow).
+- Primary decisions: H20 primary perceptual ledger (private run artifact).
+- Expected errors: H20 expected-error ledger (private run artifact).
+- Holdout receipt: H20 holdout receipt (private run artifact).
+- Holdout decisions: H20 holdout ledger (private run artifact).
+- Golden check: H20 intent-bound golden report (private run artifact).

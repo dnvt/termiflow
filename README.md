@@ -200,6 +200,7 @@ tw --strict diagram.md
 - Pipelines (Terraform/Docker Compose/npm → Mermaid → TermiFlow): `docs/pipelines.md`
 - CLI + syntax reference (flags, config, supported syntax): `docs/reference.md`
 - Architecture facts and generated diagrams: `docs/architecture/README.md`
+- Visual QA lessons and renderer design rules: `docs/visual-lessons/README.md`
 - Contributing: `CONTRIBUTING.md`
 - Release instructions: `docs/releasing.md`
 - Changelog: `CHANGELOG.md`

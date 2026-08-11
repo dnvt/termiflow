@@ -7,6 +7,7 @@ Docs here stay short and user-focused.
 - **CLI + syntax reference:** `reference.md`
 - **Pipelines:** `pipelines.md`
 - **Architecture facts:** `architecture/README.md`
+- **Visual QA lessons:** `visual-lessons/README.md`
 - **Release process:** `releasing.md`
 
 ## Breadcrumbs

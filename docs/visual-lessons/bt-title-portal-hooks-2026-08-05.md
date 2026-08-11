@@ -55,7 +55,7 @@ parallel crossings retain the wider title margin, while three-or-more aligned
 crossings stay on the literal title-safe column. The focused regression
 `render_bt_parallel_edges_avoids_adjacent_title_route_corners` passes for
 ASCII/Unicode and default/optimized modes. A fresh complete packet
-`/tmp/termiflow-route-clarity-audit-20260805-6` validates 948/948 rows, and
+The H-route-clarity complete packet validates 948/948 rows, and
 all four `collision_parallel_edges_bt` homologs receive fresh one-frame
 `pass` decisions; the former boundary hairpin is gone.
 

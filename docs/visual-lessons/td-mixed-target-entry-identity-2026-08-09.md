@@ -1,9 +1,9 @@
 # Visual lesson: TD mixed target-entry identity
 
 Date: 2026-08-09
-Source packet: `/tmp/termiflow-h78-mixed-target-r1-packet`
-Review ledger: `/tmp/termiflow-h78-mixed-target-r1-review.jsonl`
-Expected-error ledger: `/tmp/termiflow-h78-expected-error-policy.jsonl`
+Source packet: H78 mixed-target complete packet (private run artifact)
+Review ledger: H78 mixed-target perceptual ledger (private run artifact)
+Expected-error ledger: H78 expected-error policy ledger (private run artifact)
 
 ## Corpus scope and validation
 

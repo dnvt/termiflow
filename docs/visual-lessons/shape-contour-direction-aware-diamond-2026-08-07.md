@@ -50,10 +50,10 @@ from the review decision.
 
 ## Evidence references
 
-- Packet: `/tmp/termiflow-h19-final-cycle.MmaS7r/packet`
-- Primary decisions: `/tmp/termiflow-h19-final-decisions.jsonl`
-- Expected errors: `/tmp/termiflow-h19-final-expected-errors.jsonl`
-- Holdout decisions: `/tmp/termiflow-h19-final-holdout-decisions.jsonl`
-- Golden check: `/tmp/termiflow-h19-final-golden-check.json`
+- Packet: H19 complete packet (private run artifact; reproduce from the contributor workflow).
+- Primary decisions: H19 primary perceptual ledger (private run artifact).
+- Expected errors: H19 expected-error ledger (private run artifact).
+- Holdout decisions: H19 holdout ledger (private run artifact).
+- Golden check: H19 intent-bound golden report (private run artifact).
 - Durable review: `thinking/reviews/2026-08-07-h19-shape-contour-complete-corpus-review.md`
 - Durable decision: `decisions/DEC-2026-08-07-h19-shape-contour-direction-aware-diamond.md`
