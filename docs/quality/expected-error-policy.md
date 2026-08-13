@@ -2,7 +2,7 @@
 
 The full visual packet includes intentional failures as first-class corpus rows. They are not sent through perceptual diagram review because they have no diagram frame, but they must still be reviewed and accounted for before the corpus is considered complete.
 
-The packet generator enumerates every Markdown input under `tests/fixtures/inputs` across the requested directions, styles, and render modes. A normal full run currently contains 237 inputs and 948 rows: 936 renderable rows plus 12 expected-error rows.
+The packet generator enumerates every Markdown input under `tests/fixtures/inputs` across the requested directions, styles, and render modes. A normal full run currently contains 241 inputs and 964 rows: 952 renderable rows plus 12 expected-error rows.
 
 Use the typed QA flow to close the expected-error side of the packet:
 

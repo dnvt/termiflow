@@ -37,6 +37,26 @@ rows requested ASCII but emitted heavy Unicode contours, which must stay an
 independent authored-style contract check rather than being silently merged
 with canonical evidence.
 
+## H98 coverage expansion: four-edge sibling fan-in is still a held-out defect
+
+The H98 expansion added direction-complete singleton goldens and also probed a
+broader missing topology: two titled sibling subgraphs, each containing two
+source nodes, with all four edges converging on one external `Merge` node. The
+probe was rendered in TD, BT, LR, and RL before any golden approval. Its direct
+frames exposed border/rail collisions and ambiguous portal ownership. An
+exploratory multi-scene lowering experiment produced additional arrowheads but
+still rejected routes whose cells were occupied by subgraph borders, so it did
+not establish a safe fix and was fully reverted.
+
+This is durable negative evidence, not a release regression: the probe remains
+outside the checked-in golden corpus until the topology has an explicit,
+boundary-owned allocation for all four edges. The next falsifier is an exact
+four-direction ASCII/Unicode × default/optimized matrix with one attributable
+arrowhead per semantic edge, no route cell owned by a border, no shared-trunk
+ambiguity, and no generic fallback. Until that result exists, do not retry the
+rejected local multi-scene patch unchanged; keep the case in the adversarial
+fixture backlog and review it as a holdout after a topology-owned fix.
+
 The reviewer now ignores elbows whose endpoints are both node-border cells or
 both subgraph-border cells. This removes false positives from ordinary bottom
 node borders and outer subgraph corners while retaining true title-adjacent

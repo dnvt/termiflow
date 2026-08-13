@@ -14,8 +14,8 @@ directories, and user-sensitive diagrams remain private.
 ## Review contract
 
 The denominator is the complete `tests/fixtures/inputs` corpus, not only the
-fixture that exposed the problem. A normal full cycle currently covers 237
-inputs and 948 packet rows: 936 renderable rows plus 12 separately governed
+fixture that exposed the problem. A normal full cycle currently covers 241
+inputs and 964 packet rows: 952 renderable rows plus 12 separately governed
 expected-error rows. Human-eye decisions remain distinct from machine critic,
 semantic, geometry, and golden checks.
 
