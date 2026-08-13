@@ -9,6 +9,15 @@ published tag and link to the corresponding GitHub release.
   and maintenance.
 - Record intentional visual or schema changes with their reviewed decision.
 
+## [0.2.4] — 2026-08-13
+
+- Expand the visual corpus with direction-complete singleton Mermaid fixtures
+  and approved ASCII/Unicode goldens.
+- Record full canonical and authored-style visual review coverage at 241 inputs
+  and 964 packet rows per lane.
+- Preserve the four-edge sibling-subgraph fan-in probe as documented negative
+  evidence until a topology-owned route allocation is proven.
+
 ## [0.2.3] — 2026-08-11
 
 - Publish the public visual QA lesson index and reusable lesson template.
