@@ -12,7 +12,7 @@ use crate::render::wide_terminal_fan_in;
 use crate::style::BOX_HEIGHT;
 
 use super::dense_pipeline;
-use super::dual_junction::balance_dual_junctions;
+use super::dual_junction::{balance_dual_junctions, vertical_fanout_requires_headroom};
 use super::optimization::{balance_coordinates, node_extent_primary, node_extent_secondary};
 use super::pure_fan_in::balance_pure_fan_in_targets;
 use super::reserve_titled_horizontal_subgraph_headroom;
@@ -176,6 +176,16 @@ impl LayoutSpacingPolicy {
         } else {
             SPACING_MINIMAL
         };
+
+        // Exact dual-junction fan-outs need one extra primary cell between
+        // the shared anchor and the outgoing arrow entry. Without this local
+        // headroom, the generic branch route has room for the junction bar
+        // but no visible shaft before the arrowhead. Keep the surcharge
+        // topology-gated so ordinary fan-outs retain their established
+        // compact geometry.
+        if vertical_fanout_requires_headroom(graph, layers, layer_idx) {
+            spacing = spacing.max(SPACING_FANOUT + 3);
+        }
 
         // Database/Cylinder targets need one additional primary cell because
         // the renderer's shape-owned entry policy places their arrowhead one

@@ -115,7 +115,7 @@ struct ReviewArgs {
     /// Emit exactly one unreviewed frame as JSON.
     #[arg(long)]
     next: bool,
-    /// Validate and append one decision JSON object.
+    /// Validate and append one decision JSON object; use '-' to read it from stdin.
     #[arg(long)]
     record: Option<PathBuf>,
     /// Rebind exact successful perceptual decisions from a completed prior packet.
@@ -192,7 +192,7 @@ struct ErrorPolicyArgs {
     /// Emit exactly one unrecorded expected-error row as JSON.
     #[arg(long)]
     next: bool,
-    /// Validate and append one expected-error policy record JSON object.
+    /// Validate and append one expected-error policy record JSON object; use - for stdin.
     #[arg(long)]
     record: Option<PathBuf>,
     /// Require one valid policy record for every expected-error row.

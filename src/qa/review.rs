@@ -1,5 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -108,7 +109,15 @@ pub fn run(args: ReviewArgs) -> Result<()> {
     }
 
     if let Some(record_path) = args.record {
-        let decision = common::load_json(&resolve(&root, &record_path), "review decision")?;
+        let decision = if record_path == Path::new("-") {
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut bytes)
+                .context("read review decision from stdin")?;
+            serde_json::from_slice(&bytes).context("invalid review decision JSON from stdin")?
+        } else {
+            common::load_json(&resolve(&root, &record_path), "review decision")?
+        };
         validate_decision(&decision, &rows)?;
         if args.fresh {
             validate_fresh_decision(&decision)?;

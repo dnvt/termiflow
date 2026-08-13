@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::geom::{Point, Rect};
 use crate::graph::{Direction, Graph};
-use crate::portals::{compute_envelopes, SubgraphEnvelope};
+use crate::portals::{
+    compute_envelopes, horizontal_sibling_chain_requires_extra_corridor, SubgraphEnvelope,
+};
 
 use super::CoarseLayoutConfig;
 
@@ -911,6 +913,12 @@ pub(super) fn rebalance_side_by_side_horizontal_top_level_sibling_gaps(
         let envelopes = compute_envelopes(graph, node_rects, gutter);
         let mut best_shift: Option<(String, isize, usize)> = None;
 
+        let min_visual_gap = if horizontal_sibling_chain_requires_extra_corridor(graph) {
+            4
+        } else {
+            MIN_VISUAL_GAP
+        };
+
         for component in top_level_subgraph_components(graph) {
             let component_ids: HashSet<String> = component.iter().cloned().collect();
             let mut ordered: Vec<(String, Rect)> = component
@@ -938,7 +946,7 @@ pub(super) fn rebalance_side_by_side_horizontal_top_level_sibling_gaps(
             for pair in ordered.windows(2) {
                 let (_left_id, left_outer) = (&pair[0].0, pair[0].1);
                 let (right_id, right_outer) = (&pair[1].0, pair[1].1);
-                let required_right_x = left_outer.right().saturating_add(MIN_VISUAL_GAP);
+                let required_right_x = left_outer.right().saturating_add(min_visual_gap);
                 let delta_to_minimum = required_right_x.saturating_sub(right_outer.x);
 
                 if delta_to_minimum > 0 {

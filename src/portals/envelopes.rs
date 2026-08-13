@@ -5,7 +5,10 @@ use std::collections::{HashMap, HashSet};
 use crate::geom::Rect;
 use crate::graph::{Direction, Graph, NodeShape};
 
-use super::{collect_portal_slots_with_bounds, PortalSlots, SubgraphEnvelope};
+use super::{
+    collect_portal_slots_with_bounds, horizontal_sibling_chain_requires_extra_corridor,
+    PortalSlots, SubgraphEnvelope,
+};
 
 fn subgraphs_have_declared_hierarchy(graph: &Graph, left_id: &str, right_id: &str) -> bool {
     graph.is_subgraph_ancestor(left_id, right_id) || graph.is_subgraph_ancestor(right_id, left_id)
@@ -1078,7 +1081,11 @@ fn build_envelope(
         }
     }
 
-    let horizontal_pad_target = 3usize.max(side_hard_pad);
+    let horizontal_pad_target = if horizontal_sibling_chain_requires_extra_corridor(graph) {
+        5
+    } else {
+        3usize.max(side_hard_pad)
+    };
     let isolated_titled_vertical_subgraph = has_title
         && !has_external_edges
         && matches!(

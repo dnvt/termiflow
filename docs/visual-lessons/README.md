@@ -51,6 +51,7 @@ Each lesson states its own status. Read these terms literally:
 - [TD mixed target-entry identity](td-mixed-target-entry-identity-2026-08-09.md)
 - [Database intermediate nodes preserve terminal entry identity](database-intermediate-terminal-entry-2026-08-08.md)
 - [Horizontal sibling chains need receiver-owned corridor rows](horizontal-sibling-chain-receiver-rails-2026-08-11.md)
+- [Scoped BT sibling channels and vertical junction headroom](bt-sibling-channel-and-dual-junction-shaft-2026-08-13.md)
 
 ### Shapes, contours, and attachment clarity
 

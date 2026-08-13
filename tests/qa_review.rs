@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
@@ -108,6 +109,25 @@ fn run_review(packet: &Path, decisions: &Path, args: &[&str]) -> Output {
         .arg(decisions)
         .args(args);
     command.output().expect("run review command")
+}
+
+fn run_review_with_stdin(packet: &Path, decisions: &Path, args: &[&str], input: &[u8]) -> Output {
+    let mut command = qa_command();
+    command
+        .args(["review", "--packet"])
+        .arg(packet)
+        .args(["--decisions"])
+        .arg(decisions)
+        .args(args)
+        .stdin(Stdio::piped());
+    let mut child = command.spawn().expect("spawn review command");
+    child
+        .stdin
+        .take()
+        .expect("review stdin is piped")
+        .write_all(input)
+        .expect("write review decision to stdin");
+    child.wait_with_output().expect("wait for review command")
 }
 
 fn perceptual_decision(frame_sha256: &str, evidence_sha256: &str) -> Value {
@@ -525,15 +545,13 @@ fn review_cli_keeps_full_perceptual_pass_separate_from_structural_prescreen() {
         serde_json::to_vec_pretty(&decision).expect("serialize perceptual decision"),
     )
     .expect("write perceptual decision");
-    let record = run_review(
+    let record = run_review_with_stdin(
         &packet,
         &decisions,
-        &[
-            "--record",
-            decision_path.to_str().expect("decision path is UTF-8"),
-        ],
+        &["--record", "-"],
+        &serde_json::to_vec(&decision).expect("serialize stdin perceptual decision"),
     );
-    assert!(record.status.success(), "record failed: {record:?}");
+    assert!(record.status.success(), "stdin record failed: {record:?}");
 
     let duplicate = run_review(
         &packet,
