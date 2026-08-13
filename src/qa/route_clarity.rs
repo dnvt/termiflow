@@ -1325,6 +1325,13 @@ fn bt_title_boundary_hook_findings(
             for (left, right) in horizontal_elbow_pairs(&row[start..end]) {
                 let left_x = left.saturating_add(start);
                 let right_x = right.saturating_add(start);
+                if [left_x, right_x].into_iter().all(|x| {
+                    let graph_x = x.saturating_add(origin_x);
+                    is_node_border_cell(graph, graph_x, graph_y)
+                        || is_subgraph_border_cell(graph, graph_x, graph_y)
+                }) {
+                    continue;
+                }
                 let has_interior_endpoint = [left_x, right_x]
                     .into_iter()
                     .any(|x| x > first_x && x < last_x);
@@ -1567,6 +1574,39 @@ fn is_bt_boundary_junction_glyph(glyph: char) -> bool {
 
 fn is_vertical_route_glyph(glyph: char) -> bool {
     matches!(glyph, '|' | ':' | '│' | '║' | '┃' | '╎')
+}
+
+fn is_node_border_cell(graph: &termiflow::Graph, x: usize, y: usize) -> bool {
+    graph.nodes.iter().any(|node| {
+        let right = node.x.saturating_add(node.width.saturating_sub(1));
+        let bottom = node.bottom_y().saturating_sub(1);
+        x >= node.x
+            && x <= right
+            && y >= node.y
+            && y <= bottom
+            && (x == node.x || x == right || y == node.y || y == bottom)
+    })
+}
+
+fn is_subgraph_border_cell(graph: &termiflow::Graph, x: usize, y: usize) -> bool {
+    graph.subgraphs.iter().any(|subgraph| {
+        if !subgraph.bounds.is_valid() {
+            return false;
+        }
+        let right = subgraph
+            .bounds
+            .x
+            .saturating_add(subgraph.bounds.width.saturating_sub(1));
+        let bottom = subgraph
+            .bounds
+            .y
+            .saturating_add(subgraph.bounds.height.saturating_sub(1));
+        x >= subgraph.bounds.x
+            && x <= right
+            && y >= subgraph.bounds.y
+            && y <= bottom
+            && (x == subgraph.bounds.x || x == right || y == subgraph.bounds.y || y == bottom)
+    })
 }
 
 fn horizontal_elbow_pairs(row: &[char]) -> Vec<(usize, usize)> {
@@ -2293,36 +2333,48 @@ mod tests {
     }
 
     #[test]
-    fn bt_title_boundary_hooks_are_queued_for_visual_review() {
-        for (fixture, style) in [
-            (
-                "tests/fixtures/inputs/collision_parallel_edges_bt.md",
-                BaseStyle::Ascii,
-            ),
-            (
-                "tests/fixtures/inputs/collision_sibling_triple_bt.md",
-                BaseStyle::Unicode,
-            ),
-        ] {
-            let input = std::fs::read(fixture).expect("read BT title-hook fixture");
-            let frame = render_fixture(&input, style, true);
-            let report = analyze(
-                &input,
-                frame.as_bytes(),
-                match style {
-                    BaseStyle::Ascii => "ascii",
-                    BaseStyle::Unicode => "unicode",
-                    _ => unreachable!(),
-                },
-                "optimized",
-            )
-            .expect("analyze BT title-hook frame");
-            assert_eq!(report["status"], "inconclusive");
-            assert!(report["findings"].as_array().is_some_and(|items| {
+    fn bt_title_boundary_review_does_not_queue_clean_parallel_borders() {
+        let input = std::fs::read("tests/fixtures/inputs/collision_parallel_edges_bt.md")
+            .expect("read BT parallel fixture");
+        let frame = render_fixture(&input, BaseStyle::Ascii, true);
+        let report = analyze(&input, frame.as_bytes(), "ascii", "optimized")
+            .expect("analyze BT parallel frame");
+        assert_eq!(report["status"], "clean");
+        assert!(!report["findings"].as_array().is_some_and(|items| items
+            .iter()
+            .any(|item| { item["code"] == "bt_title_boundary_hook_requires_human_review" })));
+    }
+
+    #[test]
+    fn bt_title_boundary_review_ignores_node_and_subgraph_border_corners() {
+        let input = std::fs::read("tests/fixtures/inputs/collision_sibling_subgraphs_bt.md")
+            .expect("read BT sibling title-hook fixture");
+        let frame = render_fixture(&input, BaseStyle::Unicode, true);
+        let report = analyze(&input, frame.as_bytes(), "unicode", "optimized")
+            .expect("analyze BT sibling title-hook frame");
+        let hook = report["findings"]
+            .as_array()
+            .and_then(|items| {
                 items
                     .iter()
-                    .any(|item| item["code"] == "bt_title_boundary_hook_requires_human_review")
-            }));
-        }
+                    .find(|item| item["code"] == "bt_title_boundary_hook_requires_human_review")
+            })
+            .expect("real BT title hook should remain reviewable");
+        let cells = hook["cells"].as_array().expect("hook cells");
+        assert!(!cells.iter().any(|cell| {
+            matches!(
+                (cell["x"].as_u64(), cell["y"].as_u64()),
+                (Some(14), Some(43))
+                    | (Some(25), Some(43))
+                    | (Some(0), Some(46))
+                    | (Some(31), Some(46))
+            )
+        }));
+        assert!(cells.iter().any(|cell| {
+            matches!(
+                (cell["x"].as_u64(), cell["y"].as_u64()),
+                (Some(14), Some(14)) | (Some(17), Some(14))
+            )
+        }));
     }
 }

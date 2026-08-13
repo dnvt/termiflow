@@ -51,14 +51,14 @@ Regenerate them after intentional rendering changes.
 
 ## Test Counts
 
-- **237 input files** (216 clean successes, 18 successes with warnings, 3
+- **241 input files** (220 clean successes, 18 successes with warnings, 3
   expected errors); the typed contracts live in `metadata.json`
-- **474 expected outputs** (ASCII + Unicode per input)
-- **948 ordinary visual rows** (ASCII + Unicode × default + optimized per
+- **482 expected outputs** (ASCII + Unicode per input)
+- **964 ordinary visual rows** (ASCII + Unicode × default + optimized per
   input; expected-error rows follow their declared error policy)
 - **4 directions tested**: TD, LR, BT, RL
 
-The complete packet currently contains **936 renderable review rows** plus
+The complete packet currently contains **952 renderable review rows** plus
 **12 expected-error policy rows**. Every renderable row receives a
 hash-bound `termiflow.route_clarity.v1` report before it can enter the
 one-frame reviewer queue. Route `risk` and `inconclusive` statuses are
@@ -71,7 +71,7 @@ Renderer-wide work has a second full-corpus policy lane. The canonical packet
 injects the requested `--style` for comparable ASCII/Unicode homologs. The
 authored-policy packet is generated with `--respect-input-style` so native
 `%% termiflow:` style, wrapping, spacing, and composite directives are not
-overridden. It covers the same 237 inputs, 948 rows, 936 renderable decisions,
+overridden. It covers the same 241 inputs, 964 rows, 952 renderable decisions,
 and 12 expected-error policy decisions. The 20 directive-bearing inputs are
 high-risk, but every other input remains a no-override control; a row from
 one lane cannot cover the other.
@@ -141,6 +141,10 @@ scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review
 # Review residual frames one at a time; each record binds frame/evidence hashes
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --next
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --record /tmp/one-review.json
+# Records may also be supplied as one JSON object on stdin, which is useful for
+# an automated one-frame review loop without creating a private record file.
+printf '%s' '{"...":"one review decision"}' | scripts/review_visual_packet.sh \
+  --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --record -
 # Carry prior human watches/failures and hypotheses into the regenerated queue
 scripts/review_visual_packet.sh --packet /path/to/packet \
   --decisions /tmp/full-review-decisions.jsonl \
@@ -157,6 +161,17 @@ scripts/review_visual_packet.sh --packet /path/to/packet \
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --fresh --next
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --fresh --record /tmp/one-review.json
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --fresh --validate
+
+# Govern expected-error rows with a separate policy ledger. These rows are
+# reviewed for exit status, stdout, stderr, and the declared error contract;
+# they are not perceptual golden decisions.
+scripts/review_expected_errors.sh \
+  --packet /path/to/packet --records /tmp/expected-errors.jsonl --next
+printf '%s' '{"...":"one expected-error policy record"}' | \
+  scripts/review_expected_errors.sh \
+  --packet /path/to/packet --records /tmp/expected-errors.jsonl --record -
+scripts/review_expected_errors.sh \
+  --packet /path/to/packet --records /tmp/expected-errors.jsonl --validate
 
 # Close one explicit fix/hold/lesson cycle without changing goldens
 scripts/visual_cycle.sh \

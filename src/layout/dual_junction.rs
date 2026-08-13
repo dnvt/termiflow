@@ -66,6 +66,24 @@ pub(super) fn balance_dual_junctions(
     }
 }
 
+pub(super) fn vertical_fanout_requires_headroom(
+    graph: &Graph,
+    layers: &[Vec<usize>],
+    layer_idx: usize,
+) -> bool {
+    matches!(
+        graph.direction,
+        crate::graph::Direction::TD | crate::graph::Direction::TB | crate::graph::Direction::BT
+    ) && layers.get(layer_idx).is_some_and(|layer| {
+        layer.iter().any(|&node_idx| {
+            graph
+                .nodes
+                .get(node_idx)
+                .is_some_and(|node| is_dual_junction_anchor(graph, &node.id))
+        })
+    })
+}
+
 fn rank_by_id(graph: &Graph, layers: &[Vec<usize>]) -> HashMap<String, usize> {
     layers
         .iter()
@@ -82,50 +100,53 @@ fn dual_junction_ids(graph: &Graph) -> Vec<String> {
     let mut anchors: Vec<String> = graph
         .nodes
         .iter()
-        .filter(|node| {
-            let incoming: HashSet<&str> = graph
-                .edges
-                .iter()
-                .filter(|edge| !edge.is_back_edge && edge.to == node.id && edge.from != node.id)
-                .map(|edge| edge.from.as_str())
-                .collect();
-            let outgoing: HashSet<&str> = graph
-                .edges
-                .iter()
-                .filter(|edge| !edge.is_back_edge && edge.from == node.id && edge.to != node.id)
-                .map(|edge| edge.to.as_str())
-                .collect();
-            incoming.len() >= 2
-                && outgoing.len() >= 2
-                // Keep dense crossing grids and shared junction networks in
-                // the existing crossing-aware placement path. This pass is
-                // for a local merge-then-split seam whose adjacent branches
-                // do not themselves participate in another junction.
-                && incoming.iter().all(|source_id| {
-                    graph
-                        .edges
-                        .iter()
-                        .filter(|edge| {
-                            !edge.is_back_edge && edge.from == *source_id && edge.to != *source_id
-                        })
-                        .count()
-                        == 1
-                })
-                && outgoing.iter().all(|target_id| {
-                    graph
-                        .edges
-                        .iter()
-                        .filter(|edge| {
-                            !edge.is_back_edge && edge.to == *target_id && edge.from != *target_id
-                        })
-                        .count()
-                        == 1
-                })
-        })
+        .filter(|node| is_dual_junction_anchor(graph, &node.id))
         .map(|node| node.id.clone())
         .collect();
     anchors.sort_unstable();
     anchors
+}
+
+fn is_dual_junction_anchor(graph: &Graph, node_id: &str) -> bool {
+    let incoming: HashSet<&str> = graph
+        .edges
+        .iter()
+        .filter(|edge| !edge.is_back_edge && edge.to == node_id && edge.from != node_id)
+        .map(|edge| edge.from.as_str())
+        .collect();
+    let outgoing: HashSet<&str> = graph
+        .edges
+        .iter()
+        .filter(|edge| !edge.is_back_edge && edge.from == node_id && edge.to != node_id)
+        .map(|edge| edge.to.as_str())
+        .collect();
+
+    incoming.len() >= 2
+        && outgoing.len() >= 2
+        // Keep dense crossing grids and shared junction networks in the
+        // existing crossing-aware placement path. This pass is for a local
+        // merge-then-split seam whose adjacent branches do not themselves
+        // participate in another junction.
+        && incoming.iter().all(|source_id| {
+            graph
+                .edges
+                .iter()
+                .filter(|edge| {
+                    !edge.is_back_edge && edge.from == *source_id && edge.to != *source_id
+                })
+                .count()
+                == 1
+        })
+        && outgoing.iter().all(|target_id| {
+            graph
+                .edges
+                .iter()
+                .filter(|edge| {
+                    !edge.is_back_edge && edge.to == *target_id && edge.from != *target_id
+                })
+                .count()
+                == 1
+        })
 }
 
 fn outgoing_targets(graph: &Graph, anchor_id: &str) -> Vec<String> {
@@ -435,6 +456,11 @@ mod tests {
             let graph = dual_graph(direction);
             let coords = OrientedCoords::new(direction);
             let layer_map = layers(&graph);
+            assert_eq!(
+                vertical_fanout_requires_headroom(&graph, &layer_map, 1),
+                matches!(direction, Direction::TD | Direction::BT),
+                "vertical dual-junction headroom policy for {direction:?}"
+            );
             let mut rects = test_rects(direction);
             let mut positions = points(&rects);
             balance_dual_junctions(&graph, &layer_map, &coords, &mut positions, &mut rects);

@@ -180,6 +180,77 @@ pub(crate) fn bt_sibling_chain_target_ids(
     )
 }
 
+/// Return whether a flat horizontal sibling chain needs an extra side corridor.
+///
+/// The strict scene renderer turns each cross-sibling transition through a
+/// quiet row.  With the ordinary three-cell side pad, the turn is only one
+/// cell away from a node and reads as a box-attached corner in terminal output.
+/// This predicate is deliberately structural so the envelope can reserve the
+/// extra side clearance for the same narrow topology without widening ordinary
+/// subgraphs.
+pub(crate) fn horizontal_sibling_chain_requires_extra_corridor(graph: &Graph) -> bool {
+    if !matches!(graph.direction, Direction::LR | Direction::RL)
+        || graph.subgraphs.len() < 3
+        || graph.has_cycles()
+        || graph.edges.iter().any(|edge| edge.is_back_edge)
+        || graph.nodes.len() != graph.subgraphs.len().saturating_mul(2)
+        || graph.edges.len() != graph.subgraphs.len().saturating_mul(2).saturating_sub(1)
+    {
+        return false;
+    }
+
+    let mut node_to_subgraph = HashMap::new();
+    for subgraph in &graph.subgraphs {
+        if subgraph.parent_id.is_some()
+            || !subgraph.child_ids.is_empty()
+            || subgraph.title.is_none()
+            || subgraph.node_ids.len() != 2
+        {
+            return false;
+        }
+        for node_id in &subgraph.node_ids {
+            let Some(node) = graph.get_node(node_id) else {
+                return false;
+            };
+            if node.shape != NodeShape::Rectangle
+                || graph.get_node_subgraph(node_id) != Some(subgraph.id.as_str())
+            {
+                return false;
+            }
+            node_to_subgraph.insert(node_id.as_str(), subgraph.id.as_str());
+        }
+    }
+
+    let mut internal_counts: HashMap<&str, usize> = HashMap::new();
+    let mut crossing_count = 0usize;
+    for edge in &graph.edges {
+        if edge.kind != EdgeKind::Arrow || edge.label.is_some() {
+            return false;
+        }
+        let Some(from_subgraph) = node_to_subgraph.get(edge.from.as_str()).copied() else {
+            return false;
+        };
+        let Some(to_subgraph) = node_to_subgraph.get(edge.to.as_str()).copied() else {
+            return false;
+        };
+        if from_subgraph == to_subgraph {
+            *internal_counts.entry(from_subgraph).or_default() += 1;
+        } else {
+            let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+            if exits.len() != 1 || enters.len() != 1 {
+                return false;
+            }
+            crossing_count += 1;
+        }
+    }
+
+    crossing_count == graph.subgraphs.len().saturating_sub(1)
+        && graph
+            .subgraphs
+            .iter()
+            .all(|subgraph| internal_counts.get(subgraph.id.as_str()) == Some(&1))
+}
+
 /// Keep a title-safe portal away from the two interior border corners.
 pub(crate) fn nudge_portal_x_from_corners(
     left_x: usize,

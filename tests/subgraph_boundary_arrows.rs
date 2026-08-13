@@ -64,26 +64,6 @@ fn render_fixture_output(
     (graph, outcome.output)
 }
 
-fn raw_vertical_rails(
-    frame: &str,
-    origin_x: usize,
-    origin_y: usize,
-    y: usize,
-    x_start: usize,
-    x_end: usize,
-) -> Vec<usize> {
-    let Some(line) = frame.lines().nth(y.saturating_sub(origin_y)) else {
-        return Vec::new();
-    };
-    line.chars()
-        .enumerate()
-        .filter_map(|(raw_x, glyph)| {
-            let x = raw_x.saturating_add(origin_x);
-            (x >= x_start && x <= x_end && matches!(glyph, '│' | '┃' | '|')).then_some(x)
-        })
-        .collect()
-}
-
 #[test]
 fn titled_subgraph_boundary_entries_have_connected_arrows_across_homologs() {
     let mut failures = Vec::new();
@@ -297,60 +277,85 @@ fn mixed_sibling_target_remains_outside_external_fan_in_contract() {
 }
 
 #[test]
-fn exact_two_bt_siblings_do_not_reuse_one_cross_boundary_rail() {
+fn exact_two_bt_siblings_keep_cross_boundary_lanes_unique_per_edge() {
     for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
         for optimized in [false, true] {
-            let (graph, frame) =
+            let input_path = "tests/fixtures/inputs/collision_sibling_subgraphs_bt.md";
+            let input = fs::read_to_string(input_path).expect("read collision fixture");
+            let mut parsed = parse(&input, false).expect("parse collision fixture").graph;
+            let mut config = Config {
+                composite_style: CompositeStyle::from_base(style),
+                optimize_render: optimized,
+                ..Default::default()
+            };
+            config.spacing = config.spacing.for_direction(parsed.direction);
+            measure::measure_graph(&mut parsed, &config);
+            let (graph, outcome) =
+                layout_and_render_with_feedback(parsed, config).expect("render collision fixture");
+            let report = evidence::build(&graph, &outcome);
+
+            let mut lanes = Vec::new();
+            for (index, edge) in graph.edges.iter().enumerate().filter(|(_, edge)| {
+                let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+                exits.contains(&"Left") && enters.contains(&"Right")
+            }) {
+                let edge_id = format!("edge:{index}:{}->{}", edge.from, edge.to);
+                let source_lane = report
+                    .portal_trace
+                    .boundaries
+                    .iter()
+                    .find(|boundary| {
+                        boundary.edge_id == edge_id
+                            && boundary.boundary_id == "Left"
+                            && boundary.crossing == "exit"
+                    })
+                    .map(|boundary| boundary.title_safe_x)
+                    .unwrap_or_else(|| panic!("missing source lane for {edge_id}"));
+                let target_lane = report
+                    .portal_trace
+                    .boundaries
+                    .iter()
+                    .find(|boundary| {
+                        boundary.edge_id == edge_id
+                            && boundary.boundary_id == "Right"
+                            && boundary.crossing == "enter"
+                    })
+                    .map(|boundary| boundary.title_safe_x)
+                    .unwrap_or_else(|| panic!("missing target lane for {edge_id}"));
+                lanes.push((edge_id, source_lane, target_lane));
+            }
+
+            assert_eq!(lanes.len(), 2, "expected both sibling crossing lanes");
+            assert_ne!(
+                lanes[0].1, lanes[1].1,
+                "distinct edges must not share a source-boundary lane: {lanes:?}"
+            );
+            assert_ne!(
+                lanes[0].2, lanes[1].2,
+                "distinct edges must not share a target-boundary lane: {lanes:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn exact_two_bt_siblings_leave_a_quiet_row_before_each_target_title() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (_graph, frame) =
                 render_fixture_output("collision_sibling_subgraphs_bt", style, optimized);
-            let left = graph
-                .get_subgraph("Left")
-                .expect("collision fixture source subgraph");
-            let right = graph
-                .get_subgraph("Right")
-                .expect("collision fixture target subgraph");
-            let origin_x = graph
-                .nodes
-                .iter()
-                .map(|node| node.x)
-                .chain(graph.subgraphs.iter().map(|subgraph| subgraph.bounds.x))
-                .min()
-                .unwrap_or(0);
-            let origin_y = graph
-                .nodes
-                .iter()
-                .map(|node| node.y)
-                .chain(graph.subgraphs.iter().map(|subgraph| subgraph.bounds.y))
-                .min()
-                .unwrap_or(0);
-            let right_rails = raw_vertical_rails(
-                &frame,
-                origin_x,
-                origin_y,
-                right.bounds.y.saturating_add(right.bounds.height),
-                right.bounds.x.saturating_add(1),
-                right
-                    .bounds
-                    .x
-                    .saturating_add(right.bounds.width.saturating_sub(2)),
-            );
-            let left_rails = raw_vertical_rails(
-                &frame,
-                origin_x,
-                origin_y,
-                left.bounds.y.saturating_sub(1),
-                left.bounds.x.saturating_add(1),
-                left.bounds
-                    .x
-                    .saturating_add(left.bounds.width.saturating_sub(2)),
-            );
-            let shared = right_rails
-                .iter()
-                .copied()
-                .filter(|rail| left_rails.contains(rail))
-                .collect::<Vec<_>>();
+            let title_row = frame
+                .lines()
+                .position(|line| line.contains("Right Group"))
+                .expect("BT target title row");
+            let clearance_row = title_row.saturating_sub(1);
+            let row = frame
+                .lines()
+                .nth(clearance_row)
+                .expect("BT title clearance row");
             assert!(
-                right_rails.len() >= 2 && left_rails.len() >= 2 && shared.is_empty(),
-                "{style:?} optimized={optimized}: target rails={right_rails:?}, source rails={left_rails:?}, shared={shared:?}\n{frame}"
+                !row.contains('-') && !row.contains('─'),
+                "BT target title clearance row must not contain a horizontal route turn for {style:?} optimized={optimized}:\n{frame}"
             );
         }
     }

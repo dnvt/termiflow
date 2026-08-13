@@ -488,13 +488,22 @@ fn route_td_sibling_corridor(
     true
 }
 
-/// Select the first BT interior row above a title for a cross-subgraph turn.
+/// Select the BT interior row immediately above a title for a cross-subgraph
+/// turn.
 ///
-/// BT titles occupy the bottom interior row. A route turn on that row can be
-/// erased by title-row cleanup, leaving the border portal and outside elbow
-/// visually detached. Returning `None` for a too-shallow titled subgraph keeps
-/// the router from placing a turn on title text when no safe row exists.
+/// BT titles occupy the bottom interior row. A route turn immediately above
+/// that row is the normal compact attachment. Specialized sibling corridors
+/// may request one more quiet row through `bt_title_safe_entry_y_with_margin`;
+/// keeping that choice local prevents ordinary BT diagrams from acquiring a
+/// detached arrow-and-title seam.
 fn bt_title_safe_entry_y(subgraph: &crate::graph::Subgraph) -> Option<usize> {
+    bt_title_safe_entry_y_with_margin(subgraph, 0)
+}
+
+fn bt_title_safe_entry_y_with_margin(
+    subgraph: &crate::graph::Subgraph,
+    extra_quiet_rows: usize,
+) -> Option<usize> {
     if !subgraph.bounds.is_valid() {
         return None;
     }
@@ -515,7 +524,7 @@ fn bt_title_safe_entry_y(subgraph: &crate::graph::Subgraph) -> Option<usize> {
 
     let title_y =
         crate::graph::subgraph_title_row(subgraph.bounds.y, subgraph.bounds.height, Direction::BT);
-    let safe_y = title_y.checked_sub(1)?;
+    let safe_y = title_y.checked_sub(1 + extra_quiet_rows)?;
     (safe_y >= min_inside && safe_y <= max_inside).then_some(safe_y)
 }
 
@@ -1440,16 +1449,12 @@ fn bt_sibling_target_lane_candidates(
     // The typed plan can still choose the nearest title-safe lane when the
     // source column is outside this target container.
     if prefer_non_collinear {
-        // The exact two-sibling scene owns two independent cross edges.  A
-        // target lane that mirrors its source lane is valid but renders one
-        // uninterrupted shaft through both titled borders.  Prefer a
-        // title-safe lane that forces a visible ownership turn and leaves
-        // enough lateral separation from the source contour; all other
-        // sibling routes retain their source-aligned preference.
+        // The exact mixed scene owns an explicit target arrow column. Keep its
+        // outer rail aligned with that column whenever the lane is title-safe;
+        // making the rail detour toward the source center creates a needless
+        // turn immediately above the target title.
         candidates.sort_by_key(|candidate| {
             (
-                *candidate <= source_lane,
-                candidate.abs_diff(source_lane) < 4,
                 candidate.abs_diff(desired),
                 candidate.abs_diff(preferred),
                 candidate.abs_diff(source_lane),
@@ -1718,7 +1723,7 @@ fn build_bt_sibling_route_plan(
         source_sg.bounds.x.saturating_add(1),
         source_sg.bounds.x + source_sg.bounds.width.saturating_sub(2),
     );
-    let inside_y = bt_title_safe_entry_y(target_sg)
+    let inside_y = bt_title_safe_entry_y_with_margin(target_sg, 1)
         .ok_or_else(|| "target has no BT title-safe row".to_owned())?;
     if arrow_y >= inside_y {
         return Err("target arrow is not above the BT title-safe attachment row".to_owned());
@@ -2253,6 +2258,9 @@ pub(super) fn route_cross_subgraph_bt(
                         })
                         .collect();
                     let chain_targets = bt_sibling_chain_target_ids(graph, &bounds);
+                    let scene_literal_entry = graph
+                        .bt_sibling_target_entry_scene()
+                        .is_some_and(|scene| scene.target_subgraph_id == tgt_id);
                     let entry_x = preferred_portal_x_with_margin(
                         &tgt_sg.bounds,
                         tgt_sg.title.as_deref(),
@@ -2260,7 +2268,11 @@ pub(super) fn route_cross_subgraph_bt(
                         canvas,
                         Direction::BT,
                         true,
-                        bt_title_margin_for_edge(graph, &from.id, &to.id, tgt_id),
+                        if scene_literal_entry {
+                            0
+                        } else {
+                            bt_title_margin_for_edge(graph, &from.id, &to.id, tgt_id)
+                        },
                     );
                     let inside_y = if chain_targets
                         .as_ref()
@@ -3614,7 +3626,8 @@ pub(super) fn route_divergent_into_subgraph_bt(
 mod tests {
     use super::{
         bt_sibling_plan_blocker, bt_sibling_target_lane_candidates, bt_title_safe_entry_y,
-        nearest_title_safe_x, preferred_portal_x, td_sibling_corridor_row,
+        bt_title_safe_entry_y_with_margin, nearest_title_safe_x, preferred_portal_x,
+        td_sibling_corridor_row,
     };
     use crate::graph::{Direction, Graph, Node, Rectangle, Subgraph};
     use crate::portals::{title_margin_for_direction, title_safe_portal_x, PortalColumnPreference};
@@ -3671,6 +3684,7 @@ mod tests {
 
         // BT title row is y=16 and the physical bottom border is y=17.
         assert_eq!(bt_title_safe_entry_y(&subgraph), Some(15));
+        assert_eq!(bt_title_safe_entry_y_with_margin(&subgraph, 1), Some(14));
     }
 
     #[test]

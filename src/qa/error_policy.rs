@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -88,10 +89,19 @@ pub fn run(args: ErrorPolicyArgs) -> Result<()> {
     }
 
     if let Some(record_path) = args.record {
-        let record = common::load_json(
-            &resolve(&root, &record_path),
-            "expected-error policy record",
-        )?;
+        let record = if record_path == Path::new("-") {
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut bytes)
+                .context("read expected-error policy record from stdin")?;
+            serde_json::from_slice(&bytes)
+                .context("invalid expected-error policy record JSON from stdin")?
+        } else {
+            common::load_json(
+                &resolve(&root, &record_path),
+                "expected-error policy record",
+            )?
+        };
         validate_record(&record, &context)?;
         let case_id = non_empty_string(record.get("case_id"), "record case_id")?;
         if records.contains_key(&case_id) {

@@ -757,6 +757,19 @@ mod tests {
                         outcome.critic_report.findings,
                         outcome.output
                     );
+                    match style {
+                        crate::BaseStyle::Ascii => assert!(
+                            !outcome.output.contains("+<-+"),
+                            "strict horizontal chain retained a compact ASCII boundary elbow for {fixture} optimized={optimized}:\n{}",
+                            outcome.output
+                        ),
+                        crate::BaseStyle::Unicode => assert!(
+                            !outcome.output.contains("├←─┐"),
+                            "strict horizontal chain retained a compact Unicode boundary elbow for {fixture} optimized={optimized}:\n{}",
+                            outcome.output
+                        ),
+                        _ => unreachable!("focused sibling-chain test only uses ASCII and Unicode"),
+                    }
                     for title in ["Group 1", "Group 2", "Group 3"] {
                         assert!(outcome.output.contains(title));
                     }

@@ -547,3 +547,83 @@ fn render_with_feedback_keeps_default_dual_junctions_centered_before_repair() {
     assert_eq!(optimized.layout_attempts, 1);
     assert_eq!(optimized.output, baseline.output);
 }
+
+#[test]
+fn render_with_feedback_keeps_vertical_dual_junction_fanout_shafts_visible() {
+    for (direction, input, outgoing_arrow_is_last) in [
+        (
+            "TD",
+            include_str!("../fixtures/inputs/junction_quad_td.md"),
+            true,
+        ),
+        (
+            "BT",
+            include_str!("../fixtures/inputs/junction_quad_bt.md"),
+            false,
+        ),
+    ] {
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            for optimize_render in [false, true] {
+                let outcome = termiflow::render_with_feedback(
+                    input,
+                    termiflow::RenderOptions::new()
+                        .with_style(style)
+                        .with_optimize_render(optimize_render),
+                )
+                .unwrap();
+                let rows: Vec<Vec<char>> = outcome
+                    .output
+                    .lines()
+                    .map(|line| line.chars().collect())
+                    .collect();
+                let arrow = match direction {
+                    "TD" => style.chars().arrow_down,
+                    "BT" => style.chars().arrow_up,
+                    _ => unreachable!(),
+                };
+                let arrow_rows: Vec<usize> = rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.iter().filter(|&&cell| cell == arrow).count() >= 2)
+                    .map(|(index, _)| index)
+                    .collect();
+                let arrow_row = if outgoing_arrow_is_last {
+                    *arrow_rows.last().expect("TD fan-out arrow row")
+                } else {
+                    *arrow_rows.first().expect("BT fan-out arrow row")
+                };
+                let arrow_positions: Vec<usize> = rows[arrow_row]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(x, &cell)| (cell == arrow).then_some(x))
+                    .collect();
+                assert_eq!(
+                    arrow_positions.len(),
+                    2,
+                    "expected two vertical fan-out arrowheads for {direction} {style:?} optimize={optimize_render}\n{}",
+                    outcome.output
+                );
+                let shaft_row = match direction {
+                    "TD" => arrow_row.checked_sub(1).expect("TD shaft row"),
+                    "BT" => arrow_row + 1,
+                    _ => unreachable!(),
+                };
+                for x in arrow_positions {
+                    assert_eq!(
+                        rows[shaft_row][x],
+                        style.chars().edge_v,
+                        "expected a visible vertical shaft immediately before the {direction} arrowhead at x={x} for {style:?} optimize={optimize_render}\n{}",
+                        outcome.output
+                    );
+                }
+                if style == termiflow::BaseStyle::Ascii {
+                    assert!(
+                        !outcome.output.lines().any(|line| line.contains("++")),
+                        "ASCII dual-junction fan-out must not create a double-corner seam for {direction} optimize={optimize_render}\n{}",
+                        outcome.output
+                    );
+                }
+            }
+        }
+    }
+}

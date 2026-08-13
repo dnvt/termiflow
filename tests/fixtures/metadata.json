@@ -699,6 +699,34 @@
       "stderr_contains": []
     },
     {
+      "name": "flow_singleton_bt",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_singleton_lr",
+      "kind": "success",
+      "direction": "LR",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_singleton_rl",
+      "kind": "success",
+      "direction": "RL",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
+      "name": "flow_singleton_td",
+      "kind": "success",
+      "direction": "TD",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
       "name": "junction_corners_bt",
       "kind": "success",
       "direction": "BT",
