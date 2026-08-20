@@ -9,6 +9,16 @@ published tag and link to the corresponding GitHub release.
   and maintenance.
 - Record intentional visual or schema changes with their reviewed decision.
 
+## [0.2.5] — 2026-08-20
+
+- Improve topology-owned portal lanes and title-gutter routing for difficult
+  TD/TB/BT Mermaid subgraphs while retaining complex-BT negative controls.
+- Add full-corpus human-eye visual review coverage, route-clarity queues,
+  reproducible golden evidence, and public visual lessons for tiny rendering
+  defects and their falsified hypotheses.
+- Refresh the stable Rust toolchain to 1.98.0 and update compatible locked
+  dependencies.
+
 ## [0.2.4] — 2026-08-13
 
 - Expand the visual corpus with direction-complete singleton Mermaid fixtures
