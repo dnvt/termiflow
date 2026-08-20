@@ -2085,8 +2085,8 @@ fn td_single_subgraph_route_transaction_has_clean_portal_attachments() {
 
     for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
         let (title_portal, bottom_portal) = match style {
-            BaseStyle::Ascii => ("Container   |", "+----------|----------+"),
-            BaseStyle::Unicode => ("Container   │", "┗━━━━━━━━━━│━━━━━━━━━━┛"),
+            BaseStyle::Ascii => ("Container |", "+----------|----------+"),
+            BaseStyle::Unicode => ("Container │", "┗━━━━━━━━━━│━━━━━━━━━━┛"),
             _ => unreachable!("focused oracle only exercises ASCII and Unicode"),
         };
         for optimized in [false, true] {
@@ -3873,6 +3873,47 @@ fn mixed_edge_kind_endpoint_markers_preserve_direction_style_and_mode_identity()
                     })
                     .collect();
                 assert_eq!(directed_arrows.len(), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn vertical_mixed_edge_kind_fanout_preserves_kind_shafts() {
+    for direction in ["td", "bt"] {
+        let input = fs::read_to_string(format!("tests/fixtures/inputs/edge_kinds_{direction}.md"))
+            .expect("read vertical mixed edge-kind shaft fixture");
+
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let outcome = termiflow::render_with_feedback(
+                    &input,
+                    RenderOptions::new()
+                        .with_style(style)
+                        .with_optimize_render(optimized),
+                )
+                .expect("render vertical mixed edge-kind shaft fixture");
+
+                for label in ["Hub", "Thick", "Dotted"] {
+                    assert!(
+                        outcome.output.contains(label),
+                        "vertical mixed-edge fanout lost {label} for {direction} {style:?} optimized={optimized}:\n{}",
+                        outcome.output
+                    );
+                }
+
+                let required_shafts: &[char] = match style {
+                    BaseStyle::Ascii => &[':'],
+                    BaseStyle::Unicode => &['┃', '╎'],
+                    _ => unreachable!("oracle only covers ASCII and Unicode styles"),
+                };
+                for shaft in required_shafts {
+                    assert!(
+                        outcome.output.contains(*shaft),
+                        "vertical mixed-edge fanout lost kind-specific shaft {shaft:?} for {direction} {style:?} optimized={optimized}:\n{}",
+                        outcome.output
+                    );
+                }
             }
         }
     }

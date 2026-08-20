@@ -1,7 +1,7 @@
 ---
 name: termiflow-visual-review
 description: Review TermiFlow ASCII and Unicode diagram frames for human-visible semantic, routing, containment, text, and rendering defects with hash-bound evidence and targeted self-improvement.
-version: 0.1.0
+version: 0.1.8
 allowed-tools: [Read, Grep, Bash]
 ---
 
@@ -48,6 +48,12 @@ see.
   `termiflow.route_clarity.v1` report. Its `risk` or `inconclusive` status is a
   conservative reason to keep the row in the one-frame queue; even `clean` and
   `not_applicable` are evidence only and never replace the visual decision.
+- The route-clarity oracle explicitly queues title-adjacent TD/TB and BT
+  elbows (`+-+`, `┌─┘`, `└─┐`, and close Unicode variants) as human-review
+  signals when they occur inside a titled subgraph with a declared boundary
+  edge. This detector is deliberately not an automatic failure: node and
+  subgraph border corners may be legitimate, so inspect the exact cells and
+  surrounding route before recording the perceptual decision.
 - Expected-error fixtures are reviewed through their explicit error-policy
   ledger. They are not silently counted as successful diagram frames, and they
   do not reduce the requirement to inspect every renderable input/style/mode
@@ -65,8 +71,8 @@ see.
    binary identity, expected-error count, route-clarity coverage, and argv/
    effective-policy provenance. For renderer-wide work, enumerate every
    non-symlink `tests/fixtures/inputs/*.md` file across every style/mode
-   combination in both lanes: the current inventory is 237 inputs, 948 rows,
-   936 renderable frames, and 12 expected-error rows per lane. A missing
+   combination in both lanes: the current inventory is 241 inputs, 964 rows,
+   952 renderable frames, and 12 expected-error rows per lane. A missing
    user-supplied path is a missing fixture, never an invented test.
 2. Run the conservative Rust prescreen through
    `scripts/review_visual_packet.sh ... --prescreen-clean`. Treat its count and
@@ -130,6 +136,14 @@ Inspect these dimensions in order and state the result in the decision:
   touching parallel shafts, accidental crossings, uneven fan-in/fan-out,
   cycle gutters that resemble borders, and excessive blank space. Trace one
   edge from source to target, not just its arrowhead.
+   In dense vertical crossing scenes, inspect the final turn before every
+   target arrowhead: a corner directly adjacent to `↓`/`↑` (or `v`/`^`) is a
+   human-eye defect even when the route is connected. Require one straight
+   target-facing shaft cell, and verify that the corresponding `x`/`✕`
+   crossing markers and source/target port identities remain present. Keep
+   this invariant scoped to the topology-owned TD/TB/BT dense scene; do not
+   export its lane shift to LR/RL side-port routing without fresh homolog
+   evidence.
    For BT cross-subgraph edges, trace the target shaft through the title-safe
    portal column, the physical border, and the external elbow. A
    `bt_title_portal_disconnection` or
@@ -243,7 +257,7 @@ immediately legible (for example, aligned parallel rails); record a watch when
 long cross-group rails, paired receiver hooks, or external-sink fan-in require
 global tracing. Every result remains an independent exact-hash decision: a
 clean homolog does not cover a different style, mode, policy lane, or
-regenerated frame. The self-improving loop must continue draining all 936
+regenerated frame. The current self-improving loop must continue draining all 952
 renderable rows in both the canonical and no-override packets, with the 12
 expected-error rows governed separately, before a cycle or golden can be
 called complete.
@@ -333,6 +347,227 @@ do not retry upper/lower row redistribution or another one-cell coordinate
 nudge. Any promoted candidate still requires both full 237-input lanes,
 separate 12-row expected-error ledgers, and 936 fresh perceptual decisions per
 lane before it can affect visual history or goldens.
+
+### H99 lesson: minimum turn clearance is a perceptual invariant
+
+The current live corpus is 241 inputs, 964 rows per policy lane, 952
+renderable frames, and 12 separately ledgered expected errors. Historical H84,
+H89, and H91 counts above describe their original epochs; do not use them for
+current coverage accounting.
+
+For direct BT parallel edges, a route turn with only one visible shaft cell
+between its corners composes as `┌─┘` or `+-+` and reads like damaged border
+punctuation. The topology-owned lane allocator now requires a minimum
+three-cell center clearance, leaving two visible shaft cells whenever the
+scene has room. Keep the focused regression in both ASCII and Unicode and in
+default and optimized modes. Inspect all four direction homologs and both
+policy lanes before resolving the watch; do not generalize the BT fix to LR,
+RL, or TD without a fresh frame.
+
+The route critic may still report
+`bt_title_boundary_hook_requires_human_review` with score zero and no findings.
+That is a queue signal, not approval. Record a human-eye pass only when the
+full frame makes each rail, portal, title gutter, arrowhead, and border
+ownership immediately legible. In the authored/no-override packet, report the
+effective policy and rendered glyph style observed in the frame; the requested
+style label alone cannot cover an authored control row.
+
+### H100 lesson: collinear LR/RL sibling bridges stay straight
+
+The current live corpus is 241 inputs, 964 rows per policy lane, 952
+renderable frames, and 12 separately ledgered expected errors. Historical
+counts above describe their source epochs and must not be substituted for the
+current denominator.
+
+In the strict three-sibling LR/RL chain, the source and receiver edge ports can
+already share one center row. Sending those collinear transitions through a
+lower corridor creates two one-cell-inside elbows beside the neighboring
+subgraph walls; the resulting `+------+`/`└──────┘` fragment looks like a tiny
+second box even though the route is connected. The topology-owned scene must
+keep an all-collinear chain on the actual edge center row and reserve a quiet
+corridor only for transitions whose source and target rows differ.
+
+The focused regression covers LR and RL, ASCII and Unicode, and default and
+optimized rendering. It rejects the mini-border seam and requires horizontal
+portal ownership to remain present. This rule is not inferred for TD, TB, BT,
+nested, labeled, or crowded scenes; those require their own fresh homolog
+review. A direct bridge is still a watch if a portal glyph becomes a junction,
+an arrow shaft disappears, a node border is overwritten, or the middle sibling
+loses locally legible incoming/outgoing ownership.
+
+After this focused fix, regenerate both complete policy packets and drain a
+fresh one-frame decision for every renderable row. Preserve the earlier H86,
+H89, and H91 seam watches until the full matrix—including holdouts and
+authored-policy controls—shows that the straight bridge improves the selected
+homologs without exporting the rule into unrelated topology.
+
+### H101 lesson: TD sibling corridors need a layout-owned turn band
+
+The current live corpus is 241 inputs, 964 rows per policy lane, 952
+renderable frames, and 12 separately ledgered expected-error rows.
+
+In the direct three-sibling TD chain, two exterior rows are not enough when a
+title-safe portal lane must move laterally. The specialized corridor selector
+rejected the gap, the generic route emitted a compact border-adjacent elbow,
+and geometry left the two cross-subgraph edges as untraced fallback edges. A
+critic-clean score did not make that frame a visual pass.
+
+The layout contract now reserves three exterior cells for direct stacked
+TD/TB siblings: one quiet cell before the turn, one turn cell, and one portal
+shaft cell before the receiving border. The renderer accepts a two-row
+topology-owned fallback only when layout cannot expand and rejects a one-row
+gap. The focused regression covers ASCII/Unicode and default/optimized modes
+and requires all five edges to be traced with no geometry errors.
+
+This rule is limited to direct, non-nested sibling crossings. Do not export it
+to fan-in, fan-out, nested, labeled, or crowded scenes without a fresh
+perceptual review of both the canonical requested-style and authored
+no-override lanes. A fresh complete-corpus packet and one-frame decisions are
+still required before resolving the TD watch or touching goldens.
+
+### H102 lesson: TD terminal entries need distinct target-center lanes
+
+In `collision_edge_corner_td`, two external boxes entered distinct nodes in
+one titled TD subgraph. The generic portal route was connected and machine
+clean, but a one-column source/target parity mismatch composed adjacent
+`└┐`/`++` corner glyphs that read like a broken border. A connected route is
+not a visual pass when a human eye sees a tiny damaged junction.
+
+For a flat, titled, one-to-one TD/TB terminal-entry scene, the layout stage may
+align each external source to its distinct internal target center. The proposal
+set is staged and rejected unless every move is within the small displacement
+budget, remains inside the canvas, clears the subgraph and unrelated nodes, and
+does not collide with another proposed source. Fan-in, fan-out, nested,
+labeled, and crowded scenes remain fail-closed.
+
+The focused layout regression is
+`td_terminal_entry_sources_align_to_distinct_target_centers`; the render
+regression covers ASCII/Unicode and default/optimized modes and rejects both
+the `++` and `└┐` artifacts. A fresh complete canonical and authored packet is
+still required before resolving this watch or changing goldens. Inspect the
+target lane, source shaft, portal ownership, arrowhead, and neighboring
+subgraph wall as one human-eye unit; critic and route-clarity cleanliness alone
+cannot close the micro-artifact.
+
+### H104 lesson: dense vertical crossings need a quiet target shaft
+
+In the six-lane `crossing_grid_td` and `crossing_grid_bt` scenes, the prior
+dense allocator placed the final lane immediately beside its target
+arrowhead. The connected, critic-clean frame still composed as a tiny
+`└─┐↓`/`+-+v` (or mirrored BT) border-like hook. Human-eye review must inspect
+the final turn and arrow as one unit, not approve the frame from route counts.
+
+The topology-owned vertical lane band now keeps its two-cell pitch but uses
+offsets `1,3,5,...` instead of `2,4,6,...`, leaving one straight shaft cell
+before each target arrowhead. The rule is limited to TD/TB/BT. LR/RL retain
+their earlier side-port spacing; a fresh homolog review caught and rejected
+the first over-broad version before it entered the final packet.
+
+Widening source ports to match target ports was explicitly falsified: it
+removed the required explicit crossing markers and failed the independent
+route-identity oracle. Preserve port ownership and use the narrow lane-band
+repair instead. The focused regression and oracle commands are recorded in
+the public lesson
+[`dense-vertical-crossing-target-clearance-2026-08-13.md`](../../docs/visual-lessons/dense-vertical-crossing-target-clearance-2026-08-13.md).
+
+After this kind of routing fix, rebuild both complete 241-input policy lanes,
+validate the 964-row packets and separate 12-row expected-error ledgers, and
+freshly inspect every affected direction/style/mode homolog before closing a
+watch or touching goldens.
+
+### H105 lesson: TD parallel sibling lanes clear title portal hooks
+
+In strict flat titled TD/TB sibling scenes, already aligned parallel source and
+target columns can still be routed through a title-adjacent bracket-like portal
+shoulder. The route is connected and critic-clean, but a human reader can read
+the shoulder as a title hook or shared border junction. The layout envelope
+stage now applies a bounded, topology-gated translation to the aligned pair,
+keeps the original title left edge, and reuses the live title-safe target lane.
+
+The policy fails closed for mixed, labeled, nested, crowded, and non-aligned
+scenes. Its focused regression is
+`render_td_parallel_siblings_keep_target_lanes_clear_of_title_hooks` in
+`tests/render_options_api/direction_matrix.rs`. Inspect both direct and
+crossed parallel homologs in both requested-style lanes before resolving any
+BT/LR/RL watch; this rule is not inferred for those directions. The complete
+241-input/964-row packets and 12-row error ledgers remain required, and no
+golden approval follows from the focused repair.
+
+### H106 lesson: mixed sibling targets need a real visual gap
+
+When a titled sibling scene combines an internal edge and a cross-subgraph edge
+into the same vertical receiver, two connected arrowheads can still look like
+one cramped junction. The exact TD/TB and BT mixed-target lowerers now prefer a
+three-column minimum between their title-safe target entries, retaining the
+old two-column choice only when the node cannot provide the wider pair.
+
+The focused regression `mixed_vertical_sibling_targets_keep_a_readable_entry_gap`
+in `tests/subgraph_boundary_arrows.rs` covers ASCII/Unicode and
+default/optimized modes. A candidate is falsified by a lost shaft or arrowhead,
+changed edge identity, node/title collision, or a worsened tight, triple,
+nested, labeled, LR, or RL homolog. The machine-clean critic is not enough:
+fresh one-frame review must confirm the receiver is locally readable in both
+canonical requested-style and authored no-override lanes. The complete
+241-input/964-row matrix, separate 12-row error ledgers, open BT title-hook
+and TD chain watches, and golden gates remain active.
+
+### H118/H119 current negative-loop guards
+
+The current H118 fresh slice re-reviewed all four direct BT parallel
+style/mode homologs in both policy lanes. Raising
+`BT_SIBLING_MIN_RAIL_GAP` from 3 to 5 was falsified: the endpoint contract
+became unsatisfiable for the ASCII collision case, distinct middle-boundary
+roles collapsed into one shaft, and the focused BT sibling-chain test failed.
+Never retry a BT spacing-only candidate without proving that the endpoint
+contract still allocates every source/target role.
+
+The H119 LR/RL follow-up alternated successive sibling transitions between
+lower and upper quiet bands. Structural tests passed, but direct frames put an
+upper bridge into a border-shaped band above the nodes. This was also
+reverted. A green route trace or critic score is insufficient when a corridor
+changes into a container-like contour. The next LR/RL candidate must change
+local seam ownership while preserving one readable corridor band and must be
+reviewed in both mirrors before promotion.
+
+The H120 mixed-target follow-up tried the complementary placement shortcut:
+move each internal LR/RL end node onto its paired start-node row. The focused
+matrix rejected the target-entry scene in all eight LR/RL style/mode cases,
+leaving only three arrows and an untraced `B->D` edge. This candidate was
+reverted. Never promote a node-row alignment unless the target-entry scene
+planner still proves all four edge identities and both mirrored route plans;
+the next repair must own the scene endpoint contract, seam, or route search.
+
+### H121 lesson: flat TD/TB single entries need a literal title gutter
+
+In a flat titled subgraph with one unlabeled external direct entry, the
+title-safe portal can be one column away from the source's otherwise natural
+centerline. The connected route then composes a tiny `+-+`/`┌─┘`-like shoulder
+beside the title. The critic may remain clean because this is a human reading
+ambiguity, not a missing edge.
+
+The topology-owned TD/TB rule gives this exact one-entry scene a zero extra
+title margin and aligns the source only to the live, renderer-owned portal
+lane. The predicate excludes nested, labeled, multi-entry, sibling, and
+crowded scenes. The focused regression covers `subgraph_single_td` and
+`subgraph_outside_td` across ASCII/Unicode and default/optimized rendering;
+the route-clarity oracle also has a mutation test that queues an injected
+title hook while leaving repaired frames unqueued.
+
+The corresponding BT experiment aligned only the external source. It removed
+the source-side offset but left a target-side title-gutter elbow, so endpoint
+staging was explicitly falsified and retained as a watch. Do not retry that
+experiment as a generic source/target alignment rule. A successful BT follow-
+up must name target-side seam ownership, preserve every endpoint identity, and
+pass the complete 241-input/964-row canonical and authored/no-override review
+before a history resolution or golden approval.
+
+The complex BT scene is also an explicit negative control for the single-entry
+rule. `subgraph_complex_bt` has two titled subgraphs and shared Data/Service
+rails; the predicate must require exactly one flat subgraph before it moves an
+external source. If a complex multi-subgraph frame changes because of that
+rule, treat it as a topology scope regression. The v10 four-cell complex-BT
+holdout remains a P2 watch for long shared rails and title-adjacent elbows,
+with a separate future hypothesis required before changing its portal planner.
 
 ## Integration points
 

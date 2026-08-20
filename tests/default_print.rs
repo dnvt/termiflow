@@ -277,8 +277,8 @@ fn subgraph_title_uses_side_aware_entry_portal_td() {
     assert!(
         output
             .lines()
-            .any(|line| line.contains("━━━━━━━━━━━━━━│━━━━━━")),
-        "expected a side-aware vertical portal shaft on the container top border, got:\n{output}"
+            .any(|line| line.contains("┏━━━━━━━━━━━━│━━━━━━━━┓")),
+        "expected the title-gutter vertical portal shaft on the container top border, got:\n{output}"
     );
 }
 

@@ -430,6 +430,37 @@ pub fn route_divergent_edges(
         }
     }
 
+    // A mixed fan-out needs one writable target-facing shaft cell for Thick and
+    // Dotted branches.  With the compact vertical layout the shared span can
+    // otherwise land immediately beside the target arrow row, leaving those
+    // edge kinds with no branch cell to carry their kind-specific shaft glyph.
+    // Move only this topology family one cell toward the source when the
+    // candidate corridor is blank; ordinary fan-outs retain their geometry.
+    if target_positions.len() > 1
+        && matches!(direction, Direction::TD | Direction::TB | Direction::BT)
+        && target_positions.iter().any(|(_, _, target)| {
+            graph
+                .edges
+                .iter()
+                .find(|edge| !edge.is_back_edge && edge.from == from.id && edge.to == target.id)
+                .is_some_and(|edge| matches!(edge.kind, EdgeKind::Thick | EdgeKind::Dotted))
+        })
+    {
+        if let Some((candidate_x, candidate_y)) = mixed_vertical_fanout_clearance(
+            &target_positions,
+            junction_x,
+            junction_y,
+            stem_start_x,
+            stem_start_y,
+            direction,
+            graph,
+            canvas,
+        ) {
+            junction_x = candidate_x;
+            junction_y = candidate_y;
+        }
+    }
+
     // Single target: direct route
     if target_positions.len() == 1 {
         let (mut target_x, target_y, target) = (
@@ -1281,6 +1312,68 @@ pub fn route_divergent_edges(
 
         canvas.record_fallback_route_plan(plan);
     }
+}
+
+// These are intentionally separate geometry inputs: collapsing them into a
+// context object would obscure the oriented source/junction/target contract
+// this narrow fallback checks.
+#[allow(clippy::too_many_arguments)]
+fn mixed_vertical_fanout_clearance(
+    target_positions: &[(usize, usize, &Node)],
+    junction_x: usize,
+    junction_y: usize,
+    stem_start_x: usize,
+    stem_start_y: usize,
+    direction: Direction,
+    graph: &Graph,
+    canvas: &Canvas,
+) -> Option<(usize, usize)> {
+    let coords = OrientedCoords::new(direction);
+    let candidate = coords.retreat(junction_x, junction_y, 1);
+    let source_primary = coords.primary_coord(stem_start_x, stem_start_y);
+    let candidate_primary = coords.primary_coord(candidate.0, candidate.1);
+
+    // Do not move the junction through the source exit or outside the canvas.
+    let candidate_is_between_source_and_targets = match direction {
+        Direction::TD | Direction::TB => candidate_primary > source_primary,
+        Direction::BT => candidate_primary < source_primary,
+        Direction::LR | Direction::RL => false,
+    };
+    if !candidate_is_between_source_and_targets
+        || candidate.0 >= canvas.width
+        || candidate.1 >= canvas.height
+    {
+        return None;
+    }
+
+    let target_secondaries: Vec<usize> = target_positions
+        .iter()
+        .map(|(_, _, target)| {
+            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            coords.secondary_coord(arrow_x, arrow_y)
+        })
+        .collect();
+    let span_start = target_secondaries.iter().copied().min()?;
+    let span_end = target_secondaries.iter().copied().max()?;
+
+    // The candidate span and the one-cell target-facing drops must be free
+    // before this route is lowered.  A crowded corridor should keep the old
+    // geometry and remain visible to the perceptual review queue.
+    for secondary in span_start..=span_end {
+        let (x, y) = coords.with_secondary(candidate.0, candidate.1, secondary);
+        if canvas.get(x, y) != ' ' {
+            return None;
+        }
+    }
+    for secondary in target_secondaries {
+        let (drop_x, drop_y) = coords.with_secondary(candidate.0, candidate.1, secondary);
+        let (shaft_x, shaft_y) = coords.advance(drop_x, drop_y, 1);
+        if canvas.get(shaft_x, shaft_y) != ' ' {
+            return None;
+        }
+    }
+
+    Some(candidate)
 }
 
 const MIXED_BRANCH_JUNCTION_SEPARATION: usize = 3;

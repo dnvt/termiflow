@@ -4,7 +4,7 @@
 //! for detecting line types, junctions, and resolving overlapping characters.
 
 use crate::graph::Node;
-use crate::style::{StyleChars, ASCII_CHARS, UNICODE_CHARS};
+use crate::style::{display_char_width, StyleChars, ASCII_CHARS, UNICODE_CHARS};
 
 use super::fallback_route::{
     FallbackPaint, FallbackRoutePlan, FallbackRouteRejection, FallbackRouteTrace,
@@ -278,6 +278,7 @@ pub struct Canvas {
     pub width: usize,
     pub height: usize,
     grid: Vec<Vec<char>>,
+    combining_grid: Vec<Vec<String>>,
     meta_grid: Vec<Vec<CellMeta>>,
     explicit_crossings_enabled: bool,
     explicit_crossing_cells: Vec<(usize, usize)>,
@@ -294,6 +295,7 @@ impl Canvas {
             width,
             height,
             grid: vec![vec![' '; width]; height],
+            combining_grid: vec![vec![String::new(); width]; height],
             meta_grid: vec![vec![CellMeta::default(); width]; height],
             explicit_crossings_enabled: false,
             explicit_crossing_cells: Vec::new(),
@@ -329,6 +331,9 @@ impl Canvas {
         for row in &mut self.grid {
             row.resize(width, ' ');
         }
+        for row in &mut self.combining_grid {
+            row.resize(width, String::new());
+        }
         for row in &mut self.meta_grid {
             row.resize(width, CellMeta::default());
         }
@@ -349,6 +354,8 @@ impl Canvas {
         let stage = self.current_write_stage.clone();
         self.grid
             .extend((old_height..height).map(|_| vec![' '; width]));
+        self.combining_grid
+            .extend((old_height..height).map(|_| vec![String::new(); width]));
         self.meta_grid
             .extend((old_height..height).map(|_| vec![CellMeta::default(); width]));
         self.write_stage_grid
@@ -392,11 +399,32 @@ impl Canvas {
     /// Set a character and infer a generic semantic classification from the glyph.
     pub fn set_inferred(&mut self, x: usize, y: usize, c: char) {
         if x < self.width && y < self.height {
+            // A variation selector or combining mark has no terminal-cell
+            // width of its own. Keep it attached to the nearest preceding
+            // visible cell instead of replacing the base glyph in the grid.
+            // The separate combining stream lets the canvas retain the
+            // complete grapheme while routing and geometry continue to use
+            // one logical cell per base glyph.
+            if c != '\0' && display_char_width(c) == 0 {
+                let target = if self.grid[y][x] != ' ' && self.grid[y][x] != '\0' {
+                    Some(x)
+                } else if x > 0 && self.grid[y][x - 1] != ' ' && self.grid[y][x - 1] != '\0' {
+                    Some(x - 1)
+                } else {
+                    None
+                };
+                if let Some(target) = target {
+                    self.combining_grid[y][target].push(c);
+                    self.write_stage_grid[y][target] = self.current_write_stage.clone();
+                }
+                return;
+            }
             if matches!(self.grid[y][x], 'x' | '✕')
                 && self.meta_grid[y][x].role == CellRole::Junction
             {
                 return;
             }
+            self.combining_grid[y][x].clear();
             self.grid[y][x] = c;
             self.meta_grid[y][x] = infer_meta(c);
             self.write_stage_grid[y][x] = self.current_write_stage.clone();
@@ -472,6 +500,7 @@ impl Canvas {
                     })
             });
         if x < self.width && y < self.height {
+            self.combining_grid[y][x].clear();
             let final_char = if explicit_crossing {
                 self.explicit_crossing_cells.push((x, y));
                 if existing.is_ascii() && c.is_ascii() {
@@ -536,6 +565,7 @@ impl Canvas {
             resolve_overlap(existing, new_char, s)
         };
         if x < self.width && y < self.height {
+            self.combining_grid[y][x].clear();
             self.grid[y][x] = final_char;
             let existing_meta = &self.meta_grid[y][x];
             let final_role = infer_role(final_char);
@@ -585,6 +615,7 @@ impl Canvas {
             // endpoint guard has proved that this overlap is not a
             // pass-through and must become a real junction.
             if x < self.width && y < self.height {
+                self.combining_grid[y][x].clear();
                 self.grid[y][x] = s.cross;
                 self.meta_grid[y][x] = infer_owned_meta(
                     s.cross,
@@ -866,7 +897,7 @@ impl Canvas {
 
         for (y, row) in self.grid.iter().enumerate() {
             for (x, c) in row.iter().enumerate() {
-                if *c != ' ' {
+                if *c != ' ' && *c != '\0' {
                     found = true;
                     min_x = min_x.min(x);
                     max_x = max_x.max(x);
@@ -883,7 +914,15 @@ impl Canvas {
         let mut lines: Vec<String> = Vec::with_capacity(max_y.saturating_sub(min_y) + 1);
         for y in min_y..=max_y {
             let slice = &self.grid[y][min_x..=max_x];
-            let line = slice.iter().collect::<String>().trim_end().to_string();
+            let mut line = String::new();
+            for (offset, c) in slice.iter().enumerate() {
+                if *c == '\0' {
+                    continue;
+                }
+                line.push(*c);
+                line.push_str(&self.combining_grid[y][min_x + offset]);
+            }
+            let line = line.trim_end().to_string();
             lines.push(line);
         }
 
@@ -918,7 +957,7 @@ fn infer_meta(c: char) -> CellMeta {
 }
 
 fn infer_role(c: char) -> CellRole {
-    if c == ' ' {
+    if c == ' ' || c == '\0' {
         CellRole::Empty
     } else if is_arrow(c) {
         CellRole::ArrowTip
@@ -981,7 +1020,18 @@ impl std::fmt::Display for Canvas {
         let output = self
             .grid
             .iter()
-            .map(|row| row.iter().collect::<String>().trim_end().to_string())
+            .enumerate()
+            .map(|(y, row)| {
+                let mut line = String::new();
+                for (x, c) in row.iter().enumerate() {
+                    if *c == '\0' {
+                        continue;
+                    }
+                    line.push(*c);
+                    line.push_str(&self.combining_grid[y][x]);
+                }
+                line.trim_end().to_string()
+            })
             .collect::<Vec<_>>()
             .join("\n");
         write!(f, "{output}")
@@ -1072,6 +1122,16 @@ mod tests {
         let preserved = canvas.explicit_edge_meta();
         assert_eq!(preserved.len(), 3);
         assert!(preserved.iter().all(|(_, _, meta)| meta.owner_id.is_some()));
+    }
+
+    #[test]
+    fn combining_marks_do_not_replace_their_base_cell() {
+        let mut canvas = Canvas::new(3, 1);
+        canvas.set(0, 0, '⚙');
+        canvas.set(1, 0, '\u{fe0f}');
+
+        assert_eq!(canvas.get(0, 0), '⚙');
+        assert_eq!(canvas.to_string_cropped(0), "⚙️");
     }
 
     #[test]

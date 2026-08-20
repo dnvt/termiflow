@@ -49,9 +49,27 @@ Each lesson states its own status. Read these terms literally:
 - [Parallel subgraph fan-in target identity](subgraph-parallel-fanin-target-arrow-identity-2026-08-08.md)
 - [Full-corpus subgraph boundaries and target entries](full-corpus-subgraph-boundary-and-target-entry-2026-08-08.md)
 - [TD mixed target-entry identity](td-mixed-target-entry-identity-2026-08-09.md)
+- [TD mixed target entries need a short title-safe bridge](td-mixed-target-title-clearance-2026-08-20.md)
 - [Database intermediate nodes preserve terminal entry identity](database-intermediate-terminal-entry-2026-08-08.md)
 - [Horizontal sibling chains need receiver-owned corridor rows](horizontal-sibling-chain-receiver-rails-2026-08-11.md)
 - [Scoped BT sibling channels and vertical junction headroom](bt-sibling-channel-and-dual-junction-shaft-2026-08-13.md)
+- [BT sibling rails need role ownership](bt-sibling-rail-ownership-2026-08-13.md)
+- [Nested BT portals need boundary-by-boundary ownership](nested-bt-boundary-ownership-2026-08-20.md)
+- [Direct BT portals need a quiet target turn](direct-bt-portal-turn-clearance-2026-08-20.md)
+- [Complex BT multi-subgraph scenes are a negative control](complex-bt-multi-subgraph-negative-control-2026-08-20.md)
+- [BT parallel turns need visible shaft clearance](bt-parallel-turn-clearance-2026-08-13.md)
+- [BT parallel portals must share node lanes](bt-parallel-title-safe-lane-alignment-2026-08-13.md)
+- [Collinear LR/RL sibling bridges need distinct corridors](lr-rl-collinear-bridge-2026-08-13.md)
+- [Opposite LR/RL corridor bands can become border-shaped](lr-rl-alternating-band-falsified-2026-08-13.md)
+- [Mixed LR/RL target rows need route-owner repair](lr-rl-mixed-target-row-alignment-falsified-2026-08-13.md)
+- [LR/RL mixed targets need a quiet receiver shaft](lr-rl-mixed-target-receiver-shaft-2026-08-20.md)
+- [TD sibling corridors need a layout-owned turn band](td-sibling-corridor-turn-band-2026-08-13.md)
+- [TD sibling title gutters must preserve owned route rails](td-sibling-title-gutter-route-ownership-2026-08-20.md)
+- [Flat TD/TB external entries need a literal title-gutter lane](td-flat-external-title-gutter-2026-08-20.md)
+- [TD terminal entries need distinct target-center lanes](td-terminal-entry-center-alignment-2026-08-13.md)
+- [Dense vertical crossings need a quiet target shaft](dense-vertical-crossing-target-clearance-2026-08-13.md)
+- [TD parallel sibling lanes clear title portal hooks](td-parallel-title-safe-lane-alignment-2026-08-13.md)
+- [Mixed sibling targets need a real visual gap](mixed-sibling-target-entry-gap-2026-08-13.md)
 
 ### Shapes, contours, and attachment clarity
 
@@ -59,13 +77,16 @@ Each lesson states its own status. Read these terms literally:
 - [Direction-aware shape contours](shape-contour-direction-aware-diamond-2026-08-07.md)
 - [Preserve the Flag point and review its edge attachment](flag-contour-left-point-2026-08-07.md)
 - [Flag incoming-arrow clearance](flag-incoming-arrow-clearance-2026-08-07.md)
+- [Emoji variation selectors must share the base glyph cell](emoji-variation-selector-cell-2026-08-13.md)
 
 ### Fan-in, target ports, and channel separation
 
+- [Database fan-out tees need a quiet source stem](database-fanout-source-tee-stem-2026-08-13.md)
 - [Wide terminal fan-in needs separate channel rows](wide-terminal-fanin-channel-separation-2026-08-07.md)
 - [Horizontal wide fan-in preserves target ports](horizontal-wide-fanin-target-height-2026-08-07.md)
 - [Ordinary four-port fan-in preserves edge identity](ordinary-four-port-fanin-identity-2026-08-07.md)
 - [Mixed three-branch junctions need explicit target ports](mixed-three-branch-junction-target-ports-2026-08-07.md)
+- [Vertical mixed edge kinds need target-facing shaft headroom](vertical-mixed-edge-kind-shafts-2026-08-20.md)
 - [Dual-junction target ports must follow the route policy](dual-junction-target-port-measurement-2026-08-07.md)
 - [BT parallel title-gutter spacing is an unsafe shortcut](bt-parallel-title-gutter-falsified-2026-08-08.md)
 

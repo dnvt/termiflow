@@ -84,6 +84,39 @@ pub(super) fn vertical_fanout_requires_headroom(
     })
 }
 
+/// Mixed Thick/Dotted vertical fan-outs need one branch shaft cell before the
+/// target arrow so the edge kind remains visible after the shared junction is
+/// lowered. Keep this surcharge limited to a source rank with multiple
+/// outgoing edge kinds; ordinary fan-outs retain their compact spacing.
+pub(super) fn vertical_mixed_edge_kind_fanout_requires_headroom(
+    graph: &Graph,
+    layers: &[Vec<usize>],
+    layer_idx: usize,
+) -> bool {
+    matches!(
+        graph.direction,
+        crate::graph::Direction::TD | crate::graph::Direction::TB | crate::graph::Direction::BT
+    ) && layers.get(layer_idx).is_some_and(|layer| {
+        layer.iter().any(|&node_idx| {
+            let Some(node) = graph.nodes.get(node_idx) else {
+                return false;
+            };
+            let outgoing: Vec<_> = graph
+                .edges
+                .iter()
+                .filter(|edge| !edge.is_back_edge && edge.from == node.id)
+                .collect();
+            outgoing.len() > 1
+                && outgoing.iter().any(|edge| {
+                    matches!(
+                        edge.kind,
+                        crate::graph::EdgeKind::Thick | crate::graph::EdgeKind::Dotted
+                    )
+                })
+        })
+    })
+}
+
 fn rank_by_id(graph: &Graph, layers: &[Vec<usize>]) -> HashMap<String, usize> {
     layers
         .iter()
@@ -396,7 +429,7 @@ fn rectangles_overlap(left: &Rect, right: &Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Direction, Edge, Node, Subgraph};
+    use crate::graph::{Direction, Edge, EdgeKind, Node, Subgraph};
 
     fn dual_graph(direction: Direction) -> Graph {
         let mut graph = Graph::new();
@@ -441,6 +474,39 @@ mod tests {
 
     fn layers(_graph: &Graph) -> Vec<Vec<usize>> {
         vec![vec![0, 1], vec![2], vec![3, 4]]
+    }
+
+    #[test]
+    fn mixed_edge_kind_headroom_is_vertical_and_source_rank_gated() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::TD;
+        for id in ["A", "B", "C", "D"] {
+            graph.add_node(Node::new(id, id));
+        }
+        graph.add_edge(Edge::new("A", "B"));
+        let mut thick = Edge::new("A", "C");
+        thick.kind = EdgeKind::Thick;
+        graph.add_edge(thick);
+        graph.add_edge(Edge::new("A", "D"));
+        let layer_map = vec![vec![0], vec![1, 2, 3]];
+
+        assert!(vertical_mixed_edge_kind_fanout_requires_headroom(
+            &graph, &layer_map, 0
+        ));
+        assert!(!vertical_mixed_edge_kind_fanout_requires_headroom(
+            &graph, &layer_map, 1
+        ));
+
+        graph.direction = Direction::LR;
+        assert!(!vertical_mixed_edge_kind_fanout_requires_headroom(
+            &graph, &layer_map, 0
+        ));
+
+        graph.direction = Direction::TD;
+        graph.edges[1].kind = EdgeKind::Arrow;
+        assert!(!vertical_mixed_edge_kind_fanout_requires_headroom(
+            &graph, &layer_map, 0
+        ));
     }
 
     fn points(rects: &HashMap<String, Rect>) -> HashMap<String, Point> {

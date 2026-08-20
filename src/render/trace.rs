@@ -3,8 +3,8 @@
 use crate::geom::Segment;
 use crate::graph::{Direction, Graph, Rectangle};
 use crate::portals::{
-    bt_title_margin_for_edge, node_rects_from_graph, nudge_portal_x_from_corners,
-    title_safe_portal_x, PortalColumnPreference, PortalSlots,
+    bt_nested_boundary_lane_with_quiet_turn, bt_title_margin_for_edge, node_rects_from_graph,
+    nudge_portal_x_from_corners, title_safe_portal_x, PortalColumnPreference, PortalSlots,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -207,6 +207,18 @@ impl PortalTrace {
                 .get_node(&edge.from)
                 .map(|node| node_center_x(&node_rects, node))
                 .unwrap_or_default();
+            let nested_entry_lane = (enters.len() > 1)
+                .then(|| {
+                    bt_nested_boundary_lane_with_quiet_turn(
+                        graph,
+                        &enters,
+                        desired_enter,
+                        desired_exit,
+                        desired_enter,
+                        None,
+                    )
+                })
+                .flatten();
 
             for boundary_id in &enters {
                 let Some(boundary) = graph.get_subgraph(boundary_id) else {
@@ -223,6 +235,8 @@ impl PortalTrace {
                 let (title_safe_x, corner_nudged_x) = if let Some(decision) = decision_for_boundary
                 {
                     (decision.portal_x, decision.portal_x)
+                } else if let Some(nested_entry_lane) = nested_entry_lane {
+                    (nested_entry_lane, nested_entry_lane)
                 } else {
                     let title_margin =
                         bt_title_margin_for_edge(graph, &edge.from, &edge.to, boundary_id);

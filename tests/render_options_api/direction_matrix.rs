@@ -745,6 +745,54 @@ fn render_bt_parallel_edges_avoids_adjacent_title_route_corners() {
 }
 
 #[test]
+fn render_td_parallel_siblings_keep_target_lanes_clear_of_title_hooks() {
+    for (fixture, arrow_count) in [
+        ("collision_parallel_edges_td", 3usize),
+        ("collision_parallel_cross_td", 2usize),
+    ] {
+        let input = std::fs::read_to_string(format!("tests/fixtures/inputs/{fixture}.md"))
+            .expect("read TD parallel fixture");
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            for optimize_render in [false, true] {
+                let outcome = termiflow::render_with_feedback(
+                    &input,
+                    termiflow::RenderOptions::new()
+                        .with_style(style)
+                        .with_optimize_render(optimize_render),
+                )
+                .expect("render TD parallel fixture");
+
+                assert!(
+                    outcome.output.contains("Source") && outcome.output.contains("Target"),
+                    "TD parallel titles must remain readable for {fixture}, {style:?}, optimize={optimize_render}\n{}",
+                    outcome.output
+                );
+                let arrow = if matches!(style, termiflow::BaseStyle::Ascii) {
+                    'v'
+                } else {
+                    '↓'
+                };
+                let actual_arrow_count = outcome.output.matches(arrow).count();
+                assert_eq!(
+                    actual_arrow_count, arrow_count,
+                    "TD parallel target arrows must remain complete for {fixture}, {style:?}, optimize={optimize_render}\n{}",
+                    outcome.output
+                );
+                assert!(
+                    !outcome.output.lines().any(|line| {
+                        line.contains("└────┐")
+                            || line.contains("┌────┘")
+                            || line.contains("+----+")
+                    }),
+                    "TD parallel target lanes must not form bracket-like title hooks for {fixture}, {style:?}, optimize={optimize_render}\n{}",
+                    outcome.output
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn render_bt_sibling_chain_separates_middle_boundary_roles() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/collision_sibling_triple_bt.md")
         .expect("read BT sibling-chain fixture");
@@ -974,6 +1022,71 @@ fn render_with_feedback_treats_crossing_grids_as_visually_clean() {
                 fixture,
                 outcome.output
             );
+        }
+    }
+}
+
+#[test]
+fn vertical_crossing_grid_terminal_heads_keep_a_straight_shaft_cell() {
+    for (fixture, direction) in [
+        ("tests/fixtures/inputs/crossing_grid_td.md", "TD"),
+        ("tests/fixtures/inputs/crossing_grid_bt.md", "BT"),
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(true),
+            )
+            .unwrap();
+            let arrow = match (direction, style) {
+                ("TD", termiflow::BaseStyle::Ascii) => 'v',
+                ("TD", termiflow::BaseStyle::Unicode) => '↓',
+                ("BT", termiflow::BaseStyle::Ascii) => '^',
+                ("BT", termiflow::BaseStyle::Unicode) => '↑',
+                _ => unreachable!("test only covers vertical ASCII/Unicode grids"),
+            };
+            let lines: Vec<Vec<char>> = outcome
+                .output
+                .lines()
+                .map(|line| line.chars().collect())
+                .collect();
+            let arrow_positions: Vec<(usize, usize)> = lines
+                .iter()
+                .enumerate()
+                .flat_map(|(y, line)| {
+                    line.iter()
+                        .enumerate()
+                        .filter_map(move |(x, ch)| (*ch == arrow).then_some((x, y)))
+                })
+                .collect();
+
+            assert_eq!(
+                arrow_positions.len(),
+                12,
+                "{fixture} {style:?}\n{}",
+                outcome.output
+            );
+            for (x, y) in arrow_positions {
+                let shaft_y = if direction == "TD" {
+                    y.saturating_sub(1)
+                } else {
+                    y.saturating_add(1)
+                };
+                let shaft = lines
+                    .get(shaft_y)
+                    .and_then(|line| line.get(x))
+                    .copied()
+                    .unwrap_or(' ');
+                assert!(
+                    matches!(shaft, '|' | '│'),
+                    "{direction} terminal arrow at ({x},{y}) must have a straight shaft cell, got {shaft:?} for {style:?}\n{}",
+                    outcome.output
+                );
+            }
         }
     }
 }

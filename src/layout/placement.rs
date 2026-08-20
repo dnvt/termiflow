@@ -12,7 +12,10 @@ use crate::render::wide_terminal_fan_in;
 use crate::style::BOX_HEIGHT;
 
 use super::dense_pipeline;
-use super::dual_junction::{balance_dual_junctions, vertical_fanout_requires_headroom};
+use super::dual_junction::{
+    balance_dual_junctions, vertical_fanout_requires_headroom,
+    vertical_mixed_edge_kind_fanout_requires_headroom,
+};
 use super::optimization::{balance_coordinates, node_extent_primary, node_extent_secondary};
 use super::pure_fan_in::balance_pure_fan_in_targets;
 use super::reserve_titled_horizontal_subgraph_headroom;
@@ -187,12 +190,26 @@ impl LayoutSpacingPolicy {
             spacing = spacing.max(SPACING_FANOUT + 3);
         }
 
+        // Thick and Dotted branches need a writable target-facing shaft cell
+        // in compact vertical mixed fan-outs. Reserve that local row before
+        // the renderer's shared junction span is projected.
+        if vertical_mixed_edge_kind_fanout_requires_headroom(graph, layers, layer_idx) {
+            spacing = spacing.max(SPACING_FANOUT + 4);
+        }
+
         // Database/Cylinder targets need one additional primary cell because
         // the renderer's shape-owned entry policy places their arrowhead one
         // cell farther from the contour. Keep this local to the preceding
         // rank so ordinary rectangles and unrelated ranks retain compact
         // spacing.
-        if database_target_requires_headroom(graph, layers, layer_idx) {
+        if database_intermediate_scene_requires_headroom(graph, layers, layer_idx) {
+            // The strict source→cache→database diamond needs one more primary
+            // cell than a single database entry: the source-owned tee now
+            // branches after a visible stem, while the intermediate receiver
+            // still needs a clean shaft cell with no side-axis route beside
+            // its arrowhead.
+            spacing = spacing.max(SPACING_MINIMAL + 2);
+        } else if database_target_requires_headroom(graph, layers, layer_idx) {
             spacing = spacing.max(SPACING_MINIMAL + 1);
         }
 
@@ -630,6 +647,105 @@ fn database_target_requires_headroom(
                     && edge.to == target.id
                     && current_layer_ids.contains(edge.from.as_str())
             })
+    })
+}
+
+fn database_intermediate_scene_requires_headroom(
+    graph: &Graph,
+    layers: &[Vec<usize>],
+    layer_idx: usize,
+) -> bool {
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) || graph.nodes.len() != 3
+        || graph.edges.len() != 3
+        || !graph.subgraphs.is_empty()
+        || graph.edges.iter().any(|edge| {
+            edge.is_back_edge || edge.kind != crate::graph::EdgeKind::Arrow || edge.label.is_some()
+        })
+    {
+        return false;
+    }
+
+    let Some(source) = graph.nodes.iter().find(|node| {
+        node.shape == NodeShape::Rectangle
+            && graph
+                .edges
+                .iter()
+                .filter(|edge| !edge.is_back_edge && edge.from == node.id)
+                .count()
+                == 2
+            && graph
+                .edges
+                .iter()
+                .all(|edge| edge.is_back_edge || edge.to != node.id)
+    }) else {
+        return false;
+    };
+    let databases: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.shape == NodeShape::Database)
+        .collect();
+    if databases.len() != 2 {
+        return false;
+    }
+
+    let Some(intermediate) = databases.iter().find(|node| {
+        graph
+            .edges
+            .iter()
+            .filter(|edge| !edge.is_back_edge && edge.from == node.id)
+            .count()
+            == 1
+            && graph
+                .edges
+                .iter()
+                .filter(|edge| !edge.is_back_edge && edge.to == node.id)
+                .count()
+                == 1
+    }) else {
+        return false;
+    };
+    let Some(target) = databases.iter().find(|node| {
+        node.id != intermediate.id
+            && graph
+                .edges
+                .iter()
+                .filter(|edge| !edge.is_back_edge && edge.from == node.id)
+                .count()
+                == 0
+            && graph
+                .edges
+                .iter()
+                .filter(|edge| !edge.is_back_edge && edge.to == node.id)
+                .count()
+                == 2
+    }) else {
+        return false;
+    };
+    let has_edge = |from: &str, to: &str| {
+        graph
+            .edges
+            .iter()
+            .any(|edge| !edge.is_back_edge && edge.from == from && edge.to == to)
+    };
+    if !(has_edge(&source.id, &intermediate.id)
+        && has_edge(&source.id, &target.id)
+        && has_edge(&intermediate.id, &target.id))
+    {
+        return false;
+    }
+
+    layers.get(layer_idx).is_some_and(|layer| {
+        layer
+            .iter()
+            .any(|index| graph.nodes[*index].id == source.id)
+    }) && layers.get(layer_idx + 1).is_some_and(|layer| {
+        layer
+            .iter()
+            .any(|index| graph.nodes[*index].id == intermediate.id)
     })
 }
 
@@ -1131,6 +1247,38 @@ mod tests {
             &database_layers,
             1
         ));
+    }
+
+    #[test]
+    fn strict_database_scene_headroom_gives_the_source_tee_a_quiet_stem() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::TD;
+        graph.add_node(Node::new("api", "REST API"));
+        graph.add_node(Node::with_shape("cache", "Redis", NodeShape::Database));
+        graph.add_node(Node::with_shape(
+            "database",
+            "PostgreSQL",
+            NodeShape::Database,
+        ));
+        graph.add_edge(Edge::new("api", "database"));
+        graph.add_edge(Edge::new("api", "cache"));
+        graph.add_edge(Edge::new("cache", "database"));
+        let layers = vec![vec![0], vec![1], vec![2]];
+        let config = CoarseLayoutConfig::default();
+        let policy = LayoutSpacingPolicy::new(
+            config.subgraph_gutter,
+            config.node_padding,
+            config.min_horizontal_spacing,
+            config.min_vertical_spacing,
+        );
+
+        assert!(database_intermediate_scene_requires_headroom(
+            &graph, &layers, 0
+        ));
+        assert_eq!(
+            policy.spacing_for_layer(&graph, &layers, 0),
+            SPACING_MINIMAL + 2
+        );
     }
 
     #[test]

@@ -64,6 +64,19 @@ fn render_fixture_output(
     (graph, outcome.output)
 }
 
+fn rows_with_multiple_arrowheads(frame: &str, arrow: char) -> Vec<Vec<usize>> {
+    frame
+        .lines()
+        .map(|line| {
+            line.chars()
+                .enumerate()
+                .filter_map(|(column, glyph)| (glyph == arrow).then_some(column))
+                .collect::<Vec<_>>()
+        })
+        .filter(|columns| columns.len() >= 2)
+        .collect()
+}
+
 #[test]
 fn titled_subgraph_boundary_entries_have_connected_arrows_across_homologs() {
     let mut failures = Vec::new();
@@ -140,14 +153,16 @@ fn exact_td_mixed_target_keeps_both_entries_visible_across_matrix() {
                 || !report.raw.shaftless_arrowheads.is_empty()
                 || !report.geometry.errors.is_empty()
                 || !report.geometry.untraced_fallback_edges.is_empty()
+                || !report.portal_trace.fallback_rejection_reasons().is_empty()
                 || !report.critic.findings.is_empty()
             {
                 failures.push(format!(
-                    "{style:?} optimized={optimized}: arrows={} shaftless={:?} geometry={:?} untraced={:?} critic={:?}",
+                    "{style:?} optimized={optimized}: arrows={} shaftless={:?} geometry={:?} untraced={:?} rejections={:?} critic={:?}",
                     report.raw.arrowheads,
                     report.raw.shaftless_arrowheads,
                     report.geometry.errors,
                     report.geometry.untraced_fallback_edges,
+                    report.portal_trace.fallback_rejection_reasons(),
                     report.critic.findings
                 ));
             }
@@ -159,6 +174,38 @@ fn exact_td_mixed_target_keeps_both_entries_visible_across_matrix() {
         "TD mixed sibling/internal target-entry regressions:\n{}",
         failures.join("\n")
     );
+}
+
+#[test]
+fn mixed_vertical_sibling_targets_keep_a_readable_entry_gap() {
+    for fixture in [
+        "collision_sibling_subgraphs_td",
+        "collision_sibling_subgraphs_bt",
+    ] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let (_graph, frame) = render_fixture_output(fixture, style, optimized);
+                let arrow = match (fixture, style) {
+                    ("collision_sibling_subgraphs_td", BaseStyle::Ascii) => 'v',
+                    ("collision_sibling_subgraphs_td", BaseStyle::Unicode) => '↓',
+                    ("collision_sibling_subgraphs_bt", BaseStyle::Ascii) => '^',
+                    ("collision_sibling_subgraphs_bt", BaseStyle::Unicode) => '↑',
+                    _ => unreachable!("fixture matrix is exhaustive"),
+                };
+                let rows = rows_with_multiple_arrowheads(&frame, arrow);
+                assert_eq!(
+                    rows.len(),
+                    1,
+                    "expected one mixed-target row with two {arrow:?} tips for {fixture} {style:?} optimized={optimized}:\n{frame}"
+                );
+                assert!(
+                    rows[0][1].saturating_sub(rows[0][0]) >= 3,
+                    "mixed sibling target tips need at least one visual spacer cell for {fixture} {style:?} optimized={optimized}: columns={:?}\n{frame}",
+                    rows[0]
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -196,6 +243,178 @@ fn exact_horizontal_mixed_target_keeps_both_entries_visible_across_matrix() {
         "horizontal mixed sibling/internal target-entry regressions:\n{}",
         failures.join("\n")
     );
+}
+
+#[test]
+fn horizontal_mixed_target_receivers_keep_a_quiet_shaft_before_the_arrow() {
+    for fixture in [
+        "collision_sibling_subgraphs_lr",
+        "collision_sibling_subgraphs_rl",
+    ] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let report = render_fixture(fixture, style, optimized);
+                let (_graph, output) = render_fixture_output(fixture, style, optimized);
+                let forbidden = match style {
+                    BaseStyle::Ascii => ["+>+", "+<+"],
+                    BaseStyle::Unicode => ["┌→┤", "├←┐"],
+                    _ => unreachable!("test matrix only includes ASCII and Unicode"),
+                };
+                assert!(
+                    forbidden.iter().all(|pattern| !output.contains(pattern)),
+                    "mixed horizontal receiver must keep a quiet shaft before its arrow for {fixture} {style:?} optimized={optimized}:\n{}",
+                    output
+                );
+                assert_eq!(
+                    report.raw.arrowheads, 4,
+                    "quiet receiver shaft must not remove an arrow for {fixture} {style:?} optimized={optimized}:\n{}",
+                    output
+                );
+                assert!(
+                    report.geometry.untraced_fallback_edges.is_empty(),
+                    "quiet receiver shaft must preserve traceability for {fixture} {style:?} optimized={optimized}: {:?}\n{}",
+                    report.geometry.untraced_fallback_edges,
+                    output
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn direct_bt_subgraph_portals_keep_a_quiet_turn_shaft() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let report = render_fixture("subgraph_direct_bt", style, optimized);
+            let (_graph, frame) = render_fixture_output("subgraph_direct_bt", style, optimized);
+            let forbidden = match style {
+                BaseStyle::Ascii => ["++", "+-+"],
+                BaseStyle::Unicode => ["└┐", "┌┘"],
+                _ => unreachable!("test matrix only includes ASCII and Unicode"),
+            };
+            assert!(
+                forbidden.iter().all(|pattern| !frame.contains(pattern)),
+                "direct BT portal turn must keep a quiet shaft for {style:?} optimized={optimized}:\n{frame}"
+            );
+            if style == BaseStyle::Unicode {
+                assert!(
+                    !frame.contains("└─┐") && !frame.contains("┌─┘"),
+                    "direct BT portal turn must not form a one-cell Unicode hook for optimized={optimized}:\n{frame}"
+                );
+            }
+            assert_eq!(
+                report.raw.arrowheads, 1,
+                "direct BT portal repair must preserve the target arrow for {style:?} optimized={optimized}:\n{frame}"
+            );
+            assert!(
+                report.raw.shaftless_arrowheads.is_empty() && report.geometry.errors.is_empty(),
+                "direct BT portal repair must preserve a connected target entry for {style:?} optimized={optimized}: raw={:?} geometry={:?}\n{frame}",
+                report.raw.shaftless_arrowheads,
+                report.geometry.errors
+            );
+        }
+    }
+}
+
+#[test]
+fn narrow_bt_external_portals_keep_the_source_node_turn_clear() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let report = render_fixture("subgraph_narrow_bt", style, optimized);
+            let (_graph, frame) = render_fixture_output("subgraph_narrow_bt", style, optimized);
+            let forbidden = match style {
+                BaseStyle::Ascii => ["++", "+-+"],
+                BaseStyle::Unicode => ["└┐", "┌┘"],
+                _ => unreachable!("test matrix only includes ASCII and Unicode"),
+            };
+            assert!(
+                forbidden.iter().all(|pattern| !frame.contains(pattern)),
+                "narrow BT external portal must keep a quiet source turn for {style:?} optimized={optimized}:\n{frame}"
+            );
+            if style == BaseStyle::Unicode {
+                assert!(
+                    !frame.contains("└─┐") && !frame.contains("┌─┘"),
+                    "narrow BT external portal must not form a one-cell Unicode hook for optimized={optimized}:\n{frame}"
+                );
+            }
+            assert_eq!(
+                report.raw.arrowheads, 2,
+                "narrow BT portal repair must preserve both arrows for {style:?} optimized={optimized}:\n{frame}"
+            );
+            assert!(
+                report.raw.shaftless_arrowheads.is_empty() && report.geometry.errors.is_empty(),
+                "narrow BT portal repair must preserve connected entries for {style:?} optimized={optimized}: raw={:?} geometry={:?}\n{frame}",
+                report.raw.shaftless_arrowheads,
+                report.geometry.errors
+            );
+        }
+    }
+}
+
+#[test]
+fn flat_td_external_entries_use_one_title_gutter_lane_across_matrix() {
+    for fixture in ["subgraph_single_td", "subgraph_outside_td"] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let report = render_fixture(fixture, style, optimized);
+                let (_graph, frame) = render_fixture_output(fixture, style, optimized);
+                let forbidden = match style {
+                    BaseStyle::Ascii => ["+-+", "+--+"],
+                    BaseStyle::Unicode => ["┌─┘", "└─┐"],
+                    _ => unreachable!("test matrix only includes ASCII and Unicode"),
+                };
+                assert!(
+                    forbidden.iter().all(|pattern| !frame.contains(pattern)),
+                    "flat TD external entry must not form a title-row hook for {fixture} {style:?} optimized={optimized}:\n{frame}"
+                );
+                assert!(
+                    report.raw.shaftless_arrowheads.is_empty()
+                        && report.geometry.errors.is_empty(),
+                    "flat TD title-gutter lane must preserve connected arrows for {fixture} {style:?} optimized={optimized}: raw={:?} geometry={:?}\n{frame}",
+                    report.raw.shaftless_arrowheads,
+                    report.geometry.errors
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn nested_bt_external_entry_keeps_a_quiet_target_turn() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let report = render_fixture("subgraph_nested_bt", style, optimized);
+            let (_graph, frame) = render_fixture_output("subgraph_nested_bt", style, optimized);
+            let forbidden = match style {
+                BaseStyle::Ascii => ["++", "+-+"],
+                BaseStyle::Unicode => ["└┐", "┌┘"],
+                _ => unreachable!("test matrix only includes ASCII and Unicode"),
+            };
+            assert!(
+                forbidden.iter().all(|pattern| !frame.contains(pattern)),
+                "nested BT external entry must keep a quiet target turn for {style:?} optimized={optimized}:\n{frame}"
+            );
+            if style == BaseStyle::Unicode {
+                assert!(
+                    !frame.contains("└─┐") && !frame.contains("┌─┘"),
+                    "nested BT external entry must not form a one-cell Unicode hook for optimized={optimized}:\n{frame}"
+                );
+            }
+            assert_eq!(
+                report.raw.arrowheads, 2,
+                "nested BT quiet-turn repair must preserve both arrows for {style:?} optimized={optimized}:\n{frame}"
+            );
+            assert!(
+                report.raw.shaftless_arrowheads.is_empty()
+                    && report.geometry.errors.is_empty()
+                    && report.geometry.untraced_fallback_edges.is_empty(),
+                "nested BT quiet-turn repair must preserve connected, traced entries for {style:?} optimized={optimized}: raw={:?} geometry={:?} untraced={:?}\n{frame}",
+                report.raw.shaftless_arrowheads,
+                report.geometry.errors,
+                report.geometry.untraced_fallback_edges
+            );
+        }
+    }
 }
 
 #[test]
@@ -376,6 +595,10 @@ fn direct_td_terminal_entries_use_target_center_portals_without_hooks() {
                     "+-+"
                 } else {
                     "┌─┘"
+                }) && !frame.contains(if style == BaseStyle::Ascii {
+                    "++"
+                } else {
+                    "└┐"
                 }),
                 "expected no one-cell TD portal hooks for {style:?} optimized={optimized}\n{frame}"
             );
@@ -385,6 +608,61 @@ fn direct_td_terminal_entries_use_target_center_portals_without_hooks() {
                     "expected {label:?} to remain visible for {style:?} optimized={optimized}\n{frame}"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn stacked_td_sibling_corridors_trace_every_cross_boundary_edge() {
+    let input = fs::read_to_string("tests/fixtures/inputs/collision_sibling_triple_td.md")
+        .expect("read stacked TD sibling fixture");
+
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let mut parsed = parse(&input, false)
+                .expect("parse stacked TD sibling fixture")
+                .graph;
+            let mut config = Config {
+                composite_style: CompositeStyle::from_base(style),
+                optimize_render: optimized,
+                ..Default::default()
+            };
+            config.spacing = config.spacing.for_direction(parsed.direction);
+            measure::measure_graph(&mut parsed, &config);
+            let (graph, outcome) = layout_and_render_with_feedback(parsed, config)
+                .expect("render stacked TD sibling fixture");
+            let report = evidence::build(&graph, &outcome);
+
+            assert_eq!(
+                report.geometry.traced_edges, 5,
+                "all TD sibling edges must be traced for {style:?} optimized={optimized}: {:?}",
+                report.geometry
+            );
+            assert!(
+                report.geometry.untraced_fallback_edges.is_empty(),
+                "TD sibling corridors must not fall back to generic border elbows for {style:?} optimized={optimized}: {:?}",
+                report.geometry.untraced_fallback_edges
+            );
+            assert!(
+                report.geometry.errors.is_empty(),
+                "TD sibling corridor trace must be error-free for {style:?} optimized={optimized}: {:?}",
+                report.geometry.errors
+            );
+            assert!(
+                !outcome.output.lines().any(|line| {
+                    line.contains(if style == BaseStyle::Ascii {
+                        "+-+"
+                    } else {
+                        "└─┐"
+                    }) || line.contains(if style == BaseStyle::Ascii {
+                        "+-+"
+                    } else {
+                        "┌─┘"
+                    })
+                }),
+                "TD sibling corridor must not emit a degenerate one-cell hook for {style:?} optimized={optimized}:\n{}",
+                outcome.output
+            );
         }
     }
 }

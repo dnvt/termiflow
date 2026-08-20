@@ -21,10 +21,12 @@ use super::{
     style_for_edge_kind, RouteOwner, ROUTE_Z_INDEX,
 };
 use crate::portals::{
-    bt_nested_boundary_lane, bt_sibling_chain_target_ids, bt_title_margin_for_edge,
+    bt_nested_boundary_lane_with_quiet_turn, bt_sibling_chain_target_ids,
+    bt_single_external_entry_source_center_allowed,
+    bt_target_portal_x_avoiding_single_cell_turn_with_source_center, bt_title_margin_for_edge,
     td_nested_boundary_lane, td_sibling_portal_x, td_sibling_title_gutter,
-    td_terminal_entry_target_center, title_margin_for_direction, title_safe_portal_x,
-    PortalColumnPreference,
+    td_single_external_entry_uses_literal_gutter_lane, td_terminal_entry_target_center,
+    title_margin_for_direction, title_safe_portal_x, PortalColumnPreference,
 };
 
 pub(super) fn preferred_portal_x(
@@ -336,11 +338,11 @@ fn direct_td_sibling_pair<'a>(
 }
 
 fn td_sibling_corridor_row(source_border_y: usize, target_border_y: usize) -> Option<usize> {
-    // A midpoint turn needs one straight row on each side to read as a
-    // corridor rather than as a corner glued to one of the sibling borders.
-    // Narrow two-row gaps stay on the established route until they receive a
-    // separate clearance-aware layout contract.
-    if target_border_y.saturating_sub(source_border_y) < 4 {
+    // A two-row gap still has one valid topology-owned turn row: the route
+    // turns immediately below the source border, then keeps a straight portal
+    // shaft into the target border.  Reject only a one-row gap, where there
+    // is no cell left to separate the turn from either boundary.
+    if target_border_y.saturating_sub(source_border_y) < 3 {
         return None;
     }
     let first = source_border_y.saturating_add(1);
@@ -368,7 +370,14 @@ fn td_sibling_bridge_y(target: &crate::graph::Subgraph, arrow_y: usize) -> Optio
         max_inside
     };
     let max_safe = max_inside.min(title_safe_max);
-    let desired = arrow_y.saturating_sub(1).min(max_safe);
+    // If the target has no quiet row between its title-safe band and the
+    // arrow, let the final horizontal leg share the arrow row. This produces
+    // an arrow-facing entry instead of a tiny title-adjacent corner pair.
+    let desired = if arrow_y == max_safe.saturating_add(1) {
+        arrow_y
+    } else {
+        arrow_y.saturating_sub(1).min(max_safe)
+    };
     (desired >= min_inside).then_some(desired)
 }
 
@@ -396,7 +405,7 @@ fn route_td_sibling_corridor(
     let Some(corridor_y) = td_sibling_corridor_row(source_border_y, target_border_y) else {
         return false;
     };
-    let Some(bridge_y) = td_sibling_bridge_y(target, arrow_y) else {
+    let Some(bridge_y_base) = td_sibling_bridge_y(target, arrow_y) else {
         return false;
     };
 
@@ -407,16 +416,55 @@ fn route_td_sibling_corridor(
             .x
             .saturating_add(source.bounds.width.saturating_sub(2)),
     );
-    let preferred_target_lane = preferred_portal_x(
-        &target.bounds,
-        target.title.as_deref(),
-        arrow_x,
-        canvas,
-        graph.direction,
-        true,
-    );
+    let preferred_target_lane = if matches!(graph.direction, Direction::TD | Direction::TB) {
+        // A lone direct sibling crossing has no competing lane to separate.
+        // Keep its entry on the node center whenever one quiet cell remains
+        // after the title text; the wider two-cell generic keep-out otherwise
+        // creates a side-lane hook in tight titled envelopes. Multi-crossing
+        // chains still use td_sibling_portal_x below and retain their distinct
+        // title-gutter lanes.
+        let center_x = target.bounds.x + target.bounds.width / 2;
+        let relaxed_center = title_safe_portal_x(
+            target.bounds.x,
+            target.bounds.width,
+            target.title.as_deref(),
+            center_x,
+            graph.direction,
+            title_margin_for_direction(graph.direction).saturating_sub(1),
+            PortalColumnPreference::Nearest,
+        );
+        if relaxed_center == center_x {
+            center_x
+        } else {
+            preferred_portal_x(
+                &target.bounds,
+                target.title.as_deref(),
+                arrow_x,
+                canvas,
+                graph.direction,
+                true,
+            )
+        }
+    } else {
+        preferred_portal_x(
+            &target.bounds,
+            target.title.as_deref(),
+            arrow_x,
+            canvas,
+            graph.direction,
+            true,
+        )
+    };
     let target_lane = td_sibling_portal_x(graph, &from.id, &to.id, arrow_x, graph.direction)
         .unwrap_or(preferred_target_lane);
+    // A jogged target lane needs one clean row above the arrow so its
+    // horizontal leg cannot touch the receiving node's top corner. The
+    // aligned tight case may share the arrow row because it has no jog at all.
+    let bridge_y = if target_lane != arrow_x {
+        bridge_y_base.min(arrow_y.saturating_sub(1))
+    } else {
+        bridge_y_base
+    };
 
     let owner_id = owner
         .map(|route_owner| route_owner.id.to_owned())
@@ -471,9 +519,13 @@ fn route_td_sibling_corridor(
         };
         plan.push_corner(target_lane, bridge_y, start_corner);
         plan.push_horizontal(bridge_y, target_lane, arrow_x, style.edge_h);
-        plan.push_corner(arrow_x, bridge_y, end_corner);
+        if bridge_y != arrow_y {
+            plan.push_corner(arrow_x, bridge_y, end_corner);
+        }
     }
-    plan.push_vertical(arrow_x, bridge_y, arrow_y, style.edge_v);
+    if bridge_y != arrow_y {
+        plan.push_vertical(arrow_x, bridge_y, arrow_y, style.edge_v);
+    }
 
     if let Some(reason) = plan.validation_error(canvas.width, canvas.height) {
         canvas.record_fallback_route_rejection(
@@ -937,13 +989,21 @@ pub(super) fn route_cross_subgraph_td(
             get_node_center(to).0,
         );
         let final_entry_x = direct_target_center.unwrap_or_else(|| {
-            preferred_portal_x(
+            let title_margin = if td_single_external_entry_uses_literal_gutter_lane(
+                graph, &from.id, &to.id, sg_id,
+            ) {
+                0
+            } else {
+                title_margin_for_direction(graph.direction)
+            };
+            preferred_portal_x_with_margin(
                 &sg.bounds,
                 sg.title.as_deref(),
                 requested_arrow_x,
                 canvas,
                 graph.direction,
                 true,
+                title_margin,
             )
         });
         let direct_sibling_entry = enter_subgraphs.len() == 1;
@@ -2016,8 +2076,15 @@ fn route_bt_nested_entry_boundary_chain(
         return false;
     }
 
-    let lane =
-        bt_nested_boundary_lane(graph, &enter_subgraphs, arrow_x).unwrap_or_else(|| arrow_x.max(1));
+    let lane = bt_nested_boundary_lane_with_quiet_turn(
+        graph,
+        &enter_subgraphs,
+        arrow_x,
+        stem_start_x,
+        arrow_x,
+        None,
+    )
+    .unwrap_or_else(|| arrow_x.max(1));
     let outer = boundaries[0];
     let outer_bottom = outer
         .bounds
@@ -2261,6 +2328,11 @@ pub(super) fn route_cross_subgraph_bt(
                     let scene_literal_entry = graph
                         .bt_sibling_target_entry_scene()
                         .is_some_and(|scene| scene.target_subgraph_id == tgt_id);
+                    let title_margin = if scene_literal_entry {
+                        0
+                    } else {
+                        bt_title_margin_for_edge(graph, &from.id, &to.id, tgt_id)
+                    };
                     let entry_x = preferred_portal_x_with_margin(
                         &tgt_sg.bounds,
                         tgt_sg.title.as_deref(),
@@ -2268,11 +2340,23 @@ pub(super) fn route_cross_subgraph_bt(
                         canvas,
                         Direction::BT,
                         true,
-                        if scene_literal_entry {
-                            0
-                        } else {
-                            bt_title_margin_for_edge(graph, &from.id, &to.id, tgt_id)
-                        },
+                        title_margin,
+                    );
+                    let allow_source_center = bt_single_external_entry_source_center_allowed(
+                        graph, &from.id, &to.id, tgt_id,
+                    );
+                    let entry_x = bt_target_portal_x_avoiding_single_cell_turn_with_source_center(
+                        tgt_sg.bounds.x,
+                        tgt_sg.bounds.width,
+                        tgt_sg.title.as_deref(),
+                        entry_x,
+                        stem_start_x,
+                        from_sg
+                            .is_none()
+                            .then(|| (from.x, from.x + from.width.saturating_sub(1))),
+                        arrow_x,
+                        title_margin,
+                        allow_source_center,
                     );
                     let inside_y = if chain_targets
                         .as_ref()
@@ -3706,7 +3790,8 @@ mod tests {
     #[test]
     fn td_sibling_corridor_requires_clearance_on_both_sides() {
         assert_eq!(td_sibling_corridor_row(8, 12), Some(10));
-        assert_eq!(td_sibling_corridor_row(13, 16), None);
+        assert_eq!(td_sibling_corridor_row(13, 16), Some(14));
+        assert_eq!(td_sibling_corridor_row(13, 15), None);
     }
 
     #[test]

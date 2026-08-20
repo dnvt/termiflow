@@ -658,6 +658,14 @@ fn find_subgraph_title_corruption(
         };
         let title_len = title_fmt.chars().count();
         let title_y = subgraph_title_y(&subgraph.bounds, direction);
+        let visible_title_span = crate::graph::subgraph_title_text_span_with_padding_sides(
+            subgraph.bounds.x,
+            subgraph.bounds.width,
+            title,
+            direction,
+            title_gutter.leading_extra_padding,
+            title_gutter.trailing_extra_padding,
+        );
 
         let mut cells = Vec::new();
         for (offset, expected_ch) in title_fmt.chars().enumerate() {
@@ -665,8 +673,9 @@ fn find_subgraph_title_corruption(
             let Some(cell) = frame.get(x, title_y) else {
                 continue;
             };
-            let is_wrapper_padding = offset == 0 || offset + 1 == title_len;
-            let is_owned_route_padding = is_wrapper_padding
+            let is_title_gutter = visible_title_span
+                .is_some_and(|(visible_start, visible_end)| x < visible_start || x > visible_end);
+            let is_owned_route_padding = is_title_gutter
                 && cell.z_index > 0
                 && matches!(
                     cell.owner_kind,

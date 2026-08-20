@@ -3,10 +3,63 @@
 //! Supports 9 node shapes with direction-aware junction placement.
 
 use crate::graph::{Direction, NodeShape};
-use crate::style::StyleChars;
+use crate::style::{display_char_width, display_width, StyleChars};
 
 use super::canvas::{is_arrow, is_horizontal, is_junction, is_vertical, Canvas};
 use super::subgraph_title_y;
+
+/// Draw a label into a terminal-cell-sized content band.
+///
+/// The canvas is indexed by logical cells, while a wide Unicode glyph occupies
+/// more than one terminal cell. A NUL continuation marker reserves those extra
+/// cells in the canvas and is omitted when the final frame is serialized. This
+/// keeps border coordinates, route coordinates, and terminal display columns
+/// in agreement without making routing code Unicode-width-aware.
+fn draw_centered_label(canvas: &mut Canvas, x: usize, y: usize, width: usize, label: &str) {
+    if width == 0 {
+        return;
+    }
+
+    let label_width = display_width(label);
+    let padding = if width >= label_width.saturating_add(2) {
+        1
+    } else {
+        0
+    };
+    let available = width.saturating_sub(padding * 2);
+    let left = padding + available.saturating_sub(label_width) / 2;
+    let mut cursor = x.saturating_add(left);
+
+    for ch in label.chars() {
+        let char_width = display_char_width(ch);
+        if char_width == 0 {
+            // Combining marks and variation selectors belong immediately after
+            // the preceding glyph in the serialized string. A wide glyph has
+            // a continuation cell available; otherwise keep the mark adjacent
+            // in the next logical cell without changing the cell budget.
+            if cursor > x {
+                canvas.set_inferred(cursor.saturating_sub(1), y, ch);
+            } else if cursor < x.saturating_add(width) {
+                canvas.set_inferred(cursor, y, ch);
+                cursor = cursor.saturating_add(1);
+            }
+            continue;
+        }
+
+        if cursor >= x.saturating_add(width) {
+            break;
+        }
+        canvas.set_inferred(cursor, y, ch);
+        cursor = cursor.saturating_add(1);
+        for _ in 1..char_width {
+            if cursor >= x.saturating_add(width) {
+                break;
+            }
+            canvas.set_inferred(cursor, y, '\0');
+            cursor = cursor.saturating_add(1);
+        }
+    }
+}
 
 /// Draw a subgraph bounding box with optional title.
 pub fn draw_subgraph(
@@ -352,14 +405,7 @@ fn draw_boxlike(
         if row_y < y + 1 || row_y >= bottom_y {
             continue;
         }
-        let padded_label = format!(" {line:^label_area_width$} ");
-        for (i, c) in padded_label
-            .chars()
-            .take(width.saturating_sub(2))
-            .enumerate()
-        {
-            canvas.set(x + 1 + i, row_y, c);
-        }
+        draw_centered_label(canvas, x + 1, row_y, label_area_width + 2, line);
     }
 
     // Bottom border - check for edge exits below (TD/TB direction only)
@@ -484,14 +530,7 @@ fn draw_diamond(
     canvas.set(x + width.saturating_sub(1), y, top_right);
 
     canvas.set(x, y + 1, '<');
-    let padded_label = format!(" {:^width$} ", label, width = width.saturating_sub(4));
-    for (i, c) in padded_label
-        .chars()
-        .take(width.saturating_sub(2))
-        .enumerate()
-    {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
+    draw_centered_label(canvas, x + 1, y + 1, width.saturating_sub(2), label);
     canvas.set(x + width.saturating_sub(1), y + 1, '>');
 
     canvas.set(x, y + 2, bottom_left);
@@ -524,10 +563,7 @@ fn draw_circle(
     canvas.set(x + width - 1, y, tr);
 
     canvas.set(x, y + 1, '(');
-    let padded_label = format!(" {:^width$} ", label, width = width - 4);
-    for (i, c) in padded_label.chars().take(width - 2).enumerate() {
-        canvas.set(x + 1 + i, y + 1, c);
-    }
+    draw_centered_label(canvas, x + 1, y + 1, width.saturating_sub(2), label);
     canvas.set(x + width - 1, y + 1, ')');
 
     canvas.set(x, y + 2, bl);
@@ -577,10 +613,7 @@ fn draw_double_circle(
     canvas.set(x + 1, y + 1, '(');
     // content area is width - 6: 2 for "((" and 2 for "))" and 1 space each side
     let content_width = width.saturating_sub(6);
-    let padded_label = format!(" {label:^content_width$} ");
-    for (i, c) in padded_label.chars().take(width - 4).enumerate() {
-        canvas.set(x + 2 + i, y + 1, c);
-    }
+    draw_centered_label(canvas, x + 2, y + 1, content_width.saturating_add(2), label);
     canvas.set(x + width - 2, y + 1, ')');
     canvas.set(x + width - 1, y + 1, ')');
 
@@ -780,14 +813,7 @@ fn draw_asymmetric(
         if row_y < y + 1 || row_y >= bottom_y {
             continue;
         }
-        let padded_label = format!(" {line:^label_area_width$} ");
-        for (i, c) in padded_label
-            .chars()
-            .take(width.saturating_sub(2))
-            .enumerate()
-        {
-            canvas.set(x + 1 + i, row_y, c);
-        }
+        draw_centered_label(canvas, x + 1, row_y, label_area_width + 2, line);
     }
 
     canvas.set(x, bottom_y, ' ');
@@ -1030,6 +1056,33 @@ mod tests {
             row.contains("hi"),
             "label not found in interior row: {row:?}"
         );
+    }
+
+    #[test]
+    fn wide_cjk_label_preserves_terminal_box_width() {
+        let mut c = mk_canvas(20, 3);
+        draw_node(
+            &mut c,
+            0,
+            0,
+            12,
+            3,
+            &lines("日本語"),
+            NodeShape::Rectangle,
+            &UNICODE_CHARS,
+            Direction::LR,
+        );
+
+        let output = c.to_string_cropped(0);
+        let rows: Vec<_> = output.lines().collect();
+        assert_eq!(rows.len(), 3);
+        assert!(rows
+            .iter()
+            .all(|row| crate::style::display_width(row) == 12));
+        assert!(rows[1].contains("日本語"), "wide label missing: {output:?}");
+        assert_eq!(rows[0].chars().next(), Some('┌'));
+        assert_eq!(rows[0].chars().last(), Some('┐'));
+        assert_eq!(rows[1].chars().last(), Some('│'));
     }
 
     #[test]

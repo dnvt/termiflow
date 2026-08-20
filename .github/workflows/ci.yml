@@ -25,7 +25,7 @@ jobs:
         run: bash scripts/check_toolchain_policy.sh
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
 
@@ -148,7 +148,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Build renderer
         run: cargo build --locked --bin termiflow
@@ -208,7 +208,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Install cargo-deny
         run: cargo install cargo-deny --version 0.20.2 --locked

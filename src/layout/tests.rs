@@ -128,6 +128,27 @@ fn td_parallel_external_portals_align_to_internal_centers() {
 }
 
 #[test]
+#[cfg(feature = "maintainer-fixtures")]
+fn td_terminal_entry_sources_align_to_distinct_target_centers() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/collision_edge_corner_td.md")
+        .expect("read TD terminal-entry corner fixture");
+    let parsed = parse(&input, false).expect("parse TD terminal-entry corner fixture");
+    let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
+        .expect("layout TD terminal-entry corner fixture");
+
+    assert_eq!(
+        graph.get_node("A").expect("external source A").center_x(),
+        graph.get_node("B").expect("internal target B").center_x(),
+        "TD source A must align with its distinct terminal target B"
+    );
+    assert_eq!(
+        graph.get_node("D").expect("external source D").center_x(),
+        graph.get_node("C").expect("internal target C").center_x(),
+        "TD source D must align with its distinct terminal target C"
+    );
+}
+
+#[test]
 fn side_by_side_sibling_envelopes_keep_a_visual_gap_in_both_horizontal_directions() {
     for direction in [Direction::LR, Direction::RL] {
         let mut graph = Graph::new();
@@ -691,7 +712,7 @@ fn stacked_top_level_td_sibling_subgraphs_stay_vertically_compact() {
 
 #[test]
 #[cfg(feature = "maintainer-fixtures")]
-fn stacked_td_sibling_crossings_keep_two_connector_rows() {
+fn stacked_td_sibling_crossings_keep_three_connector_cells() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/collision_sibling_triple_td.md")
         .expect("read triple sibling fixture");
     let parsed = parse(&input, false).expect("parse triple sibling fixture");
@@ -706,8 +727,8 @@ fn stacked_td_sibling_crossings_keep_two_connector_rows() {
             .y
             .saturating_sub(upper.bounds.y.saturating_add(upper.bounds.height));
         assert!(
-            gap >= 2,
-            "expected two connector rows between {upper_id} and {lower_id}: upper={:?} lower={:?} gap={gap}",
+            gap >= 3,
+            "expected three connector cells between {upper_id} and {lower_id}: upper={:?} lower={:?} gap={gap}",
             upper.bounds,
             lower.bounds
         );

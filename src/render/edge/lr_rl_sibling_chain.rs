@@ -3,8 +3,10 @@
 //! A flat chain of titled siblings can otherwise collapse every cross-boundary
 //! transition onto the internal-node row.  The result is technically
 //! connected, but the middle sibling's incoming and outgoing roles read as one
-//! continuous bus.  This lowerer allocates one quiet corridor row per
-//! transition and keeps the reservation transactional.
+//! continuous bus.  This lowerer allocates distinct quiet corridor rows for
+//! the transitions, keeping the reservation transactional.  Layout supplies
+//! enough lateral gap for each turned bridge to read as a transition rather
+//! than a tiny box attached to two neighboring borders.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -298,12 +300,13 @@ fn choose_lanes(graph: &Graph, scene: &Scene) -> Option<Vec<usize>> {
         })
     };
     let mut candidates = Vec::new();
-    // Prefer the lower quiet band.  It keeps the inter-sibling corridors away
-    // from the caption row, where a one-row upper rail can otherwise resemble
-    // a second title border or a small box attached to the group frame.  Fall
-    // back to the upper band only when a longer chain needs more lanes than the
-    // lower band provides.
-    candidates.extend((scene.node_bottom..frame_bottom).filter(|row| title_safe(*row)));
+    // Prefer the lower quiet band, leaving one genuinely empty row after the
+    // node border. Starting at `node_bottom` makes the first corridor touch the
+    // node-adjacent composition and can render as a tiny box-attached corner at
+    // each sibling seam. Fall back to the upper band only when a longer chain
+    // needs more lanes than the lower band provides.
+    candidates
+        .extend((scene.node_bottom.saturating_add(1)..frame_bottom).filter(|row| title_safe(*row)));
     candidates.extend(
         (scene.frame.y.saturating_add(1)..scene.node_y)
             .rev()
@@ -690,6 +693,7 @@ mod tests {
     #[test]
     fn strict_horizontal_chain_selector_is_direction_gated() {
         for (fixture, expected) in [
+            ("collision_sibling_triple_lr.md", true),
             ("collision_sibling_triple_rl.md", true),
             ("collision_sibling_triple_bt.md", false),
             ("collision_sibling_subgraphs_rl.md", false),
@@ -706,10 +710,20 @@ mod tests {
             let scene = detect_scene(&graph);
             assert_eq!(scene.is_some(), expected, "fixture={fixture}");
             if let Some(scene) = scene {
-                assert_eq!(
-                    choose_lanes(&graph, &scene).map(|lanes| lanes.len()),
-                    Some(2)
+                let lanes = choose_lanes(&graph, &scene).expect("strict chain lanes");
+                assert_eq!(lanes.len(), 2);
+                assert!(
+                    lanes.iter().all(|lane| *lane > scene.node_bottom),
+                    "strict horizontal chain must leave one empty row after the node border: node_bottom={} lanes={lanes:?}",
+                    scene.node_bottom
                 );
+                if fixture.contains("triple_") {
+                    assert_eq!(
+                        lanes.iter().collect::<BTreeSet<_>>().len(),
+                        lanes.len(),
+                        "collinear strict horizontal transitions need distinct corridor rows: lanes={lanes:?}"
+                    );
+                }
             }
         }
     }
@@ -748,7 +762,11 @@ mod tests {
                     assert!(trace.mismatches.is_empty());
                     let lanes: BTreeSet<_> =
                         trace.boundary_claims.iter().map(|claim| claim.y).collect();
-                    assert_eq!(lanes.len(), 2);
+                    assert_eq!(
+                        lanes.len(),
+                        2,
+                        "collinear transitions should use distinct quiet corridor rows for {fixture} {style:?} optimized={optimized}"
+                    );
                     assert_eq!(trace.entry_decisions.len(), 2);
                     assert!(trace.contract_digest.is_some());
                     assert!(

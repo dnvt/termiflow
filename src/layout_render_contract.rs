@@ -444,6 +444,34 @@ fn bt_sibling_target_lane(
                     .all(|used_lane| lane.abs_diff(*used_lane) >= BT_SIBLING_MIN_RAIL_GAP)
         })
         .collect::<Vec<_>>();
+    // When the receiver has enough width, avoid making the whole transition
+    // collinear with its source. A short, explicit corridor turn makes the
+    // boundary ownership visible; narrow receivers fall back to the proven
+    // source-aligned lane below rather than inventing an unsafe hook.
+    let non_collinear = separated
+        .iter()
+        .copied()
+        .filter(|lane| *lane != desired)
+        .collect::<Vec<_>>();
+    let relaxed_non_collinear = candidates
+        .iter()
+        .copied()
+        .filter(|lane| {
+            *lane != desired
+                && next_source_lane.is_none_or(|next_lane| *lane != next_lane)
+                && used_target_lanes
+                    .iter()
+                    .all(|used_lane| lane.abs_diff(*used_lane) >= BT_SIBLING_MIN_RAIL_GAP)
+        })
+        .collect::<Vec<_>>();
+    let prefer_relaxed_turn = non_collinear.is_empty() && !relaxed_non_collinear.is_empty();
+    let separated = if !non_collinear.is_empty() {
+        non_collinear
+    } else if !relaxed_non_collinear.is_empty() {
+        relaxed_non_collinear
+    } else {
+        separated
+    };
     let separated = if separated.is_empty() {
         candidates
             .iter()
@@ -463,13 +491,23 @@ fn bt_sibling_target_lane(
         separated
     };
     let mut candidates = separated;
-    candidates.sort_by_key(|lane| {
-        (
-            lane.abs_diff(target.x + target.width / 2),
-            lane.abs_diff(desired),
-            *lane,
-        )
-    });
+    if prefer_relaxed_turn {
+        candidates.sort_by_key(|lane| {
+            (
+                usize::MAX - lane.abs_diff(desired),
+                lane.abs_diff(target.x + target.width / 2),
+                *lane,
+            )
+        });
+    } else {
+        candidates.sort_by_key(|lane| {
+            (
+                lane.abs_diff(target.x + target.width / 2),
+                lane.abs_diff(desired),
+                *lane,
+            )
+        });
+    }
     candidates.into_iter().find(|lane| {
         let title_safe = title_safe_portal_x(
             target_bounds.x,
