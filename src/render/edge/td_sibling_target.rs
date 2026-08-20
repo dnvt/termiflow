@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 use crate::graph::{Direction, Graph, Node, Subgraph};
 use crate::orientation::{is_before, OrientedCoords};
 use crate::portals::PortalSlots;
-use crate::render::fan_in_identity::target_port_columns;
 use crate::spacing::SpacingConfig;
 use crate::style::StyleChars;
 
@@ -26,6 +25,8 @@ use super::subgraph::lower_td_fallback_plan;
 use super::{set_route_char, RouteOwner};
 
 const STRATEGY: &str = "td-sibling-target-entry-identity";
+const PREFERRED_TARGET_ENTRY_GAP: usize = 3;
+const MINIMUM_TARGET_ENTRY_GAP: usize = 2;
 
 /// Reserve the exact TD mixed target scene as one transaction.
 pub(crate) fn plan_td_sibling_target_scene(
@@ -100,28 +101,59 @@ pub(crate) fn plan_td_sibling_target_scene(
         return reject_scene(canvas, &owner_id, "scene edge coverage is incomplete");
     }
 
-    let Some(target_arrow_y) = edge_entry_candidates(target_end, Direction::TD)
-        .first()
-        .map(|(_, y)| *y)
-    else {
-        return reject_scene(canvas, &owner_id, "target has no entry row");
-    };
-    let target_ports = target_port_columns(target_end.x, target_end.width, 2)
+    let target_candidates = edge_entry_candidates(target_end, Direction::TD)
         .into_iter()
-        .map(|x| (x, target_arrow_y))
         .filter(|(x, y)| {
             *x < canvas.width
                 && *y < canvas.height
                 && !is_subgraph_title_cell(graph, *x, y.saturating_sub(1))
         })
         .collect::<Vec<_>>();
-    if target_ports.len() != 2 || target_ports[0].0.abs_diff(target_ports[1].0) < 2 {
+    let mut target_ports = None;
+    for minimum_gap in [PREFERRED_TARGET_ENTRY_GAP, MINIMUM_TARGET_ENTRY_GAP] {
+        let mut best = None;
+        for (left_index, left) in target_candidates.iter().enumerate() {
+            for right in target_candidates.iter().skip(left_index + 1) {
+                let gap = left.0.abs_diff(right.0);
+                if gap < minimum_gap {
+                    continue;
+                }
+                let distance = left.0.abs_diff(target_end.center_x())
+                    + right.0.abs_diff(target_end.center_x());
+                let pair = if left.0 <= right.0 {
+                    (*left, *right)
+                } else {
+                    (*right, *left)
+                };
+                // Prefer the pair closest to the title-safe right-side
+                // portal when centered pairs tie.  This shortens the
+                // target-side bridge without changing the required gap.
+                let score = (
+                    distance,
+                    gap,
+                    usize::MAX.saturating_sub(pair.1 .0),
+                    usize::MAX.saturating_sub(pair.0 .0),
+                );
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_score, _)| score < *best_score)
+                {
+                    best = Some((score, pair));
+                }
+            }
+        }
+        if let Some((_, pair)) = best {
+            target_ports = Some(vec![pair.0, pair.1]);
+            break;
+        }
+    }
+    let Some(target_ports) = target_ports else {
         return reject_scene(
             canvas,
             &owner_id,
             "target has no separated title-safe entries",
         );
-    }
+    };
 
     let baseline = canvas.clone();
     let debug = crate::runtime::current().diagnostics.timing;
@@ -517,6 +549,7 @@ pub(crate) fn plan_td_sibling_target_scene(
             }
             continue;
         }
+
         if let Some(reason) = plan.validation_error(canvas.width, canvas.height) {
             if debug {
                 eprintln!("  {STRATEGY} plan rejected: {reason}");

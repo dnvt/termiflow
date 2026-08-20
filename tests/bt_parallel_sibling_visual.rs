@@ -50,6 +50,18 @@ fn direct_bt_parallel_edges_keep_three_boundary_lanes_distinct() {
                 "direct BT source and target lanes must stay paired for {style:?} optimized={optimized}:\n{}",
                 outcome.output
             );
+            for boundary in
+                outcome.portal_trace.boundaries.iter().filter(|boundary| {
+                    boundary.boundary_id == "SG1" || boundary.boundary_id == "SG2"
+                })
+            {
+                assert_eq!(
+                    boundary.slot_x,
+                    Some(boundary.desired_x),
+                    "strict BT parallel scene must keep each portal on its paired node lane for {style:?} optimized={optimized}:\n{}",
+                    outcome.output
+                );
+            }
             assert!(
                 outcome.output.contains("Source") && outcome.output.contains("Target"),
                 "direct BT titled siblings must remain readable for {style:?} optimized={optimized}:\n{}",
@@ -57,16 +69,37 @@ fn direct_bt_parallel_edges_keep_three_boundary_lanes_distinct() {
             );
 
             match style {
-                BaseStyle::Ascii => assert!(
-                    !outcome.output.contains("Target |"),
-                    "the first BT rail must not touch the Target title gutter for optimized={optimized}:\n{}",
-                    outcome.output
-                ),
-                BaseStyle::Unicode => assert!(
-                    !outcome.output.contains("Target │"),
-                    "the first BT rail must not touch the Target title gutter for optimized={optimized}:\n{}",
-                    outcome.output
-                ),
+                BaseStyle::Ascii => {
+                    assert!(
+                        !outcome.output.contains("Target |"),
+                        "the first BT rail must not touch the Target title gutter for optimized={optimized}:\n{}",
+                        outcome.output
+                    );
+                    assert!(
+                        !outcome.output.lines().any(|line| {
+                            line.contains("++") || line.contains("+-+")
+                        }),
+                        "BT parallel turns must expose a readable shaft between ASCII corners for optimized={optimized}:\n{}",
+                        outcome.output
+                    );
+                }
+                BaseStyle::Unicode => {
+                    assert!(
+                        !outcome.output.contains("Target │"),
+                        "the first BT rail must not touch the Target title gutter for optimized={optimized}:\n{}",
+                        outcome.output
+                    );
+                    assert!(
+                        !outcome.output.lines().any(|line| {
+                            line.contains("┌┘")
+                                || line.contains("└┐")
+                                || line.contains("┌─┘")
+                                || line.contains("└─┐")
+                        }),
+                        "BT parallel turns must expose a readable shaft between Unicode corners for optimized={optimized}:\n{}",
+                        outcome.output
+                    );
+                }
                 _ => unreachable!("focused direct-parallel test only uses ASCII and Unicode"),
             }
         }

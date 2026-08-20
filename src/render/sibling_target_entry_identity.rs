@@ -154,6 +154,109 @@ pub(crate) fn td_scene(graph: &Graph) -> Option<TdScene> {
     })
 }
 
+/// Layout-stage form of [`td_scene`] that does not depend on subgraph bounds.
+/// Envelope bounds are not copied back into the parsed graph until rendering,
+/// so placement repairs must select the same exact topology using the caller's
+/// already-resolved source and target subgraph IDs.
+pub(crate) fn td_scene_for_layout(
+    graph: &Graph,
+    source_subgraph_id: &str,
+    target_subgraph_id: &str,
+) -> Option<TdScene> {
+    if graph.direction != Direction::TD
+        || graph.subgraphs.len() != 2
+        || graph.nodes.len() != 4
+        || graph.edges.len() != 4
+        || graph.has_cycles()
+    {
+        return None;
+    }
+    let source_subgraph = graph.get_subgraph(source_subgraph_id)?;
+    let target_subgraph = graph.get_subgraph(target_subgraph_id)?;
+    if source_subgraph.parent_id.is_some()
+        || target_subgraph.parent_id.is_some()
+        || !source_subgraph.child_ids.is_empty()
+        || !target_subgraph.child_ids.is_empty()
+        || source_subgraph.title.is_none()
+        || target_subgraph.title.is_none()
+        || source_subgraph.node_ids.len() != 2
+        || target_subgraph.node_ids.len() != 2
+        || source_subgraph.node_ids.iter().any(|node_id| {
+            graph.get_node(node_id).is_none()
+                || graph.get_node_subgraph(node_id) != Some(source_subgraph_id)
+        })
+        || target_subgraph.node_ids.iter().any(|node_id| {
+            graph.get_node(node_id).is_none()
+                || graph.get_node_subgraph(node_id) != Some(target_subgraph_id)
+        })
+        || graph
+            .nodes
+            .iter()
+            .any(|node| node.shape != NodeShape::Rectangle)
+    {
+        return None;
+    }
+
+    let ordinary_edges = graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| {
+            !edge.is_back_edge && edge.kind == EdgeKind::Arrow && edge.label.is_none()
+        })
+        .collect::<Vec<_>>();
+    if ordinary_edges.len() != graph.edges.len() {
+        return None;
+    }
+    let internal_edges = |subgraph: &crate::graph::Subgraph| {
+        ordinary_edges
+            .iter()
+            .filter(|(_, edge)| {
+                subgraph.node_ids.contains(&edge.from) && subgraph.node_ids.contains(&edge.to)
+            })
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let source_internal = internal_edges(source_subgraph);
+    let target_internal = internal_edges(target_subgraph);
+    if source_internal.len() != 1 || target_internal.len() != 1 {
+        return None;
+    }
+    let source_start_node_id = source_internal[0].1.from.clone();
+    let source_end_node_id = source_internal[0].1.to.clone();
+    let target_start_node_id = target_internal[0].1.from.clone();
+    let target_end_node_id = target_internal[0].1.to.clone();
+    let cross_edges = ordinary_edges
+        .iter()
+        .filter(|(_, edge)| {
+            source_subgraph.node_ids.contains(&edge.from)
+                && target_subgraph.node_ids.contains(&edge.to)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    if cross_edges.len() != 2 {
+        return None;
+    }
+    let start_cross = cross_edges
+        .iter()
+        .find(|(_, edge)| edge.from == source_start_node_id && edge.to == target_start_node_id)?;
+    let end_cross = cross_edges
+        .iter()
+        .find(|(_, edge)| edge.from == source_end_node_id && edge.to == target_end_node_id)?;
+    Some(TdScene {
+        source_subgraph_id: source_subgraph_id.to_owned(),
+        target_subgraph_id: target_subgraph_id.to_owned(),
+        source_start_node_id,
+        source_end_node_id,
+        target_start_node_id,
+        target_end_node_id,
+        source_internal_edge_index: source_internal[0].0,
+        target_internal_edge_index: target_internal[0].0,
+        start_cross_edge_index: start_cross.0,
+        end_cross_edge_index: end_cross.0,
+    })
+}
+
 /// Return the exact flat two-sibling LR/RL scene whose target has one
 /// internal and one cross-subgraph incoming edge.  The horizontal lowerer
 /// consumes this proof before it reserves side rows or boundary portals.

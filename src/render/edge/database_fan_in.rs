@@ -362,13 +362,10 @@ fn outer_bypass_path(
     side: usize,
     coords: &OrientedCoords,
     source: &Node,
-    intermediate: &Node,
+    _intermediate: &Node,
 ) -> Vec<(usize, usize)> {
     let mut path = Vec::new();
-    let mut first_turn = start;
-    let mut first_primary = start;
-    let (first_axis, second_axis);
-    if matches!(
+    let (first_turn, first_primary, first_axis, second_axis) = if matches!(
         coords.direction,
         Direction::TD | Direction::TB | Direction::BT
     ) {
@@ -378,32 +375,29 @@ fn outer_bypass_path(
         } else {
             source.x.saturating_add(2)
         };
-        coords.set_secondary(&mut first_turn.0, &mut first_turn.1, pre_secondary);
-        let pre_primary = if coords.direction == Direction::BT {
-            // Keep the outer bypass one cell beyond the intermediate's
-            // receiver entry.  With the generic database clearance, using
-            // `bottom_y()` would paint over the intermediate arrowhead.
-            intermediate.bottom_y().saturating_add(1)
-        } else {
-            // The direct source→intermediate route owns the row immediately
-            // above the receiver.  Leave one quiet row before the bypass
-            // turns so its horizontal rail cannot erase that arrowhead.
-            intermediate.y.saturating_sub(2)
-        };
-        coords.set_primary(&mut first_primary.0, &mut first_primary.1, pre_primary);
-        coords.set_secondary(&mut first_primary.0, &mut first_primary.1, pre_secondary);
-        first_axis = crate::orientation::Axis::Horizontal;
-        second_axis = crate::orientation::Axis::Vertical;
+        // Keep one quiet primary-axis cell after the source exit before the
+        // bypass leaves the source stem. Starting the bypass on the border
+        // makes the source tee read like a stray `+---+` hook; the direct
+        // source→intermediate edge already owns this short prefix, so the
+        // later branch remains collision-safe and the intermediate arrow
+        // still has its own entry cell.
+        let first_turn = coords.advance(start.0, start.1, 1);
+        let first_primary = coords.with_secondary(first_turn.0, first_turn.1, pre_secondary);
+        (first_turn, first_primary, coords.primary, coords.secondary)
     } else {
-        // Step one cell in flow direction before leaving the source axis. The
-        // direct source→intermediate edge shares this short stem, so the
-        // branch junction is explicit one cell away from the source border
-        // instead of looking like a vertical rail glued to its corner.
-        first_turn = coords.advance(start.0, start.1, 1);
-        first_primary = coords.with_secondary(first_turn.0, first_turn.1, side);
-        first_axis = crate::orientation::Axis::Horizontal;
-        second_axis = crate::orientation::Axis::Vertical;
-    }
+        // Leave two quiet cells in the source stem before leaving the source
+        // axis. The direct source→intermediate edge shares this prefix, so a
+        // two-cell stem makes the source-owned tee read as an intentional
+        // branch rather than a one-cell `+-+` hook glued to the node corner.
+        let first_turn = coords.advance(start.0, start.1, 2);
+        let first_primary = coords.with_secondary(first_turn.0, first_turn.1, side);
+        (
+            first_turn,
+            first_primary,
+            crate::orientation::Axis::Horizontal,
+            crate::orientation::Axis::Vertical,
+        )
+    };
     let start_side = coords.with_secondary(first_primary.0, first_primary.1, side);
     let target_before = coords.retreat(end.0, end.1, 1);
     let end_side = coords.with_secondary(target_before.0, target_before.1, side);
@@ -648,8 +642,11 @@ fn source_branch_junction(
 
 #[cfg(test)]
 mod tests {
-    use super::route_database_intermediate_scene;
+    use super::{
+        edge_entry_point, edge_exit_point, outer_bypass_path, route_database_intermediate_scene,
+    };
     use crate::graph::{Direction, Edge, Graph, Node, NodeShape};
+    use crate::orientation::OrientedCoords;
     use crate::render::canvas::Canvas;
     use crate::style::ASCII_CHARS;
 
@@ -727,6 +724,31 @@ mod tests {
                     .count(),
                 3,
                 "three edges need three arrowheads at {direction:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn horizontal_database_bypass_reserves_a_two_cell_source_tee_stem() {
+        for direction in [Direction::LR, Direction::RL] {
+            let graph = scene(direction);
+            let source = graph.get_node("A").expect("source node");
+            let intermediate = graph.get_node("B").expect("intermediate node");
+            let target = graph.get_node("C").expect("target node");
+            let coords = OrientedCoords::new(direction);
+            let start = edge_exit_point(source, direction);
+            let end = edge_entry_point(target, direction);
+            let source_secondary = coords.secondary_coord(start.0, start.1);
+            let side = source_secondary.saturating_add(5);
+            let path = outer_bypass_path(start, end, side, &coords, source, intermediate);
+
+            let quiet_stem = path
+                .iter()
+                .take_while(|point| coords.secondary_coord(point.0, point.1) == source_secondary)
+                .count();
+            assert!(
+                quiet_stem >= 3,
+                "{direction:?} database bypass needs source plus two quiet stem cells, got {quiet_stem}"
             );
         }
     }

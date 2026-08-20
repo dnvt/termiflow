@@ -106,6 +106,11 @@ pub fn analyze(input: &[u8], frame: &[u8], style: &str, mode: &str) -> Result<Va
         frame,
         origin(&graph),
     ));
+    findings.extend(td_tb_title_boundary_hook_findings(
+        &graph,
+        frame,
+        origin(&graph),
+    ));
     findings.extend(bt_boundary_rail_findings(&graph, frame, origin(&graph)));
     findings.sort_by(|left, right| {
         left["code"]
@@ -1369,6 +1374,49 @@ fn bt_title_boundary_hook_findings(
             }
         }
 
+        // A repaired strict BT parallel scene may no longer contain a
+        // literal horizontal elbow, while a rail can still pierce the title
+        // row and visually read as a title suffix (`Target |`). Keep that
+        // topology-owned ambiguity in the human queue. The predicate is
+        // based on the direct boundary pair count, never on fixture names or
+        // title text, and records the exact title-row rail cells.
+        if cells.is_empty() {
+            let mut parallel_boundary_pairs = HashMap::<(String, String), usize>::new();
+            for edge in graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+                let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+                if exits.len() == 1
+                    && enters.len() == 1
+                    && (exits[0] == subgraph.id || enters[0] == subgraph.id)
+                {
+                    *parallel_boundary_pairs
+                        .entry((exits[0].to_owned(), enters[0].to_owned()))
+                        .or_default() += 1;
+                }
+            }
+            let is_strict_parallel_boundary = graph.direction == termiflow::graph::Direction::BT
+                && parallel_boundary_pairs.values().copied().max().unwrap_or(0) >= 3;
+            if is_strict_parallel_boundary {
+                let title_row = title_y.saturating_sub(origin_y);
+                if let Some(row) = lines.get(title_row) {
+                    for x in subgraph.bounds.x.saturating_add(1)
+                        ..subgraph
+                            .bounds
+                            .x
+                            .saturating_add(subgraph.bounds.width.saturating_sub(1))
+                    {
+                        let frame_x = x.saturating_sub(origin_x);
+                        if row
+                            .get(frame_x)
+                            .copied()
+                            .is_some_and(is_vertical_route_glyph)
+                        {
+                            cells.push(cell(frame_x, title_row));
+                        }
+                    }
+                }
+            }
+        }
+
         cells.sort_by_key(|value| {
             (
                 value["y"].as_u64().unwrap_or_default(),
@@ -1382,6 +1430,140 @@ fn bt_title_boundary_hook_findings(
                 "P2",
                 format!(
                     "subgraph {} ({title:?}) has title-adjacent horizontal route elbows; one-frame review must distinguish title clearance from an accidental kink",
+                    subgraph.id
+                ),
+                cells,
+            ));
+        }
+    }
+    findings
+}
+
+/// Queue title-adjacent TD/TB elbows for visual review.
+///
+/// TD/TB routes can be fully connected and still leave a short horizontal
+/// detour in the title row. In ASCII the detour looks like `+-+`; in Unicode
+/// it can read as a tiny bracket attached to the title gutter. This is a
+/// perceptual queue signal rather than a structural error. Restricting the
+/// scan to titled subgraphs with declared boundary edges keeps ordinary node
+/// borders and unrelated junctions out of the finding.
+fn td_tb_title_boundary_hook_findings(
+    graph: &termiflow::Graph,
+    frame: &str,
+    (origin_x, origin_y): (usize, usize),
+) -> Vec<Value> {
+    if !matches!(
+        graph.direction,
+        termiflow::graph::Direction::TD | termiflow::graph::Direction::TB
+    ) {
+        return Vec::new();
+    }
+
+    let lines: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+    let mut findings = Vec::new();
+    for subgraph in &graph.subgraphs {
+        let Some(title) = subgraph.title.as_deref() else {
+            continue;
+        };
+        let has_boundary_edge = graph.edges.iter().any(|edge| {
+            if edge.is_back_edge {
+                return false;
+            }
+            let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+            exits
+                .iter()
+                .chain(enters.iter())
+                .any(|id| *id == subgraph.id)
+        });
+        if !has_boundary_edge || !subgraph.bounds.is_valid() {
+            continue;
+        }
+
+        let title_y = termiflow::graph::subgraph_title_row(
+            subgraph.bounds.y,
+            subgraph.bounds.height,
+            graph.direction,
+        );
+        let first_row = title_y.saturating_sub(2);
+        let last_row = title_y.saturating_add(2);
+        let first_x = subgraph.bounds.x.saturating_sub(origin_x);
+        let last_x = subgraph
+            .bounds
+            .x
+            .saturating_add(subgraph.bounds.width)
+            .saturating_sub(origin_x);
+        let mut cells = Vec::new();
+
+        for graph_y in first_row..=last_row {
+            let Some(row) = lines.get(graph_y.saturating_sub(origin_y)) else {
+                continue;
+            };
+            let start = first_x.min(row.len());
+            let end = last_x.min(row.len());
+            if start >= end {
+                continue;
+            }
+            for (left, right) in horizontal_elbow_pairs(&row[start..end]) {
+                let left_x = left.saturating_add(start);
+                let right_x = right.saturating_add(start);
+                if [left_x, right_x].into_iter().all(|x| {
+                    let graph_x = x.saturating_add(origin_x);
+                    is_node_border_cell(graph, graph_x, graph_y)
+                        || is_subgraph_border_cell(graph, graph_x, graph_y)
+                }) {
+                    continue;
+                }
+
+                let has_interior_endpoint = [left_x, right_x]
+                    .into_iter()
+                    .any(|x| x > first_x && x < last_x);
+                let row_index = graph_y.saturating_sub(origin_y);
+                let has_adjacent_vertical_route = [left_x, right_x].into_iter().any(|x| {
+                    [row_index.saturating_sub(1), row_index.saturating_add(1)]
+                        .into_iter()
+                        .filter_map(|neighbor_y| {
+                            lines.get(neighbor_y).and_then(|neighbor| neighbor.get(x))
+                        })
+                        .copied()
+                        .any(is_vertical_route_glyph)
+                });
+                let is_directional_unicode_elbow = matches!(
+                    (row[start + left], row[start + right]),
+                    ('└', '┐') | ('┌', '┘') | ('╚', '╗') | ('╔', '╝')
+                );
+                let is_unicode_boundary_elbow = matches!(
+                    (row[start + left], row[start + right]),
+                    ('└', '┘') | ('┌', '┐') | ('╚', '╝') | ('╔', '╗')
+                ) && has_interior_endpoint
+                    && has_adjacent_vertical_route;
+                let is_ascii_route_elbow = row[start + left] == '+'
+                    && row[start + right] == '+'
+                    && (right.saturating_sub(left) <= 3
+                        || (has_interior_endpoint && has_adjacent_vertical_route));
+                if !is_directional_unicode_elbow
+                    && !is_unicode_boundary_elbow
+                    && !is_ascii_route_elbow
+                {
+                    continue;
+                }
+                cells.push(cell(left_x, graph_y.saturating_sub(origin_y)));
+                cells.push(cell(right_x, graph_y.saturating_sub(origin_y)));
+            }
+        }
+
+        cells.sort_by_key(|value| {
+            (
+                value["y"].as_u64().unwrap_or_default(),
+                value["x"].as_u64().unwrap_or_default(),
+            )
+        });
+        cells.dedup();
+        if !cells.is_empty() {
+            findings.push(finding(
+                "td_tb_title_boundary_hook_requires_human_review",
+                "P2",
+                format!(
+                    "subgraph {} ({title:?}) has title-adjacent TD/TB route elbows; one-frame review must distinguish title clearance from an accidental kink",
                     subgraph.id
                 ),
                 cells,
@@ -2333,14 +2515,63 @@ mod tests {
     }
 
     #[test]
-    fn bt_title_boundary_review_does_not_queue_clean_parallel_borders() {
+    fn td_tb_title_boundary_review_queues_injected_hook_but_not_repaired_entries() {
+        for fixture in ["subgraph_single_td.md", "subgraph_outside_td.md"] {
+            let input = std::fs::read(format!("tests/fixtures/inputs/{fixture}"))
+                .expect("read TD title-gutter fixture");
+            for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+                for optimized in [false, true] {
+                    let frame = render_fixture(&input, style, optimized);
+                    let report = analyze(
+                        &input,
+                        frame.as_bytes(),
+                        if style == BaseStyle::Ascii {
+                            "ascii"
+                        } else {
+                            "unicode"
+                        },
+                        if optimized { "optimized" } else { "default" },
+                    )
+                    .expect("analyze repaired TD title-gutter frame");
+                    assert!(
+                        !report["findings"].as_array().is_some_and(|items| {
+                            items.iter().any(|item| {
+                                item["code"] == "td_tb_title_boundary_hook_requires_human_review"
+                            })
+                        }),
+                        "repaired TD frame was still queued: {report}"
+                    );
+                }
+            }
+        }
+
+        let input = std::fs::read("tests/fixtures/inputs/subgraph_outside_td.md")
+            .expect("read TD title-gutter mutation fixture");
+        let frame = render_fixture(&input, BaseStyle::Ascii, false);
+        let mutated = frame.replace("Core Logic |", "Core Logic +-+");
+        assert_ne!(mutated, frame, "mutation must inject a title hook");
+        let report = analyze(&input, mutated.as_bytes(), "ascii", "default")
+            .expect("analyze injected TD title hook");
+        assert_eq!(report["status"], "inconclusive");
+        assert!(
+            report["findings"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["code"] == "td_tb_title_boundary_hook_requires_human_review")
+            }),
+            "injected TD title hook was not queued: {report}"
+        );
+    }
+
+    #[test]
+    fn bt_title_boundary_review_queues_repaired_parallel_turn_for_human_review() {
         let input = std::fs::read("tests/fixtures/inputs/collision_parallel_edges_bt.md")
             .expect("read BT parallel fixture");
         let frame = render_fixture(&input, BaseStyle::Ascii, true);
         let report = analyze(&input, frame.as_bytes(), "ascii", "optimized")
             .expect("analyze BT parallel frame");
-        assert_eq!(report["status"], "clean");
-        assert!(!report["findings"].as_array().is_some_and(|items| items
+        assert_eq!(report["status"], "inconclusive");
+        assert!(report["findings"].as_array().is_some_and(|items| items
             .iter()
             .any(|item| { item["code"] == "bt_title_boundary_hook_requires_human_review" })));
     }

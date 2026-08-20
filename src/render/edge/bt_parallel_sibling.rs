@@ -12,6 +12,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::graph::{Direction, EdgeKind, Graph, Node, NodeShape, Subgraph};
 use crate::portals::{
     nudge_portal_x_from_corners, title_safe_portal_x, PortalColumnPreference, PortalSlots,
+    BT_PARALLEL_MIN_LANE_GAP, BT_PARALLEL_TITLE_MARGIN,
 };
 use crate::style::StyleChars;
 
@@ -24,11 +25,14 @@ use super::subgraph::lower_bt_fallback_plan;
 use super::RouteOwner;
 
 const STRATEGY: &str = "bt-parallel-sibling-scene";
-const MIN_LANE_GAP: usize = 4;
+// A turn with only one shaft cell between its corners still composes as a
+// tiny `┌─┘` (or `+-+` in ASCII), which reads like a damaged border rather than
+// an intentional route. Keep two visible edge cells between the turn corners
+// whenever the scene has room.
+const MIN_TURN_CLEARANCE: usize = 3;
 // Keep one quiet cell beyond the title token before the first direct-parallel
 // rail. The wrapper cell alone still makes the rail read as a continuation of
 // the title gutter (`Target |`), especially in compact ASCII frames.
-const TITLE_MARGIN: usize = 1;
 const SOURCE_TURN_OFFSET: usize = 2;
 const TARGET_TURN_CLEARANCE: usize = 2;
 
@@ -358,8 +362,24 @@ fn assign_lanes(
                 let lanes = vec![candidates[first], candidates[second], candidates[third]];
                 if lanes
                     .windows(2)
-                    .any(|pair| pair[1] - pair[0] < MIN_LANE_GAP)
+                    .any(|pair| pair[1] - pair[0] < BT_PARALLEL_MIN_LANE_GAP)
                 {
+                    continue;
+                }
+                let has_short_source_turn =
+                    lanes.iter().zip(&desired).any(|(lane, (source_x, _))| {
+                        let delta = lane.abs_diff(*source_x);
+                        delta != 0 && delta < MIN_TURN_CLEARANCE
+                    });
+                let has_short_target_turn = lanes.iter().zip(&scene.edges).any(|(lane, edge)| {
+                    let Some(target) = graph.get_node(&edge.target_id) else {
+                        return true;
+                    };
+                    let target_entry_x = choose_target_entry(target, *lane).0;
+                    let delta = lane.abs_diff(target_entry_x);
+                    delta != 0 && delta < MIN_TURN_CLEARANCE
+                });
+                if has_short_source_turn || has_short_target_turn {
                     continue;
                 }
                 let cost = lanes
@@ -413,7 +433,7 @@ fn title_safe_and_not_corner(subgraph: &Subgraph, x: usize) -> bool {
         subgraph.title.as_deref(),
         x,
         Direction::BT,
-        TITLE_MARGIN,
+        BT_PARALLEL_TITLE_MARGIN,
         PortalColumnPreference::Directional,
     );
     nudge_portal_x_from_corners(
@@ -606,10 +626,25 @@ mod tests {
         assert_eq!(lanes.len(), 3);
         assert!(lanes
             .windows(2)
-            .all(|pair| pair[1] - pair[0] >= MIN_LANE_GAP));
+            .all(|pair| pair[1] - pair[0] >= BT_PARALLEL_MIN_LANE_GAP));
         assert!(
-            lanes[0] > 9,
+            lanes[0] >= 9,
             "first rail keeps a quiet cell beyond the Target title: {lanes:?}"
+        );
+        assert!(
+            lanes.iter().zip(&scene.edges).all(|(lane, edge)| {
+                let source_x = graph
+                    .get_node(&edge.source_id)
+                    .expect("source node")
+                    .center_x();
+                let target = graph.get_node(&edge.target_id).expect("target node");
+                let source_delta = lane.abs_diff(source_x);
+                let target_entry_x = choose_target_entry(target, *lane).0;
+                (source_delta == 0 || source_delta >= MIN_TURN_CLEARANCE)
+                    && (lane.abs_diff(target_entry_x) == 0
+                        || lane.abs_diff(target_entry_x) >= MIN_TURN_CLEARANCE)
+            }),
+            "parallel turns need a visible shaft cell: {lanes:?}"
         );
     }
 }

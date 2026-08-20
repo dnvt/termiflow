@@ -280,7 +280,23 @@ fn lower_pair(pair: &DensePair, graph: &Graph, canvas: &mut Canvas, style: &Styl
         // `││`/`||` reads like a doubled box border and obscures which lane
         // owns a turn; in vertical scenes the same gap prevents a tee-shaped
         // contact between neighboring routes.
-        let lane_offset = (index + 1).saturating_mul(lane_pitch);
+        // In vertical scenes, start the lane band one cell earlier than the
+        // source-side quiet corridor would normally suggest. The final lane
+        // otherwise lands immediately before the target entry
+        // (`...└─┐↓` / `...+-+v`) in the minimum accepted rank gap. Keeping
+        // the same two-cell pitch while using 1,3,5,... leaves one quiet
+        // shaft cell before every arrowhead without widening the graph or
+        // changing the dedicated ports. Horizontal scenes keep their prior
+        // source-side spacing; their short turns are part of a different
+        // side-port composition and must not inherit the vertical repair.
+        let lane_offset = if matches!(
+            graph.direction,
+            Direction::TD | Direction::TB | Direction::BT
+        ) {
+            index.saturating_mul(lane_pitch).saturating_add(1)
+        } else {
+            (index + 1).saturating_mul(lane_pitch)
+        };
         let lane = if flows_forward(graph.direction) {
             source_primary.saturating_add(lane_offset)
         } else {

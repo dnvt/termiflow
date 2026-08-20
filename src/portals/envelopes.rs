@@ -1100,6 +1100,13 @@ fn build_envelope(
     let side_pad = horizontal_pad_target;
     let mut top_pad = vertical_balance_floor.max(top_hard_pad);
     let mut bottom_pad = vertical_balance_floor.max(bottom_hard_pad);
+    if horizontal_sibling_chain_requires_extra_corridor(graph) {
+        // The strict LR/RL sibling scene starts its corridor one row below the
+        // node border. Reserve that row in the envelope so every transition
+        // gets a quiet attachment band instead of borrowing the node-adjacent
+        // border composition.
+        bottom_pad = bottom_pad.max(4);
+    }
     if let Some(max_bottom_pad) = bottom_max_pad {
         bottom_pad = bottom_pad.min(max_bottom_pad);
     }

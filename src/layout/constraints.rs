@@ -6,6 +6,7 @@ use crate::geom::{Point, Rect};
 use crate::graph::{Direction, Graph};
 use crate::portals::{
     compute_envelopes, horizontal_sibling_chain_requires_extra_corridor, SubgraphEnvelope,
+    HORIZONTAL_SIBLING_CHAIN_MIN_INTER_GAP,
 };
 
 use super::CoarseLayoutConfig;
@@ -914,7 +915,7 @@ pub(super) fn rebalance_side_by_side_horizontal_top_level_sibling_gaps(
         let mut best_shift: Option<(String, isize, usize)> = None;
 
         let min_visual_gap = if horizontal_sibling_chain_requires_extra_corridor(graph) {
-            4
+            HORIZONTAL_SIBLING_CHAIN_MIN_INTER_GAP
         } else {
             MIN_VISUAL_GAP
         };

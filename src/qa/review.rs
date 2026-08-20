@@ -853,6 +853,7 @@ fn frame_payload(
     let evidence: Value =
         serde_json::from_slice(&evidence_bytes).context("parse review evidence")?;
     let evidence_hash = evidence_ref["sha256"].as_str().unwrap_or_default();
+    let style_provenance = style_provenance(row, &evidence);
     Ok(json!({
         "schema": FRAME_SCHEMA,
         "case_id": row["case_id"],
@@ -861,6 +862,7 @@ fn frame_payload(
         "fixture": row["fixture"],
         "style": row["style"],
         "mode": row["mode"],
+        "style_provenance": style_provenance,
         "frame_sha256": row["stdout"]["sha256"],
         "evidence_sha256": evidence_hash,
         "input": input_source,
@@ -903,6 +905,27 @@ fn frame_payload(
             "policy_sha256": row["policy"]["sha256"],
         },
     }))
+}
+
+fn style_provenance(row: &Value, evidence: &Value) -> Value {
+    let style_override = row
+        .get("argv")
+        .and_then(Value::as_array)
+        .is_some_and(|argv| argv.iter().any(|arg| arg.as_str() == Some("--style")));
+    json!({
+        "policy_lane": if style_override {
+            "canonical_requested_style"
+        } else {
+            "authored_policy_no_override"
+        },
+        "requested_style": row.get("style").cloned().unwrap_or(Value::Null),
+        "effective_style": evidence
+            .get("route_clarity")
+            .and_then(|route| route.get("style"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "style_override": style_override,
+    })
 }
 
 fn manifest_input_source(root: &Path, packet: &Path, row: &Value) -> Result<String> {
@@ -1055,6 +1078,32 @@ mod tests {
             "findings": [{"code": "declared_edge_missing"}]
         });
         assert!(!evidence_is_structurally_clean(&route_risk));
+    }
+
+    #[test]
+    fn style_provenance_distinguishes_requested_and_authored_policy_lanes() {
+        let evidence = json!({"route_clarity": {"style": "unicode"}});
+        let canonical = json!({"argv": ["tw", "--style", "ascii"], "style": "ascii"});
+        let authored = json!({"argv": ["tw"], "style": "ascii"});
+
+        assert_eq!(
+            style_provenance(&canonical, &evidence),
+            json!({
+                "policy_lane": "canonical_requested_style",
+                "requested_style": "ascii",
+                "effective_style": "unicode",
+                "style_override": true,
+            })
+        );
+        assert_eq!(
+            style_provenance(&authored, &evidence),
+            json!({
+                "policy_lane": "authored_policy_no_override",
+                "requested_style": "ascii",
+                "effective_style": "unicode",
+                "style_override": false,
+            })
+        );
     }
 
     #[test]

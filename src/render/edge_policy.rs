@@ -5,7 +5,10 @@
 
 use crate::graph::{Direction, EdgeKind, Graph, Node, NodeShape};
 
-use crate::portals::{title_margin_for_direction, title_safe_portal_x, PortalColumnPreference};
+use crate::portals::{
+    td_single_external_entry_uses_literal_gutter_lane, title_margin_for_direction,
+    title_safe_portal_x, PortalColumnPreference,
+};
 
 use super::edge::{edge_entry_candidates, is_subgraph_title_cell};
 
@@ -93,16 +96,25 @@ pub(super) fn td_single_incoming_route_x(
     {
         return None;
     }
-    let subgraph = graph
-        .get_node_subgraph(&to.id)
-        .and_then(|id| graph.get_subgraph(id))?;
+    let subgraph_id = graph.get_node_subgraph(&to.id)?;
+    let subgraph = graph.get_subgraph(subgraph_id)?;
+    let title_margin = if td_single_external_entry_uses_literal_gutter_lane(
+        graph,
+        &from.id,
+        &to.id,
+        subgraph_id,
+    ) {
+        0
+    } else {
+        title_margin_for_direction(graph.direction)
+    };
     let portal_x = title_safe_portal_x(
         subgraph.bounds.x,
         subgraph.bounds.width,
         subgraph.title.as_deref(),
         desired_arrow_x,
         graph.direction,
-        title_margin_for_direction(graph.direction),
+        title_margin,
         PortalColumnPreference::Directional,
     );
     edge_entry_candidates(to, graph.direction)

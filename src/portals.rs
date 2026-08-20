@@ -420,6 +420,240 @@ fn title_safe_portal_x_for_span(
     }
 }
 
+/// Select a BT target portal while preserving a quiet turn from both the
+/// source stem and receiving arrow. The exact flat one-entry BT scene may
+/// additionally allow the source-centered lane after layout has staged the
+/// source there; all other callers retain the original fail-closed selector.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bt_target_portal_x_avoiding_single_cell_turn_with_source_center(
+    left_x: usize,
+    width: usize,
+    title: Option<&str>,
+    desired: usize,
+    source_x: usize,
+    source_node_bounds: Option<(usize, usize)>,
+    arrow_x: usize,
+    title_margin: usize,
+    allow_source_center: bool,
+) -> usize {
+    let initial = title_safe_portal_x(
+        left_x,
+        width,
+        title,
+        desired,
+        Direction::BT,
+        title_margin,
+        PortalColumnPreference::Directional,
+    );
+    let initial_is_quiet = initial.abs_diff(source_x) >= 3 && initial.abs_diff(arrow_x) >= 3;
+    if initial_is_quiet {
+        return initial;
+    }
+
+    let min = left_x.saturating_add(1);
+    let max = left_x + width.saturating_sub(2);
+    let mut candidates = Vec::new();
+    for candidate in [
+        initial.saturating_sub(1),
+        initial.saturating_add(1),
+        initial.saturating_sub(2),
+        initial.saturating_add(2),
+        initial.saturating_sub(3),
+        initial.saturating_add(3),
+        initial.saturating_sub(5),
+        initial.saturating_add(5),
+        arrow_x.saturating_sub(3),
+        arrow_x.saturating_add(3),
+        arrow_x.saturating_sub(5),
+        arrow_x.saturating_add(5),
+        source_x.saturating_sub(3),
+        source_x.saturating_add(3),
+        source_x.saturating_sub(5),
+        source_x.saturating_add(5),
+    ] {
+        if candidate < min
+            || candidate > max
+            || candidate.abs_diff(source_x) < 3
+            || candidate.abs_diff(arrow_x) < 3
+            || source_node_bounds.is_some_and(|(left, right)| {
+                if candidate == source_x {
+                    !allow_source_center
+                } else if candidate > source_x {
+                    candidate <= right.saturating_add(2)
+                } else if candidate < source_x {
+                    candidate.saturating_add(2) >= left
+                } else {
+                    true
+                }
+            })
+            || title_safe_portal_x(
+                left_x,
+                width,
+                title,
+                candidate,
+                Direction::BT,
+                title_margin,
+                PortalColumnPreference::Directional,
+            ) != candidate
+        {
+            continue;
+        }
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+
+    if allow_source_center
+        && source_x >= min
+        && source_x <= max
+        && source_x.abs_diff(arrow_x) >= 3
+        && title_safe_portal_x(
+            left_x,
+            width,
+            title,
+            source_x,
+            Direction::BT,
+            title_margin,
+            PortalColumnPreference::Directional,
+        ) == source_x
+        && !candidates.contains(&source_x)
+    {
+        candidates.push(source_x);
+    }
+
+    candidates
+        .into_iter()
+        .min_by_key(|candidate| (candidate.abs_diff(initial), candidate.abs_diff(arrow_x)))
+        .unwrap_or(initial)
+}
+
+/// Return the nearest title-safe lane that can be owned by the source stem
+/// while retaining a quiet three-cell separation from the receiving arrow.
+/// Layout uses this only for a flat, single external BT entry; the route
+/// selector receives the same topology permission so both stages agree.
+pub(crate) fn bt_external_entry_source_center_lane(
+    left_x: usize,
+    width: usize,
+    title: Option<&str>,
+    desired: usize,
+    source_center: usize,
+    arrow_x: usize,
+    title_margin: usize,
+) -> Option<usize> {
+    let min = left_x.saturating_add(1);
+    let max = left_x + width.saturating_sub(2);
+    (min..=max)
+        .filter(|candidate| {
+            candidate.abs_diff(arrow_x) >= 3
+                && title_safe_portal_x(
+                    left_x,
+                    width,
+                    title,
+                    *candidate,
+                    Direction::BT,
+                    title_margin,
+                    PortalColumnPreference::Directional,
+                ) == *candidate
+        })
+        .min_by_key(|candidate| {
+            (
+                candidate.abs_diff(desired),
+                candidate.abs_diff(source_center),
+                *candidate,
+            )
+        })
+}
+
+/// Identify the only BT topology allowed to make the source stem itself the
+/// receiving portal lane. Shared fan-in/fan-out, sibling, nested, labeled, and
+/// parallel entries retain the conservative quiet-turn selector.
+pub(crate) fn bt_single_external_entry_source_center_allowed(
+    graph: &Graph,
+    from_id: &str,
+    to_id: &str,
+    subgraph_id: &str,
+) -> bool {
+    if graph.direction != Direction::BT
+        || graph.subgraphs.len() != 1
+        || graph.get_node_subgraph(from_id).is_some()
+        || graph.get_node_subgraph(to_id) != Some(subgraph_id)
+    {
+        return false;
+    }
+    let Some(subgraph) = graph.get_subgraph(subgraph_id) else {
+        return false;
+    };
+    if subgraph.parent_id.is_some() || !subgraph.child_ids.is_empty() || !subgraph.has_title() {
+        return false;
+    }
+
+    let direct_entries: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            !edge.is_back_edge
+                && edge.kind == EdgeKind::Arrow
+                && edge.label.is_none()
+                && graph.get_node_subgraph(&edge.from).is_none()
+                && graph.get_node_subgraph(&edge.to) == Some(subgraph_id)
+                && graph
+                    .edge_boundary_crossings(&edge.from, &edge.to)
+                    .0
+                    .is_empty()
+                && graph.edge_boundary_crossings(&edge.from, &edge.to).1 == vec![subgraph_id]
+        })
+        .collect();
+    if direct_entries.len() != 1 {
+        return false;
+    }
+    let edge = direct_entries[0];
+    edge.from == from_id && edge.to == to_id
+}
+
+/// Identify the narrow TD/TB topology allowed to use the visible-title
+/// gutter as its portal margin: one flat titled subgraph with exactly one
+/// unlabeled external entry. A single source/target shaft can then stay on the
+/// target's legal entry column without painting a title-adjacent elbow; all
+/// shared, nested, fan-in, fan-out, and labeled routes retain the wider
+/// title-clearance policy.
+pub(crate) fn td_single_external_entry_uses_literal_gutter_lane(
+    graph: &Graph,
+    from_id: &str,
+    to_id: &str,
+    subgraph_id: &str,
+) -> bool {
+    if !matches!(graph.direction, Direction::TD | Direction::TB)
+        || graph.get_node_subgraph(from_id).is_some()
+        || graph.get_node_subgraph(to_id) != Some(subgraph_id)
+    {
+        return false;
+    }
+    let Some(subgraph) = graph.get_subgraph(subgraph_id) else {
+        return false;
+    };
+    if subgraph.parent_id.is_some() || !subgraph.child_ids.is_empty() || !subgraph.has_title() {
+        return false;
+    }
+
+    let direct_entries: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            !edge.is_back_edge
+                && edge.kind == EdgeKind::Arrow
+                && edge.label.is_none()
+                && graph.get_node_subgraph(&edge.from).is_none()
+                && graph.get_node_subgraph(&edge.to) == Some(subgraph_id)
+                && graph
+                    .edge_boundary_crossings(&edge.from, &edge.to)
+                    .0
+                    .is_empty()
+                && graph.edge_boundary_crossings(&edge.from, &edge.to).1 == vec![subgraph_id]
+        })
+        .collect();
+    direct_entries.len() == 1 && direct_entries[0].from == from_id && direct_entries[0].to == to_id
+}
+
 /// Preserve a wider BT title gutter for sibling crossings whose shared target
 /// title would otherwise read as a border seam. Exact-two crossings retain the
 /// established two-cell policy because their two lanes can otherwise read as a
@@ -485,6 +719,17 @@ const TD_SIBLING_EXTRA_TITLE_PADDING: usize = 1;
 /// Generic BT portals and exact-two parallel-edge policies retain their
 /// established behavior.
 pub(crate) const BT_SIBLING_CHAIN_TITLE_MARGIN: usize = 1;
+
+/// Shared policy for the strict three-edge BT parallel-sibling scene. Layout
+/// and route lowering must agree on this margin or a title-safe boundary lane
+/// can diverge from the lane occupied by its node pair.
+pub(crate) const BT_PARALLEL_TITLE_MARGIN: usize = 1;
+pub(crate) const BT_PARALLEL_MIN_LANE_GAP: usize = 4;
+
+/// Keep a strict horizontal sibling-chain bridge long enough to read as a
+/// deliberate cross-group transition after its quiet-corridor turn.  A
+/// shorter gap makes the two corner cells look like a tiny second box.
+pub(crate) const HORIZONTAL_SIBLING_CHAIN_MIN_INTER_GAP: usize = 16;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct TitleGutter {
@@ -568,10 +813,13 @@ fn td_sibling_eligible_crossings(graph: &Graph) -> Vec<TdSiblingCrossing> {
 
 /// Return the topology-owned title gutter for an eligible target.
 ///
-/// The first ordered sibling lane receives leading padding and the next lane
-/// receives trailing padding. This avoids spending the narrow target envelope's
-/// last interior cell on the opposite side of the selected route. A target with
-/// multiple eligible entries gets symmetric padding only when that token fits.
+/// A linear chain alternates leading and trailing gutters with its ordered
+/// crossings so repeated transitions do not reuse one apparent trunk. Shared
+/// targets retain the first/next lane policy: the first ordered sibling lane
+/// receives leading padding and the next lane receives trailing padding. This
+/// avoids spending the narrow target envelope's last interior cell on the
+/// opposite side of the selected route. A target with multiple eligible
+/// entries gets symmetric padding only when that token fits.
 pub(crate) fn td_sibling_title_gutter(graph: &Graph, target_id: &str) -> TitleGutter {
     if !matches!(graph.direction, Direction::TD | Direction::TB) {
         return TitleGutter::default();
@@ -586,6 +834,43 @@ pub(crate) fn td_sibling_title_gutter(graph: &Graph, target_id: &str) -> TitleGu
     let eligible = td_sibling_eligible_crossings(graph);
     if eligible.len() < 2 {
         return TitleGutter::default();
+    }
+    if !eligible
+        .iter()
+        .any(|crossing| crossing.target_id == target_id)
+    {
+        return TitleGutter::default();
+    }
+    if td_sibling_crossings_form_linear_chain(&eligible) {
+        let ordinal = eligible
+            .iter()
+            .position(|crossing| crossing.target_id == target_id)
+            .unwrap_or(0);
+        let gutter = if ordinal % 2 == 0 {
+            TitleGutter {
+                leading_extra_padding: TD_SIBLING_EXTRA_TITLE_PADDING,
+                trailing_extra_padding: 0,
+            }
+        } else {
+            TitleGutter {
+                leading_extra_padding: 0,
+                trailing_extra_padding: TD_SIBLING_EXTRA_TITLE_PADDING + 1,
+            }
+        };
+        return if crate::graph::subgraph_title_span_with_padding_sides(
+            target.bounds.x,
+            target.bounds.width,
+            title,
+            graph.direction,
+            gutter.leading_extra_padding,
+            gutter.trailing_extra_padding,
+        )
+        .is_some()
+        {
+            gutter
+        } else {
+            TitleGutter::default()
+        };
     }
     let Some(ordinal) = eligible
         .iter()
@@ -628,6 +913,35 @@ pub(crate) fn td_sibling_title_gutter(graph: &Graph, target_id: &str) -> TitleGu
     } else {
         TitleGutter::default()
     }
+}
+
+fn td_sibling_crossings_form_linear_chain(eligible: &[TdSiblingCrossing]) -> bool {
+    if eligible.len() < 2 {
+        return false;
+    }
+
+    let mut degrees: HashMap<&str, (usize, usize)> = HashMap::new();
+    for crossing in eligible {
+        let source = degrees.entry(crossing.source_id.as_str()).or_default();
+        source.0 += 1;
+        let target = degrees.entry(crossing.target_id.as_str()).or_default();
+        target.1 += 1;
+    }
+
+    let starts = degrees
+        .values()
+        .filter(|(outgoing, incoming)| *outgoing == 1 && *incoming == 0)
+        .count();
+    let ends = degrees
+        .values()
+        .filter(|(outgoing, incoming)| *outgoing == 0 && *incoming == 1)
+        .count();
+    degrees
+        .values()
+        .all(|(outgoing, incoming)| *outgoing <= 1 && *incoming <= 1)
+        && degrees.len() == eligible.len() + 1
+        && starts == 1
+        && ends == 1
 }
 
 /// Return a topology-owned target lane for a direct, vertically stacked TD/TB
@@ -729,20 +1043,66 @@ pub(crate) fn td_nested_boundary_lane_with_bounds(
 /// Independent title shifts at each bottom border create a visible staircase;
 /// a common safe lane lets routing and border restoration share one ownership
 /// decision for the whole chain.
-pub(crate) fn bt_nested_boundary_lane(
-    graph: &Graph,
-    boundary_ids: &[&str],
-    desired_x: usize,
-) -> Option<usize> {
-    bt_nested_boundary_lane_with_bounds(graph, boundary_ids, desired_x, None)
-}
-
 pub(crate) fn bt_nested_boundary_lane_with_bounds(
     graph: &Graph,
     boundary_ids: &[&str],
     desired_x: usize,
     current_bounds: Option<&HashMap<String, Rect>>,
 ) -> Option<usize> {
+    let candidates =
+        bt_nested_boundary_lane_candidates_with_bounds(graph, boundary_ids, current_bounds)?;
+    let min_x = candidates.iter().copied().min()?;
+    let max_x = candidates.iter().copied().max()?;
+    let preferred = desired_x.clamp(min_x, max_x);
+    candidates
+        .into_iter()
+        .min_by_key(|candidate| (candidate.abs_diff(preferred), *candidate))
+}
+
+/// Select a common BT lane for a nested entry, while rejecting a one-cell
+/// source-to-target turn whenever the chain has a title-safe alternative.
+///
+/// Nested entries still use one lane through the boundary chain as the
+/// conservative ownership control.  The extra spacing rule is shared by
+/// layout and rendering so the collector cannot reserve the close lane that
+/// the lowerer later turns into a visually dense `+-+`/`└┐` shoulder.
+pub(crate) fn bt_nested_boundary_lane_with_quiet_turn(
+    graph: &Graph,
+    boundary_ids: &[&str],
+    desired_x: usize,
+    source_x: usize,
+    arrow_x: usize,
+    current_bounds: Option<&HashMap<String, Rect>>,
+) -> Option<usize> {
+    let common =
+        bt_nested_boundary_lane_with_bounds(graph, boundary_ids, desired_x, current_bounds)?;
+    if common.abs_diff(source_x) >= 3 && common.abs_diff(arrow_x) >= 3 {
+        return Some(common);
+    }
+
+    let candidates =
+        bt_nested_boundary_lane_candidates_with_bounds(graph, boundary_ids, current_bounds)?;
+    let min_x = candidates.iter().copied().min()?;
+    let max_x = candidates.iter().copied().max()?;
+    let preferred = desired_x.clamp(min_x, max_x);
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.abs_diff(source_x) >= 3 && candidate.abs_diff(arrow_x) >= 3)
+        .min_by_key(|candidate| {
+            (
+                candidate.abs_diff(preferred),
+                candidate.abs_diff(arrow_x),
+                *candidate,
+            )
+        })
+        .or(Some(common))
+}
+
+fn bt_nested_boundary_lane_candidates_with_bounds(
+    graph: &Graph,
+    boundary_ids: &[&str],
+    current_bounds: Option<&HashMap<String, Rect>>,
+) -> Option<Vec<usize>> {
     if graph.direction != Direction::BT || boundary_ids.len() < 2 {
         return None;
     }
@@ -770,14 +1130,14 @@ pub(crate) fn bt_nested_boundary_lane_with_bounds(
         return None;
     }
 
-    let preferred = desired_x.clamp(min_x, max_x);
-    let mut candidates = (min_x..=max_x).collect::<Vec<_>>();
-    candidates.sort_by_key(|candidate| (candidate.abs_diff(preferred), *candidate));
-    candidates.into_iter().find(|candidate| {
-        title_spans
-            .iter()
-            .all(|(start, end)| candidate < start || candidate > end)
-    })
+    let candidates = (min_x..=max_x)
+        .filter(|candidate| {
+            title_spans
+                .iter()
+                .all(|(start, end)| candidate < start || candidate > end)
+        })
+        .collect::<Vec<_>>();
+    (!candidates.is_empty()).then_some(candidates)
 }
 
 /// Layout-aware form of [`td_sibling_portal_x`] that accepts live envelope
@@ -830,6 +1190,8 @@ pub(crate) fn td_sibling_portal_x_with_bounds(
             && candidate.target_id == target_id
     })?;
 
+    let is_linear_chain = td_sibling_crossings_form_linear_chain(&eligible);
+
     let min_x = target_bounds.x.saturating_add(1);
     let max_x = target_bounds
         .x
@@ -839,6 +1201,11 @@ pub(crate) fn td_sibling_portal_x_with_bounds(
     }
 
     let desired_x = desired_x.clamp(min_x, max_x);
+    // A linear chain still needs distinct boundary ownership. Reusing one
+    // side portal for every crossing creates a single shaft through all
+    // sibling frames; alternate the title-safe side so each transition gets
+    // a visible turn in its own corridor. Shared targets, fan-in/fan-out, and
+    // parallel scenes retain the same alternating policy.
     let offset_lane = if ordinal % 2 == 0 {
         desired_x.saturating_sub(TD_SIBLING_LANE_OFFSET)
     } else {
@@ -849,7 +1216,24 @@ pub(crate) fn td_sibling_portal_x_with_bounds(
         return None;
     }
 
-    let gutter = td_sibling_title_gutter(graph, target_id);
+    let gutter = if is_linear_chain {
+        if ordinal % 2 == 0 {
+            TitleGutter {
+                leading_extra_padding: TD_SIBLING_EXTRA_TITLE_PADDING,
+                trailing_extra_padding: 0,
+            }
+        } else {
+            TitleGutter {
+                leading_extra_padding: 0,
+                // The right-hand portal sits after the literal title span;
+                // reserve one additional quiet cell so the rail cannot read
+                // as a title suffix.
+                trailing_extra_padding: TD_SIBLING_EXTRA_TITLE_PADDING + 1,
+            }
+        }
+    } else {
+        td_sibling_title_gutter(graph, target_id)
+    };
     let lane = title_safe_portal_x_with_text_padding_sides(
         target_bounds.x,
         target_bounds.width,
@@ -859,6 +1243,10 @@ pub(crate) fn td_sibling_portal_x_with_bounds(
         gutter.leading_extra_padding,
         gutter.trailing_extra_padding,
         if gutter.leading_extra_padding > 0 || gutter.trailing_extra_padding > 0 {
+            // Keep one quiet cell outside the visible title text while
+            // preserving the topology-owned interior lane. A wider margin
+            // collapses the left lane onto the border in narrow sibling
+            // envelopes and produces a visually worse route.
             1
         } else {
             0
@@ -1142,25 +1530,6 @@ fn collect_portal_slots_with_bounds(
         )
     };
 
-    let bt_nudge_from_corners = |sg_id: &str, x: usize| -> usize {
-        let Some(sg) = graph.get_subgraph(sg_id) else {
-            return x;
-        };
-        let Some(bounds) = current_subgraph_bounds(graph, current_bounds, sg_id) else {
-            return x;
-        };
-        if bounds.is_empty() || graph.direction != Direction::BT {
-            return x;
-        }
-        nudge_portal_x_from_corners(
-            bounds.x,
-            bounds.width,
-            sg.title.as_deref(),
-            graph.direction,
-            x,
-        )
-    };
-
     if matches!(direction, Direction::TD | Direction::TB) {
         let mut grouped_targets: HashMap<(String, String), Vec<usize>> = HashMap::new();
         let mut grouped_sources: HashMap<(String, String), Vec<usize>> = HashMap::new();
@@ -1423,8 +1792,13 @@ fn collect_portal_slots_with_bounds(
                                 target_bounds,
                             )
                         });
-                        sibling_lane
-                            .unwrap_or_else(|| shift_x_out_of_title(id, target_center_x, None))
+                        sibling_lane.unwrap_or_else(|| {
+                            let margin = td_single_external_entry_uses_literal_gutter_lane(
+                                graph, &edge.from, &edge.to, id,
+                            )
+                            .then_some(0);
+                            shift_x_out_of_title(id, target_center_x, margin)
+                        })
                     };
                     slots.entry(id.to_string()).or_default().top.insert(x);
                 }
@@ -1483,9 +1857,11 @@ fn collect_portal_slots_with_bounds(
             Direction::BT => {
                 let nested_entry_lane = (enter_subgraphs.len() > 1)
                     .then(|| {
-                        bt_nested_boundary_lane_with_bounds(
+                        bt_nested_boundary_lane_with_quiet_turn(
                             graph,
                             &enter_subgraphs,
+                            node_center_x(node_rects, &edge.to, to),
+                            node_center_x(node_rects, &edge.from, from),
                             node_center_x(node_rects, &edge.to, to),
                             current_bounds,
                         )
@@ -1494,13 +1870,40 @@ fn collect_portal_slots_with_bounds(
                 for id in enter_subgraphs {
                     let x = nested_entry_lane.unwrap_or_else(|| {
                         let mut lane = node_center_x(node_rects, &edge.to, to);
-                        lane = shift_x_out_of_title(
-                            id,
-                            lane,
-                            (graph.direction == Direction::BT)
-                                .then(|| bt_title_margin_for_edge(graph, &edge.from, &edge.to, id)),
+                        let title_margin = (graph.direction == Direction::BT)
+                            .then(|| bt_title_margin_for_edge(graph, &edge.from, &edge.to, id));
+                        lane = shift_x_out_of_title(id, lane, title_margin);
+                        let Some(bounds) = current_subgraph_bounds(graph, current_bounds, id)
+                        else {
+                            return lane;
+                        };
+                        let title = graph
+                            .get_subgraph(id)
+                            .and_then(|subgraph| subgraph.title.as_deref());
+                        let allow_source_center = bt_single_external_entry_source_center_allowed(
+                            graph, &edge.from, &edge.to, id,
                         );
-                        bt_nudge_from_corners(id, lane)
+                        lane = bt_target_portal_x_avoiding_single_cell_turn_with_source_center(
+                            bounds.x,
+                            bounds.width,
+                            title,
+                            lane,
+                            node_center_x(node_rects, &edge.from, from),
+                            graph.get_node_subgraph(&edge.from).is_none().then(|| {
+                                let source = current_node_rect(node_rects, &edge.from, from);
+                                (source.x, source.right().saturating_sub(1))
+                            }),
+                            node_center_x(node_rects, &edge.to, to),
+                            title_margin.unwrap_or(0),
+                            allow_source_center,
+                        );
+                        nudge_portal_x_from_corners(
+                            bounds.x,
+                            bounds.width,
+                            title,
+                            graph.direction,
+                            lane,
+                        )
                     });
                     slots.entry(id.to_string()).or_default().bottom.insert(x);
                 }
@@ -1568,7 +1971,137 @@ fn collect_portal_slots_with_bounds(
         }
     }
 
+    ensure_td_mixed_sibling_target_portals(graph, node_rects, current_bounds, &mut slots);
+
     slots
+}
+
+/// Reserve two distinct, title-safe top lanes for the exact TD mixed sibling
+/// target scene. Generic collection sees two target crossings but both title
+/// policies can converge on the same safe column; the scene lowerer then has
+/// no way to keep the internal and cross-subgraph arrivals distinct.
+///
+/// This runs in the shared collector consumed by both layout and rendering.
+/// The topology selector is exact and the pair is chosen from live node and
+/// envelope coordinates, so unrelated fan-in, nested, labelled, and crowded
+/// scenes retain the generic policy.
+fn ensure_td_mixed_sibling_target_portals(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    current_bounds: Option<&HashMap<String, Rect>>,
+    slots: &mut HashMap<String, PortalSlots>,
+) {
+    if graph.direction != Direction::TD || graph.subgraphs.len() != 2 {
+        return;
+    }
+
+    let mut ordered = graph
+        .subgraphs
+        .iter()
+        .filter_map(|subgraph| {
+            current_subgraph_bounds(graph, current_bounds, &subgraph.id)
+                .map(|bounds| (subgraph, bounds))
+        })
+        .collect::<Vec<_>>();
+    if ordered.len() != 2 {
+        return;
+    }
+    ordered.sort_by_key(|(_, bounds)| (bounds.y, bounds.x));
+    let source_id = ordered[0].0.id.as_str();
+    let target_id = ordered[1].0.id.as_str();
+    let Some(scene) = crate::render::sibling_target_entry_identity::td_scene_for_layout(
+        graph, source_id, target_id,
+    ) else {
+        return;
+    };
+    let Some(target_bounds) = current_subgraph_bounds(graph, current_bounds, target_id) else {
+        return;
+    };
+    let Some(target_subgraph) = graph.get_subgraph(target_id) else {
+        return;
+    };
+    let Some(target_start) = graph.get_node(&scene.target_start_node_id) else {
+        return;
+    };
+    let Some(target_end) = graph.get_node(&scene.target_end_node_id) else {
+        return;
+    };
+
+    let min_x = target_bounds.x.saturating_add(1);
+    let max_x = target_bounds.right().saturating_sub(2);
+    if min_x > max_x {
+        return;
+    }
+
+    // One quiet cell after the title is sufficient for the paired scene and
+    // leaves room for a second lane. A wider generic margin is what caused
+    // the two otherwise-valid lanes to collapse onto one column.
+    const MIXED_TARGET_TITLE_MARGIN: usize = 1;
+    let safe_columns = (min_x..=max_x)
+        .filter(|x| {
+            title_safe_portal_x(
+                target_bounds.x,
+                target_bounds.width,
+                target_subgraph.title.as_deref(),
+                *x,
+                Direction::TD,
+                MIXED_TARGET_TITLE_MARGIN,
+                PortalColumnPreference::Nearest,
+            ) == *x
+        })
+        .collect::<Vec<_>>();
+    if safe_columns.len() < 2 {
+        return;
+    }
+
+    let start_x = node_center_x(node_rects, &target_start.id, target_start);
+    let end_x = node_center_x(node_rects, &target_end.id, target_end);
+    let nearest = |left: usize, right: usize, desired: usize| {
+        if left.abs_diff(desired) <= right.abs_diff(desired) {
+            left
+        } else {
+            right
+        }
+    };
+
+    let mut selected = None;
+    for minimum_gap in [2, 1] {
+        for (left_index, left) in safe_columns.iter().enumerate() {
+            for right in safe_columns.iter().skip(left_index + 1) {
+                if right.saturating_sub(*left) < minimum_gap {
+                    continue;
+                }
+                let start_lane = nearest(*left, *right, start_x);
+                let end_lane = nearest(*left, *right, end_x);
+                if start_lane == end_lane {
+                    continue;
+                }
+                let score = (
+                    start_lane.abs_diff(start_x) + end_lane.abs_diff(end_x),
+                    right.saturating_sub(*left),
+                    *left,
+                    *right,
+                );
+                if selected
+                    .as_ref()
+                    .is_none_or(|(best_score, _)| score < *best_score)
+                {
+                    selected = Some((score, (*left, *right)));
+                }
+            }
+        }
+        if selected.is_some() {
+            break;
+        }
+    }
+
+    let Some((_, (left, right))) = selected else {
+        return;
+    };
+    let target_slots = slots.entry(target_id.to_owned()).or_default();
+    target_slots.top.clear();
+    target_slots.top.insert(left);
+    target_slots.top.insert(right);
 }
 
 fn node_center_x(
@@ -1916,7 +2449,7 @@ mod tests {
     }
 
     #[test]
-    fn td_sibling_portal_lanes_alternate_for_unique_stacked_pairs() {
+    fn td_sibling_portal_lanes_alternate_title_safe_sides_for_linear_chain() {
         let mut g = Graph::new();
         g.direction = Direction::TD;
         for (id, label) in [("a2", "A2"), ("b", "B"), ("b2", "B2"), ("c", "C")] {
@@ -1961,7 +2494,7 @@ mod tests {
             td_sibling_title_gutter(&g, "g3"),
             TitleGutter {
                 leading_extra_padding: 0,
-                trailing_extra_padding: 1,
+                trailing_extra_padding: 2,
             }
         );
 

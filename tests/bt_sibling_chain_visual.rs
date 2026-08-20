@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::BTreeSet, fs};
 
 use termiflow::{BaseStyle, RenderOptions};
 
@@ -71,6 +71,33 @@ fn strict_bt_sibling_chain_allocates_distinct_target_portal_lanes() {
                 "strict BT sibling transitions must not share one source portal lane for {style:?} optimized={optimized}:\n{}",
                 outcome.output
             );
+            for edge_id in outcome
+                .portal_trace
+                .boundaries
+                .iter()
+                .map(|boundary| boundary.edge_id.clone())
+                .collect::<BTreeSet<_>>()
+            {
+                let source_lane = outcome
+                    .portal_trace
+                    .boundaries
+                    .iter()
+                    .find(|boundary| boundary.edge_id == edge_id && boundary.crossing == "exit")
+                    .and_then(|boundary| boundary.slot_x)
+                    .expect("strict BT transition source lane");
+                let target_lane = outcome
+                    .portal_trace
+                    .boundaries
+                    .iter()
+                    .find(|boundary| boundary.edge_id == edge_id && boundary.crossing == "enter")
+                    .and_then(|boundary| boundary.slot_x)
+                    .expect("strict BT transition target lane");
+                assert_ne!(
+                    source_lane, target_lane,
+                    "strict BT sibling transition should expose a visible corridor turn for {edge_id} on {style:?} optimized={optimized}:\n{}",
+                    outcome.output
+                );
+            }
             assert!(
                 outcome.output.contains("Input Stage")
                     && outcome.output.contains("Transform Stage")

@@ -5,10 +5,14 @@ use std::collections::{HashMap, HashSet};
 use crate::geom::Rect;
 use crate::graph::{Direction, EdgeKind, Graph, NodeShape};
 use crate::portals::{
-    bt_sibling_chain_target_ids, compute_envelopes, nudge_portal_x_from_corners,
-    title_safe_portal_x, PortalColumnPreference, SubgraphEnvelope, BT_SIBLING_CHAIN_TITLE_MARGIN,
+    bt_external_entry_source_center_lane, bt_sibling_chain_target_ids,
+    bt_single_external_entry_source_center_allowed, bt_title_margin_for_edge, compute_envelopes,
+    nudge_portal_x_from_corners, title_margin_for_direction, title_safe_portal_x,
+    PortalColumnPreference, SubgraphEnvelope, BT_PARALLEL_MIN_LANE_GAP, BT_PARALLEL_TITLE_MARGIN,
+    BT_SIBLING_CHAIN_TITLE_MARGIN,
 };
 use crate::render::sibling_subgraph_fan_in_identity;
+use crate::render::sibling_target_entry_identity;
 
 use super::constraints::*;
 use super::placement::Placement;
@@ -18,7 +22,11 @@ const BT_SIBLING_CORRIDOR_SIDE_GAP: usize = 2;
 const BT_EXTERNAL_NODE_KEEP_OUT: usize = 1;
 const BT_MULTI_ENTRY_SOURCE_CLEARANCE: usize = 2;
 const BT_MULTI_ENTRY_MIN_LANE_GAP: usize = 3;
-const TD_SIBLING_CONNECTOR_ROWS: usize = 2;
+// Direct stacked sibling transitions need three exterior cells: one quiet
+// row before the turn, one turn row, and one portal-shaft row before the next
+// border. Two rows force the route to turn immediately against a boundary and
+// make the connector read like a damaged title hook.
+const TD_SIBLING_CONNECTOR_ROWS: usize = 3;
 
 /// Return the source-to-envelope clearance needed by a complete BT multi-entry
 /// scene. A one-row gap is enough for ordinary boundary edges, but a shared
@@ -780,13 +788,11 @@ fn align_td_external_fanout_centers(
 /// cross-subgraph route to paint a horizontal hook before the title-safe
 /// portal. That is technically connected but reads as a stray elbow. The move
 /// is deliberately narrower than the general portal collector: it is only
-/// eligible for the existing strict one-flat-subgraph, one-internal-node,
-/// two-edge route transaction; the direct entry set must be complete and
-/// one-to-one; the displacement must be at most six cells to cover the full
-/// title-safe shift in this bounded route transaction; and every staged
-/// rectangle must remain clear of the canvas, the subgraph, and unrelated
-/// nodes. Ambiguous or crowded scenes retain the existing fail-closed route
-/// policy.
+/// eligible for one flat titled subgraph whose direct external entry set is
+/// complete and one-to-one; the displacement must be at most six cells to
+/// cover the bounded title-safe shift; and every staged rectangle must remain
+/// clear of the canvas, the subgraph, and unrelated nodes. Ambiguous or
+/// crowded scenes retain the existing fail-closed route policy.
 fn align_td_external_entry_centers(
     graph: &Graph,
     placement: &mut Placement,
@@ -800,11 +806,9 @@ fn align_td_external_entry_centers(
     let mut proposals: Vec<(String, Rect)> = Vec::new();
     for subgraph in &graph.subgraphs {
         if graph.subgraphs.len() != 1
-            || graph.edges.iter().filter(|edge| !edge.is_back_edge).count() != 2
             || subgraph.parent_id.is_some()
             || !subgraph.child_ids.is_empty()
             || !subgraph.has_title()
-            || subgraph.node_ids.len() != 1
         {
             continue;
         }
@@ -835,12 +839,12 @@ fn align_td_external_entry_centers(
                         == vec![subgraph.id.as_str()]
             })
             .collect();
-        // A single direct entry is safe only under the same strict guards
-        // below: it must be the complete direct-entry set, use one distinct
-        // source/target pair, stay within the bounded displacement, and clear
-        // every unrelated rectangle. Keeping this path here lets the exact
-        // single-subgraph TD scene remove a stray approach hook without
-        // broadening ambiguous fan-in or nested portal placement.
+        // A direct entry set is safe only under the same strict guards below:
+        // it must be complete, one-to-one, stay within the bounded
+        // displacement, and clear every unrelated rectangle. Keeping this
+        // path flat and boundary-local lets a simple external-to-chain TD
+        // scene remove a stray approach hook without broadening ambiguous
+        // fan-in or nested portal placement.
         if entries.is_empty() {
             continue;
         }
@@ -882,6 +886,163 @@ fn align_td_external_entry_centers(
                 continue;
             }
             local_proposals.push((edge.from.clone(), candidate));
+        }
+        if local_proposals.is_empty() {
+            continue;
+        }
+
+        let source_ids: HashSet<&str> = local_proposals
+            .iter()
+            .map(|(source_id, _)| source_id.as_str())
+            .collect();
+        if local_proposals.iter().any(|(_, candidate)| {
+            candidate.x < placement.canvas.x
+                || candidate.y < placement.canvas.y
+                || candidate.bottom() > placement.canvas.bottom()
+                || rects_overlap(*candidate, envelope.outer)
+                || graph
+                    .nodes
+                    .iter()
+                    .filter(|node| !source_ids.contains(node.id.as_str()))
+                    .filter_map(|node| placement.node_rects.get(&node.id))
+                    .any(|rect| rects_overlap(*candidate, *rect))
+        }) {
+            continue;
+        }
+        if local_proposals
+            .iter()
+            .enumerate()
+            .any(|(index, (_, candidate))| {
+                local_proposals
+                    .iter()
+                    .skip(index + 1)
+                    .any(|(_, other)| rects_overlap(*candidate, *other))
+            })
+        {
+            continue;
+        }
+
+        proposals.extend(local_proposals);
+    }
+
+    if proposals.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+    for (source_id, candidate) in proposals {
+        changed |= set_node_x(placement, &source_id, candidate.x);
+    }
+    if changed {
+        placement.canvas.width = placement.canvas.width.max(
+            placement
+                .node_rects
+                .values()
+                .map(Rect::right)
+                .max()
+                .unwrap_or(0),
+        );
+    }
+    changed
+}
+
+/// Align a strict one-to-one set of external TD/TB sources with the centers of
+/// their distinct terminal targets inside one flat titled subgraph.
+///
+/// When an even-width external source and its target differ by one column, a
+/// generic portal route has no way to avoid adjacent corner glyphs. A target
+/// center is a stronger topology-owned lane than the subgraph's aggregate top
+/// slot for this narrow scene, so move each source to its paired target center
+/// only after validating the complete proposal set. Fan-in, fan-out, nested,
+/// labeled, and crowded scenes remain fail-closed.
+fn align_td_external_terminal_centers(
+    graph: &Graph,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) {
+        return false;
+    }
+
+    const MAX_TD_TERMINAL_CENTER_SHIFT: usize = 6;
+    let mut proposals: Vec<(String, Rect)> = Vec::new();
+
+    for subgraph in &graph.subgraphs {
+        if graph.subgraphs.len() != 1
+            || subgraph.parent_id.is_some()
+            || !subgraph.child_ids.is_empty()
+            || !subgraph.has_title()
+            || subgraph.node_ids.len() < 2
+        {
+            continue;
+        }
+        let Some(envelope) = envelopes.get(&subgraph.id) else {
+            continue;
+        };
+
+        let entries: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                !edge.is_back_edge
+                    && edge.kind == EdgeKind::Arrow
+                    && edge.label.is_none()
+                    && graph.get_node_subgraph(&edge.from).is_none()
+                    && graph.get_node_subgraph(&edge.to) == Some(subgraph.id.as_str())
+                    && graph
+                        .edge_boundary_crossings(&edge.from, &edge.to)
+                        .0
+                        .is_empty()
+                    && graph.edge_boundary_crossings(&edge.from, &edge.to).1
+                        == vec![subgraph.id.as_str()]
+            })
+            .collect();
+        let source_ids: HashSet<&str> = entries.iter().map(|edge| edge.from.as_str()).collect();
+        let target_ids: HashSet<&str> = entries.iter().map(|edge| edge.to.as_str()).collect();
+        if entries.len() < 2
+            || source_ids.len() != entries.len()
+            || target_ids.len() != entries.len()
+            || entries.len() != subgraph.node_ids.len()
+        {
+            continue;
+        }
+
+        let all_direct_entries = graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                !edge.is_back_edge
+                    && graph.get_node_subgraph(&edge.from).is_none()
+                    && graph.edge_boundary_crossings(&edge.from, &edge.to).1
+                        == vec![subgraph.id.as_str()]
+            })
+            .count();
+        if all_direct_entries != entries.len() {
+            continue;
+        }
+
+        let mut local_proposals = Vec::new();
+        for edge in entries {
+            let Some(source_rect) = placement.node_rects.get(&edge.from).copied() else {
+                local_proposals.clear();
+                break;
+            };
+            let Some(target_rect) = placement.node_rects.get(&edge.to).copied() else {
+                local_proposals.clear();
+                break;
+            };
+            let target_center = target_rect.x + target_rect.width / 2;
+            let source_center = source_rect.x + source_rect.width / 2;
+            if source_center.abs_diff(target_center) > MAX_TD_TERMINAL_CENTER_SHIFT {
+                local_proposals.clear();
+                break;
+            }
+            let Some(candidate) = centered_rect_at_x(source_rect, target_center) else {
+                local_proposals.clear();
+                break;
+            };
+            if candidate != source_rect {
+                local_proposals.push((edge.from.clone(), candidate));
+            }
         }
         if local_proposals.is_empty() {
             continue;
@@ -1194,7 +1355,7 @@ fn align_bt_parallel_sibling_lanes(
                         title,
                         *lane,
                         Direction::BT,
-                        0,
+                        BT_PARALLEL_TITLE_MARGIN,
                         PortalColumnPreference::Directional,
                     ),
                 ) == *lane
@@ -1226,7 +1387,10 @@ fn align_bt_parallel_sibling_lanes(
                     candidates[second_index],
                     candidates[third_index],
                 ];
-                if lanes.windows(2).any(|pair| pair[1] - pair[0] < 4) {
+                if lanes
+                    .windows(2)
+                    .any(|pair| pair[1] - pair[0] < BT_PARALLEL_MIN_LANE_GAP)
+                {
                     continue;
                 }
                 let cost = lanes
@@ -1290,6 +1454,353 @@ fn align_bt_parallel_sibling_lanes(
         changed |= set_node_x(placement, &node_id, candidate.x);
     }
     changed
+}
+
+/// Align a strict flat TD/TB parallel scene to its title-safe target lanes.
+///
+/// A titled target reserves a portal outside its title token. If the paired
+/// source and target boxes remain on the old center column, the shortest legal
+/// route has to draw a bracket-like detour at the target border. This policy
+/// moves both sibling groups by the same bounded delta, preserving pairwise
+/// edge identity while keeping the title anchored at the original left edge.
+/// Mixed, labeled, nested, fan-in, and non-bijective scenes fail closed.
+fn align_td_parallel_sibling_lanes(
+    graph: &Graph,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) || graph.subgraphs.len() != 2 {
+        return false;
+    }
+
+    let mut subgraphs: Vec<_> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| {
+            subgraph.parent_id.is_none()
+                && subgraph.child_ids.is_empty()
+                && subgraph.title.is_some()
+                && subgraph.node_ids.len() >= 2
+        })
+        .collect();
+    if subgraphs.len() != 2 {
+        return false;
+    }
+    subgraphs.sort_by_key(|subgraph| {
+        envelopes
+            .get(&subgraph.id)
+            .map(|envelope| (envelope.outer.y, envelope.outer.x))
+            .unwrap_or((usize::MAX, usize::MAX))
+    });
+    let source_subgraph = subgraphs[0];
+    let target_subgraph = subgraphs[1];
+    let Some(source_bounds) = envelopes.get(&source_subgraph.id).map(|env| env.outer) else {
+        return false;
+    };
+    let Some(target_bounds) = envelopes.get(&target_subgraph.id).map(|env| env.outer) else {
+        return false;
+    };
+    if source_bounds.y >= target_bounds.y || source_bounds.bottom() > target_bounds.y {
+        return false;
+    }
+
+    let source_ids: HashSet<&str> = source_subgraph
+        .node_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let target_ids: HashSet<&str> = target_subgraph
+        .node_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if source_ids.len() != target_ids.len()
+        || source_ids.len() < 2
+        || source_ids.len() + target_ids.len() != graph.nodes.len()
+    {
+        return false;
+    }
+    if graph
+        .nodes
+        .iter()
+        .any(|node| node.shape != NodeShape::Rectangle)
+    {
+        return false;
+    }
+
+    let mut edges: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            !edge.is_back_edge
+                && edge.kind == EdgeKind::Arrow
+                && edge.label.is_none()
+                && source_ids.contains(edge.from.as_str())
+                && target_ids.contains(edge.to.as_str())
+        })
+        .collect();
+    if edges.len() != source_ids.len()
+        || graph.edges.iter().filter(|edge| !edge.is_back_edge).count() != edges.len()
+        || edges
+            .iter()
+            .flat_map(|edge| [edge.from.as_str(), edge.to.as_str()])
+            .collect::<HashSet<_>>()
+            .len()
+            != graph.nodes.len()
+    {
+        return false;
+    }
+    edges.sort_by_key(|edge| {
+        (
+            placement
+                .node_rects
+                .get(&edge.from)
+                .map(|rect| rect_center_x(*rect)),
+            placement
+                .node_rects
+                .get(&edge.to)
+                .map(|rect| rect_center_x(*rect)),
+            edge.from.as_str(),
+            edge.to.as_str(),
+        )
+    });
+
+    let Some(desired): Option<Vec<(usize, usize)>> = edges
+        .iter()
+        .map(|edge| {
+            Some((
+                rect_center_x(*placement.node_rects.get(&edge.from)?),
+                rect_center_x(*placement.node_rects.get(&edge.to)?),
+            ))
+        })
+        .collect()
+    else {
+        return false;
+    };
+    // The bounded repair only translates an already aligned parallel scene.
+    // It must not silently change a crossing or reorder a non-aligned pair.
+    if desired.iter().any(|(source, target)| source != target)
+        || desired.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+    {
+        return false;
+    }
+
+    const MAX_TD_PARALLEL_SIBLING_SHIFT: usize = 12;
+    let title = target_subgraph.title.as_deref();
+    let margin = title_margin_for_direction(graph.direction);
+    let mut selected: Option<(usize, Vec<(String, Rect)>)> = None;
+    for delta in 0..=MAX_TD_PARALLEL_SIBLING_SHIFT {
+        let lanes: Vec<usize> = desired
+            .iter()
+            .map(|(source, _)| source.saturating_add(delta))
+            .collect();
+        if lanes.iter().any(|lane| {
+            title_safe_portal_x(
+                target_bounds.x,
+                target_bounds.width,
+                title,
+                *lane,
+                graph.direction,
+                margin,
+                PortalColumnPreference::Directional,
+            ) != *lane
+        }) {
+            continue;
+        }
+
+        let mut proposals = Vec::with_capacity(graph.nodes.len());
+        for edge in &edges {
+            let Some(source_rect) = placement.node_rects.get(&edge.from).copied() else {
+                proposals.clear();
+                break;
+            };
+            let Some(target_rect) = placement.node_rects.get(&edge.to).copied() else {
+                proposals.clear();
+                break;
+            };
+            let lane = rect_center_x(source_rect).saturating_add(delta);
+            let Some(source_candidate) = centered_rect_at_x(source_rect, lane) else {
+                proposals.clear();
+                break;
+            };
+            let Some(target_candidate) = centered_rect_at_x(target_rect, lane) else {
+                proposals.clear();
+                break;
+            };
+            proposals.push((edge.from.clone(), source_candidate));
+            proposals.push((edge.to.clone(), target_candidate));
+        }
+        if proposals.len() != graph.nodes.len() {
+            continue;
+        }
+        let moved_ids: HashSet<&str> = proposals.iter().map(|(id, _)| id.as_str()).collect();
+        if proposals.iter().any(|(_, candidate)| {
+            graph
+                .nodes
+                .iter()
+                .filter(|node| !moved_ids.contains(node.id.as_str()))
+                .filter_map(|node| placement.node_rects.get(&node.id))
+                .any(|rect| rects_overlap(*rect, *candidate))
+        }) || proposals.iter().enumerate().any(|(index, (_, candidate))| {
+            proposals
+                .iter()
+                .skip(index + 1)
+                .any(|(_, other)| rects_overlap(*candidate, *other))
+        }) {
+            continue;
+        }
+        selected = Some((delta, proposals));
+        break;
+    }
+
+    let Some((delta, proposals)) = selected else {
+        return false;
+    };
+    if delta == 0 {
+        return false;
+    }
+    let max_right = proposals
+        .iter()
+        .map(|(_, rect)| rect.right())
+        .max()
+        .unwrap_or(placement.canvas.width);
+    placement.canvas.width = placement.canvas.width.max(max_right);
+    let mut changed = false;
+    for (node_id, candidate) in proposals {
+        changed |= set_node_x(placement, &node_id, candidate.x);
+    }
+    changed
+}
+
+/// Align the corresponding node columns in the exact mixed TD sibling scene.
+///
+/// A cross edge that enters the lower target while the target's internal edge
+/// also converges there needs two physical target lanes. If both corresponding
+/// source/target pairs share one horizontal offset, translating the target
+/// nodes onto the source columns gives the scene a straight outer rail and
+/// leaves the alternate target lane outside the internal target branch. The
+/// selector is deliberately exact and fails closed for unequal offsets or any
+/// extra topology.
+fn align_td_mixed_sibling_target_lanes(
+    graph: &Graph,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    if graph.subgraphs.len() != 2 {
+        return false;
+    }
+    let mut subgraphs = graph.subgraphs.iter().collect::<Vec<_>>();
+    subgraphs.sort_by_key(|subgraph| {
+        envelopes
+            .get(&subgraph.id)
+            .map(|envelope| (envelope.outer.y, envelope.outer.x))
+            .unwrap_or((usize::MAX, usize::MAX))
+    });
+    let Some(source_bounds) = envelopes.get(&subgraphs[0].id).map(|env| env.outer) else {
+        return false;
+    };
+    let Some(target_bounds) = envelopes.get(&subgraphs[1].id).map(|env| env.outer) else {
+        return false;
+    };
+    if source_bounds.y >= target_bounds.y || source_bounds.bottom() > target_bounds.y {
+        return false;
+    }
+    let Some(scene) = sibling_target_entry_identity::td_scene_for_layout(
+        graph,
+        &subgraphs[0].id,
+        &subgraphs[1].id,
+    ) else {
+        return false;
+    };
+    let Some(source_start) = placement
+        .node_rects
+        .get(&scene.source_start_node_id)
+        .copied()
+    else {
+        return false;
+    };
+    let Some(source_end) = placement.node_rects.get(&scene.source_end_node_id).copied() else {
+        return false;
+    };
+    let Some(target_start) = placement
+        .node_rects
+        .get(&scene.target_start_node_id)
+        .copied()
+    else {
+        return false;
+    };
+    let Some(target_end) = placement.node_rects.get(&scene.target_end_node_id).copied() else {
+        return false;
+    };
+
+    let source_target_offsets = [
+        rect_center_x(target_start) as isize - rect_center_x(source_start) as isize,
+        rect_center_x(target_end) as isize - rect_center_x(source_end) as isize,
+    ];
+    if source_target_offsets[0] != source_target_offsets[1]
+        || source_target_offsets[0] == 0
+        || source_target_offsets[0].unsigned_abs() > 12
+    {
+        return false;
+    }
+
+    let target_start_candidate = centered_rect_at_x(target_start, rect_center_x(source_start));
+    let target_end_candidate = centered_rect_at_x(target_end, rect_center_x(source_end));
+    let (Some(target_start_candidate), Some(target_end_candidate)) =
+        (target_start_candidate, target_end_candidate)
+    else {
+        return false;
+    };
+    let moved_ids = [
+        scene.target_start_node_id.as_str(),
+        scene.target_end_node_id.as_str(),
+    ];
+    let candidates = [target_start_candidate, target_end_candidate];
+    if candidates.iter().any(|candidate| {
+        !rect_is_inside(*candidate, placement.canvas)
+            || graph
+                .nodes
+                .iter()
+                .filter(|node| !moved_ids.contains(&node.id.as_str()))
+                .filter_map(|node| placement.node_rects.get(&node.id))
+                .any(|rect| rects_overlap(*rect, *candidate))
+    }) || rects_overlap(candidates[0], candidates[1])
+    {
+        return false;
+    }
+
+    let mut changed = false;
+    changed |= set_node_x(
+        placement,
+        &scene.target_start_node_id,
+        target_start_candidate.x,
+    );
+    changed |= set_node_x(placement, &scene.target_end_node_id, target_end_candidate.x);
+    changed
+}
+
+/// Keep a translation-only parallel repair's title anchors stable after
+/// recomputing envelopes from the shifted content. The right edge is allowed
+/// to grow so the newly aligned nodes remain inside their visible subgraphs.
+fn preserve_envelope_left_edges(
+    previous: &HashMap<String, SubgraphEnvelope>,
+    current: &mut HashMap<String, SubgraphEnvelope>,
+) {
+    for (subgraph_id, previous_envelope) in previous {
+        let Some(envelope) = current.get_mut(subgraph_id) else {
+            continue;
+        };
+        if envelope.outer.x > previous_envelope.outer.x {
+            let right = envelope.outer.right();
+            envelope.outer.x = previous_envelope.outer.x;
+            envelope.outer.width = right.saturating_sub(envelope.outer.x);
+        }
+        if envelope.inner.x > previous_envelope.inner.x {
+            let right = envelope.inner.right();
+            envelope.inner.x = previous_envelope.inner.x;
+            envelope.inner.width = right.saturating_sub(envelope.inner.x);
+        }
+    }
 }
 
 /// Return the one-to-one external BT entries of a flat titled subgraph.
@@ -1510,11 +2021,13 @@ fn bt_intervals_separated(left: (usize, usize), right: (usize, usize)) -> bool {
 }
 
 /// Align a strict flat BT multi-entry scene to the renderer's deterministic
-/// title-safe lanes. Matching only target centers is insufficient: a target
-/// center can be inside the title span, forcing the route planner to select a
-/// different lane and paint a border-adjacent turn. This policy stages source
-/// rectangles on the same lane candidates used by that scene and fails closed
-/// when source boxes cannot be separated without touching another node.
+/// title-safe lanes. Matching only source centers is insufficient: a
+/// title-safe portal can be intentionally offset from the target center, and
+/// the route planner then has to paint a border-adjacent turn inside the
+/// target group. Stage both ends of each direct entry on the same selected
+/// lane so the portal shaft owns one column from source box to target box.
+/// Fail closed when either source or target boxes cannot be moved without
+/// leaving the canvas, touching another node, or escaping the target envelope.
 ///
 /// All candidate rectangles are staged and checked before any placement is
 /// mutated. The policy fails closed on collisions, boundary contact, or a
@@ -1540,6 +2053,7 @@ fn align_bt_external_entry_centers(
     };
 
     let source_ids: HashSet<&str> = entries.iter().map(|(source, _)| source.as_str()).collect();
+    let target_ids: HashSet<&str> = entries.iter().map(|(_, target)| target.as_str()).collect();
     let Some(lane_candidates) = bt_multi_entry_lane_candidates(
         envelope.outer,
         graph
@@ -1581,27 +2095,54 @@ fn align_bt_external_entry_centers(
         return false;
     };
 
-    let candidates: Vec<(String, Rect)> = entries
-        .iter()
-        .zip(lanes)
-        .filter_map(|((source_id, _), lane)| {
-            centered_rect_at_x(*placement.node_rects.get(source_id)?, lane)
-                .map(|candidate| (source_id.clone(), candidate))
-        })
-        .collect();
-    if candidates.len() != entries.len() {
-        return false;
+    let mut candidates = Vec::with_capacity(entries.len() * 2);
+    for ((source_id, target_id), lane) in entries.iter().zip(lanes) {
+        let Some(source_rect) = placement.node_rects.get(source_id).copied() else {
+            return false;
+        };
+        let Some(target_rect) = placement.node_rects.get(target_id).copied() else {
+            return false;
+        };
+        let Some(source_candidate) = centered_rect_at_x(source_rect, lane) else {
+            return false;
+        };
+        let Some(target_candidate) = centered_rect_at_x(target_rect, lane) else {
+            return false;
+        };
+        candidates.push((source_id.clone(), source_candidate));
+        candidates.push((target_id.clone(), target_candidate));
     }
 
     for (index, (_, candidate)) in candidates.iter().enumerate() {
-        if candidate.x < placement.canvas.x || candidate.bottom() > placement.canvas.bottom() {
+        let node_id = &candidates[index].0;
+        // Target boxes belong to the titled subgraph, so a rightward lane may
+        // legitimately grow its outer envelope by the one cell needed to keep
+        // the full-width box centered on the final portal. Keep the left wall
+        // and vertical band bounded; the later envelope recomputation owns the
+        // resulting right-edge growth.
+        let inside_target_envelope = if target_ids.contains(node_id.as_str()) {
+            candidate.x >= envelope.outer.x
+                && candidate.y >= envelope.outer.y
+                && candidate.bottom() <= envelope.outer.bottom()
+                && candidate.right()
+                    <= envelope
+                        .outer
+                        .right()
+                        .saturating_add(BT_EXTERNAL_NODE_KEEP_OUT)
+        } else {
+            true
+        };
+        let inside_canvas = candidate.x >= placement.canvas.x
+            && candidate.y >= placement.canvas.y
+            && candidate.bottom() <= placement.canvas.bottom();
+        if !inside_canvas || (target_ids.contains(node_id.as_str()) && !inside_target_envelope) {
             return false;
         }
         for (other_index, (_, other_candidate)) in candidates.iter().enumerate() {
             if index != other_index
                 && rects_overlap(
                     candidate.inflate(BT_EXTERNAL_NODE_KEEP_OUT),
-                    *other_candidate,
+                    other_candidate.inflate(BT_EXTERNAL_NODE_KEEP_OUT),
                 )
             {
                 return false;
@@ -1609,6 +2150,7 @@ fn align_bt_external_entry_centers(
         }
         for (node_id, node_rect) in &placement.node_rects {
             if !source_ids.contains(node_id.as_str())
+                && !target_ids.contains(node_id.as_str())
                 && rects_overlap(
                     candidate.inflate(BT_EXTERNAL_NODE_KEEP_OUT),
                     node_rect.inflate(BT_EXTERNAL_NODE_KEEP_OUT),
@@ -1619,18 +2161,18 @@ fn align_bt_external_entry_centers(
         }
     }
 
-    let changed = candidates.iter().any(|(source_id, candidate)| {
+    let changed = candidates.iter().any(|(node_id, candidate)| {
         placement
             .node_rects
-            .get(source_id)
+            .get(node_id)
             .is_some_and(|current| current.x != candidate.x)
     });
     if !changed {
         return false;
     }
 
-    for (source_id, candidate) in candidates {
-        if !set_node_x(placement, &source_id, candidate.x) {
+    for (node_id, candidate) in candidates {
+        if !set_node_x(placement, &node_id, candidate.x) {
             return false;
         }
     }
@@ -1643,6 +2185,132 @@ fn align_bt_external_entry_centers(
             .unwrap_or(0),
     );
     true
+}
+
+/// Align the source box of one flat BT external entry with the quiet lane
+/// selected for its target. The generic BT selector intentionally keeps a
+/// source-adjacent portal away from the source box; in this exact one-entry
+/// topology that conservative rule creates the visible lower boundary hook
+/// the reviewer flagged. Move only the external source, stage every proposal,
+/// and fail closed on canvas, envelope, or node collisions.
+fn align_bt_single_external_entry_center(
+    graph: &Graph,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    if graph.direction != Direction::BT {
+        return false;
+    }
+
+    const MAX_BT_SINGLE_ENTRY_SOURCE_SHIFT: usize = 8;
+    let mut proposals: Vec<(String, Rect)> = Vec::new();
+
+    for subgraph in &graph.subgraphs {
+        let Some(envelope) = envelopes.get(&subgraph.id) else {
+            continue;
+        };
+        let entries: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                !edge.is_back_edge
+                    && edge.kind == EdgeKind::Arrow
+                    && edge.label.is_none()
+                    && graph.get_node_subgraph(&edge.from).is_none()
+                    && graph.get_node_subgraph(&edge.to) == Some(subgraph.id.as_str())
+                    && graph
+                        .edge_boundary_crossings(&edge.from, &edge.to)
+                        .0
+                        .is_empty()
+                    && graph.edge_boundary_crossings(&edge.from, &edge.to).1
+                        == vec![subgraph.id.as_str()]
+            })
+            .collect();
+        if entries.len() != 1 {
+            continue;
+        }
+        let edge = entries[0];
+        if !bt_single_external_entry_source_center_allowed(
+            graph,
+            &edge.from,
+            &edge.to,
+            &subgraph.id,
+        ) {
+            continue;
+        }
+
+        let Some(source_rect) = placement.node_rects.get(&edge.from).copied() else {
+            continue;
+        };
+        let Some(target_rect) = placement.node_rects.get(&edge.to).copied() else {
+            continue;
+        };
+        if source_rect.y <= target_rect.y {
+            continue;
+        }
+        let source_center = rect_center_x(source_rect);
+        let target_center = rect_center_x(target_rect);
+        let title_margin = bt_title_margin_for_edge(graph, &edge.from, &edge.to, &subgraph.id);
+        let Some(lane) = bt_external_entry_source_center_lane(
+            envelope.outer.x,
+            envelope.outer.width,
+            subgraph.title.as_deref(),
+            target_center,
+            source_center,
+            target_center,
+            title_margin,
+        ) else {
+            continue;
+        };
+        if source_center.abs_diff(lane) > MAX_BT_SINGLE_ENTRY_SOURCE_SHIFT {
+            continue;
+        }
+        let Some(candidate) = centered_rect_at_x(source_rect, lane) else {
+            continue;
+        };
+        if candidate == source_rect
+            || candidate.x < placement.canvas.x
+            || candidate.y < placement.canvas.y
+            || candidate.bottom() > placement.canvas.bottom()
+            || rects_overlap(candidate, envelope.outer)
+            || graph
+                .nodes
+                .iter()
+                .filter(|node| node.id != edge.from)
+                .filter_map(|node| placement.node_rects.get(&node.id))
+                .any(|rect| rects_overlap(candidate, *rect))
+        {
+            continue;
+        }
+        proposals.push((edge.from.clone(), candidate));
+    }
+
+    if proposals.is_empty()
+        || proposals.iter().enumerate().any(|(index, (_, candidate))| {
+            proposals
+                .iter()
+                .skip(index + 1)
+                .any(|(_, other)| rects_overlap(*candidate, *other))
+        })
+    {
+        return false;
+    }
+
+    let mut changed = false;
+    for (source_id, candidate) in proposals {
+        changed |= set_node_x(placement, &source_id, candidate.x);
+    }
+    if changed {
+        placement.canvas.width = placement.canvas.width.max(
+            placement
+                .node_rects
+                .values()
+                .map(Rect::right)
+                .max()
+                .unwrap_or(0),
+        );
+    }
+    changed
 }
 
 /// Move topology-connected external blockers out of exact sibling BT
@@ -2777,8 +3445,38 @@ pub(super) fn resolve_subgraph_envelopes(
         align_bt_sibling_chain_content(input.graph, config, placement, &mut subgraph_envelopes);
     }
 
+    let previous_bt_parallel_envelopes = subgraph_envelopes.clone();
     if input.graph.direction == Direction::BT
         && align_bt_parallel_sibling_lanes(input.graph, placement, &subgraph_envelopes)
+    {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        preserve_envelope_left_edges(&previous_bt_parallel_envelopes, &mut subgraph_envelopes);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
+    // Keep strict vertical parallel siblings on the title-safe target lanes
+    // selected by the portal collector. The repair is translation-only and
+    // preserves each source/target pair, so a successful move must also keep
+    // the old left title anchors while allowing the right envelope edge to
+    // grow around the shifted content.
+    if matches!(input.graph.direction, Direction::TD | Direction::TB) {
+        let previous_envelopes = subgraph_envelopes.clone();
+        if align_td_parallel_sibling_lanes(input.graph, placement, &subgraph_envelopes) {
+            subgraph_envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            preserve_envelope_left_edges(&previous_envelopes, &mut subgraph_envelopes);
+            adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
+    }
+
+    // The mixed sibling-target scene has two corresponding cross edges and two
+    // internal edges. When both pairs carry the same horizontal offset, align
+    // the target group's node centers to the source group's centers before
+    // route ownership is projected. This removes a needless boundary jog and
+    // leaves the target's internal branch outside the cross-edge shaft.
+    if input.graph.direction == Direction::TD
+        && align_td_mixed_sibling_target_lanes(input.graph, placement, &subgraph_envelopes)
     {
         subgraph_envelopes =
             compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
@@ -2788,11 +3486,24 @@ pub(super) fn resolve_subgraph_envelopes(
     // Keep direct external BT entries on the same columns as their target
     // centers. This is intentionally after envelope/sibling rebalance so the
     // translation is the final placement owner consumed by route staging.
+    let previous_bt_entry_envelopes = subgraph_envelopes.clone();
+    if input.graph.direction == Direction::BT
+        && align_bt_single_external_entry_center(input.graph, placement, &subgraph_envelopes)
+    {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
+    // Keep strict BT multi-entry scenes on their paired lanes. The single-entry
+    // alignment above deliberately does not participate in fan-in/fan-out or
+    // sibling ownership, so those routes retain their existing allocator.
     if input.graph.direction == Direction::BT
         && align_bt_external_entry_centers(input.graph, placement, &subgraph_envelopes)
     {
         subgraph_envelopes =
             compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        preserve_envelope_left_edges(&previous_bt_entry_envelopes, &mut subgraph_envelopes);
         adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
     }
 
@@ -2825,6 +3536,18 @@ pub(super) fn resolve_subgraph_envelopes(
     // ambiguous multi-entry collector scenes.
     if matches!(input.graph.direction, Direction::TD | Direction::TB)
         && align_td_external_entry_centers(input.graph, placement, &subgraph_envelopes)
+    {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
+    // Align strict one-to-one terminal entries with their paired target
+    // centers after the aggregate portal policies have settled. This removes
+    // adjacent corner glyphs from the narrow flat multi-target scene without
+    // taking ownership of ambiguous collector routes.
+    if matches!(input.graph.direction, Direction::TD | Direction::TB)
+        && align_td_external_terminal_centers(input.graph, placement, &subgraph_envelopes)
     {
         subgraph_envelopes =
             compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);

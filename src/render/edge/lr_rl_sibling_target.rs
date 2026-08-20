@@ -22,6 +22,12 @@ use super::edge_primitives::{edge_entry_point, edge_exit_point, is_subgraph_titl
 use super::{set_route_char, set_route_edge_char, RouteOwner};
 
 const STRATEGY: &str = "lr-rl-sibling-target-entry-identity";
+// Keep branch and receiver turns one quiet cell away from the source node
+// and the target portal.  A one-cell turn makes the ASCII `+>+`/`<+` shoulder
+// read like a box corner or a shared border seam in the mixed sibling scene.
+const SOURCE_TURN_CLEARANCE: usize = 2;
+const TARGET_PORTAL_CLEARANCE: usize = 2;
+const INTERNAL_TARGET_TURN_CLEARANCE: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoundarySide {
@@ -341,9 +347,9 @@ fn route_cross(
     }
     let direction = graph.direction;
     let coords = OrientedCoords::new(direction);
-    let target_outside = coords.advance(target_portal.0, target_portal.1, 1);
+    let target_outside = coords.advance(target_portal.0, target_portal.1, TARGET_PORTAL_CLEARANCE);
     let target_turn = coords.with_secondary(target_outside.0, target_outside.1, target_entry.1);
-    let source_bend = coords.advance(source_exit.0, source_exit.1, 1);
+    let source_bend = coords.advance(source_exit.0, source_exit.1, SOURCE_TURN_CLEARANCE);
     let source_turn = coords.with_secondary(source_bend.0, source_bend.1, source_portal.1);
     let mut cells = BTreeSet::new();
     add_primary(plan, &mut cells, source_exit, source_bend, style);
@@ -423,7 +429,11 @@ fn route_internal(
     style: &StyleChars,
 ) -> Option<BTreeSet<(usize, usize)>> {
     let coords = OrientedCoords::new(direction);
-    let target_turn = coords.retreat(target_entry.0, target_entry.1, 1);
+    let target_turn = coords.retreat(
+        target_entry.0,
+        target_entry.1,
+        INTERNAL_TARGET_TURN_CLEARANCE,
+    );
     let source_turn = coords.with_secondary(target_turn.0, source_exit.1, source_exit.1);
     let mut cells = BTreeSet::new();
     add_primary(plan, &mut cells, source_exit, source_turn, style);

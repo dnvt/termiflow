@@ -988,13 +988,8 @@ pub(super) fn draw_convergent_edge_label(
 
             // Move the label away from the shared merge corridor when the source
             // approaches the target from the left or right.
-            let label_start_x = if src_x + 1 < target_x {
-                src_x.saturating_sub(label_width)
-            } else if src_x > target_x + 1 {
-                src_x.saturating_add(2)
-            } else {
-                src_x.saturating_sub(label_width / 2)
-            };
+            let label_start_x =
+                convergent_vertical_label_start(src_x, target_x, label_width, canvas.width);
 
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
@@ -1010,7 +1005,8 @@ pub(super) fn draw_convergent_edge_label(
             let stem_start_y = from.y.saturating_sub(1);
             let label_y = stem_start_y.saturating_sub(1);
 
-            let label_start_x = src_x.saturating_sub(label_width / 2);
+            let label_start_x =
+                convergent_vertical_label_start(src_x, center_x(to), label_width, canvas.width);
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
@@ -1024,9 +1020,14 @@ pub(super) fn draw_convergent_edge_label(
             // Place label on horizontal line from source, before merge
             let src_y = center_y(from);
             let stem_start_x = from.x + from.width;
-            let label_x = stem_start_x + 1;
             // Place label above the edge line
             let label_y = src_y.saturating_sub(1);
+            let label_x = convergent_horizontal_label_start(
+                stem_start_x.saturating_add(1),
+                to.x.saturating_sub(1),
+                label_width,
+                canvas.width,
+            );
 
             let mut x_pos = label_x;
             for c in display_label.chars() {
@@ -1039,9 +1040,13 @@ pub(super) fn draw_convergent_edge_label(
         }
         Direction::RL => {
             let src_y = center_y(from);
-            let stem_start_x = from.x.saturating_sub(1);
-            let label_x = stem_start_x.saturating_sub(label_width);
             let label_y = src_y.saturating_sub(1);
+            let label_x = convergent_horizontal_label_start(
+                to.x.saturating_add(to.width).saturating_add(1),
+                from.x.saturating_sub(1),
+                label_width,
+                canvas.width,
+            );
 
             let mut x_pos = label_x;
             for c in display_label.chars() {
@@ -1055,6 +1060,52 @@ pub(super) fn draw_convergent_edge_label(
     }
 
     build_label_placement(owner_id, cells)
+}
+
+/// Prefer the horizontal turn corridor between a convergent source and target.
+/// If that corridor is too narrow for the label, place the label on the source
+/// side so it remains local to the branch instead of floating at a frame edge.
+fn convergent_vertical_label_start(
+    source_x: usize,
+    target_x: usize,
+    label_width: usize,
+    canvas_width: usize,
+) -> usize {
+    let (left, right) = if source_x <= target_x {
+        (source_x.saturating_add(2), target_x.saturating_sub(1))
+    } else {
+        (target_x.saturating_add(1), source_x.saturating_sub(2))
+    };
+    if right >= left {
+        let span = right.saturating_sub(left).saturating_add(1);
+        if span >= label_width {
+            return left + (span - label_width) / 2;
+        }
+    }
+
+    let outer = if source_x <= target_x {
+        source_x.saturating_sub(label_width.saturating_add(2))
+    } else {
+        source_x.saturating_add(2)
+    };
+    outer.min(canvas_width.saturating_sub(label_width))
+}
+
+/// Center a convergent horizontal label in the open gap between the source
+/// and target boxes. Tight branches use the nearest bounded source-local slot.
+fn convergent_horizontal_label_start(
+    gap_start: usize,
+    gap_end_exclusive: usize,
+    label_width: usize,
+    canvas_width: usize,
+) -> usize {
+    if gap_end_exclusive > gap_start {
+        let span = gap_end_exclusive - gap_start;
+        if span >= label_width {
+            return gap_start + (span - label_width) / 2;
+        }
+    }
+    gap_start.min(canvas_width.saturating_sub(label_width))
 }
 
 fn record_label_cell(cells: &mut Vec<(usize, usize)>, x: usize, y: usize) {

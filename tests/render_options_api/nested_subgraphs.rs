@@ -28,6 +28,42 @@ fn render_with_feedback_coordinates_bt_multi_entry_boundary_scene() {
                 "expected clean BT multi-entry scene for {style:?}, optimize={optimize}\n{}",
                 outcome.output
             );
+            let lines: Vec<&str> = outcome.output.lines().collect();
+            let title_idx = lines
+                .iter()
+                .position(|line| line.contains("Target Group"))
+                .expect("target title row");
+            let target_bottom = lines[..title_idx]
+                .iter()
+                .rposition(|line| {
+                    line.contains(if style == termiflow::BaseStyle::Ascii {
+                        "+-----+"
+                    } else {
+                        "└─────┘"
+                    })
+                })
+                .expect("target node bottom row");
+            let source_label = lines
+                .iter()
+                .position(|line| line.contains("X1"))
+                .expect("source node row");
+            let horizontal = if style == termiflow::BaseStyle::Ascii {
+                '-'
+            } else {
+                '─'
+            };
+            assert!(
+                (target_bottom + 1..title_idx)
+                    .all(|row| !lines[row].contains(horizontal)),
+                "expected a quiet interior title approach with no horizontal hook for style={style:?}, optimize={optimize}\n{}",
+                outcome.output
+            );
+            assert!(
+                (title_idx + 2..source_label.saturating_sub(1))
+                    .all(|row| !lines[row].contains(horizontal)),
+                "expected a quiet exterior source approach with no horizontal hook for style={style:?}, optimize={optimize}\n{}",
+                outcome.output
+            );
             if style == termiflow::BaseStyle::Ascii {
                 assert!(
                     !outcome.output.contains("+-+") && !outcome.output.contains("+ -"),
@@ -166,7 +202,7 @@ fn render_with_feedback_keeps_narrow_td_subgraph_portal_corners_separated() {
 }
 
 #[test]
-fn render_with_feedback_keeps_direct_td_sibling_turn_in_the_gap() {
+fn render_with_feedback_keeps_direct_td_sibling_corridor_clear() {
     let fixtures = [
         (
             "tests/fixtures/inputs/collision_sibling_tight_td.md",
@@ -227,20 +263,46 @@ fn render_with_feedback_keeps_direct_td_sibling_turn_in_the_gap() {
                         line.contains('└') && line.contains('┐') && line.contains('─')
                     }
                 };
-                let turn_row = (upper_border + 1..lower_border)
-                    .find(|index| is_corridor_turn(lines[*index]))
-                    .unwrap_or_else(|| {
+                let turn_row =
+                    (upper_border + 1..lower_border).find(|index| is_corridor_turn(lines[*index]));
+                if fixture.ends_with("collision_sibling_tight_td.md") {
+                    assert!(
+                        turn_row.is_none(),
+                        "tight direct TD sibling should stay on one straight center lane rather than inventing a side hook for style={style:?}, optimize={optimize}\n{}",
+                        outcome.output
+                    );
+                    assert!(
+                        !lines.iter().any(|line| {
+                            line.contains(if style == termiflow::BaseStyle::Ascii {
+                                "v-"
+                            } else {
+                                "↓─"
+                            }) || line.contains(if style == termiflow::BaseStyle::Ascii {
+                                "+-+"
+                            } else {
+                                "└─┐"
+                            }) || line.contains(if style == termiflow::BaseStyle::Ascii {
+                                "+-+"
+                            } else {
+                                "┌─┘"
+                            })
+                        }),
+                        "tight direct TD sibling must not emit a title hook or arrow-row tail for style={style:?}, optimize={optimize}\n{}",
+                        outcome.output
+                    );
+                } else {
+                    let turn_row = turn_row.unwrap_or_else(|| {
                         panic!(
                             "direct corridor turn row missing for {fixture}, style={style:?}, optimize={optimize}; borders=({upper_border}, {lower_border})\n{}",
                             outcome.output
                         )
                     });
-
-                assert!(
-                    turn_row - upper_border >= 2 && lower_border - turn_row >= 2,
-                    "expected direct TD turn to have a straight row before each sibling border for {fixture}, style={style:?}, optimize={optimize}; turn={turn_row}, borders=({upper_border}, {lower_border})\n{}",
-                    outcome.output
-                );
+                    assert!(
+                        turn_row - upper_border >= 2 && lower_border - turn_row >= 2,
+                        "expected direct TD turn to have a straight row before each sibling border for {fixture}, style={style:?}, optimize={optimize}; turn={turn_row}, borders=({upper_border}, {lower_border})\n{}",
+                        outcome.output
+                    );
+                }
                 for label in labels {
                     assert!(
                         outcome.output.contains(label),
@@ -348,6 +410,17 @@ fn render_with_feedback_gives_stacked_td_siblings_two_connector_rows() {
             assert!(
                 outcome.output.chars().filter(|ch| *ch == arrow).count() >= 5,
                 "expected all five TD arrows for {style:?}, optimize={optimize}\n{}",
+                outcome.output
+            );
+            assert!(
+                !lines.iter().any(|line| {
+                    line.contains(if style == termiflow::BaseStyle::Ascii {
+                        "v-"
+                    } else {
+                        "↓─"
+                    })
+                }),
+                "stacked TD sibling entries must not leave a horizontal tail after an arrow for {style:?}, optimize={optimize}\n{}",
                 outcome.output
             );
             assert_eq!(

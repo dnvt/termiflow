@@ -276,12 +276,26 @@ pub(super) fn draw_subgraph_title(
     if title_y >= canvas.height {
         return;
     }
-    let title_last_index = title_fmt.chars().count().saturating_sub(1);
+    let visible_title_span = crate::graph::subgraph_title_text_span_with_padding_sides(
+        rect.x,
+        rect.width,
+        t,
+        direction,
+        title_gutter.leading_extra_padding,
+        title_gutter.trailing_extra_padding,
+    );
     for (i, c) in title_fmt.chars().enumerate() {
         if start_x + i < canvas.width {
-            let is_wrapper_padding = i == 0 || i == title_last_index;
-            let preserves_route = is_wrapper_padding
-                && canvas.get_meta(start_x + i, title_y).is_some_and(|meta| {
+            let x = start_x + i;
+            // Extra topology-owned gutter cells are part of the title
+            // envelope but not part of the visible title. Preserve a route
+            // there just as we preserve the ordinary one-cell wrappers; a
+            // sibling portal may intentionally use the second padded cell
+            // to keep its rail continuous through the title row.
+            let is_title_gutter = visible_title_span
+                .is_some_and(|(visible_start, visible_end)| x < visible_start || x > visible_end);
+            let preserves_route = is_title_gutter
+                && canvas.get_meta(x, title_y).is_some_and(|meta| {
                     meta.z_index > 0
                         && matches!(
                             meta.owner_kind,
@@ -295,7 +309,7 @@ pub(super) fn draw_subgraph_title(
             if preserves_route {
                 continue;
             }
-            canvas.set(start_x + i, title_y, c);
+            canvas.set(x, title_y, c);
         }
     }
 }

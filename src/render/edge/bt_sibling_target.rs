@@ -24,6 +24,8 @@ use super::subgraph::{lower_bt_fallback_plan, route_cross_subgraph_bt, BtRouteOu
 use super::{route_divergent_edges, set_route_char, set_route_edge_char, RouteOwner};
 
 const STRATEGY: &str = "bt-sibling-target-entry-identity";
+const PREFERRED_TARGET_ENTRY_GAP: usize = 3;
+const MINIMUM_TARGET_ENTRY_GAP: usize = 2;
 
 /// Reserve the exact mixed sibling/internal target scene as one transaction.
 ///
@@ -103,17 +105,22 @@ pub(crate) fn plan_bt_sibling_target_scene(
     target_ports.dedup();
 
     let mut port_pairs = Vec::new();
-    for &cross_port in &target_ports {
-        for &internal_port in &target_ports {
-            if cross_port >= internal_port || internal_port.abs_diff(cross_port) < 2 {
-                continue;
+    for minimum_gap in [PREFERRED_TARGET_ENTRY_GAP, MINIMUM_TARGET_ENTRY_GAP] {
+        for &cross_port in &target_ports {
+            for &internal_port in &target_ports {
+                if cross_port >= internal_port || internal_port.abs_diff(cross_port) < minimum_gap {
+                    continue;
+                }
+                port_pairs.push((
+                    cross_port,
+                    internal_port,
+                    cross_port.abs_diff(target_upper.center_x())
+                        + internal_port.abs_diff(target_upper.center_x()),
+                ));
             }
-            port_pairs.push((
-                cross_port,
-                internal_port,
-                cross_port.abs_diff(target_upper.center_x())
-                    + internal_port.abs_diff(target_upper.center_x()),
-            ));
+        }
+        if !port_pairs.is_empty() {
+            break;
         }
     }
     port_pairs.sort_by_key(|(cross_port, internal_port, distance)| {
