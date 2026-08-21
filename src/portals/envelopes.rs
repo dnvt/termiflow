@@ -1002,6 +1002,17 @@ fn build_envelope(
         top_hard_pad = top_hard_pad.max(gutter.saturating_add(2));
     }
 
+    // The strict TD/TB terminal-entry scene uses the row immediately below the
+    // title band as a quiet visual buffer. The route bridge remains one row
+    // above the receiver arrow, so reserve exactly one extra top cell in the
+    // envelope instead of inflating the rank gap for unrelated diagrams.
+    if matches!(graph.direction, Direction::TD | Direction::TB)
+        && super::td_terminal_entry_scene_subgraph(graph)
+            .is_some_and(|scene| scene.id == subgraph.id)
+    {
+        top_hard_pad = top_hard_pad.saturating_add(1);
+    }
+
     let mut bottom_hard_pad = if title_on_bottom { 3 } else { 1 };
     if matches!(graph.direction, Direction::BT) && incoming_cross_count > 0 {
         bottom_hard_pad = bottom_hard_pad.max(if has_title { 4 } else { 2 });
@@ -1114,6 +1125,15 @@ fn build_envelope(
         top_pad = bottom_pad.saturating_add(1);
     } else if bottom_pad > top_pad.saturating_add(1) {
         bottom_pad = top_pad.saturating_add(1);
+    }
+    if matches!(graph.direction, Direction::TD | Direction::TB)
+        && super::td_terminal_entry_scene_subgraph(graph)
+            .is_some_and(|scene| scene.id == subgraph.id)
+    {
+        // The normal balancing rule intentionally keeps ordinary frames
+        // symmetric. This exact scene owns one additional top cell even when
+        // the balance pass would otherwise spend it on the bottom side.
+        top_pad = top_pad.saturating_add(1);
     }
 
     let outer = Rect::new(

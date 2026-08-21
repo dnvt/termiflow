@@ -5,18 +5,19 @@
 //! rejected geometry cannot leave a partial scene behind.
 
 use crate::graph::{Direction, Graph, Node};
-use crate::orientation::OrientedCoords;
+use crate::orientation::{Axis, OrientedCoords};
 use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
 use super::super::dual_junction::target_port_count as dual_junction_target_port_count;
+use super::super::fallback_route::FallbackRoutePlan;
 use super::super::vertical_fan_in::{
     nonterminal_target_port_count, target_port_columns, target_port_count,
 };
 use super::edge_primitives::{
     draw_line_primary, draw_line_secondary, edge_entry_point, edge_exit_point,
 };
-use super::{edge_route_owner_id, set_route_char, set_route_edge_char, RouteOwner};
+use super::{edge_route_owner_id, set_route_char, RouteOwner};
 
 struct PlannedRoute<'a> {
     source: &'a Node,
@@ -124,7 +125,19 @@ pub(crate) fn route_vertical_fan_in_edges(
     }
 
     canvas.set_write_stage("edge-route-vertical-fan-in");
+    let mut fallback = FallbackRoutePlan::new(
+        format!("vertical-fan-in:{}", target.id),
+        "vertical-fan-in-identity",
+    );
+    fallback.set_scene_coverage(
+        ordered_sources
+            .iter()
+            .map(|source| edge_route_owner_id(graph, &source.id, &target.id)),
+    );
     for plan in plans {
+        if has_shared_source_stem(graph, plan.source, target) {
+            mark_shared_source_prefix(&mut fallback, &plan, &coords);
+        }
         let owner_id = edge_route_owner_id(graph, &plan.source.id, &target.id);
         let owner = RouteOwner {
             kind: crate::render::semantic::CellOwnerKind::EdgeSegment,
@@ -156,12 +169,15 @@ pub(crate) fn route_vertical_fan_in_edges(
                 Some(graph),
                 Some(owner),
             );
-            set_route_edge_char(
+            // The primary line helper includes its endpoint, so the turn cell
+            // temporarily contains a shaft.  This route plan has already
+            // proved the corner is collision-free; write the authoritative
+            // corner directly instead of resolving it as a false tee.
+            set_route_char(
                 canvas,
                 plan.turn.0,
                 plan.turn.1,
                 coords.corner_start_to_secondary(going_before, style),
-                style,
                 Some(owner),
             );
 
@@ -177,17 +193,20 @@ pub(crate) fn route_vertical_fan_in_edges(
                 Some(graph),
                 Some(owner),
             );
-            set_route_edge_char(
+            // The final primary leg starts after target_turn, but retain the
+            // direct corner write so a prior shaft cannot manufacture a
+            // junction glyph at the receiver elbow.
+            set_route_char(
                 canvas,
                 target_turn.0,
                 target_turn.1,
                 coords.corner_secondary_to_end(going_before, style),
-                style,
                 Some(owner),
             );
+            let final_start = coords.advance(target_turn.0, target_turn.1, 1);
             draw_line_primary(
-                target_turn.0,
-                target_turn.1,
+                final_start.0,
+                final_start.1,
                 plan.target_entry.0,
                 plan.target_entry.1,
                 &coords,
@@ -204,6 +223,154 @@ pub(crate) fn route_vertical_fan_in_edges(
             coords.arrow_end(style),
             Some(owner),
         );
+
+        if source_column == plan.target_port {
+            push_primary_segment(
+                &mut fallback,
+                plan.source_exit,
+                plan.target_entry,
+                &coords,
+                style,
+            );
+        } else {
+            push_primary_segment(&mut fallback, plan.source_exit, plan.turn, &coords, style);
+            let target_turn = coords.with_secondary(plan.turn.0, plan.turn.1, plan.target_port);
+            push_secondary_segment(&mut fallback, plan.turn, target_turn, &coords, style);
+            let going_before = source_column > plan.target_port;
+            let final_start = coords.advance(target_turn.0, target_turn.1, 1);
+            push_primary_segment(
+                &mut fallback,
+                final_start,
+                plan.target_entry,
+                &coords,
+                style,
+            );
+            fallback.push_corner(
+                plan.turn.0,
+                plan.turn.1,
+                coords.corner_start_to_secondary(going_before, style),
+            );
+            fallback.push_corner(
+                target_turn.0,
+                target_turn.1,
+                coords.corner_secondary_to_end(going_before, style),
+            );
+        }
+        fallback.push_paint(
+            plan.target_entry.0,
+            plan.target_entry.1,
+            coords.arrow_end(style),
+        );
     }
+    canvas.record_fallback_route_evidence(fallback);
     true
+}
+
+fn has_shared_source_stem(graph: &Graph, source: &Node, target: &Node) -> bool {
+    graph
+        .edges
+        .iter()
+        .any(|edge| !edge.is_back_edge && edge.from == source.id && edge.to != target.id)
+}
+
+fn mark_shared_source_prefix(
+    fallback: &mut FallbackRoutePlan,
+    plan: &PlannedRoute<'_>,
+    coords: &OrientedCoords,
+) {
+    let start_primary = coords.primary_coord(plan.source_exit.0, plan.source_exit.1);
+    let end_primary = coords.primary_coord(plan.turn.0, plan.turn.1);
+    let range = if start_primary <= end_primary {
+        Box::new(start_primary..=end_primary) as Box<dyn Iterator<Item = usize>>
+    } else {
+        Box::new((end_primary..=start_primary).rev()) as Box<dyn Iterator<Item = usize>>
+    };
+    for primary in range {
+        let mut point = plan.source_exit;
+        coords.set_primary(&mut point.0, &mut point.1, primary);
+        fallback.allow_shared_cell(point.0, point.1);
+    }
+}
+
+fn push_primary_segment(
+    fallback: &mut FallbackRoutePlan,
+    from: (usize, usize),
+    to: (usize, usize),
+    coords: &OrientedCoords,
+    style: &StyleChars,
+) {
+    match coords.primary {
+        Axis::Horizontal => {
+            fallback.push_horizontal(from.1, from.0, to.0, coords.primary_edge_char(style))
+        }
+        Axis::Vertical => {
+            fallback.push_vertical(from.0, from.1, to.1, coords.primary_edge_char(style))
+        }
+    }
+}
+
+fn push_secondary_segment(
+    fallback: &mut FallbackRoutePlan,
+    from: (usize, usize),
+    to: (usize, usize),
+    coords: &OrientedCoords,
+    style: &StyleChars,
+) {
+    match coords.secondary {
+        Axis::Horizontal => {
+            fallback.push_horizontal(from.1, from.0, to.0, coords.secondary_edge_char(style))
+        }
+        Axis::Vertical => {
+            fallback.push_vertical(from.0, from.1, to.1, coords.secondary_edge_char(style))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::route_vertical_fan_in_edges;
+    use crate::graph::{Direction, Edge, Graph, Node};
+    use crate::render::canvas::Canvas;
+    use crate::style::ASCII_CHARS;
+
+    fn node(id: &str, x: usize, y: usize, width: usize, height: usize) -> Node {
+        let mut node = Node::new(id, id);
+        node.x = x;
+        node.y = y;
+        node.width = width;
+        node.height = height;
+        node
+    }
+
+    #[test]
+    fn records_vertical_identity_fallback_evidence() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::TD;
+        graph.nodes.push(node("A", 0, 0, 8, 3));
+        graph.nodes.push(node("B", 20, 0, 8, 3));
+        graph.nodes.push(node("T", 10, 8, 10, 3));
+        graph.edges.push(Edge::new("A", "T"));
+        graph.edges.push(Edge::new("B", "T"));
+
+        let sources = vec![&graph.nodes[0], &graph.nodes[1]];
+        let mut canvas = Canvas::new(40, 20);
+        assert!(route_vertical_fan_in_edges(
+            &sources,
+            &graph.nodes[2],
+            &mut canvas,
+            &ASCII_CHARS,
+            graph.direction,
+            &graph,
+        ));
+
+        let traces = canvas.fallback_route_traces();
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].strategy, "vertical-fan-in-identity");
+        assert_eq!(traces[0].covered_edge_ids.len(), 2);
+        assert!(
+            traces[0].mismatches.is_empty(),
+            "vertical fan-in evidence must match the painted route: {:?}",
+            traces[0].mismatches
+        );
+    }
 }

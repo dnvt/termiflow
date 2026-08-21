@@ -10,6 +10,7 @@ use super::canvas::Canvas;
 use super::portal_projection::{is_textual, subgraph_title_y};
 use super::precomputed::is_subgraph_title_cell;
 use super::provenance::{edge_owner_id, EdgeLabelPlacement};
+use super::semantic::CellOwnerKind;
 
 pub(super) fn pad_string(input: &str, pad: usize) -> String {
     if pad == 0 {
@@ -36,10 +37,99 @@ pub(super) fn pad_string(input: &str, pad: usize) -> String {
     out.join("\n")
 }
 
-fn set_routed_label_shaft(canvas: &mut Canvas, x: usize, y: usize, glyph: char) {
-    if x < canvas.width && y < canvas.height && !canvas::is_arrow(canvas.get(x, y)) {
+fn set_routed_label_shaft(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    glyph: char,
+    style: &StyleChars,
+) {
+    let existing = canvas.get(x, y);
+    if x < canvas.width
+        && y < canvas.height
+        && (existing == ' ' || canvas::is_horizontal(existing, style))
+    {
         canvas.set(x, y, glyph);
     }
+}
+
+/// A routed label may replace a horizontal shaft cell, but never a turn or a
+/// vertical/semantic cell. The previous predicate protected only arrows,
+/// which let a label erase its route's corner and produce a visually broken
+/// path (for example `←─label` where the next vertical turn disappeared).
+fn routed_label_cell_is_writable(canvas: &Canvas, x: usize, y: usize, style: &StyleChars) -> bool {
+    if x >= canvas.width || y >= canvas.height {
+        return false;
+    }
+    let existing = canvas.get(x, y);
+    if existing == ' ' {
+        return true;
+    }
+    if canvas::is_arrow(existing) || !canvas::is_horizontal(existing, style) {
+        return false;
+    }
+    canvas.get_meta(x, y).is_some_and(|meta| {
+        matches!(
+            meta.owner_kind,
+            CellOwnerKind::EdgeSegment | CellOwnerKind::CycleEdge
+        )
+    })
+}
+
+fn routed_label_slot_is_writable(
+    canvas: &Canvas,
+    start_x: usize,
+    y: usize,
+    width: usize,
+    style: &StyleChars,
+) -> bool {
+    let boundary_is_clear = |x: usize| {
+        let existing = canvas.get(x, y);
+        existing == ' ' || canvas::is_horizontal(existing, style)
+    };
+    width > 0
+        && start_x.saturating_add(width) <= canvas.width
+        && y < canvas.height
+        && (start_x..start_x + width).all(|x| routed_label_cell_is_writable(canvas, x, y, style))
+        && (start_x == 0 || boundary_is_clear(start_x - 1))
+        && (start_x.saturating_add(width) >= canvas.width || boundary_is_clear(start_x + width))
+}
+
+/// Find a deterministic slot nearest the preferred center that does not erase
+/// a turn or another semantic owner. The range is the chosen route segment;
+/// labels are allowed to replace only its horizontal shaft cells.
+fn nearest_routed_label_slot(
+    canvas: &Canvas,
+    range_start: usize,
+    range_end: usize,
+    preferred: usize,
+    width: usize,
+    y: usize,
+    style: &StyleChars,
+) -> Option<usize> {
+    if width == 0 || range_end <= range_start || width > range_end - range_start {
+        return None;
+    }
+    let max_start = range_end - width;
+    let preferred = preferred.clamp(range_start, max_start);
+    for distance in 0..=max_start.saturating_sub(range_start) {
+        if let Some(candidate) = preferred.checked_sub(distance) {
+            if candidate >= range_start
+                && routed_label_slot_is_writable(canvas, candidate, y, width, style)
+            {
+                return Some(candidate);
+            }
+        }
+        if distance > 0 {
+            let candidate = preferred.saturating_add(distance);
+            if candidate <= max_start
+                && routed_label_slot_is_writable(canvas, candidate, y, width, style)
+            {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -527,8 +617,36 @@ pub(super) fn draw_routed_edge_label(
         let inline_margin = if reserve_leading_shaft { 4 } else { 3 };
         let inline_collides = overlaps_node(&nodes, centered_start_x, y, label_width)
             || overlaps_reserved_subgraph_cells(graph, centered_start_x, y, label_width);
-        let can_fit_full_inline = !inline_collides && label_width + inline_margin <= gap_width;
-        let can_fit_tight_inline = !inline_collides && label_width <= gap_width;
+        let full_inline_start = if !inline_collides && label_width + inline_margin <= gap_width {
+            let preferred = gap_start_x
+                + usize::from(reserve_leading_shaft)
+                + (gap_width - (label_width + inline_margin)) / 2;
+            nearest_routed_label_slot(
+                canvas,
+                gap_start_x,
+                gap_end_x,
+                preferred,
+                label_width,
+                y,
+                style,
+            )
+        } else {
+            None
+        };
+        let tight_inline_start = if !inline_collides && label_width <= gap_width {
+            let preferred = gap_start_x + (gap_width.saturating_sub(label_width)) / 2;
+            nearest_routed_label_slot(
+                canvas,
+                gap_start_x,
+                gap_end_x,
+                preferred,
+                label_width,
+                y,
+                style,
+            )
+        } else {
+            None
+        };
         let (node_gap_start_x, node_gap_end_x) = match (graph.direction, from_node, to_node) {
             (Direction::LR, Some(from), Some(to)) => (from.x + from.width, to.x.saturating_sub(1)),
             (Direction::RL, Some(from), Some(to)) => (to.x + to.width, from.x),
@@ -537,55 +655,76 @@ pub(super) fn draw_routed_edge_label(
         let node_gap_width = node_gap_end_x.saturating_sub(node_gap_start_x);
         let node_gap_center = node_gap_start_x + node_gap_width / 2;
         let node_gap_start = node_gap_center.saturating_sub(label_width / 2);
-        let can_fit_node_gap = matches!(graph.direction, Direction::LR | Direction::RL)
+        let node_gap_label_start = if matches!(graph.direction, Direction::LR | Direction::RL)
             && label_width <= node_gap_width
             && !overlaps_node(&nodes, node_gap_start, y, label_width)
-            && !overlaps_reserved_subgraph_cells(graph, node_gap_start, y, label_width);
+            && !overlaps_reserved_subgraph_cells(graph, node_gap_start, y, label_width)
+        {
+            Some(
+                nearest_routed_label_slot(
+                    canvas,
+                    node_gap_start_x,
+                    node_gap_end_x,
+                    node_gap_start,
+                    label_width,
+                    y,
+                    style,
+                )
+                .or_else(|| {
+                    if node_gap_start != node_gap_center {
+                        nearest_routed_label_slot(
+                            canvas,
+                            node_gap_start_x,
+                            node_gap_end_x,
+                            node_gap_center,
+                            label_width,
+                            y,
+                            style,
+                        )
+                    } else {
+                        None
+                    }
+                }),
+            )
+            .flatten()
+        } else {
+            None
+        };
 
-        if can_fit_full_inline {
-            let start_x = gap_start_x
-                + usize::from(reserve_leading_shaft)
-                + (gap_width - (label_width + inline_margin)) / 2;
+        if let Some(start_x) = full_inline_start {
             for x in gap_start_x..start_x {
-                set_routed_label_shaft(canvas, x, y, style.edge_h);
+                set_routed_label_shaft(canvas, x, y, style.edge_h, style);
             }
 
-            if start_x < canvas.width && y < canvas.height {
+            if routed_label_cell_is_writable(canvas, start_x, y, style) {
                 canvas.set(start_x, y, ' ');
             }
 
             let mut x_pos = start_x + 1;
             for c in display_label.chars() {
-                if y < canvas.height
-                    && x_pos < canvas.width
-                    && !canvas::is_arrow(canvas.get(x_pos, y))
-                {
+                if routed_label_cell_is_writable(canvas, x_pos, y, style) {
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
                 x_pos += display_char_width(c);
             }
 
-            if x_pos < canvas.width && y < canvas.height {
+            if routed_label_cell_is_writable(canvas, x_pos, y, style) {
                 canvas.set(x_pos, y, ' ');
             }
             x_pos += 1;
 
             for x in x_pos..gap_end_x {
-                set_routed_label_shaft(canvas, x, y, style.edge_h);
+                set_routed_label_shaft(canvas, x, y, style.edge_h, style);
             }
-        } else if can_fit_tight_inline {
-            let start_x = gap_start_x + (gap_width.saturating_sub(label_width)) / 2;
+        } else if let Some(start_x) = tight_inline_start {
             for x in gap_start_x..start_x {
-                set_routed_label_shaft(canvas, x, y, style.edge_h);
+                set_routed_label_shaft(canvas, x, y, style.edge_h, style);
             }
 
             let mut x_pos = start_x;
             for c in display_label.chars() {
-                if y < canvas.height
-                    && x_pos < canvas.width
-                    && !canvas::is_arrow(canvas.get(x_pos, y))
-                {
+                if routed_label_cell_is_writable(canvas, x_pos, y, style) {
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
@@ -593,20 +732,16 @@ pub(super) fn draw_routed_edge_label(
             }
 
             for x in x_pos..gap_end_x {
-                set_routed_label_shaft(canvas, x, y, style.edge_h);
+                set_routed_label_shaft(canvas, x, y, style.edge_h, style);
             }
-        } else if can_fit_node_gap {
-            let start_x = node_gap_start;
+        } else if let Some(start_x) = node_gap_label_start {
             for x in node_gap_start_x..start_x {
-                set_routed_label_shaft(canvas, x, y, style.edge_h);
+                set_routed_label_shaft(canvas, x, y, style.edge_h, style);
             }
 
             let mut x_pos = start_x;
             for c in display_label.chars() {
-                if y < canvas.height
-                    && x_pos < canvas.width
-                    && !canvas::is_arrow(canvas.get(x_pos, y))
-                {
+                if routed_label_cell_is_writable(canvas, x_pos, y, style) {
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
@@ -614,7 +749,7 @@ pub(super) fn draw_routed_edge_label(
             }
 
             for x in x_pos..node_gap_end_x {
-                set_routed_label_shaft(canvas, x, y, style.edge_h);
+                set_routed_label_shaft(canvas, x, y, style.edge_h, style);
             }
         } else if let Some(label_row) = outside_row {
             let max_label_start = canvas.width.saturating_sub(label_width);
@@ -643,37 +778,43 @@ pub(super) fn draw_routed_edge_label(
                 .min(gap_width.saturating_sub(inline_margin).max(1));
             let inline_label = format_edge_label_with_limit(label, inline_limit);
             let inline_width = display_width(&inline_label);
-            let start_x = gap_start_x
+            let preferred_start_x = gap_start_x
                 + usize::from(reserve_leading_shaft)
                 + (gap_width.saturating_sub(inline_width + inline_margin)) / 2;
+            let start_x = nearest_routed_label_slot(
+                canvas,
+                gap_start_x,
+                gap_end_x,
+                preferred_start_x,
+                inline_width,
+                y,
+                style,
+            )?;
 
             for x in gap_start_x..start_x {
-                set_routed_label_shaft(canvas, x, y, style.edge_h);
+                set_routed_label_shaft(canvas, x, y, style.edge_h, style);
             }
 
-            if start_x < canvas.width && y < canvas.height {
+            if routed_label_cell_is_writable(canvas, start_x, y, style) {
                 canvas.set(start_x, y, ' ');
             }
 
             let mut x_pos = start_x + 1;
             for c in inline_label.chars() {
-                if y < canvas.height
-                    && x_pos < canvas.width
-                    && !canvas::is_arrow(canvas.get(x_pos, y))
-                {
+                if routed_label_cell_is_writable(canvas, x_pos, y, style) {
                     canvas.set(x_pos, y, c);
                     record_label_cell(&mut cells, x_pos, y);
                 }
                 x_pos += display_char_width(c);
             }
 
-            if x_pos < canvas.width && y < canvas.height {
+            if routed_label_cell_is_writable(canvas, x_pos, y, style) {
                 canvas.set(x_pos, y, ' ');
             }
             x_pos += 1;
 
             for x in x_pos..gap_end_x {
-                set_routed_label_shaft(canvas, x, y, style.edge_h);
+                set_routed_label_shaft(canvas, x, y, style.edge_h, style);
             }
         }
     } else {
@@ -964,6 +1105,7 @@ pub(super) fn draw_convergent_edge_label(
     to: &Node,
     label: &str,
     direction: Direction,
+    style: &StyleChars,
     config: &Config,
     edge_idx: usize,
     edge: &crate::graph::Edge,
@@ -1022,39 +1164,55 @@ pub(super) fn draw_convergent_edge_label(
             let stem_start_x = from.x + from.width;
             // Place label above the edge line
             let label_y = src_y.saturating_sub(1);
-            let label_x = convergent_horizontal_label_start(
-                stem_start_x.saturating_add(1),
-                to.x.saturating_sub(1),
+            let gap_start = stem_start_x.saturating_add(1);
+            let gap_end = to.x.saturating_sub(1);
+            let preferred =
+                convergent_horizontal_label_start(gap_start, gap_end, label_width, canvas.width);
+            let label_start = nearest_routed_label_slot(
+                canvas,
+                gap_start,
+                gap_end,
+                preferred,
                 label_width,
-                canvas.width,
+                label_y,
+                style,
             );
-
-            let mut x_pos = label_x;
-            for c in display_label.chars() {
-                if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+            if let Some(label_start) = label_start {
+                let mut x_pos = label_start;
+                for c in display_label.chars() {
+                    if routed_label_cell_is_writable(canvas, x_pos, label_y, style) {
+                        canvas.set(x_pos, label_y, c);
+                        record_label_cell(&mut cells, x_pos, label_y);
+                    }
+                    x_pos += display_char_width(c);
                 }
-                x_pos += display_char_width(c);
             }
         }
         Direction::RL => {
             let src_y = center_y(from);
             let label_y = src_y.saturating_sub(1);
-            let label_x = convergent_horizontal_label_start(
-                to.x.saturating_add(to.width).saturating_add(1),
-                from.x.saturating_sub(1),
+            let gap_start = to.x.saturating_add(to.width).saturating_add(1);
+            let gap_end = from.x.saturating_sub(1);
+            let preferred =
+                convergent_horizontal_label_start(gap_start, gap_end, label_width, canvas.width);
+            let label_start = nearest_routed_label_slot(
+                canvas,
+                gap_start,
+                gap_end,
+                preferred,
                 label_width,
-                canvas.width,
+                label_y,
+                style,
             );
-
-            let mut x_pos = label_x;
-            for c in display_label.chars() {
-                if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+            if let Some(label_start) = label_start {
+                let mut x_pos = label_start;
+                for c in display_label.chars() {
+                    if routed_label_cell_is_writable(canvas, x_pos, label_y, style) {
+                        canvas.set(x_pos, label_y, c);
+                        record_label_cell(&mut cells, x_pos, label_y);
+                    }
+                    x_pos += display_char_width(c);
                 }
-                x_pos += display_char_width(c);
             }
         }
     }

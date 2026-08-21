@@ -477,6 +477,18 @@ pub(crate) struct BtSiblingTargetEntryScene {
     pub upper_cross_edge_index: usize,
 }
 
+/// The bounded BT sibling scene whose target receivers can share one quiet
+/// external-side lane. Layout and route lowering consume this same typed
+/// topology selector so a staged receiver cannot drift away from its route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BtExternalSideReceiverScene {
+    pub source_subgraph_id: String,
+    pub target_subgraph_id: String,
+    pub source_external_node_id: String,
+    pub source_receiver_node_id: String,
+    pub sink_external_node_id: String,
+}
+
 /// Graph direction (from Mermaid `graph TD/LR/TB/BT`)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub enum Direction {
@@ -865,6 +877,146 @@ impl Graph {
         })
     }
 
+    /// Return the exact two-subgraph BT scene whose target receiver lane may
+    /// be staged beside an external sibling corridor. The match is structural
+    /// and deliberately excludes labels, unsupported edge kinds, nested
+    /// subgraphs, cycles, extra branches, and the narrower four-node sibling
+    /// target-entry scene.
+    pub(crate) fn bt_external_side_receiver_scene(&self) -> Option<BtExternalSideReceiverScene> {
+        if self.direction != Direction::BT
+            || self.subgraphs.len() != 2
+            || self.nodes.len() != 6
+            || self.edges.len() != 6
+        {
+            return None;
+        }
+
+        let subgraphs = self
+            .subgraphs
+            .iter()
+            .filter(|subgraph| {
+                subgraph.parent_id.is_none()
+                    && subgraph.child_ids.is_empty()
+                    && subgraph.title.is_some()
+                    && subgraph.node_ids.len() == 2
+                    && subgraph.node_ids.iter().all(|node_id| {
+                        self.get_node(node_id).is_some()
+                            && self.get_node_subgraph(node_id) == Some(subgraph.id.as_str())
+                    })
+            })
+            .collect::<Vec<_>>();
+        if subgraphs.len() != 2 {
+            return None;
+        }
+
+        let ordinary_edges = self
+            .edges
+            .iter()
+            .filter(|edge| {
+                !edge.is_back_edge && edge.kind == EdgeKind::Arrow && edge.label.is_none()
+            })
+            .collect::<Vec<_>>();
+        if ordinary_edges.len() != self.edges.len() {
+            return None;
+        }
+        let internal_edge_count = |subgraph: &Subgraph| {
+            ordinary_edges
+                .iter()
+                .filter(|edge| {
+                    subgraph.node_ids.contains(&edge.from) && subgraph.node_ids.contains(&edge.to)
+                })
+                .count()
+        };
+        let (source_subgraph, target_subgraph) = match (
+            internal_edge_count(subgraphs[0]),
+            internal_edge_count(subgraphs[1]),
+        ) {
+            (1, 0) => (subgraphs[0], subgraphs[1]),
+            (0, 1) => (subgraphs[1], subgraphs[0]),
+            _ => return None,
+        };
+
+        let source_ids: HashSet<&str> = source_subgraph
+            .node_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let target_ids: HashSet<&str> = target_subgraph
+            .node_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let external_ids: HashSet<&str> = self
+            .nodes
+            .iter()
+            .filter(|node| self.get_node_subgraph(&node.id).is_none())
+            .map(|node| node.id.as_str())
+            .collect();
+        if source_ids.len() != 2 || target_ids.len() != 2 || external_ids.len() != 2 {
+            return None;
+        }
+
+        let source_internal = ordinary_edges
+            .iter()
+            .filter(|edge| {
+                source_ids.contains(edge.from.as_str()) && source_ids.contains(edge.to.as_str())
+            })
+            .count();
+        let target_internal = ordinary_edges
+            .iter()
+            .filter(|edge| {
+                target_ids.contains(edge.from.as_str()) && target_ids.contains(edge.to.as_str())
+            })
+            .count();
+        let cross_edges = ordinary_edges
+            .iter()
+            .filter(|edge| {
+                source_ids.contains(edge.from.as_str()) && target_ids.contains(edge.to.as_str())
+            })
+            .collect::<Vec<_>>();
+        let entry_edges = ordinary_edges
+            .iter()
+            .filter(|edge| {
+                external_ids.contains(edge.from.as_str()) && source_ids.contains(edge.to.as_str())
+            })
+            .collect::<Vec<_>>();
+        let exit_edges = ordinary_edges
+            .iter()
+            .filter(|edge| {
+                target_ids.contains(edge.from.as_str()) && external_ids.contains(edge.to.as_str())
+            })
+            .collect::<Vec<_>>();
+        let cross_sources: HashSet<&str> =
+            cross_edges.iter().map(|edge| edge.from.as_str()).collect();
+        let cross_targets: HashSet<&str> =
+            cross_edges.iter().map(|edge| edge.to.as_str()).collect();
+        let exit_targets: HashSet<&str> = exit_edges.iter().map(|edge| edge.to.as_str()).collect();
+        let source_external_node_id = entry_edges.first().map(|edge| edge.from.as_str());
+        let sink_external_node_id = exit_edges.first().map(|edge| edge.to.as_str());
+        if source_internal != 1
+            || target_internal != 0
+            || cross_edges.len() != 2
+            || cross_sources.len() != 2
+            || cross_targets.len() != 2
+            || entry_edges.len() != 1
+            || exit_edges.len() != 2
+            || exit_targets.len() != 1
+            || source_external_node_id.is_none()
+            || sink_external_node_id.is_none()
+            || source_external_node_id == sink_external_node_id
+        {
+            return None;
+        }
+
+        Some(BtExternalSideReceiverScene {
+            source_subgraph_id: source_subgraph.id.clone(),
+            target_subgraph_id: target_subgraph.id.clone(),
+            source_external_node_id: source_external_node_id?.to_owned(),
+            source_receiver_node_id: entry_edges.first()?.to.clone(),
+            sink_external_node_id: sink_external_node_id?.to_owned(),
+        })
+    }
+
     /// Check whether an edge crosses any subgraph boundary.
     pub fn edge_crosses_subgraph_boundary(&self, from_node_id: &str, to_node_id: &str) -> bool {
         let (exit_subgraphs, enter_subgraphs) =
@@ -1033,6 +1185,37 @@ mod tests {
         graph.edges[2].label = None;
         graph.direction = Direction::TD;
         assert!(graph.bt_sibling_target_entry_scene().is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "maintainer-fixtures")]
+    fn bt_external_side_receiver_selector_matches_only_the_complex_scene() {
+        let graph = crate::layout::coarse_waterfall(
+            crate::parser::parse(
+                include_str!("../tests/fixtures/inputs/subgraph_complex_bt.md"),
+                false,
+            )
+            .expect("parse complex BT fixture")
+            .graph,
+        )
+        .expect("layout complex BT fixture");
+
+        let scene = graph
+            .bt_external_side_receiver_scene()
+            .expect("complex BT fixture should match the exact receiver scene");
+        assert_eq!(scene.source_subgraph_id, "SG1");
+        assert_eq!(scene.target_subgraph_id, "SG2");
+        assert_eq!(scene.source_external_node_id, "API");
+        assert_eq!(scene.source_receiver_node_id, "S1");
+        assert_eq!(scene.sink_external_node_id, "Response");
+
+        let mut labeled = graph.clone();
+        labeled.edges[3].label = Some("crossing".to_owned());
+        assert!(labeled.bt_external_side_receiver_scene().is_none());
+
+        let mut wrong_direction = graph;
+        wrong_direction.direction = Direction::TD;
+        assert!(wrong_direction.bt_external_side_receiver_scene().is_none());
     }
 
     // =========================================================================

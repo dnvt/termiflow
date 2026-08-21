@@ -569,6 +569,133 @@ rule, treat it as a topology scope regression. The v10 four-cell complex-BT
 holdout remains a P2 watch for long shared rails and title-adjacent elbows,
 with a separate future hypothesis required before changing its portal planner.
 
+### H127 lesson: quiet BT corridors need a shoulder detector
+
+A source-side complex-BT experiment made one receiver shaft straighter and
+removed a lower title elbow, but introduced an adjacent `┌┘`/`++` shoulder in
+the empty corridor below the Data Layer border. All four style/mode homologs
+were connected and machine route-clean; direct human-eye review rejected the
+candidate and it was rolled back. A connected route can therefore regress in
+the first quiet corridor row even when title-hook and segment checks are
+clean.
+
+The independent route-clarity review now queues
+`bt_quiet_corridor_shoulder_requires_human_review` for adjacent Unicode corner
+pairs or ASCII `++` pairs with vertical context between vertically stacked
+titled BT sibling envelopes. This is a conservative P2 queue signal, not an
+automatic failure or approval. Its focused mutation regression is
+`bt_quiet_corridor_review_queues_adjacent_shoulders` in
+`src/qa/route_clarity.rs`, and the unmodified complex-BT baseline must remain
+unqueued by that new rule.
+
+When reviewing a BT sibling corridor, inspect the first row below the upper
+border, the last row above the lower border, and every adjacent corner pair in
+between. Record the exact row/column and glyphs before naming an owner. Any
+new shoulder falsifies the candidate even if the source/target endpoints,
+route trace, critic, and geometry reports remain green. Keep both the
+target-side title seam and the source-side corridor shoulder in the same
+falsifier set, and rerun all four style/mode homologs in canonical and
+authored/no-override lanes before resolving the watch or touching goldens.
+
+### H133 lesson: a source-node repair can be narrower than a source-group repair
+
+The follow-up experiment moved only the external API node onto the existing
+S1 receiver lane, derived from the unique structural entry edge. It removed
+the lower API → S1 title hook in all four ASCII/Unicode × default/optimized
+frames and in both policy lanes, while leaving the titled sibling groups and
+Data Layer nodes unchanged. The prior H127 shoulder did not recur. Keep this
+as a topology-gated source-node policy, not a generalized source-group rule;
+the shared sibling rail remains a named P2 watch and the full 952-renderable
+row perceptual queue must still be drained before any golden or release
+decision.
+
+### H145 lesson: repeated BT title noise does not authorize a global row move
+
+Fresh canonical and authored frames independently queued the BT title/border
+lane in simple and parallel titled subgraphs, and a sibling frame also showed a
+boundary-rail/title-hook ambiguity. A bounded experiment moved every BT title
+from the final interior row to the preceding row. The simple title band looked
+quieter, but the changed `collision_sibling_subgraphs_bt` homolog lost one of
+Node D's two incoming arrow identities and collapsed route ownership into a
+misleading junction beside `Right Group`. The candidate was reverted; the
+hash-bound falsification is recorded in
+`2026-08-21-h145-bt-title-row-falsification.md`.
+
+Treat this as a negative-loop guard: a repeated symptom may cross topology
+owners, while a global visual offset can hide the symptom by damaging a sibling
+route. Do not change `subgraph_title_row` direction-wide to discharge a BT
+title watch. Any follow-up must be selected by a typed receiver/portal scene,
+keep title placement and edge lowering on the same topology-owned contract,
+and inspect basic, parallel, sibling, untouched BT, and non-BT holdouts. A
+lost arrowhead, merged route identity, changed receiver ownership, or new
+title/border shoulder falsifies the candidate even if route counts and critic
+checks remain green.
+
+### H145 dense-RL scanability guard
+
+`scale_dense_rl` is a separate human-eye watch: local routes can be connected
+and clear while the full frame becomes difficult to scan because of excessive
+blank horizontal spans or unbalanced visual massing. Do not approve it from
+route clarity alone, and do not change rank spacing until before/after
+measurements compare direction/style/mode homologs and preserve label clearance,
+edge order, and node readability. Record the exact global composition issue and
+its falsifier; a local clean segment is not evidence that the canvas is
+composed well.
+
+### H145 mixed-BT branch-rail guard
+
+The canonical `junction_mixed_bt` frame is connected and retains all six
+arrowheads, yet its upper fan-in rail, lower fan-out rail, and adjacent elbows
+form a visually dense ladder. Queue this as
+`bt_mixed_branch_rail_semantic_density_requires_human_review` until the same
+topology is checked in all style/mode and policy homologs. A clean critic or a
+complete arrow count does not prove that each branch is still individually
+traceable to a human reader.
+
+Before proposing a fix, compare the upper and lower rail ownership, arrowhead
+separation, label clearance, and any border-like reading against untouched
+fan-in/fan-out controls. Reject a candidate that makes one branch quieter by
+merging an edge identity, moving a receiver off its source-owned lane, or
+turning a shared rail into a container-like contour.
+
+### H146 lesson: routed labels cannot own route turns
+
+An edge label can leave its arrowhead visible while erasing the corner that
+connects the arrow's shaft. That composes as a broken `←─label`/`+<-label`
+route and is a P1 visual defect when the target edge becomes ambiguous. The
+label writer must treat route corners, arrows, vertical shafts, title cells,
+borders, and semantic owners as protected. It may replace only blank or
+horizontal edge-owned cells and must choose a nearby safe slot deterministically;
+if no slot exists, omitting the label is safer than damaging topology.
+
+The focused regression is
+`render_with_feedback_keeps_rl_convergent_labels_off_route_corners` in
+`tests/render_options_api/direction_matrix.rs`, with the complete label golden
+family checked in ASCII and Unicode. After changing label ownership, inspect
+every changed label row in default and optimized modes and in both the
+requested-style and authored-policy lanes. Exact frame-hash rebinding is
+acceptable only for unchanged rows; changed rows require fresh one-frame
+inspection. This rule does not generalize into a layout or portal-lane move.
+
+### H147 lesson: safe BT sibling transitions should stay straight
+
+Strict bottom-to-top chains of titled sibling subgraphs rendered repeated
+long `┌────┘`/`+----+` shoulders because the endpoint contract deliberately
+selected a non-collinear receiver lane even when the source lane was safe for
+the target. That was visually noisy without adding route identity: the middle
+boundary already had separate incoming and outgoing lanes.
+
+Prefer the source-aligned target portal only when it is inside the target node,
+title-safe, and separated from the next source and prior target lanes. Keep the
+existing separated-lane search for unsafe or colliding candidates. The focused
+regressions are `strict_bt_sibling_chain_prefers_straight_target_portal_lanes`
+and `strict_bt_sibling_chain_separates_middle_boundary_roles` in
+`tests/bt_sibling_chain_visual.rs`. Inspect both strict BT fixtures across
+ASCII/Unicode, default/optimized, and canonical/authored lanes, plus BT
+parallel, nested, complex, and non-BT controls. A lost middle boundary role,
+title-safe portal, arrowhead, or required near-miss turn falsifies the rule.
+This is an endpoint-contract policy, not a global layout shift.
+
 ## Integration points
 
 - Rust implementation: `termiflow-qa review`, `src/qa/review.rs`, and the

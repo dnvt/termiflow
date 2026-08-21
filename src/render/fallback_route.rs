@@ -91,6 +91,7 @@ pub(crate) struct FallbackRoutePlan {
     pub target_attachment: Option<FallbackAttachment>,
     pub arrow_attachment: Option<FallbackPoint>,
     pub covered_edge_ids: Vec<String>,
+    pub shared_cells: Vec<FallbackPoint>,
     pub entry_decisions: Vec<PortalEntryDecision>,
     pub contract_digest: Option<String>,
 }
@@ -108,6 +109,7 @@ impl FallbackRoutePlan {
             target_attachment: None,
             arrow_attachment: None,
             covered_edge_ids: Vec::new(),
+            shared_cells: Vec::new(),
             entry_decisions: Vec::new(),
             contract_digest: None,
         }
@@ -119,6 +121,20 @@ impl FallbackRoutePlan {
 
     pub(crate) fn set_scene_coverage(&mut self, edge_ids: impl IntoIterator<Item = String>) {
         self.covered_edge_ids = edge_ids.into_iter().collect();
+    }
+
+    /// Record a physical route cell that may legitimately be owned by a
+    /// sibling edge, such as the shared source stem before a fan-in branch.
+    /// This is evidence-only metadata; it never makes the cell available to a
+    /// later route writer.
+    pub(crate) fn allow_shared_cell(&mut self, x: usize, y: usize) {
+        if !self
+            .shared_cells
+            .iter()
+            .any(|point| point.x == x && point.y == y)
+        {
+            self.shared_cells.push(FallbackPoint { x, y });
+        }
     }
 
     pub(crate) fn set_source_attachment(
@@ -242,6 +258,9 @@ impl FallbackRoutePlan {
         }
         if !self.paints.iter().all(|paint| point_is_valid(paint.point)) {
             return Some("paint is out of bounds".to_owned());
+        }
+        if !self.shared_cells.iter().all(|point| point_is_valid(*point)) {
+            return Some("shared route cell is out of bounds".to_owned());
         }
         let mut decision_edges = BTreeSet::new();
         for decision in &self.entry_decisions {
@@ -502,6 +521,12 @@ impl FallbackRoutePlan {
             coordinates.insert((arrow.x, arrow.y));
         }
 
+        let shared_coordinates: BTreeSet<_> = self
+            .shared_cells
+            .iter()
+            .map(|point| (point.x, point.y))
+            .collect();
+
         let mut mismatches = Vec::new();
         for claim in &self.boundary_claims {
             let glyph = canvas.get(claim.x, claim.y);
@@ -551,6 +576,7 @@ impl FallbackRoutePlan {
                 .is_some_and(|owner_id| self.covered_edge_ids.iter().any(|id| id == owner_id));
             if contract_route
                 && !boundary_coordinates.contains(&(x, y))
+                && !shared_coordinates.contains(&(x, y))
                 && !owned_by_scene
                 && !owned_by_covered_edge
             {
@@ -580,6 +606,7 @@ impl FallbackRoutePlan {
             target_attachment: self.target_attachment.clone(),
             arrow_attachment: self.arrow_attachment,
             covered_edge_ids: self.covered_edge_ids.clone(),
+            shared_cells: self.shared_cells.clone(),
             entry_decisions: self.entry_decisions.clone(),
             contract_digest: self.contract_digest.clone(),
             cells,
@@ -610,6 +637,7 @@ pub(crate) struct FallbackRouteTrace {
     pub target_attachment: Option<FallbackAttachment>,
     pub arrow_attachment: Option<FallbackPoint>,
     pub covered_edge_ids: Vec<String>,
+    pub shared_cells: Vec<FallbackPoint>,
     pub entry_decisions: Vec<PortalEntryDecision>,
     pub contract_digest: Option<String>,
     pub cells: Vec<FallbackCellTrace>,

@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 
+use termiflow::render::semantic::{CellOwnerKind, CellRole};
 use termiflow::{
     layout_and_render_with_feedback, measure, parse, render::evidence, BaseStyle, CompositeStyle,
     Config, FindingCode,
@@ -62,6 +63,26 @@ fn render_fixture_output(
     let (graph, outcome) =
         layout_and_render_with_feedback(parsed, config).expect("render boundary-arrow fixture");
     (graph, outcome.output)
+}
+
+fn render_fixture_outcome(
+    path: &str,
+    style: BaseStyle,
+    optimized: bool,
+) -> (termiflow::Graph, termiflow::RenderOutcome) {
+    let input_path = format!("tests/fixtures/inputs/{path}.md");
+    let input = fs::read_to_string(&input_path).expect("read boundary-arrow fixture");
+    let mut parsed = parse(&input, false)
+        .expect("parse boundary-arrow fixture")
+        .graph;
+    let mut config = Config {
+        composite_style: CompositeStyle::from_base(style),
+        optimize_render: optimized,
+        ..Default::default()
+    };
+    config.spacing = config.spacing.for_direction(parsed.direction);
+    measure::measure_graph(&mut parsed, &config);
+    layout_and_render_with_feedback(parsed, config).expect("render boundary-arrow fixture")
 }
 
 fn rows_with_multiple_arrowheads(frame: &str, arrow: char) -> Vec<Vec<usize>> {
@@ -374,6 +395,99 @@ fn flat_td_external_entries_use_one_title_gutter_lane_across_matrix() {
                     report.raw.shaftless_arrowheads,
                     report.geometry.errors
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn strict_td_terminal_entries_reserve_a_quiet_title_row_and_clean_receivers() {
+    for (fixture, title, expected_arrows) in [
+        ("collision_edge_along_border_td", "Target Group", 3usize),
+        ("collision_edge_corner_td", "Group", 2usize),
+    ] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let (graph, outcome) = render_fixture_outcome(fixture, style, optimized);
+                let frame = &outcome.display_semantic_frame;
+                let output = &outcome.output;
+                let arrow = if style == BaseStyle::Ascii {
+                    'v'
+                } else {
+                    '↓'
+                };
+                let title_row = output
+                    .lines()
+                    .position(|line| line.contains(title))
+                    .expect("strict TD title row");
+                let arrow_row = output
+                    .lines()
+                    .position(|line| {
+                        line.chars().filter(|glyph| *glyph == arrow).count() == expected_arrows
+                    })
+                    .expect("strict TD arrow row");
+                assert!(
+                    arrow_row > title_row + 1,
+                    "strict TD receiver scene needs a quiet row below the title for {fixture} {style:?} optimized={optimized}\n{output}"
+                );
+                for x in 0..frame.width {
+                    let cell = frame.get(x, title_row + 1).expect("title clearance cell");
+                    assert!(!matches!(
+                        (cell.owner_kind, cell.role),
+                        (CellOwnerKind::EdgeSegment, CellRole::Horizontal)
+                            | (CellOwnerKind::Junction, CellRole::Horizontal)
+                            | (CellOwnerKind::Junction, CellRole::Junction)
+                    ), "route-owned horizontal/junction cell at ({x}, {}) below title for {fixture} {style:?} optimized={optimized}: {cell:?}\n{output}", title_row + 1);
+                }
+                let report = evidence::build(&graph, &outcome);
+                assert_eq!(report.raw.arrowheads, expected_arrows);
+                assert!(
+                    report.raw.shaftless_arrowheads.is_empty()
+                        && report.geometry.errors.is_empty()
+                        && report.geometry.untraced_fallback_edges.is_empty()
+                        && report.portal_trace.fallback_rejection_reasons().is_empty()
+                        && report.critic.findings.is_empty(),
+                    "strict TD receiver scene is not machine-clean for {fixture} {style:?} optimized={optimized}: raw={:?} geometry={:?} rejections={:?} critic={:?}\n{output}",
+                    report.raw,
+                    report.geometry,
+                    report.portal_trace.fallback_rejection_reasons(),
+                    report.critic.findings
+                );
+                assert!(
+                    arrow_row > title_row,
+                    "strict TD receiver row must be below the title for {fixture} {style:?} optimized={optimized}"
+                );
+
+                if fixture == "collision_edge_along_border_td" {
+                    let portal_columns: BTreeSet<_> = frame
+                        .cells
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, cell)| cell.role == CellRole::Portal)
+                        .map(|(index, _)| index % frame.width)
+                        .collect();
+                    let portal_columns: Vec<_> = portal_columns.into_iter().collect();
+                    assert_eq!(
+                        portal_columns.len(),
+                        expected_arrows,
+                        "strict TD terminal scene should expose one opening per target for {style:?} optimized={optimized}: {output}"
+                    );
+                    assert!(
+                        portal_columns.windows(2).all(|columns| {
+                            columns[1].saturating_sub(columns[0]) >= 4
+                        }),
+                        "strict TD terminal scene should keep a readable gap between portal openings for {style:?} optimized={optimized}: columns={portal_columns:?}\n{output}"
+                    );
+                    let paired_openings = match style {
+                        BaseStyle::Ascii => "|-|",
+                        BaseStyle::Unicode => "│─│",
+                        _ => unreachable!("strict TD test only uses ASCII and Unicode"),
+                    };
+                    assert!(
+                        !output.lines().any(|line| line.contains(paired_openings)),
+                        "strict TD terminal scene should not compose adjacent portal openings as border punctuation for {style:?} optimized={optimized}: {output}"
+                    );
+                }
             }
         }
     }

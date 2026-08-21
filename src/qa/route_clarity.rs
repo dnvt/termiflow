@@ -111,6 +111,11 @@ pub fn analyze(input: &[u8], frame: &[u8], style: &str, mode: &str) -> Result<Va
         frame,
         origin(&graph),
     ));
+    findings.extend(bt_quiet_corridor_shoulder_findings(
+        &graph,
+        frame,
+        origin(&graph),
+    ));
     findings.extend(bt_boundary_rail_findings(&graph, frame, origin(&graph)));
     findings.sort_by(|left, right| {
         left["code"]
@@ -1573,6 +1578,121 @@ fn td_tb_title_boundary_hook_findings(
     findings
 }
 
+/// Queue adjacent corner pairs in the quiet corridor between vertically
+/// stacked titled BT siblings.
+///
+/// A route can be connected, axis-aligned, and clear of both title rows while
+/// still producing a visually surprising `┌┘`/`└┐` (or ASCII `++`) shoulder in
+/// the empty band between sibling envelopes. That tiny pair is easy to miss
+/// in a structural pre-screen and is exactly the kind of human-eye defect the
+/// perceptual queue must preserve. This is intentionally a conservative P2
+/// signal: it records the two cells and leaves acceptance to the reviewer.
+fn bt_quiet_corridor_shoulder_findings(
+    graph: &termiflow::Graph,
+    frame: &str,
+    (origin_x, origin_y): (usize, usize),
+) -> Vec<Value> {
+    if graph.direction != termiflow::graph::Direction::BT {
+        return Vec::new();
+    }
+
+    let lines: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+    let mut titled: Vec<_> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| {
+            subgraph.parent_id.is_none() && subgraph.title.is_some() && subgraph.bounds.is_valid()
+        })
+        .collect();
+    titled.sort_by_key(|subgraph| (subgraph.bounds.y, subgraph.bounds.x));
+
+    let mut findings = Vec::new();
+    for (upper_index, upper) in titled.iter().enumerate() {
+        for lower in titled.iter().skip(upper_index + 1) {
+            let corridor_start = upper.bounds.y.saturating_add(upper.bounds.height);
+            let corridor_end = lower.bounds.y;
+            if corridor_start >= corridor_end {
+                continue;
+            }
+
+            let overlap_start = upper.bounds.x.max(lower.bounds.x).saturating_add(1);
+            let overlap_end = upper
+                .bounds
+                .x
+                .saturating_add(upper.bounds.width)
+                .min(lower.bounds.x.saturating_add(lower.bounds.width))
+                .saturating_sub(1);
+            if overlap_start >= overlap_end {
+                continue;
+            }
+
+            for graph_y in corridor_start..corridor_end {
+                let frame_y = graph_y.saturating_sub(origin_y);
+                let Some(row) = lines.get(frame_y) else {
+                    continue;
+                };
+                let start = overlap_start.saturating_sub(origin_x).min(row.len());
+                let end = overlap_end.saturating_sub(origin_x).min(row.len());
+                if start >= end {
+                    continue;
+                }
+
+                for frame_x in start..end {
+                    let Some(&left) = row.get(frame_x) else {
+                        continue;
+                    };
+                    let Some(&right) = row.get(frame_x.saturating_add(1)) else {
+                        continue;
+                    };
+                    if !is_bt_quiet_corridor_shoulder_pair(left, right) {
+                        continue;
+                    }
+
+                    let has_vertical_context =
+                        [frame_y.saturating_sub(1), frame_y.saturating_add(1)]
+                            .into_iter()
+                            .filter_map(|neighbor_y| lines.get(neighbor_y))
+                            .any(|neighbor| {
+                                neighbor
+                                    .get(frame_x)
+                                    .copied()
+                                    .is_some_and(is_vertical_route_glyph)
+                                    || neighbor
+                                        .get(frame_x.saturating_add(1))
+                                        .copied()
+                                        .is_some_and(is_vertical_route_glyph)
+                            });
+                    if !has_vertical_context {
+                        continue;
+                    }
+
+                    findings.push(finding(
+                        "bt_quiet_corridor_shoulder_requires_human_review",
+                        "P2",
+                        format!(
+                            "BT titled siblings {:?} and {:?} contain an adjacent corner shoulder in their empty corridor; one-frame review must distinguish a deliberate turn from a visually broken rail",
+                            upper.id, lower.id
+                        ),
+                        vec![
+                            cell(frame_x, frame_y),
+                            cell(frame_x.saturating_add(1), frame_y),
+                        ],
+                    ));
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+fn is_bt_quiet_corridor_shoulder_pair(left: char, right: char) -> bool {
+    matches!(
+        (left, right),
+        ('┌', '┘') | ('└', '┐') | ('╔', '╝') | ('╚', '╗') | ('+', '+')
+    )
+}
+
 /// Queue BT rails whose straightness hides boundary ownership.
 ///
 /// A connected shaft is not automatically a readable portal. When the same
@@ -2607,5 +2727,97 @@ mod tests {
                 (Some(14), Some(14)) | (Some(17), Some(14))
             )
         }));
+    }
+
+    #[test]
+    fn bt_quiet_corridor_review_queues_adjacent_shoulders() {
+        let input = std::fs::read("tests/fixtures/inputs/subgraph_complex_bt.md")
+            .expect("read complex BT corridor fixture");
+
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            let style_name = if style == BaseStyle::Ascii {
+                "ascii"
+            } else {
+                "unicode"
+            };
+            for optimized in [false, true] {
+                let (graph, frame) = render_fixture_with_graph(&input, style, optimized);
+                let mut titled: Vec<_> = graph
+                    .subgraphs
+                    .iter()
+                    .filter(|subgraph| {
+                        subgraph.parent_id.is_none()
+                            && subgraph.title.is_some()
+                            && subgraph.bounds.is_valid()
+                    })
+                    .collect();
+                titled.sort_by_key(|subgraph| (subgraph.bounds.y, subgraph.bounds.x));
+                assert_eq!(
+                    titled.len(),
+                    2,
+                    "complex BT fixture should have two titled siblings"
+                );
+                let upper = titled[0];
+                let lower = titled[1];
+                let corridor_start = upper.bounds.y.saturating_add(upper.bounds.height);
+                let corridor_end = lower.bounds.y;
+                assert!(
+                    corridor_start < corridor_end,
+                    "fixture must have a sibling corridor"
+                );
+                let graph_y = corridor_start + (corridor_end - corridor_start) / 2;
+                let (origin_x, origin_y) = origin(&graph);
+                let frame_y = graph_y.saturating_sub(origin_y);
+                let overlap_start = upper.bounds.x.max(lower.bounds.x).saturating_add(1);
+                let overlap_end = upper
+                    .bounds
+                    .x
+                    .saturating_add(upper.bounds.width)
+                    .min(lower.bounds.x.saturating_add(lower.bounds.width))
+                    .saturating_sub(1);
+                let row = frame
+                    .lines()
+                    .nth(frame_y)
+                    .expect("corridor row must be rendered")
+                    .chars()
+                    .collect::<Vec<_>>();
+                let start = overlap_start.saturating_sub(origin_x);
+                let end = overlap_end.saturating_sub(origin_x);
+                let frame_x = (start..end.saturating_sub(1))
+                    .find(|x| row.get(*x).copied().is_some_and(is_vertical_route_glyph))
+                    .expect("complex BT corridor should contain a vertical route shaft");
+
+                let mode_name = if optimized { "optimized" } else { "default" };
+                let baseline = analyze(&input, frame.as_bytes(), style_name, mode_name)
+                    .expect("analyze complex BT baseline");
+                assert!(!baseline["findings"].as_array().is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item["code"] == "bt_quiet_corridor_shoulder_requires_human_review"
+                    })
+                }));
+
+                let (left, right) = if style == BaseStyle::Ascii {
+                    ('+', '+')
+                } else {
+                    ('┌', '┘')
+                };
+                let mutated = replace_frame_cell(
+                    &replace_frame_cell(&frame, frame_x, frame_y, left),
+                    frame_x.saturating_add(1),
+                    frame_y,
+                    right,
+                );
+                let report = analyze(&input, mutated.as_bytes(), style_name, mode_name)
+                    .expect("analyze injected corridor shoulder");
+                assert!(
+                    report["findings"].as_array().is_some_and(|items| {
+                        items.iter().any(|item| {
+                            item["code"] == "bt_quiet_corridor_shoulder_requires_human_review"
+                        })
+                    }),
+                    "injected {style_name} corridor shoulder was not queued: {report}"
+                );
+            }
+        }
     }
 }

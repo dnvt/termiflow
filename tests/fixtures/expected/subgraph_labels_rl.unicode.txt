@@ -2,7 +2,7 @@
                        │                                     Auth Flow  │
                        │                                                │
 ┌─────────────┐        │  ┌────────────────┐          ┌──────────────┐  │
-│  Dashboard  ├←─success──┤  Authenticate  ├←─submit ─┤  Login Form  │  │
+│  Dashboard  ├←─success──┤  Authenticate  ├←─ submit ┤  Login Form  │  │
 └─────────────┘        │  └────────────────┘          └──────────────┘  │
                        │                                                │
                        │                                                │
