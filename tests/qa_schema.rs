@@ -8,6 +8,10 @@ fn qa_command() -> Command {
     Command::new(env!("CARGO_BIN_EXE_termiflow-qa"))
 }
 
+fn renderer_binary() -> &'static str {
+    env!("CARGO_BIN_EXE_termiflow")
+}
+
 fn spec_path() -> &'static str {
     "tests/fixtures/fixture_spec.json"
 }
@@ -301,6 +305,7 @@ fn scoped_visual_packet_and_holdout_receipt_are_hash_bound() {
     let audit = qa_command()
         .args(["visual-audit", "--schema-manifest"])
         .arg(&manifest)
+        .args(["--binary", renderer_binary()])
         .args(["--out"])
         .arg(&packet)
         .output()
@@ -331,6 +336,8 @@ fn scoped_visual_packet_and_holdout_receipt_are_hash_bound() {
             spec_path(),
             "--queue",
             "junction-quad",
+            "--binary",
+            renderer_binary(),
             "--out",
         ])
         .arg(&holdout_packet)
@@ -376,6 +383,8 @@ fn scoped_visual_packet_and_holdout_receipt_are_hash_bound() {
             spec_path(),
             "--queue",
             "junction-quad",
+            "--binary",
+            renderer_binary(),
             "--out",
         ])
         .arg(&holdout_packet)
@@ -412,6 +421,8 @@ fn source_only_holdout_materializes_and_validates() {
             spec_path(),
             "--queue",
             "canonical-smoke",
+            "--binary",
+            renderer_binary(),
             "--out",
         ])
         .arg(&holdout_packet)
