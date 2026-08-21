@@ -7,7 +7,9 @@ use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
 use super::super::edge_policy::{td_single_incoming_route_x, title_safe_td_entry_x};
-use super::super::fallback_route::{FallbackAxis, FallbackRoutePlan, FallbackSegment};
+use super::super::fallback_route::{
+    FallbackAxis, FallbackRoutePlan, FallbackSegment, PortalEntryDecision,
+};
 use super::super::portal_projection::{
     is_textual, stamp_portal_opening, subgraph_title_y, title_span, PortalAxis,
 };
@@ -21,12 +23,13 @@ use super::{
     style_for_edge_kind, RouteOwner, ROUTE_Z_INDEX,
 };
 use crate::portals::{
-    bt_nested_boundary_lane_with_quiet_turn, bt_sibling_chain_target_ids,
-    bt_single_external_entry_source_center_allowed,
+    bt_external_side_receiver_lane, bt_nested_boundary_lane_with_quiet_turn,
+    bt_sibling_chain_target_ids, bt_single_external_entry_source_center_allowed,
     bt_target_portal_x_avoiding_single_cell_turn_with_source_center, bt_title_margin_for_edge,
     td_nested_boundary_lane, td_sibling_portal_x, td_sibling_title_gutter,
-    td_single_external_entry_uses_literal_gutter_lane, td_terminal_entry_target_center,
-    title_margin_for_direction, title_safe_portal_x, PortalColumnPreference,
+    td_single_external_entry_uses_literal_gutter_lane, td_terminal_entry_portal_lanes,
+    td_terminal_entry_scene_subgraph, td_terminal_entry_target_center, title_margin_for_direction,
+    title_safe_portal_x, PortalColumnPreference,
 };
 
 pub(super) fn preferred_portal_x(
@@ -721,6 +724,200 @@ pub(super) fn lower_td_fallback_plan(
     }
 }
 
+/// Lower the strict flat TD/TB terminal-entry scene as one route transaction.
+///
+/// A per-edge generic route makes the first title-safe lane look like a shared
+/// rail, then lets the next edge overwrite its receiver ownership. Planning
+/// the complete scene once keeps the lane/bridge map and all terminal arrows
+/// in one immutable fallback trace. Unsupported near-misses return `false` so
+/// the established route policy remains responsible for them.
+#[allow(clippy::too_many_arguments)]
+fn route_td_terminal_entry_quiet_band(
+    from: &Node,
+    to: &Node,
+    stem_start_x: usize,
+    stem_start_y: usize,
+    arrow_x: usize,
+    arrow_y: usize,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+    owner: Option<RouteOwner<'_>>,
+) -> bool {
+    let Some(scene) = td_terminal_entry_scene_subgraph(graph) else {
+        return false;
+    };
+    let Some(target_subgraph_id) = graph.get_node_subgraph(&to.id) else {
+        return false;
+    };
+    if target_subgraph_id != scene.id
+        || graph.get_node_subgraph(&from.id).is_some()
+        || !scene.bounds.is_valid()
+        || edge_exit_point(from, graph.direction) != (stem_start_x, stem_start_y)
+    {
+        return false;
+    }
+
+    let current_edge_id = edge_route_owner_id(graph, &from.id, &to.id);
+    if canvas.fallback_route_covers_edge(&current_edge_id) {
+        return true;
+    }
+
+    let border_y = scene.bounds.y;
+    let outside_y = border_y.saturating_sub(1);
+    let quiet_row = border_y.saturating_add(2);
+    let scene_owner_id = format!("scene:td-terminal-quiet-band:{}", scene.id);
+    let mut plan = FallbackRoutePlan::new(scene_owner_id.clone(), "td-terminal-quiet-band");
+    let mut covered_edge_ids = Vec::new();
+    let mut first_attachment = None;
+    let target_centers = scene
+        .node_ids
+        .iter()
+        .filter_map(|node_id| Some((node_id.clone(), graph.get_node(node_id)?.center_x())))
+        .collect::<std::collections::HashMap<_, _>>();
+    let Some(lanes) = td_terminal_entry_portal_lanes(
+        graph,
+        &scene.id,
+        Rect::new(
+            scene.bounds.x,
+            scene.bounds.y,
+            scene.bounds.width,
+            scene.bounds.height,
+        ),
+        graph.direction,
+        &target_centers,
+    ) else {
+        return false;
+    };
+
+    for edge in graph.edges.iter().filter(|edge| !edge.is_back_edge) {
+        let Some(source) = graph.get_node(&edge.from) else {
+            return false;
+        };
+        let Some(target) = graph.get_node(&edge.to) else {
+            return false;
+        };
+        let source_x_y = edge_exit_point(source, graph.direction);
+        let (target_arrow_x, target_arrow_y) =
+            adjusted_edge_entry_point(target, graph.direction, graph);
+        let target_arrow_x = if edge.from == from.id && edge.to == to.id {
+            arrow_x
+        } else {
+            target_arrow_x
+        };
+        let target_arrow_y = if edge.from == from.id && edge.to == to.id {
+            arrow_y
+        } else {
+            target_arrow_y
+        };
+        let Some(&lane) = lanes.get(&edge.to) else {
+            return false;
+        };
+        let bridge_y = target_arrow_y.saturating_sub(1);
+        if source_x_y.1 > outside_y
+            || target_arrow_y <= border_y
+            || bridge_y <= quiet_row
+            || bridge_y >= target_arrow_y
+            || target_arrow_x >= canvas.width
+            || target_arrow_y >= canvas.height
+        {
+            return false;
+        }
+
+        let edge_id = edge_route_owner_id(graph, &edge.from, &edge.to);
+        covered_edge_ids.push(edge_id.clone());
+        let going_right = lane > source_x_y.0;
+        if source_x_y.1 < outside_y {
+            plan.push_vertical(source_x_y.0, source_x_y.1, outside_y, style.edge_v);
+        }
+        if lane != source_x_y.0 {
+            plan.push_corner(
+                source_x_y.0,
+                outside_y,
+                if going_right {
+                    style.corner_ul
+                } else {
+                    style.corner_ur
+                },
+            );
+            plan.push_horizontal(outside_y, source_x_y.0, lane, style.edge_h);
+            plan.push_corner(
+                lane,
+                outside_y,
+                if going_right {
+                    style.corner_dr
+                } else {
+                    style.corner_dl
+                },
+            );
+        }
+        plan.push_vertical(lane, outside_y, bridge_y, style.edge_v);
+        plan.claim_boundary(scene.id.clone(), "top", lane, border_y, style.edge_v);
+        if lane != target_arrow_x {
+            let arrow_is_right = target_arrow_x > lane;
+            plan.push_corner(
+                lane,
+                bridge_y,
+                if arrow_is_right {
+                    style.corner_ul
+                } else {
+                    style.corner_ur
+                },
+            );
+            plan.push_horizontal(bridge_y, lane, target_arrow_x, style.edge_h);
+            plan.push_corner(
+                target_arrow_x,
+                bridge_y,
+                if arrow_is_right {
+                    style.corner_dr
+                } else {
+                    style.corner_dl
+                },
+            );
+        }
+        plan.push_vertical(target_arrow_x, bridge_y, target_arrow_y, style.edge_v);
+        plan.push_paint(
+            target_arrow_x,
+            target_arrow_y,
+            OrientedCoords::new(graph.direction).arrow_end(style),
+        );
+        plan.set_target_entry_decision(PortalEntryDecision {
+            edge_id,
+            owner_id: scene_owner_id.clone(),
+            target_node_id: target.id.clone(),
+            boundary_id: scene.id.clone(),
+            side: "top".to_owned(),
+            portal_x: lane,
+            portal_y: border_y,
+            arrow_x: target_arrow_x,
+            arrow_y: target_arrow_y,
+        });
+        if first_attachment.is_none() {
+            first_attachment = Some((lane, target_arrow_x, target_arrow_y));
+        }
+    }
+
+    if covered_edge_ids.len() < 2 || !covered_edge_ids.iter().any(|id| id == &current_edge_id) {
+        return false;
+    }
+    plan.set_scene_coverage(covered_edge_ids);
+    if let Some((lane, target_arrow_x, target_arrow_y)) = first_attachment {
+        plan.set_target_attachment(scene.id.clone(), "top", lane, border_y);
+        plan.set_arrow_attachment(target_arrow_x, target_arrow_y);
+    }
+    if let Some(reason) = plan.validation_error(canvas.width, canvas.height) {
+        canvas.record_fallback_route_rejection(
+            plan.owner_id.clone(),
+            plan.strategy.clone(),
+            reason,
+        );
+        return false;
+    }
+
+    lower_td_fallback_plan(plan, canvas, style, owner);
+    true
+}
+
 /// Route a TD/TB edge from a nested node through every owned bottom boundary.
 ///
 /// The generic single-subgraph route can only reserve the immediate source
@@ -943,6 +1140,27 @@ pub(super) fn route_cross_subgraph_td(
     };
     if !sg.bounds.is_valid() {
         return false;
+    }
+
+    if route_td_terminal_entry_quiet_band(
+        from,
+        to,
+        stem_start_x,
+        stem_start_y,
+        arrow_x,
+        arrow_y,
+        canvas,
+        style,
+        graph,
+        owner,
+    ) {
+        if debug_timing {
+            eprintln!(
+                "  cross-subgraph strict terminal quiet band {} -> {}",
+                from.id, to.id
+            );
+        }
+        return true;
     }
 
     // Direct stacked siblings get a paired, boundary-owned corridor. Mixed
@@ -1685,6 +1903,40 @@ fn bt_external_side_reservation_present(
     })
 }
 
+/// The layout stage may stage a target receiver on the exact arrow lane for a
+/// bounded external-side BT scene. When that structural contract is true, a
+/// target-side detour is actively harmful: it leaves the receiver aligned to
+/// the arrow but routes through an unrelated title-safe lane first.
+fn bt_external_side_receiver_lane_is_staged(
+    graph: &Graph,
+    source_sg: &crate::graph::Subgraph,
+    target_sg: &crate::graph::Subgraph,
+    arrow_x: usize,
+) -> bool {
+    let Some(scene) = graph.bt_external_side_receiver_scene() else {
+        return false;
+    };
+    if scene.source_subgraph_id != source_sg.id || scene.target_subgraph_id != target_sg.id {
+        return false;
+    }
+
+    let Some(receiver) = target_sg
+        .node_ids
+        .iter()
+        .filter_map(|node_id| graph.get_node(node_id))
+        .find(|node| node.center_x() == arrow_x)
+    else {
+        return false;
+    };
+    receiver.center_x()
+        == bt_external_side_receiver_lane(
+            target_sg.bounds.x,
+            target_sg.bounds.width,
+            target_sg.title.as_deref(),
+            arrow_x,
+        )
+}
+
 /// Use the stricter fallback contract only when an external obstacle actually
 /// pressures the sibling corridor (or has just been moved out of it). Ordinary
 /// sibling crossings retain their established route geometry and snapshots.
@@ -1801,23 +2053,30 @@ fn build_bt_sibling_route_plan(
         return Err("target has no title-safe interior lane candidates".to_owned());
     }
     if bt_external_side_reservation_present(graph, source_sg, target_sg) {
-        let preferred_reserved_lane = title_safe_portal_x(
+        let preferred_reserved_lane = bt_external_side_receiver_lane(
             target_sg.bounds.x,
             target_sg.bounds.width,
             target_sg.title.as_deref(),
             arrow_x,
-            Direction::BT,
-            2,
-            PortalColumnPreference::Directional,
         );
-        candidates.sort_by_key(|candidate| {
-            (
-                candidate.abs_diff(arrow_x) < 2,
-                candidate.abs_diff(preferred_reserved_lane),
-                candidate.abs_diff(arrow_x),
-                *candidate,
-            )
-        });
+        if bt_external_side_receiver_lane_is_staged(graph, source_sg, target_sg, arrow_x) {
+            candidates.sort_by_key(|candidate| {
+                (
+                    candidate.abs_diff(preferred_reserved_lane),
+                    candidate.abs_diff(arrow_x),
+                    *candidate,
+                )
+            });
+        } else {
+            candidates.sort_by_key(|candidate| {
+                (
+                    candidate.abs_diff(arrow_x) < 2,
+                    candidate.abs_diff(preferred_reserved_lane),
+                    candidate.abs_diff(arrow_x),
+                    *candidate,
+                )
+            });
+        }
     }
 
     let mut rejections = Vec::new();
@@ -3708,6 +3967,8 @@ pub(super) fn route_divergent_into_subgraph_bt(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{
         bt_sibling_plan_blocker, bt_sibling_target_lane_candidates, bt_title_safe_entry_y,
         bt_title_safe_entry_y_with_margin, nearest_title_safe_x, preferred_portal_x,
@@ -3716,7 +3977,7 @@ mod tests {
     use crate::graph::{Direction, Graph, Node, Rectangle, Subgraph};
     use crate::portals::{title_margin_for_direction, title_safe_portal_x, PortalColumnPreference};
     use crate::render::canvas::Canvas;
-    use crate::render::fallback_route::FallbackRoutePlan;
+    use crate::render::fallback_route::{FallbackAxis, FallbackRoutePlan};
 
     #[test]
     fn preferred_portal_uses_the_shared_directional_policy() {
@@ -3839,9 +4100,7 @@ mod tests {
     #[cfg(feature = "maintainer-fixtures")]
     fn complex_bt_external_node_is_relocated_for_sibling_route() {
         let input = include_str!("../../../tests/fixtures/inputs/subgraph_complex_bt.md");
-        let parsed = crate::parser::parse(input, false).expect("parse fixture");
-        let graph = crate::layout::coarse_waterfall(parsed.graph).expect("layout fixture");
-        let outcome = crate::render::render_with_feedback(&graph, &crate::Config::default())
+        let outcome = crate::render_with_feedback(input, crate::RenderOptions::default())
             .expect("render fixture");
 
         assert!(!outcome
@@ -3854,5 +4113,42 @@ mod tests {
             .fallback_routes
             .iter()
             .any(|route| route.owner_id == "edge:3:S2->D2"));
+        let route = outcome
+            .portal_trace
+            .fallback_routes
+            .iter()
+            .find(|route| route.owner_id == "edge:3:S2->D2")
+            .expect("complex BT receiver route should be traced");
+        assert_eq!(route.planned_segments.len(), 3);
+        assert!(route
+            .planned_segments
+            .iter()
+            .all(|segment| segment.axis == FallbackAxis::Vertical));
+        assert!(route
+            .boundary_claims
+            .iter()
+            .filter(|claim| claim.boundary_id == "SG2")
+            .all(|claim| claim.x == 18));
+
+        let source_cells: Vec<_> = outcome
+            .semantic_frame
+            .cells
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| cell.owner_id.as_deref() == Some("edge:1:API->S1"))
+            .collect();
+        assert!(
+            source_cells.len() >= 2,
+            "source shaft should remain visible"
+        );
+        let source_xs: BTreeSet<_> = source_cells
+            .iter()
+            .map(|(index, _)| index % outcome.semantic_frame.width)
+            .collect();
+        assert_eq!(
+            source_xs.len(),
+            1,
+            "API -> S1 should use one vertical lane: {source_cells:?}"
+        );
     }
 }

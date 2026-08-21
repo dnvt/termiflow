@@ -285,6 +285,7 @@ pub struct Canvas {
     write_stage_grid: Vec<Vec<String>>,
     current_write_stage: String,
     fallback_route_plans: Vec<FallbackRoutePlan>,
+    fallback_route_evidence: Vec<FallbackRoutePlan>,
     fallback_route_rejections: Vec<FallbackRouteRejection>,
 }
 
@@ -302,6 +303,7 @@ impl Canvas {
             write_stage_grid: vec![vec!["init".to_owned(); width]; height],
             current_write_stage: "init".to_owned(),
             fallback_route_plans: Vec::new(),
+            fallback_route_evidence: Vec::new(),
             fallback_route_rejections: Vec::new(),
         }
     }
@@ -729,6 +731,15 @@ impl Canvas {
         self.fallback_route_plans.push(plan);
     }
 
+    /// Record a route for final audit evidence without reserving its cells
+    /// against later route lowering.  Some generic routes are painted before
+    /// a legitimate crossing/branch is lowered; making their diagnostic plan
+    /// a reservation would let the evidence mechanism change the visible
+    /// topology it is meant to observe.
+    pub(crate) fn record_fallback_route_evidence(&mut self, plan: FallbackRoutePlan) {
+        self.fallback_route_evidence.push(plan);
+    }
+
     pub(crate) fn record_fallback_route_rejection(
         &mut self,
         owner_id: impl Into<String>,
@@ -748,6 +759,7 @@ impl Canvas {
     pub(crate) fn fallback_route_traces(&self) -> Vec<FallbackRouteTrace> {
         self.fallback_route_plans
             .iter()
+            .chain(self.fallback_route_evidence.iter())
             .map(|plan| plan.trace_on(self))
             .collect()
     }

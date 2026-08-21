@@ -316,6 +316,27 @@ pub(crate) fn title_safe_portal_x(
     )
 }
 
+/// Select the receiver lane used by the bounded BT sibling scene whose
+/// external side reservation needs a quiet title margin. Layout stages the
+/// receiver node on this lane; route lowering then sees the same lane through
+/// the receiver center and does not need a title-adjacent jog.
+pub(crate) fn bt_external_side_receiver_lane(
+    left_x: usize,
+    width: usize,
+    title: Option<&str>,
+    desired: usize,
+) -> usize {
+    title_safe_portal_x(
+        left_x,
+        width,
+        title,
+        desired,
+        Direction::BT,
+        BT_EXTERNAL_SIDE_RECEIVER_TITLE_MARGIN,
+        PortalColumnPreference::Directional,
+    )
+}
+
 /// Select a title-safe column using independent leading/trailing title gutter.
 // The side-aware variant intentionally mirrors the existing scalar helper while
 // keeping both gutter dimensions explicit at this policy boundary.
@@ -725,6 +746,10 @@ pub(crate) const BT_SIBLING_CHAIN_TITLE_MARGIN: usize = 1;
 /// can diverge from the lane occupied by its node pair.
 pub(crate) const BT_PARALLEL_TITLE_MARGIN: usize = 1;
 pub(crate) const BT_PARALLEL_MIN_LANE_GAP: usize = 4;
+
+/// Keep the receiver portal outside the complete BT title token while the
+/// layout owner aligns the receiver node to that same lane.
+pub(crate) const BT_EXTERNAL_SIDE_RECEIVER_TITLE_MARGIN: usize = 2;
 
 /// Keep a strict horizontal sibling-chain bridge long enough to read as a
 /// deliberate cross-group transition after its quiet-corridor turn.  A
@@ -1494,6 +1519,161 @@ pub(crate) fn td_terminal_entry_target_center(
     Some(target_center)
 }
 
+/// Return the one flat titled TD/TB subgraph whose complete edge set is a
+/// one-to-one set of unlabeled external entries into terminal rectangle nodes.
+///
+/// This is intentionally stricter than the older target-center helper.  The
+/// quiet-band route is a scene transaction, so accepting a partial edge family
+/// would let an unrelated edge borrow the same title/receiver corridor and
+/// recreate the very ownership ambiguity the transaction is meant to remove.
+pub(crate) fn td_terminal_entry_scene_subgraph(graph: &Graph) -> Option<&crate::graph::Subgraph> {
+    if !matches!(graph.direction, Direction::TD | Direction::TB)
+        || graph.subgraphs.len() != 1
+        || graph.edges.iter().any(|edge| edge.is_back_edge)
+    {
+        return None;
+    }
+
+    let subgraph = graph.subgraphs.first()?;
+    if subgraph.parent_id.is_some() || !subgraph.child_ids.is_empty() || !subgraph.has_title() {
+        return None;
+    }
+
+    let entries: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            edge.kind == EdgeKind::Arrow
+                && edge.label.is_none()
+                && graph.get_node_subgraph(&edge.from).is_none()
+                && graph.get_node_subgraph(&edge.to) == Some(subgraph.id.as_str())
+                && subgraph.node_ids.contains(&edge.to)
+                && graph
+                    .edge_boundary_crossings(&edge.from, &edge.to)
+                    .0
+                    .is_empty()
+                && graph.edge_boundary_crossings(&edge.from, &edge.to).1
+                    == vec![subgraph.id.as_str()]
+        })
+        .collect();
+    if entries.len() < 2 || entries.len() != graph.edges.len() {
+        return None;
+    }
+
+    let source_ids: HashSet<&str> = entries.iter().map(|edge| edge.from.as_str()).collect();
+    let target_ids: HashSet<&str> = entries.iter().map(|edge| edge.to.as_str()).collect();
+    let pair_ids: HashSet<(&str, &str)> = entries
+        .iter()
+        .map(|edge| (edge.from.as_str(), edge.to.as_str()))
+        .collect();
+    if source_ids.len() != entries.len()
+        || target_ids.len() != entries.len()
+        || pair_ids.len() != entries.len()
+        || target_ids.len() != subgraph.node_ids.len()
+        || subgraph
+            .node_ids
+            .iter()
+            .any(|node_id| !target_ids.contains(node_id.as_str()))
+        || graph.nodes.iter().any(|node| {
+            !source_ids.contains(node.id.as_str()) && !target_ids.contains(node.id.as_str())
+        })
+    {
+        return None;
+    }
+
+    if graph
+        .nodes
+        .iter()
+        .any(|node| target_ids.contains(node.id.as_str()) && node.shape != NodeShape::Rectangle)
+    {
+        return None;
+    }
+
+    Some(subgraph)
+}
+
+/// Select title-safe interior lanes for a strict terminal-entry scene.
+///
+/// Each target is assigned independently in target-center order while keeping
+/// a readable gap between adjacent portal shafts. The helper is intentionally
+/// shared by layout, portal projection, and rendering so the three stages do
+/// not invent different receiver lanes.
+const TD_TERMINAL_ENTRY_MIN_LANE_GAP: usize = 4;
+
+pub(crate) fn td_terminal_entry_portal_lanes(
+    graph: &Graph,
+    subgraph_id: &str,
+    target_bounds: Rect,
+    direction: Direction,
+    target_centers: &HashMap<String, usize>,
+) -> Option<HashMap<String, usize>> {
+    let subgraph = td_terminal_entry_scene_subgraph(graph)?;
+    if subgraph.id != subgraph_id || target_bounds.is_empty() {
+        return None;
+    }
+
+    let min_lane = target_bounds.x.saturating_add(2);
+    let max_lane = target_bounds
+        .x
+        .saturating_add(target_bounds.width.saturating_sub(3));
+    if min_lane > max_lane
+        || subgraph
+            .node_ids
+            .iter()
+            .any(|node_id| !target_centers.contains_key(node_id))
+    {
+        return None;
+    }
+
+    let mut target_ids: Vec<&str> = subgraph.node_ids.iter().map(String::as_str).collect();
+    target_ids.sort_unstable_by_key(|target_id| {
+        (
+            target_centers
+                .get(*target_id)
+                .copied()
+                .unwrap_or(usize::MAX),
+            *target_id,
+        )
+    });
+
+    let mut lanes = HashMap::new();
+    let mut used = Vec::new();
+    for target_id in target_ids {
+        let target_center = *target_centers.get(target_id)?;
+        let mut candidates = (min_lane..=max_lane)
+            .filter(|candidate| {
+                title_safe_portal_x(
+                    target_bounds.x,
+                    target_bounds.width,
+                    subgraph.title.as_deref(),
+                    *candidate,
+                    direction,
+                    0,
+                    PortalColumnPreference::Directional,
+                ) == *candidate
+            })
+            .collect::<Vec<_>>();
+        candidates
+            .sort_unstable_by_key(|candidate| (candidate.abs_diff(target_center), *candidate));
+        let lane = candidates
+            .iter()
+            .copied()
+            .find(|candidate| {
+                used.iter()
+                    .all(|prior| candidate.abs_diff(*prior) >= TD_TERMINAL_ENTRY_MIN_LANE_GAP)
+            })
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|candidate| !used.contains(candidate))
+            })?;
+        used.push(lane);
+        lanes.insert(target_id.to_owned(), lane);
+    }
+    Some(lanes)
+}
+
 fn collect_portal_slots_with_bounds(
     graph: &Graph,
     node_rects: &HashMap<String, Rect>,
@@ -1505,6 +1685,23 @@ fn collect_portal_slots_with_bounds(
     let mut shared_td_fanin_bottom_slots: HashMap<(String, String), Vec<usize>> = HashMap::new();
     let mut shared_horizontal_fanin_side_slots: HashMap<(String, String), Vec<usize>> =
         HashMap::new();
+
+    let strict_td_entry_lanes = if matches!(direction, Direction::TD | Direction::TB) {
+        td_terminal_entry_scene_subgraph(graph).and_then(|scene| {
+            let bounds = current_subgraph_bounds(graph, current_bounds, &scene.id)?;
+            let target_centers = scene
+                .node_ids
+                .iter()
+                .filter_map(|node_id| {
+                    let node = graph.get_node(node_id)?;
+                    Some((node_id.clone(), node_center_x(node_rects, node_id, node)))
+                })
+                .collect::<HashMap<_, _>>();
+            td_terminal_entry_portal_lanes(graph, &scene.id, bounds, direction, &target_centers)
+        })
+    } else {
+        None
+    };
 
     let shift_x_out_of_title = |sg_id: &str, desired_x: usize, margin: Option<usize>| -> usize {
         let Some(sg) = graph.get_subgraph(sg_id) else {
@@ -1768,6 +1965,11 @@ fn collect_portal_slots_with_bounds(
                         shared_td_fanout_top_slots.get(&(edge.from.clone(), id.to_string()))
                     {
                         shared_x
+                    } else if let Some(strict_lane) = strict_td_entry_lanes
+                        .as_ref()
+                        .and_then(|lanes| lanes.get(&edge.to).copied())
+                    {
+                        strict_lane
                     } else if let Some(target_center) = td_terminal_entry_target_center(
                         graph,
                         &edge.from,

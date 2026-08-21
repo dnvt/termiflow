@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, fs};
 use termiflow::{BaseStyle, RenderOptions};
 
 #[test]
-fn strict_bt_sibling_chain_allocates_distinct_target_portal_lanes() {
+fn strict_bt_sibling_chain_prefers_straight_target_portal_lanes() {
     let input = fs::read_to_string("tests/fixtures/inputs/subgraph_chain_bt.md")
         .expect("read strict BT sibling-chain fixture");
 
@@ -92,9 +92,9 @@ fn strict_bt_sibling_chain_allocates_distinct_target_portal_lanes() {
                     .find(|boundary| boundary.edge_id == edge_id && boundary.crossing == "enter")
                     .and_then(|boundary| boundary.slot_x)
                     .expect("strict BT transition target lane");
-                assert_ne!(
+                assert_eq!(
                     source_lane, target_lane,
-                    "strict BT sibling transition should expose a visible corridor turn for {edge_id} on {style:?} optimized={optimized}:\n{}",
+                    "safe strict BT sibling transition should stay source-aligned for {edge_id} on {style:?} optimized={optimized}:\n{}",
                     outcome.output
                 );
             }
@@ -105,19 +105,6 @@ fn strict_bt_sibling_chain_allocates_distinct_target_portal_lanes() {
                 "all titled sibling stages must remain readable for {style:?} optimized={optimized}:\n{}",
                 outcome.output
             );
-            match style {
-                BaseStyle::Ascii => assert!(
-                    !outcome.output.contains("+-+"),
-                    "BT sibling lanes must leave a visible horizontal run between ASCII corners for optimized={optimized}:\n{}",
-                    outcome.output
-                ),
-                BaseStyle::Unicode => assert!(
-                    !outcome.output.contains("┌─┘") && !outcome.output.contains("└─┐"),
-                    "BT sibling lanes must leave a visible horizontal run between Unicode corners for optimized={optimized}:\n{}",
-                    outcome.output
-                ),
-                _ => unreachable!("focused sibling-chain test only uses ASCII and Unicode"),
-            }
         }
     }
 }

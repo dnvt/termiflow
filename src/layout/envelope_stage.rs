@@ -5,11 +5,12 @@ use std::collections::{HashMap, HashSet};
 use crate::geom::Rect;
 use crate::graph::{Direction, EdgeKind, Graph, NodeShape};
 use crate::portals::{
-    bt_external_entry_source_center_lane, bt_sibling_chain_target_ids,
-    bt_single_external_entry_source_center_allowed, bt_title_margin_for_edge, compute_envelopes,
-    nudge_portal_x_from_corners, title_margin_for_direction, title_safe_portal_x,
-    PortalColumnPreference, SubgraphEnvelope, BT_PARALLEL_MIN_LANE_GAP, BT_PARALLEL_TITLE_MARGIN,
-    BT_SIBLING_CHAIN_TITLE_MARGIN,
+    bt_external_entry_source_center_lane, bt_external_side_receiver_lane,
+    bt_sibling_chain_target_ids, bt_single_external_entry_source_center_allowed,
+    bt_title_margin_for_edge, compute_envelopes, nudge_portal_x_from_corners,
+    td_terminal_entry_portal_lanes, td_terminal_entry_scene_subgraph, title_margin_for_direction,
+    title_safe_portal_x, PortalColumnPreference, SubgraphEnvelope, BT_PARALLEL_MIN_LANE_GAP,
+    BT_PARALLEL_TITLE_MARGIN, BT_SIBLING_CHAIN_TITLE_MARGIN,
 };
 use crate::render::sibling_subgraph_fan_in_identity;
 use crate::render::sibling_target_entry_identity;
@@ -1090,6 +1091,138 @@ fn align_td_external_terminal_centers(
     changed
 }
 
+/// Move only terminal receiver/source pairs that can occupy a separated
+/// title-safe lane without colliding with a neighboring pair.
+///
+/// A strict multi-entry TD scene may have one target whose center is inside the
+/// title band. Its legal portal is therefore on the far side of the title,
+/// while the next target can be only two cells away. The renderer must then
+/// choose between adjacent border openings or a second tiny receiver hook.
+/// Stage a wider lane map first, and translate a pair only when the candidate
+/// is independently collision-free; pairs that cannot move retain the
+/// conservative route and the scene remains eligible for perceptual review.
+fn align_td_terminal_entry_receiver_lanes(
+    graph: &Graph,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) {
+        return false;
+    }
+    let Some(scene) = td_terminal_entry_scene_subgraph(graph) else {
+        return false;
+    };
+    let Some(envelope) = envelopes.get(&scene.id) else {
+        return false;
+    };
+
+    let mut entries: Vec<_> = graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            edge.kind == EdgeKind::Arrow
+                && edge.label.is_none()
+                && !edge.is_back_edge
+                && graph.get_node_subgraph(&edge.from).is_none()
+                && graph.get_node_subgraph(&edge.to) == Some(scene.id.as_str())
+        })
+        .collect();
+    if entries.len() != graph.edges.len() || entries.len() != scene.node_ids.len() {
+        return false;
+    }
+    entries.sort_by_key(|edge| edge.to.as_str());
+
+    let target_centers = scene
+        .node_ids
+        .iter()
+        .filter_map(|node_id| {
+            placement
+                .node_rects
+                .get(node_id)
+                .map(|rect| (node_id.clone(), rect_center_x(*rect)))
+        })
+        .collect::<HashMap<_, _>>();
+    if target_centers.len() != scene.node_ids.len() {
+        return false;
+    }
+    let Some(lanes) = td_terminal_entry_portal_lanes(
+        graph,
+        &scene.id,
+        envelope.outer,
+        graph.direction,
+        &target_centers,
+    ) else {
+        return false;
+    };
+
+    let mut proposals: Vec<(String, Rect)> = Vec::new();
+    for edge in entries {
+        let Some(&lane) = lanes.get(&edge.to) else {
+            return false;
+        };
+        let (Some(source_rect), Some(target_rect)) = (
+            placement.node_rects.get(&edge.from).copied(),
+            placement.node_rects.get(&edge.to).copied(),
+        ) else {
+            return false;
+        };
+        let Some(source_candidate) = centered_rect_at_x(source_rect, lane) else {
+            continue;
+        };
+        let Some(target_candidate) = centered_rect_at_x(target_rect, lane) else {
+            continue;
+        };
+        if source_candidate == source_rect && target_candidate == target_rect {
+            continue;
+        }
+
+        let pair_ids = [edge.from.as_str(), edge.to.as_str()];
+        if !rect_is_inside(source_candidate, placement.canvas)
+            || !rect_is_inside(target_candidate, envelope.outer)
+            || graph
+                .nodes
+                .iter()
+                .filter(|node| !pair_ids.contains(&node.id.as_str()))
+                .filter_map(|node| placement.node_rects.get(&node.id))
+                .any(|rect| {
+                    rects_overlap(*rect, source_candidate) || rects_overlap(*rect, target_candidate)
+                })
+        {
+            continue;
+        }
+
+        proposals.push((edge.from.clone(), source_candidate));
+        proposals.push((edge.to.clone(), target_candidate));
+    }
+
+    if proposals.is_empty()
+        || proposals.iter().enumerate().any(|(index, (_, candidate))| {
+            proposals
+                .iter()
+                .skip(index + 1)
+                .any(|(_, other)| rects_overlap(*candidate, *other))
+        })
+    {
+        return false;
+    }
+
+    let mut changed = false;
+    for (node_id, candidate) in proposals {
+        changed |= set_node_x(placement, &node_id, candidate.x);
+    }
+    if changed {
+        placement.canvas.width = placement.canvas.width.max(
+            placement
+                .node_rects
+                .values()
+                .map(Rect::right)
+                .max()
+                .unwrap_or(placement.canvas.width),
+        );
+    }
+    changed
+}
+
 /// Align a strict terminal external target with the exit portal of a flat,
 /// titled vertical subgraph. A one-cell source/target parity mismatch makes
 /// the generic route emit two adjacent boundary shafts; when the edge is
@@ -1454,6 +1587,182 @@ fn align_bt_parallel_sibling_lanes(
         changed |= set_node_x(placement, &node_id, candidate.x);
     }
     changed
+}
+
+/// Align the receiver nodes of a bounded two-subgraph BT scene to the
+/// title-safe lanes selected for its external-side sibling corridor.
+///
+/// When the target node remains on its original center, the route planner must
+/// turn from the receiver portal into the target one row below the title. The
+/// resulting `+-+`/`└─┐` is connected but reads as a title hook. Stage the
+/// target node on the same receiver lane instead. The predicate is structural:
+/// two titled root subgraphs with two source-to-target crossings, one external
+/// source entry, and two terminal target exits. It deliberately excludes the
+/// existing four-node sibling scene and all generic BT routes.
+fn align_bt_external_side_receiver_lanes(
+    graph: &Graph,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    let Some(scene) = graph.bt_external_side_receiver_scene() else {
+        return false;
+    };
+    let (Some(target_subgraph), Some(source_subgraph)) = (
+        graph.get_subgraph(&scene.target_subgraph_id),
+        graph.get_subgraph(&scene.source_subgraph_id),
+    ) else {
+        return false;
+    };
+    let (Some(target_envelope), Some(source_envelope)) = (
+        envelopes.get(&target_subgraph.id),
+        envelopes.get(&source_subgraph.id),
+    ) else {
+        return false;
+    };
+    if target_envelope.outer.y >= source_envelope.outer.y
+        || target_envelope.outer.bottom() > source_envelope.outer.y
+    {
+        return false;
+    }
+
+    let moved_ids: HashSet<&str> = target_subgraph
+        .node_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut proposals = Vec::with_capacity(target_subgraph.node_ids.len());
+    for node_id in &target_subgraph.node_ids {
+        let Some(current) = placement.node_rects.get(node_id).copied() else {
+            return false;
+        };
+        let receiver_lane = bt_external_side_receiver_lane(
+            target_envelope.outer.x,
+            target_envelope.outer.width,
+            target_subgraph.title.as_deref(),
+            rect_center_x(current),
+        );
+        if receiver_lane < target_envelope.outer.x.saturating_add(2)
+            || receiver_lane > target_envelope.outer.right().saturating_sub(3)
+        {
+            return false;
+        }
+        let Some(candidate) = centered_rect_at_x(current, receiver_lane) else {
+            return false;
+        };
+        if candidate == current {
+            continue;
+        }
+        proposals.push((node_id.clone(), candidate));
+    }
+    if proposals.is_empty() {
+        return false;
+    }
+
+    if proposals.iter().any(|(_, candidate)| {
+        !rect_is_inside(*candidate, placement.canvas)
+            || !rect_is_inside(*candidate, target_envelope.outer)
+            || graph
+                .nodes
+                .iter()
+                .filter(|node| !moved_ids.contains(node.id.as_str()))
+                .filter_map(|node| placement.node_rects.get(&node.id))
+                .any(|rect| rects_overlap(*rect, *candidate))
+    }) || proposals.iter().enumerate().any(|(index, (_, candidate))| {
+        proposals
+            .iter()
+            .skip(index + 1)
+            .any(|(_, other)| rects_overlap(*candidate, *other))
+    }) {
+        return false;
+    }
+
+    let mut changed = false;
+    for (node_id, candidate) in proposals {
+        changed |= set_node_x(placement, &node_id, candidate.x);
+    }
+    if changed {
+        placement.canvas.width = placement.canvas.width.max(
+            placement
+                .node_rects
+                .values()
+                .map(Rect::right)
+                .max()
+                .unwrap_or(0),
+        );
+    }
+    changed
+}
+
+/// Align only the external source node of the bounded two-subgraph BT scene
+/// with the receiver lane selected by its unique source-entry edge.
+///
+/// H127 showed that moving the whole source sibling group can trade a lower
+/// title hook for a new shoulder in the quiet corridor. This narrower policy
+/// leaves both titled groups and every Data Layer node fixed: only the
+/// external API rectangle is translated to the existing source receiver
+/// center. Every candidate is staged before mutation and fails closed on
+/// clipping, envelope intrusion, or collision.
+fn align_bt_external_side_source_entry_lane(
+    graph: &Graph,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    let Some(scene) = graph.bt_external_side_receiver_scene() else {
+        return false;
+    };
+    if graph
+        .get_node_subgraph(&scene.source_external_node_id)
+        .is_some()
+        || graph.get_node_subgraph(&scene.source_receiver_node_id)
+            != Some(scene.source_subgraph_id.as_str())
+    {
+        return false;
+    }
+    let (Some(source_rect), Some(receiver_rect)) = (
+        placement
+            .node_rects
+            .get(&scene.source_external_node_id)
+            .copied(),
+        placement
+            .node_rects
+            .get(&scene.source_receiver_node_id)
+            .copied(),
+    ) else {
+        return false;
+    };
+    let Some(candidate) = centered_rect_at_x(source_rect, rect_center_x(receiver_rect)) else {
+        return false;
+    };
+    if candidate == source_rect || !rect_is_inside(candidate, placement.canvas) {
+        return false;
+    }
+
+    let source_id = scene.source_external_node_id.as_str();
+    if graph
+        .nodes
+        .iter()
+        .filter(|node| node.id != source_id)
+        .filter_map(|node| placement.node_rects.get(&node.id))
+        .any(|rect| rects_overlap(*rect, candidate))
+        || envelopes
+            .values()
+            .any(|envelope| rects_overlap(envelope.outer, candidate))
+    {
+        return false;
+    }
+
+    if !set_node_x(placement, source_id, candidate.x) {
+        return false;
+    }
+    placement.canvas.width = placement.canvas.width.max(
+        placement
+            .node_rects
+            .values()
+            .map(Rect::right)
+            .max()
+            .unwrap_or(placement.canvas.width),
+    );
+    true
 }
 
 /// Align a strict flat TD/TB parallel scene to its title-safe target lanes.
@@ -3455,6 +3764,27 @@ pub(super) fn resolve_subgraph_envelopes(
         adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
     }
 
+    // Align the two-node receiver pair in the bounded external-side BT scene
+    // to the same quiet title lane consumed by its sibling corridor. This is
+    // intentionally separate from the four-node sibling target scene and the
+    // generic external-entry aligner below.
+    let previous_bt_receiver_envelopes = subgraph_envelopes.clone();
+    if input.graph.direction == Direction::BT
+        && align_bt_external_side_receiver_lanes(input.graph, placement, &subgraph_envelopes)
+    {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        preserve_envelope_left_edges(&previous_bt_receiver_envelopes, &mut subgraph_envelopes);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
+    // Keep only the external API source on the already-selected source
+    // receiver lane. This is narrower than the rejected H127 source-group
+    // alignment and deliberately does not mutate either titled sibling.
+    if input.graph.direction == Direction::BT {
+        align_bt_external_side_source_entry_lane(input.graph, placement, &subgraph_envelopes);
+    }
+
     // Keep strict vertical parallel siblings on the title-safe target lanes
     // selected by the portal collector. The repair is translation-only and
     // preserves each source/target pair, so a successful move must also keep
@@ -3548,6 +3878,18 @@ pub(super) fn resolve_subgraph_envelopes(
     // taking ownership of ambiguous collector routes.
     if matches!(input.graph.direction, Direction::TD | Direction::TB)
         && align_td_external_terminal_centers(input.graph, placement, &subgraph_envelopes)
+    {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
+    // Separate the title-safe portal openings in the strict terminal-entry
+    // scene when a receiver/source pair can move together without collision.
+    // The portal collector and route lowerer consume the same widened lane
+    // policy after this final placement transaction.
+    if matches!(input.graph.direction, Direction::TD | Direction::TB)
+        && align_td_terminal_entry_receiver_lanes(input.graph, placement, &subgraph_envelopes)
     {
         subgraph_envelopes =
             compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);

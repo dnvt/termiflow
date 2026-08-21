@@ -9,10 +9,11 @@
 use std::collections::HashSet;
 
 use crate::graph::{Direction, Graph, Node};
-use crate::orientation::OrientedCoords;
+use crate::orientation::{Axis, OrientedCoords};
 use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
+use super::super::fallback_route::FallbackRoutePlan;
 use super::super::fan_in_identity::{
     is_vertical_branch_rejoin_target, target_port_columns, target_port_count, target_port_rows,
 };
@@ -230,8 +231,54 @@ fn route_fan_in_identity_edges_impl(
     for plan in &plans {
         paint_route(plan, &mut trial, style, graph, &coords);
     }
+    let mut fallback =
+        FallbackRoutePlan::new(format!("fan-in-identity:{}", target.id), "fan-in-identity");
+    fallback.set_scene_coverage(
+        plans
+            .iter()
+            .map(|plan| edge_route_owner_id(graph, &plan.source.id, &plan.target.id)),
+    );
+    for plan in &plans {
+        if has_shared_source_stem(graph, plan.source, target) {
+            mark_shared_source_prefix(&mut fallback, plan, &coords);
+        }
+        record_identity_route_evidence(&mut fallback, plan, &coords, style);
+    }
+    trial.record_fallback_route_evidence(fallback);
     *canvas = trial;
     true
+}
+
+fn has_shared_source_stem(graph: &Graph, source: &Node, target: &Node) -> bool {
+    graph
+        .edges
+        .iter()
+        .any(|edge| !edge.is_back_edge && edge.from == source.id && edge.to != target.id)
+}
+
+fn mark_shared_source_prefix(
+    fallback: &mut FallbackRoutePlan,
+    plan: &PlannedRoute<'_>,
+    coords: &OrientedCoords,
+) {
+    let source_secondary = coords.secondary_coord(plan.source_exit.0, plan.source_exit.1);
+    let end = if source_secondary == plan.target_secondary {
+        plan.source_exit
+    } else {
+        plan.turn
+    };
+    let start_primary = coords.primary_coord(plan.source_exit.0, plan.source_exit.1);
+    let end_primary = coords.primary_coord(end.0, end.1);
+    let range = if start_primary <= end_primary {
+        Box::new(start_primary..=end_primary) as Box<dyn Iterator<Item = usize>>
+    } else {
+        Box::new((end_primary..=start_primary).rev()) as Box<dyn Iterator<Item = usize>>
+    };
+    for primary in range {
+        let mut point = plan.source_exit;
+        coords.set_primary(&mut point.0, &mut point.1, primary);
+        fallback.allow_shared_cell(point.0, point.1);
+    }
 }
 
 /// Derive a collision-free channel order for the four-port vertical route.
@@ -483,6 +530,76 @@ fn paint_route(
     );
 }
 
+/// Record the same primitive route that `paint_route` just lowered.  Keeping
+/// this beside the lowerer is intentional: evidence must describe the live
+/// topology transaction, not reconstruct a route later from node centers.
+fn record_identity_route_evidence(
+    fallback: &mut FallbackRoutePlan,
+    plan: &PlannedRoute<'_>,
+    coords: &OrientedCoords,
+    style: &StyleChars,
+) {
+    let source_secondary = coords.secondary_coord(plan.source_exit.0, plan.source_exit.1);
+    if source_secondary == plan.target_secondary {
+        push_primary_segment(fallback, plan.source_exit, plan.target_entry, coords, style);
+    } else {
+        push_primary_segment(fallback, plan.source_exit, plan.turn, coords, style);
+        push_secondary_segment(fallback, plan.turn, plan.target_turn, coords, style);
+        let final_start = coords.advance(plan.target_turn.0, plan.target_turn.1, 1);
+        push_primary_segment(fallback, final_start, plan.target_entry, coords, style);
+        let going_before = source_secondary > plan.target_secondary;
+        fallback.push_corner(
+            plan.turn.0,
+            plan.turn.1,
+            coords.corner_start_to_secondary(going_before, style),
+        );
+        fallback.push_corner(
+            plan.target_turn.0,
+            plan.target_turn.1,
+            coords.corner_secondary_to_end(going_before, style),
+        );
+    }
+    fallback.push_paint(
+        plan.target_entry.0,
+        plan.target_entry.1,
+        coords.arrow_end(style),
+    );
+}
+
+fn push_primary_segment(
+    fallback: &mut FallbackRoutePlan,
+    from: (usize, usize),
+    to: (usize, usize),
+    coords: &OrientedCoords,
+    style: &StyleChars,
+) {
+    match coords.primary {
+        Axis::Horizontal => {
+            fallback.push_horizontal(from.1, from.0, to.0, coords.primary_edge_char(style))
+        }
+        Axis::Vertical => {
+            fallback.push_vertical(from.0, from.1, to.1, coords.primary_edge_char(style))
+        }
+    }
+}
+
+fn push_secondary_segment(
+    fallback: &mut FallbackRoutePlan,
+    from: (usize, usize),
+    to: (usize, usize),
+    coords: &OrientedCoords,
+    style: &StyleChars,
+) {
+    match coords.secondary {
+        Axis::Horizontal => {
+            fallback.push_horizontal(from.1, from.0, to.0, coords.secondary_edge_char(style))
+        }
+        Axis::Vertical => {
+            fallback.push_vertical(from.0, from.1, to.1, coords.secondary_edge_char(style))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{route_bt_parallel_identity_edges, route_fan_in_identity_edges};
@@ -530,6 +647,16 @@ mod tests {
         ));
         assert_eq!(canvas.get(13, 2), ASCII_CHARS.arrow_right);
         assert_eq!(canvas.get(13, 4), ASCII_CHARS.arrow_right);
+
+        let traces = canvas.fallback_route_traces();
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].strategy, "fan-in-identity");
+        assert_eq!(traces[0].covered_edge_ids.len(), 2);
+        assert!(
+            traces[0].mismatches.is_empty(),
+            "fan-in identity evidence must match the painted route: {:?}",
+            traces[0].mismatches
+        );
     }
 
     #[test]

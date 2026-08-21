@@ -57,6 +57,8 @@ Each lesson states its own status. Read these terms literally:
 - [Nested BT portals need boundary-by-boundary ownership](nested-bt-boundary-ownership-2026-08-20.md)
 - [Direct BT portals need a quiet target turn](direct-bt-portal-turn-clearance-2026-08-20.md)
 - [Complex BT multi-subgraph scenes are a negative control](complex-bt-multi-subgraph-negative-control-2026-08-20.md)
+- [Quiet BT sibling corridors can hide tiny shoulders](complex-bt-quiet-corridor-shoulder-2026-08-20.md)
+- [Safe BT sibling transitions should stay straight](bt-sibling-straight-transitions-2026-08-21.md)
 - [BT parallel turns need visible shaft clearance](bt-parallel-turn-clearance-2026-08-13.md)
 - [BT parallel portals must share node lanes](bt-parallel-title-safe-lane-alignment-2026-08-13.md)
 - [Collinear LR/RL sibling bridges need distinct corridors](lr-rl-collinear-bridge-2026-08-13.md)
@@ -70,6 +72,10 @@ Each lesson states its own status. Read these terms literally:
 - [Dense vertical crossings need a quiet target shaft](dense-vertical-crossing-target-clearance-2026-08-13.md)
 - [TD parallel sibling lanes clear title portal hooks](td-parallel-title-safe-lane-alignment-2026-08-13.md)
 - [Mixed sibling targets need a real visual gap](mixed-sibling-target-entry-gap-2026-08-13.md)
+
+### Labels and text ownership
+
+- [Routed labels must protect route corners](routed-labels-protect-route-corners-2026-08-21.md)
 
 ### Shapes, contours, and attachment clarity
 

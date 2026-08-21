@@ -408,16 +408,12 @@ fn node_accepts_bt_entry(rect: Rect, lane: usize) -> bool {
 
 /// Pick the receiver-owned lane for a strict BT sibling transition.
 ///
-/// A source lane is useful for preserving the edge's external identity, but
-/// choosing it first lets a long rail enter a receiver away from its center
-/// and makes adjacent sibling transitions read as one trunk. Prefer the
-/// nearest title-safe lane to the target node center; when the receiver is a
-/// middle sibling, keep that lane away from the next outgoing source lane so
-/// the two boundary roles cannot collapse into one rail. Fall back toward the
-/// source lane only when the receiver center is not title-safe or no separated
-/// candidate exists. The strict endpoint contract then records the lateral
-/// turn explicitly in the open corridor instead of hiding it at the receiver
-/// border.
+/// Prefer a source-aligned lane when it is safe for the receiver. A straight
+/// transition is the least surprising human-eye reading of a simple stacked
+/// chain and avoids manufacturing a long corridor elbow merely to separate
+/// two roles that are already separated at the middle boundary. When that
+/// lane is unavailable, retain the separated receiver-lane policy so title
+/// ownership and adjacent transition identity remain explicit.
 fn bt_sibling_target_lane(
     target: Rect,
     target_bounds: Rect,
@@ -433,6 +429,19 @@ fn bt_sibling_target_lane(
     }
 
     let candidates = (min_lane..=max_lane).collect::<Vec<_>>();
+    let source_aligned_is_safe = desired >= target_bounds.x
+        && desired <= target_bounds.right().saturating_sub(1)
+        && node_accepts_bt_entry(target, desired)
+        && next_source_lane
+            .is_none_or(|next_lane| desired.abs_diff(next_lane) >= BT_SIBLING_MIN_RAIL_GAP)
+        && used_target_lanes
+            .iter()
+            .all(|used_lane| desired.abs_diff(*used_lane) >= BT_SIBLING_MIN_RAIL_GAP)
+        && endpoint_lane_is_title_safe(target_bounds, title, desired);
+    if source_aligned_is_safe {
+        return Some(desired);
+    }
+
     let separated = candidates
         .iter()
         .copied()
@@ -527,6 +536,19 @@ fn bt_sibling_target_lane(
                 title_safe,
             ) == *lane
     })
+}
+
+fn endpoint_lane_is_title_safe(bounds: Rect, title: Option<&str>, lane: usize) -> bool {
+    let title_safe = title_safe_portal_x(
+        bounds.x,
+        bounds.width,
+        title,
+        lane,
+        Direction::BT,
+        BT_SIBLING_CHAIN_TITLE_MARGIN,
+        PortalColumnPreference::Nearest,
+    );
+    nudge_portal_x_from_corners(bounds.x, bounds.width, title, Direction::BT, title_safe) == lane
 }
 
 fn translate_rect(rect: Rect, delta: isize) -> Rect {

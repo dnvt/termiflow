@@ -563,6 +563,7 @@ pub(super) fn render_with_feedback_with_contract(
                 to,
                 label,
                 graph.direction,
+                &chars,
                 config,
                 edge_idx,
                 edge,
