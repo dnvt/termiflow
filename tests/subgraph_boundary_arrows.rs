@@ -6,7 +6,7 @@ use std::fs;
 use termiflow::render::semantic::{CellOwnerKind, CellRole};
 use termiflow::{
     layout_and_render_with_feedback, measure, parse, render::evidence, BaseStyle, CompositeStyle,
-    Config, FindingCode,
+    Config, FindingCode, DEFAULT_DISPLAY_PROFILE,
 };
 
 const FIXTURES: &[&str] = &[
@@ -762,6 +762,28 @@ fn exact_two_bt_siblings_keep_cross_boundary_lanes_unique_per_edge() {
 }
 
 #[test]
+fn exact_two_bt_siblings_replace_stale_generic_portal_slots() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let report = render_fixture("collision_sibling_subgraphs_bt", style, optimized);
+            let target_entries = report
+                .portal_trace
+                .boundaries
+                .iter()
+                .filter(|boundary| boundary.boundary_id == "Right" && boundary.crossing == "enter")
+                .collect::<Vec<_>>();
+            assert_eq!(target_entries.len(), 2);
+            assert!(
+                target_entries
+                    .iter()
+                    .all(|boundary| boundary.slot_x == Some(boundary.title_safe_x)),
+                "exact BT sibling scene must project the route-owned target lanes, not stale generic slots, for {style:?} optimized={optimized}: {target_entries:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn exact_two_bt_siblings_leave_a_quiet_row_before_each_target_title() {
     for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
         for optimized in [false, true] {
@@ -779,6 +801,52 @@ fn exact_two_bt_siblings_leave_a_quiet_row_before_each_target_title() {
             assert!(
                 !row.contains('-') && !row.contains('─'),
                 "BT target title clearance row must not contain a horizontal route turn for {style:?} optimized={optimized}:\n{frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn exact_two_bt_siblings_route_clarity_is_clean_across_matrix() {
+    let input_path = "tests/fixtures/inputs/collision_sibling_subgraphs_bt.md";
+    let input = fs::read_to_string(input_path).expect("read exact BT mixed sibling fixture");
+
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let mut parsed = parse(&input, false)
+                .expect("parse exact BT mixed sibling fixture")
+                .graph;
+            let mut config = Config {
+                composite_style: CompositeStyle::from_base(style),
+                optimize_render: optimized,
+                ..Default::default()
+            };
+            config.spacing = config.spacing.for_direction(parsed.direction);
+            let policy = termiflow::effective_render_policy(
+                &config,
+                parsed.direction,
+                DEFAULT_DISPLAY_PROFILE.name,
+                "Fixed",
+                false,
+                false,
+            );
+            measure::measure_graph(&mut parsed, &config);
+            let (_graph, outcome) =
+                layout_and_render_with_feedback(parsed, config).expect("render exact BT scene");
+            let report = termiflow::analyze_route_clarity_for_audit(
+                input.as_bytes(),
+                outcome.output.as_bytes(),
+                &policy,
+                optimized,
+            )
+            .expect("analyze exact BT scene route clarity");
+            assert!(
+                !report["findings"].as_array().is_some_and(|findings| {
+                    findings.iter().any(|finding| {
+                        finding["code"] == "bt_title_boundary_hook_requires_human_review"
+                    })
+                }),
+                "exact BT mixed sibling scene must not retain title-boundary-hook findings for {style:?} optimized={optimized}: {report}"
             );
         }
     }

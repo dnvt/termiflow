@@ -731,6 +731,7 @@ pub(crate) fn bt_title_margin_for_edge(
     }
     match parallel_edges {
         0 | 1 => 0,
+        2 if graph.bt_sibling_target_entry_scene().is_some() => 0,
         2 => 2,
         _ => 0,
     }
