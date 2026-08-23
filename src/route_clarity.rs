@@ -2221,10 +2221,40 @@ fn route_identity_opposite(index: u8) -> u8 {
 mod bt_boundary_rail_tests {
     use super::*;
 
+    const COLLISION_PARALLEL_EDGES_BT: &str = r#"graph BT
+subgraph SG1 [Source]
+    A[A1]
+    B[A2]
+    C[A3]
+end
+subgraph SG2 [Target]
+    D[B1]
+    E[B2]
+    F[B3]
+end
+A --> D
+B --> E
+C --> F
+"#;
+
+    const COLLISION_SIBLING_TRIPLE_BT: &str = r#"graph BT
+subgraph G1 [Group 1]
+    A[A1] --> A2[A2]
+end
+subgraph G2 [Group 2]
+    B[B1] --> B2[B2]
+end
+subgraph G3 [Group 3]
+    C[C1] --> C2[C2]
+end
+A2 --> B
+B2 --> C
+"#;
+
     fn report_for_fixture(path: &str, style: BaseStyle, optimized: bool) -> Value {
-        let input = include_str!("../tests/fixtures/inputs/collision_parallel_edges_bt.md");
+        let input = COLLISION_PARALLEL_EDGES_BT;
         let input = if path.ends_with("collision_sibling_triple_bt.md") {
-            include_str!("../tests/fixtures/inputs/collision_sibling_triple_bt.md")
+            COLLISION_SIBLING_TRIPLE_BT
         } else {
             input
         };
@@ -2567,6 +2597,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn dense_baseline_is_clean_after_route_identity_fix() {
         let input = std::fs::read("tests/fixtures/inputs/crossing_grid_td.md")
             .expect("read dense crossing input");
@@ -2579,6 +2610,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn raw_frame_mutation_is_detected_without_route_metadata() {
         let input = std::fs::read("tests/fixtures/inputs/crossing_grid_td.md")
             .expect("read dense crossing input");
@@ -2605,6 +2637,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn raw_label_oracle_accepts_wrapped_and_bounded_visual_lines() {
         for fixture in [
             "tests/fixtures/inputs/label_wrap_td.md",
@@ -2624,6 +2657,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn database_fan_in_route_probe_uses_shape_clearance_matrix() {
         assert_eq!(
             target_entry_clearance(
@@ -2668,6 +2702,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn database_fan_in_route_probe_rejects_missing_clearance_arrow() {
         let input = std::fs::read("tests/fixtures/inputs/shape_database_rl.md")
             .expect("read RL database fan-in fixture");
@@ -2705,6 +2740,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn report_validation_rejects_stale_frame_and_missing_findings() {
         let input = std::fs::read("tests/fixtures/inputs/crossing_grid_td.md")
             .expect("read dense crossing input");
@@ -2741,6 +2777,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn td_tb_title_boundary_review_queues_injected_hook_but_not_repaired_entries() {
         for fixture in ["subgraph_single_td.md", "subgraph_outside_td.md"] {
             let input = std::fs::read(format!("tests/fixtures/inputs/{fixture}"))
@@ -2790,6 +2827,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn bt_title_boundary_review_queues_repaired_parallel_turn_for_human_review() {
         let input = std::fs::read("tests/fixtures/inputs/collision_parallel_edges_bt.md")
             .expect("read BT parallel fixture");
@@ -2803,6 +2841,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn bt_title_boundary_review_ignores_node_and_subgraph_border_corners() {
         let input = std::fs::read("tests/fixtures/inputs/collision_sibling_subgraphs_bt.md")
             .expect("read BT sibling title-hook fixture");
@@ -2836,6 +2875,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "maintainer-fixtures")]
     fn bt_quiet_corridor_review_queues_adjacent_shoulders() {
         let input = std::fs::read("tests/fixtures/inputs/subgraph_complex_bt.md")
             .expect("read complex BT corridor fixture");
