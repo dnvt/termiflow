@@ -23,6 +23,8 @@
 // Modules
 // ============================================================================
 
+extern crate self as termiflow;
+
 pub mod config;
 pub mod crossing;
 pub mod display_profile;
@@ -45,6 +47,9 @@ pub mod scaling;
 pub mod spacing;
 pub mod style;
 pub mod tui;
+
+#[allow(dead_code)]
+mod route_clarity;
 
 // ============================================================================
 // Re-exports for convenient access
@@ -78,7 +83,44 @@ pub use tui::{AnsiDiffPresenter, FrameDelta, TerminalFrame, TerminalPresenter};
 // High-Level API
 // ============================================================================
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+
+/// Analyze the rendered frame with TermiFlow's independent route-clarity
+/// oracle for a text audit boundary.
+///
+/// The report is evidence, not approval: it is hash-bound to the exact input
+/// and frame bytes supplied by the caller and keeps route signals separate
+/// from critic findings. The policy is the same resolved policy emitted by
+/// [`effective_render_policy`].
+pub fn analyze_route_clarity_for_audit(
+    input: &[u8],
+    frame: &[u8],
+    policy: &serde_json::Value,
+    optimized: bool,
+) -> Result<serde_json::Value> {
+    let style = route_clarity_style(policy)?;
+    let mode = if optimized { "optimized" } else { "default" };
+    route_clarity::analyze(input, frame, style, mode)
+}
+
+fn route_clarity_style(policy: &serde_json::Value) -> Result<&'static str> {
+    let composite = policy
+        .pointer("/fields/config/composite_style")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow!("effective render policy composite style is missing"))?;
+    let components = [
+        "corner", "border", "arrow", "edge", "junction", "back", "subgraph",
+    ];
+    let values = components
+        .iter()
+        .filter_map(|field| composite.get(*field).and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    if !values.is_empty() && values.iter().all(|value| *value == "Ascii") {
+        Ok("ascii")
+    } else {
+        Ok("unicode")
+    }
+}
 /// Options for rendering a diagram
 #[derive(Debug, Clone)]
 pub struct RenderOptions {

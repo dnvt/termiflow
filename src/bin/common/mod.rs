@@ -298,6 +298,21 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
 
     let t_render_start = std::time::Instant::now();
     let rendered = render_cli_input(cli, &input, true)?;
+    let route_report = if cli.audit {
+        let optimized = rendered
+            .policy
+            .pointer("/fields/config/optimize_render")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(cli.optimize_render);
+        Some(termiflow::analyze_route_clarity_for_audit(
+            input.as_bytes(),
+            rendered.outcome.output.as_bytes(),
+            &rendered.policy,
+            optimized,
+        )?)
+    } else {
+        None
+    };
     if let Some(path) = &cli.audit_json {
         termiflow::render::evidence::write_json_with_policy(
             path,
@@ -373,7 +388,7 @@ fn run_print_mode(cli: &Cli) -> Result<()> {
     stdout.flush()?;
 
     if cli.audit {
-        emit_audit_summary(&rendered.outcome);
+        emit_audit_summary(&rendered.outcome, route_report.as_ref());
     }
 
     Ok(())
@@ -658,19 +673,101 @@ fn grapheme_overlaps_title_cells(
     })
 }
 
-fn emit_audit_summary(outcome: &RenderOutcome) {
+fn emit_audit_summary(outcome: &RenderOutcome, route_report: Option<&serde_json::Value>) {
     let summary = outcome.critic_report.audit_summary();
-    eprintln!(
-        "termiflow: audit verdict={:?} score={} info={} warnings={} errors={} findings={}",
-        summary.verdict,
-        summary.score,
-        summary.info_count,
-        summary.warning_count,
-        summary.error_count,
-        outcome.critic_report.findings.len()
-    );
+    if let Some(report) = route_report.filter(|report| route_report_requires_review(report)) {
+        eprintln!(
+            "termiflow: audit critic verdict={:?} score={} info={} warnings={} errors={} findings={}",
+            summary.verdict,
+            summary.score,
+            summary.info_count,
+            summary.warning_count,
+            summary.error_count,
+            outcome.critic_report.findings.len()
+        );
+        emit_route_audit_summary(report);
+        eprintln!(
+            "termiflow: audit verdict=NeedsReview critic={:?} route={}",
+            summary.verdict,
+            report
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+        );
+    } else {
+        eprintln!(
+            "termiflow: audit verdict={:?} score={} info={} warnings={} errors={} findings={}",
+            summary.verdict,
+            summary.score,
+            summary.info_count,
+            summary.warning_count,
+            summary.error_count,
+            outcome.critic_report.findings.len()
+        );
+    }
     for highlight in &summary.highlights {
         eprintln!("termiflow: audit highlight: {highlight}");
+    }
+}
+
+fn route_report_requires_review(report: &serde_json::Value) -> bool {
+    matches!(
+        report.get("status").and_then(serde_json::Value::as_str),
+        Some("risk" | "inconclusive")
+    )
+}
+
+fn emit_route_audit_summary(report: &serde_json::Value) {
+    let status = report
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let findings = report
+        .get("findings")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    eprintln!("termiflow: audit route status={status} findings={findings}");
+
+    if let Some(items) = report.get("findings").and_then(serde_json::Value::as_array) {
+        for finding in items {
+            let code = finding
+                .get("code")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let severity = finding
+                .get("severity")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let message = finding
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("no message");
+            let cells = finding
+                .get("cells")
+                .and_then(serde_json::Value::as_array)
+                .map(|cells| {
+                    let rendered = cells
+                        .iter()
+                        .filter_map(|cell| {
+                            let x = cell.get("x").and_then(serde_json::Value::as_u64)?;
+                            let y = cell.get("y").and_then(serde_json::Value::as_u64)?;
+                            Some(format!("({x},{y})"))
+                        })
+                        .take(8)
+                        .collect::<Vec<_>>();
+                    if rendered.is_empty() {
+                        "none".to_string()
+                    } else if cells.len() > rendered.len() {
+                        format!("{}…(+{})", rendered.join(","), cells.len() - rendered.len())
+                    } else {
+                        rendered.join(",")
+                    }
+                })
+                .unwrap_or_else(|| "none".to_string());
+            eprintln!(
+                "termiflow: audit route finding code={code} severity={severity} cells={cells} message={message}"
+            );
+        }
     }
 }
 

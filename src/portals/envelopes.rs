@@ -952,6 +952,28 @@ fn build_envelope(
         1
     };
     let has_title = subgraph.title.is_some();
+    let nested_bt_direct_entry = graph.direction == Direction::BT
+        && has_title
+        && subgraph.has_parent()
+        && graph.edges.iter().any(|edge| {
+            !edge.is_back_edge
+                && graph.get_node_subgraph(&edge.to) == Some(subgraph.id.as_str())
+                && graph.edge_boundary_crossings(&edge.from, &edge.to).1.len() >= 2
+        });
+    let bt_sibling_direct_entry = graph.direction == Direction::BT
+        && has_title
+        && !subgraph.has_parent()
+        && incoming_cross_count == 1
+        && graph.edges.iter().any(|edge| {
+            if edge.is_back_edge || graph.get_node_subgraph(&edge.from).is_none() {
+                return false;
+            }
+            let (exit_subgraphs, enter_subgraphs) =
+                graph.edge_boundary_crossings(&edge.from, &edge.to);
+            exit_subgraphs.len() == 1
+                && enter_subgraphs == vec![subgraph.id.as_str()]
+                && exit_subgraphs[0] != subgraph.id
+        });
     if let Some(t) = subgraph.title.as_ref() {
         let title_len = crate::graph::subgraph_title_len(t);
         let min_outer_width = title_len.saturating_add(2 + title_buffer);
@@ -1013,9 +1035,23 @@ fn build_envelope(
         top_hard_pad = top_hard_pad.saturating_add(1);
     }
 
-    let mut bottom_hard_pad = if title_on_bottom { 3 } else { 1 };
+    let mut bottom_hard_pad: usize = if title_on_bottom { 3 } else { 1 };
     if matches!(graph.direction, Direction::BT) && incoming_cross_count > 0 {
         bottom_hard_pad = bottom_hard_pad.max(if has_title { 4 } else { 2 });
+    }
+    if nested_bt_direct_entry {
+        // A nested BT entry bridge turns one row below the target arrow.  Keep
+        // one additional bottom corridor row so that turn does not become
+        // visually attached to the child title.  The predicate is owned by
+        // the live direct child topology; ordinary titled BT targets retain
+        // the existing balanced envelope.
+        bottom_hard_pad = bottom_hard_pad.saturating_add(1);
+    }
+    if bt_sibling_direct_entry {
+        // A flat sibling entry uses one additional route-owned quiet row:
+        // arrow, vertical shaft, turn, vertical shaft, then the title. Without
+        // this row the title-safe turn is forced directly against the arrow.
+        bottom_hard_pad = bottom_hard_pad.saturating_add(1);
     }
 
     let inner = content.inflate(inner_pad);
@@ -1123,7 +1159,10 @@ fn build_envelope(
     }
     if top_pad > bottom_pad.saturating_add(1) {
         top_pad = bottom_pad.saturating_add(1);
-    } else if bottom_pad > top_pad.saturating_add(1) {
+    } else if bottom_pad > top_pad.saturating_add(1)
+        && !nested_bt_direct_entry
+        && !bt_sibling_direct_entry
+    {
         bottom_pad = top_pad.saturating_add(1);
     }
     if matches!(graph.direction, Direction::TD | Direction::TB)

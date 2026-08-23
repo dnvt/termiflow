@@ -243,16 +243,34 @@ fn raw_portal_marker_errors_for_frame(
                 0
             };
             let top_markers = (left_x + 1..right_x)
-                .filter(|x| rendered_char(*x, top_y) == Some(chars.edge_v))
+                .filter(|x| {
+                    let glyph = rendered_char(*x, top_y);
+                    if direct_parallel_crossings >= 3 {
+                        is_explicit_bt_parallel_seam(glyph, style)
+                    } else {
+                        is_vertical_portal_marker(glyph, style)
+                    }
+                })
                 .count();
             let bottom_markers = (left_x + 1..right_x)
-                .filter(|x| rendered_char(*x, bottom_y) == Some(chars.edge_v))
+                .filter(|x| {
+                    let glyph = rendered_char(*x, bottom_y);
+                    if direct_parallel_crossings >= 3 {
+                        is_explicit_bt_parallel_seam(glyph, style)
+                    } else {
+                        is_vertical_portal_marker(glyph, style)
+                    }
+                })
                 .count();
             let top_junctions = (left_x + 1..right_x)
-                .filter(|x| rendered_char(*x, top_y) == Some(chars.cross))
+                .filter(|x| {
+                    style != BaseStyle::Ascii && rendered_char(*x, top_y) == Some(chars.cross)
+                })
                 .count();
             let bottom_junctions = (left_x + 1..right_x)
-                .filter(|x| rendered_char(*x, bottom_y) == Some(chars.cross))
+                .filter(|x| {
+                    style != BaseStyle::Ascii && rendered_char(*x, bottom_y) == Some(chars.cross)
+                })
                 .count();
             if direct_parallel_crossings >= 3 {
                 if top_junctions + bottom_junctions > 0 {
@@ -272,7 +290,7 @@ fn raw_portal_marker_errors_for_frame(
                 }
                 for y in [top_y, bottom_y] {
                     for x in left_x + 1..right_x {
-                        if rendered_char(x, y) != Some(chars.edge_v) {
+                        if !is_explicit_bt_parallel_seam(rendered_char(x, y), style) {
                             continue;
                         }
                         let shaft_above = y > 0 && rendered_char(x, y - 1) == Some(chars.edge_v);
@@ -321,6 +339,27 @@ fn raw_portal_marker_errors_for_frame(
     }
 
     errors
+}
+
+fn is_vertical_portal_marker(glyph: Option<char>, style: BaseStyle) -> bool {
+    let chars = CompositeStyle::from_base(style).to_style_chars(style);
+    glyph == Some(chars.edge_v)
+        || (style == BaseStyle::Ascii && glyph == Some(chars.cross))
+        || matches!(
+            glyph,
+            Some('┬' | '┴' | '┯' | '┷' | '┰' | '┸' | '╤' | '╧' | '╥' | '╨')
+        )
+}
+
+fn is_explicit_bt_parallel_seam(glyph: Option<char>, style: BaseStyle) -> bool {
+    match style {
+        BaseStyle::Ascii => glyph == Some('+'),
+        BaseStyle::Unicode => matches!(
+            glyph,
+            Some('┬' | '┴' | '┯' | '┷' | '┰' | '┸' | '╤' | '╧' | '╥' | '╨')
+        ),
+        _ => is_vertical_portal_marker(glyph, style),
+    }
 }
 
 fn replace_raw_char(frame: &str, x: usize, y: usize, replacement: char) -> String {
@@ -2327,11 +2366,14 @@ fn bt_parallel_portal_oracle_rejects_bare_border_pipe_mutation() {
                     .saturating_add(subgraph.bounds.height.saturating_sub(1));
                 [subgraph.bounds.y, bottom_y].into_iter().find_map(|y| {
                     (left_x + 1..right_x).find_map(|x| {
-                        (raw_char_at(
-                            &outcome.output,
-                            x.saturating_sub(origin_x),
-                            y.saturating_sub(origin_y),
-                        ) == Some(chars.edge_v))
+                        is_explicit_bt_parallel_seam(
+                            raw_char_at(
+                                &outcome.output,
+                                x.saturating_sub(origin_x),
+                                y.saturating_sub(origin_y),
+                            ),
+                            style,
+                        )
                         .then_some((x.saturating_sub(origin_x), y.saturating_sub(origin_y)))
                     })
                 })
@@ -2342,7 +2384,7 @@ fn bt_parallel_portal_oracle_rejects_bare_border_pipe_mutation() {
                     outcome.output
                 )
             });
-            let mutated = replace_raw_char(&outcome.output, portal_x, portal_y, chars.cross);
+            let mutated = replace_raw_char(&outcome.output, portal_x, portal_y, chars.edge_v);
             let errors = raw_portal_marker_errors_for_frame(&graph, &mutated, style);
             assert!(
                 errors

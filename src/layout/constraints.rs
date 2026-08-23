@@ -5,8 +5,9 @@ use std::collections::{HashMap, HashSet};
 use crate::geom::{Point, Rect};
 use crate::graph::{Direction, Graph};
 use crate::portals::{
-    compute_envelopes, horizontal_sibling_chain_requires_extra_corridor, SubgraphEnvelope,
-    HORIZONTAL_SIBLING_CHAIN_MIN_INTER_GAP,
+    bt_sibling_chain_target_ids, compute_envelopes,
+    horizontal_sibling_chain_requires_extra_corridor, SubgraphEnvelope,
+    BT_SIBLING_CHAIN_MIN_CORRIDOR_GAP, HORIZONTAL_SIBLING_CHAIN_MIN_INTER_GAP,
 };
 
 use super::CoarseLayoutConfig;
@@ -179,6 +180,11 @@ pub(super) fn compact_stacked_vertical_top_level_sibling_subgraphs(
     gutter: usize,
     canvas_height: &mut usize,
 ) {
+    if graph.direction == Direction::BT {
+        compact_strict_bt_sibling_chain(graph, positions, node_rects, gutter, canvas_height);
+        return;
+    }
+
     if !matches!(graph.direction, Direction::TD | Direction::TB) || graph.subgraphs.is_empty() {
         return;
     }
@@ -316,6 +322,75 @@ pub(super) fn compact_stacked_vertical_top_level_sibling_subgraphs(
             node_rects,
             &subgraph_id,
             -(delta_y as isize),
+        );
+        *canvas_height = node_rects
+            .values()
+            .map(|rect| rect.bottom())
+            .max()
+            .unwrap_or(*canvas_height);
+    }
+}
+
+/// Remove only the measured excess between a complete, strict BT sibling
+/// chain. The scene route needs one clear corridor row after its two-cell
+/// border/title offsets; keeping a larger layout gap makes long chains read as
+/// disconnected islands without adding route safety.
+fn compact_strict_bt_sibling_chain(
+    graph: &Graph,
+    positions: &mut HashMap<String, Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    gutter: usize,
+    canvas_height: &mut usize,
+) {
+    if graph.subgraphs.len() < 2 {
+        return;
+    }
+
+    let initial_envelopes = compute_envelopes(graph, node_rects, gutter);
+    let initial_bounds: HashMap<_, _> = initial_envelopes
+        .iter()
+        .map(|(subgraph_id, envelope)| (subgraph_id.clone(), envelope.outer))
+        .collect();
+
+    // Keep the layout policy synchronized with the renderer's exact topology
+    // predicate. This rejects ordinary BT groups, nested groups, labels,
+    // external nodes, and non-chain crossings before any compaction occurs.
+    if bt_sibling_chain_target_ids(graph, &initial_bounds).is_none() {
+        return;
+    }
+
+    let mut ordered_ids: Vec<_> = graph
+        .subgraphs
+        .iter()
+        .filter_map(|subgraph| {
+            initial_bounds
+                .get(&subgraph.id)
+                .map(|outer| (subgraph.id.clone(), *outer))
+        })
+        .collect();
+    ordered_ids.sort_by_key(|(_, outer)| (outer.y, outer.x));
+    let ordered_ids: Vec<_> = ordered_ids
+        .into_iter()
+        .map(|(subgraph_id, _)| subgraph_id)
+        .collect();
+
+    for pair in ordered_ids.windows(2) {
+        let envelopes = compute_envelopes(graph, node_rects, gutter);
+        let (Some(upper), Some(lower)) = (envelopes.get(&pair[0]), envelopes.get(&pair[1])) else {
+            return;
+        };
+        let current_gap = lower.outer.y.saturating_sub(upper.outer.bottom());
+        let excess_gap = current_gap.saturating_sub(BT_SIBLING_CHAIN_MIN_CORRIDOR_GAP);
+        if excess_gap == 0 {
+            continue;
+        }
+
+        shift_nodes_in_subgraph_tree_y_signed(
+            graph,
+            positions,
+            node_rects,
+            &pair[1],
+            -(excess_gap as isize),
         );
         *canvas_height = node_rects
             .values()

@@ -68,6 +68,37 @@ fn high_level_mermaid_json_and_render_feedback_remain_available() {
 }
 
 #[test]
+fn route_clarity_audit_surface_is_public_and_hash_bound() {
+    let source = include_str!("fixtures/inputs/collision_sibling_triple_bt.md");
+    let parsed = parse(source, false).unwrap();
+    let config = Config::from_parse_config(&parsed.config);
+    let policy = termiflow::effective_render_policy(
+        &config,
+        parsed.graph.direction,
+        DEFAULT_DISPLAY_PROFILE.name,
+        "Fixed",
+        false,
+        false,
+    );
+    let frame = termiflow::render_with_feedback(source, RenderOptions::default()).unwrap();
+    let report = termiflow::analyze_route_clarity_for_audit(
+        source.as_bytes(),
+        frame.output.as_bytes(),
+        &policy,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(report["source_sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(report["frame_sha256"].as_str().unwrap().len(), 64);
+    assert!(matches!(
+        report["status"].as_str(),
+        Some("risk" | "inconclusive")
+    ));
+    assert!(!report["findings"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn configuration_precedence_is_defaults_then_directives_then_api_override() {
     let directives = ParseConfig {
         max_label: Some(7),

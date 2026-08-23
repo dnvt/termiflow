@@ -1,4 +1,4 @@
-use super::envelope_stage::resolve_subgraph_envelopes;
+use super::envelope_stage::{finalize_bt_parallel_first_rail, resolve_subgraph_envelopes};
 use super::normalization::normalize_orientation_and_gutters;
 use super::routing_stage::route_stage;
 use super::*;
@@ -236,8 +236,17 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     resolve_subgraph_envelopes(&input, &config, &mut placement, debug_timing);
     reserve_sibling_subgraph_target_corridor(input.graph, &mut placement, &config);
     reserve_nested_bt_external_entry_lanes(input.graph, &mut placement, &config);
-    let subgraph_envelopes =
+    let mut subgraph_envelopes =
         resolve_subgraph_envelopes(&input, &config, &mut placement, debug_timing);
+    // H154 is the final fixed-envelope owner for the exact direct three-rail
+    // BT scene. It runs once after the second bounded envelope resolution so a
+    // relative lane preference cannot be consumed twice by the layout loop.
+    finalize_bt_parallel_first_rail(
+        input.graph,
+        &config,
+        &mut placement,
+        &mut subgraph_envelopes,
+    );
 
     let routes = route_stage(
         input.graph,

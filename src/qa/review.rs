@@ -17,6 +17,10 @@ const DECISIONS: &[&str] = &["pass", "fail", "watch", "unclear"];
 const SEVERITIES: &[&str] = &["P0", "P1", "P2", "P3"];
 const DIMENSIONS: &[&str] = &["semantic", "containment", "route", "text", "readability"];
 const REVIEWERS: &[&str] = &["ai", "human", "machine"];
+const GENERIC_WATCH_OBSERVATION: &str =
+    "Route or local visual density remains a conservative human-eye watch; the marked cells need matched review.";
+const GENERIC_WATCH_HYPOTHESIS: &str =
+    "The current topology-owned route/boundary interaction remains a human-eye ownership or density watch even though the frame is structurally renderable.";
 
 #[derive(Debug, Default)]
 struct DecisionState {
@@ -346,6 +350,27 @@ fn validate_fresh_decision(decision: &Value) -> Result<()> {
     }
     if decision.get("carry_forward").is_some() {
         bail!("fresh perceptual review cannot include carry-forward decision for {case_id}");
+    }
+    if decision["observation"].as_str() == Some(GENERIC_WATCH_OBSERVATION)
+        || decision["hypothesis"].as_str() == Some(GENERIC_WATCH_HYPOTHESIS)
+    {
+        bail!(
+            "fresh perceptual review must replace generic watch boilerplate with a frame-specific observation and hypothesis for {case_id}"
+        );
+    }
+    if decision["next_command"]
+        .as_str()
+        .is_some_and(|command| command.contains("h152-"))
+    {
+        bail!("fresh perceptual review has a stale H152 next command for {case_id}");
+    }
+    if matches!(decision["decision"].as_str(), Some("watch" | "fail"))
+        && decision["cells"].as_array().is_some_and(Vec::is_empty)
+    {
+        bail!(
+            "fresh {kind} review must bind a watch/fail to exact frame cells for {case_id}",
+            kind = decision["decision"]
+        );
     }
     Ok(())
 }
@@ -881,6 +906,21 @@ fn frame_payload(
             "layout_attempts": evidence["layout_attempts"],
             "layout_repairs_applied": evidence["layout_repairs_applied"],
         },
+        "review_rubric": {
+            "schema": "termiflow.visual_review.rubric.v1",
+            "fresh_review": true,
+            "machine_evidence_is_triage_only": true,
+            "carry_forward_forbidden": true,
+            "watch_or_fail_requires_exact_cells": true,
+            "checks": [
+                "semantic topology and direction",
+                "route continuity, crossings, overlap, portals, borders, and titles",
+                "spacing, balance, density, corners, junctions, and seams",
+                "shaft-to-arrowhead continuity and endpoint ownership",
+                "labels, clipping, wrapping, CJK/emoji width, and fallback glyphs",
+                "tiny visible artifacts in both the frame and matched homologs"
+            ]
+        },
         "decision_form": {
             "decision": "pass|fail|watch|unclear",
             "severity": "P0|P1|P2|P3",
@@ -1198,6 +1238,45 @@ mod tests {
                 PERCEPTUAL_REVIEW
             );
         }
+    }
+
+    #[test]
+    fn fresh_perceptual_review_rejects_boilerplate_and_unbound_watches() {
+        let row = json!({
+            "case_id": "case",
+            "stdout": {"sha256": "frame"},
+            "evidence": {"sha256": "evidence"}
+        });
+        let rows = BTreeMap::from([("case".to_owned(), row)]);
+        let mut decision = json!({
+            "schema": DECISION_SCHEMA,
+            "case_id": "case",
+            "frame_sha256": "frame",
+            "evidence_sha256": "evidence",
+            "decision": "watch",
+            "severity": "P2",
+            "dimensions": ["route", "readability"],
+            "cells": [],
+            "finding": "route-watch",
+            "observation": GENERIC_WATCH_OBSERVATION,
+            "hypothesis": GENERIC_WATCH_HYPOTHESIS,
+            "expected_observation_if_true": "the matched frame keeps the route attached",
+            "falsifier": "a detached route or visible overlap",
+            "affected_homologs": [],
+            "next_command": "scripts/review_visual_packet.sh --packet h155 --decisions fresh --next",
+            "reviewer": "ai",
+            "review_kind": PERCEPTUAL_REVIEW,
+            "timestamp": "now"
+        });
+        validate_decision(&decision, &rows).expect("base decision should validate");
+        assert!(validate_fresh_decision(&decision).is_err());
+
+        decision["observation"] = json!("The first rail touches the title row at x=7,y=8.");
+        decision["hypothesis"] = json!("The title-owned portal margin is one cell too small.");
+        assert!(validate_fresh_decision(&decision).is_err());
+
+        decision["cells"] = json!([{"x": 7, "y": 8, "note": "first rail touches title row"}]);
+        validate_fresh_decision(&decision).expect("specific watch should validate");
     }
 
     #[test]

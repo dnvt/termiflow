@@ -530,7 +530,12 @@ impl FallbackRoutePlan {
         let mut mismatches = Vec::new();
         for claim in &self.boundary_claims {
             let glyph = canvas.get(claim.x, claim.y);
-            if glyph != claim.expected_glyph {
+            let is_portal_seam = glyph != claim.expected_glyph
+                && canvas.get_meta(claim.x, claim.y).is_some_and(|meta| {
+                    meta.owner_kind == super::semantic::CellOwnerKind::PortalOpening
+                        && boundary_seam_glyph(claim.expected_glyph, glyph)
+                });
+            if glyph != claim.expected_glyph && !is_portal_seam {
                 mismatches.push(format!(
                     "boundary {} {} claim at ({},{}) expected {:?}, got {:?}",
                     claim.boundary_id, claim.side, claim.x, claim.y, claim.expected_glyph, glyph
@@ -562,7 +567,11 @@ impl FallbackRoutePlan {
                 .iter()
                 .find(|paint| paint.point.x == x && paint.point.y == y)
             {
-                if glyph != paint.glyph {
+                let is_portal_seam = glyph != paint.glyph
+                    && boundary_coordinates.contains(&(x, y))
+                    && meta.owner_kind == super::semantic::CellOwnerKind::PortalOpening
+                    && boundary_seam_glyph(paint.glyph, glyph);
+                if glyph != paint.glyph && !is_portal_seam {
                     mismatches.push(format!(
                         "planned route paint at ({x},{y}) expected {:?}, got {:?}",
                         paint.glyph, glyph
@@ -613,6 +622,21 @@ impl FallbackRoutePlan {
             mismatches,
         }
     }
+}
+
+/// A final portal projection may compose the route shaft with the enclosing
+/// border. The route plan still owns the crossing and records its shaft glyph;
+/// these are the only alternate glyphs accepted at a claimed boundary cell.
+/// Requiring `PortalOpening` ownership at the call site prevents a generic
+/// junction or overwritten route from being silently treated as equivalent.
+fn boundary_seam_glyph(expected: char, actual: char) -> bool {
+    matches!(
+        (expected, actual),
+        ('|', '+')
+            | ('│', '┬' | '┴' | '┯' | '┷' | '╤' | '╧')
+            | ('┃', '┳' | '┻' | '┰' | '┸')
+            | ('║', '╥' | '╨')
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -832,13 +832,22 @@ fn find_portal_marker_mismatches(
             continue;
         }
 
-        // The exact TD parallel scene deliberately composes the vertical
-        // route with the horizontal subgraph border at the portal cell.  Its
-        // topology-owned `┬`/`┴` (or ASCII `+`) seam is not a route junction
-        // defect; it is the truthful representation of a border crossing.
-        let td_parallel_seam = graph
+        // Exact parallel and strict sibling scenes deliberately compose the
+        // vertical route with the horizontal subgraph border at the portal
+        // cell. Their topology-owned `┬`/`┴` (or ASCII `+`) seam is not a
+        // route-junction defect; it is the truthful representation of a
+        // border crossing.
+        let directional_seam = graph
             .td_parallel_external_attachment_ids()
-            .is_some_and(|(scene_id, ..)| scene_id == subgraph.id);
+            .is_some_and(|(scene_id, ..)| scene_id == subgraph.id)
+            || crate::render::bt_parallel_identity::scene_for(graph)
+                .is_some_and(|scene| scene.subgraph_id == subgraph.id)
+            || crate::render::edge::strict_chain_subgraph_ids(graph)
+                .is_some_and(|subgraph_ids| subgraph_ids.contains(&subgraph.id))
+            || crate::render::edge::sibling_target_entry_subgraph_ids(graph)
+                .is_some_and(|subgraph_ids| subgraph_ids.contains(&subgraph.id))
+            || crate::render::edge::direct_parallel_sibling_subgraph_ids(graph)
+                .is_some_and(|subgraph_ids| subgraph_ids.contains(&subgraph.id));
 
         let left_x = subgraph.bounds.x;
         let right_x = subgraph.bounds.x + subgraph.bounds.width.saturating_sub(1);
@@ -882,7 +891,7 @@ fn find_portal_marker_mismatches(
                     "top" | "bottom" => {
                         cell.ch == chars.edge_v
                             || is_vertical_portal_marker(cell.ch, chars)
-                            || (td_parallel_seam
+                            || (directional_seam
                                 && ((side == "top" && cell.ch == chars.junction_down)
                                     || (side == "bottom" && cell.ch == chars.junction_up)))
                     }

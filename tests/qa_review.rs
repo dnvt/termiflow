@@ -524,6 +524,18 @@ fn review_cli_keeps_full_perceptual_pass_separate_from_structural_prescreen() {
         frame["route_clarity"]["schema"],
         "termiflow.route_clarity.v1"
     );
+    assert_eq!(
+        frame["review_rubric"]["schema"],
+        "termiflow.visual_review.rubric.v1"
+    );
+    assert_eq!(
+        frame["review_rubric"]["machine_evidence_is_triage_only"],
+        true
+    );
+    assert_eq!(
+        frame["review_rubric"]["watch_or_fail_requires_exact_cells"],
+        true
+    );
 
     let before_review = run_review(&packet, &decisions, &["--validate"]);
     assert!(

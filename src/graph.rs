@@ -477,6 +477,17 @@ pub(crate) struct BtSiblingTargetEntryScene {
     pub upper_cross_edge_index: usize,
 }
 
+/// The exact flat BT sibling scene with three direct, pairwise rail crossings.
+/// The selector is deliberately stricter than a generic parallel-edge count:
+/// projection may only add directional seams when every source and target node
+/// participates once and the two titled boundaries own the complete graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BtDirectParallelSiblingScene {
+    pub source_subgraph_id: String,
+    pub target_subgraph_id: String,
+    pub edge_indices: Vec<usize>,
+}
+
 /// The bounded BT sibling scene whose target receivers can share one quiet
 /// external-side lane. Layout and route lowering consume this same typed
 /// topology selector so a staged receiver cannot drift away from its route.
@@ -877,6 +888,121 @@ impl Graph {
         })
     }
 
+    /// Return the exact flat three-rail BT sibling scene whose existing portal
+    /// slots should receive directional border seams in final projection.
+    ///
+    /// This intentionally excludes crossed two-rail pairs, internal edges,
+    /// labels, nested containers, non-rectangle nodes, duplicate endpoints,
+    /// cycles, and every extra graph edge. The route planner remains the owner
+    /// of the three lanes; this selector only identifies their boundaries.
+    pub(crate) fn bt_direct_parallel_sibling_scene(&self) -> Option<BtDirectParallelSiblingScene> {
+        if self.direction != Direction::BT
+            || self.subgraphs.len() != 2
+            || self.nodes.len() != 6
+            || self.edges.len() != 3
+            || self.has_cycles()
+        {
+            return None;
+        }
+
+        let subgraphs = self
+            .subgraphs
+            .iter()
+            .filter(|subgraph| {
+                subgraph.parent_id.is_none()
+                    && subgraph.child_ids.is_empty()
+                    && subgraph
+                        .title
+                        .as_deref()
+                        .is_some_and(|title| !title.is_empty())
+                    && subgraph.bounds.is_valid()
+                    && subgraph.node_ids.len() == 3
+                    && subgraph.node_ids.iter().all(|node_id| {
+                        self.get_node(node_id).is_some()
+                            && self.get_node_subgraph(node_id) == Some(subgraph.id.as_str())
+                    })
+            })
+            .collect::<Vec<_>>();
+        if subgraphs.len() != 2 || subgraphs[0].bounds.y == subgraphs[1].bounds.y {
+            return None;
+        }
+
+        if self
+            .nodes
+            .iter()
+            .any(|node| node.shape != NodeShape::Rectangle)
+        {
+            return None;
+        }
+
+        let (source_subgraph, target_subgraph) = if subgraphs[0].bounds.y > subgraphs[1].bounds.y {
+            (subgraphs[0], subgraphs[1])
+        } else {
+            (subgraphs[1], subgraphs[0])
+        };
+        if target_subgraph
+            .bounds
+            .y
+            .saturating_add(target_subgraph.bounds.height)
+            > source_subgraph.bounds.y
+        {
+            return None;
+        }
+
+        let source_node_ids: HashSet<&str> = source_subgraph
+            .node_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let target_node_ids: HashSet<&str> = target_subgraph
+            .node_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        if source_node_ids.len() != 3
+            || target_node_ids.len() != 3
+            || source_node_ids
+                .intersection(&target_node_ids)
+                .next()
+                .is_some()
+            || self.nodes.iter().any(|node| {
+                !source_node_ids.contains(node.id.as_str())
+                    && !target_node_ids.contains(node.id.as_str())
+            })
+        {
+            return None;
+        }
+
+        let mut source_endpoints = HashSet::new();
+        let mut target_endpoints = HashSet::new();
+        let mut edge_indices = Vec::with_capacity(self.edges.len());
+        for (index, edge) in self.edges.iter().enumerate() {
+            if edge.is_back_edge || edge.kind != EdgeKind::Arrow || edge.label.is_some() {
+                return None;
+            }
+            let (exits, enters) = self.edge_boundary_crossings(&edge.from, &edge.to);
+            if exits != vec![source_subgraph.id.as_str()]
+                || enters != vec![target_subgraph.id.as_str()]
+                || !source_node_ids.contains(edge.from.as_str())
+                || !target_node_ids.contains(edge.to.as_str())
+                || !source_endpoints.insert(edge.from.as_str())
+                || !target_endpoints.insert(edge.to.as_str())
+            {
+                return None;
+            }
+            edge_indices.push(index);
+        }
+        if source_endpoints != source_node_ids || target_endpoints != target_node_ids {
+            return None;
+        }
+
+        Some(BtDirectParallelSiblingScene {
+            source_subgraph_id: source_subgraph.id.clone(),
+            target_subgraph_id: target_subgraph.id.clone(),
+            edge_indices,
+        })
+    }
+
     /// Return the exact two-subgraph BT scene whose target receiver lane may
     /// be staged beside an external sibling corridor. The match is structural
     /// and deliberately excludes labels, unsupported edge kinds, nested
@@ -1185,6 +1311,48 @@ mod tests {
         graph.edges[2].label = None;
         graph.direction = Direction::TD;
         assert!(graph.bt_sibling_target_entry_scene().is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "maintainer-fixtures")]
+    fn bt_direct_parallel_sibling_selector_matches_three_pairwise_rails() {
+        let mut graph = crate::parser::parse(
+            include_str!("../tests/fixtures/inputs/collision_parallel_edges_bt.md"),
+            false,
+        )
+        .expect("parse direct BT parallel fixture")
+        .graph;
+        for subgraph in &mut graph.subgraphs {
+            let y = if subgraph.id == "SG1" { 20 } else { 0 };
+            subgraph.bounds = Rectangle::new(0, y, 40, 18);
+        }
+
+        let scene = graph
+            .bt_direct_parallel_sibling_scene()
+            .expect("three pairwise BT rails should match the exact selector");
+        assert_eq!(scene.source_subgraph_id, "SG1");
+        assert_eq!(scene.target_subgraph_id, "SG2");
+        assert_eq!(scene.edge_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    #[cfg(feature = "maintainer-fixtures")]
+    fn bt_direct_parallel_sibling_selector_rejects_crossed_two_rail_control() {
+        let mut graph = crate::parser::parse(
+            include_str!("../tests/fixtures/inputs/collision_parallel_cross_bt.md"),
+            false,
+        )
+        .expect("parse crossed BT parallel fixture")
+        .graph;
+        for subgraph in &mut graph.subgraphs {
+            let y = if subgraph.id == "SG1" { 20 } else { 0 };
+            subgraph.bounds = Rectangle::new(0, y, 40, 18);
+        }
+
+        assert!(graph.bt_direct_parallel_sibling_scene().is_none());
+
+        graph.edges[0].label = Some("crossing".to_owned());
+        assert!(graph.bt_direct_parallel_sibling_scene().is_none());
     }
 
     #[test]
