@@ -595,7 +595,7 @@ fn render_with_feedback_keeps_bt_title_portals_continuous_for_collision_homologs
     }
 
     fn is_portal_marker(c: char) -> bool {
-        is_vertical(c) || matches!(c, '+' | '┼' | '╋')
+        is_vertical(c) || matches!(c, '+' | '┼' | '╋' | '┯' | '┷' | '┬' | '┴')
     }
 
     fn assert_title_portals_are_connected(output: &str, titles: &[&str]) {
@@ -672,8 +672,16 @@ fn render_bt_parallel_edges_avoids_adjacent_title_route_corners() {
         matches!(c, '|' | '│' | '║')
     }
 
+    fn is_vertical_seam(c: char) -> bool {
+        is_vertical(c)
+            || matches!(
+                c,
+                '+' | '┬' | '┴' | '┯' | '┷' | '┰' | '┸' | '╤' | '╧' | '╥' | '╨'
+            )
+    }
+
     fn is_portal_marker(c: char) -> bool {
-        is_vertical(c) || matches!(c, '+' | '┼' | '╋')
+        is_vertical_seam(c) || matches!(c, '┼' | '╋')
     }
 
     let input = std::fs::read_to_string("tests/fixtures/inputs/collision_parallel_edges_bt.md")
@@ -737,7 +745,7 @@ fn render_bt_parallel_edges_avoids_adjacent_title_route_corners() {
                 (x > 0 && x + 1 < lines[border_row].len() && is_portal_marker(*c)).then_some(x)
             }) {
                 assert!(
-                    is_vertical(lines[border_row][portal_x]),
+                    is_vertical_seam(lines[border_row][portal_x]),
                     "BT parallel portal at x={portal_x} is not a local vertical seam for {style:?}, optimize={optimize_render}\n{}",
                     outcome.output
                 );

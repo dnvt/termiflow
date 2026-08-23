@@ -19,6 +19,10 @@ inputs and 964 packet rows: 952 renderable rows plus 12 separately governed
 expected-error rows. Human-eye decisions remain distinct from machine critic,
 semantic, geometry, and golden checks.
 
+The reusable [visual review rubric](../visual-review-rubric.md) defines the
+fresh one-frame protocol, exact-cell requirement for watches, and evidence
+hierarchy used by the QA CLI.
+
 A lesson is not by itself a golden approval or a release sign-off. Snapshot
 changes require the separate intent-bound golden workflow in
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md). Historical lessons retain their
@@ -56,6 +60,12 @@ Each lesson states its own status. Read these terms literally:
 - [BT sibling rails need role ownership](bt-sibling-rail-ownership-2026-08-13.md)
 - [Nested BT portals need boundary-by-boundary ownership](nested-bt-boundary-ownership-2026-08-20.md)
 - [Direct BT portals need a quiet target turn](direct-bt-portal-turn-clearance-2026-08-20.md)
+- [BT sibling entries need a quiet row on both sides of the turn](bt-sibling-quiet-row-2026-08-22.md)
+- [Two-group BT sibling routes need a traced, compact corridor](bt-two-group-owned-corridor-2026-08-22.md)
+- [Strict BT sibling portals need directional border seams](bt-sibling-portal-seams-2026-08-22.md)
+- [Parallel BT sibling rails need an exact scene-owned seam](bt-parallel-sibling-seams-2026-08-22.md)
+- [Direct three-rail BT portals need a directional seam](bt-direct-three-rail-portal-seams-2026-08-23.md)
+- [Whole-group BT title staging does not own the title boundary](bt-title-staging-envelope-recentering-2026-08-23.md)
 - [Complex BT multi-subgraph scenes are a negative control](complex-bt-multi-subgraph-negative-control-2026-08-20.md)
 - [Quiet BT sibling corridors can hide tiny shoulders](complex-bt-quiet-corridor-shoulder-2026-08-20.md)
 - [Safe BT sibling transitions should stay straight](bt-sibling-straight-transitions-2026-08-21.md)
@@ -76,6 +86,8 @@ Each lesson states its own status. Read these terms literally:
 ### Labels and text ownership
 
 - [Routed labels must protect route corners](routed-labels-protect-route-corners-2026-08-21.md)
+- [Bounded long edge labels need an explicit policy review](bounded-long-edge-label-ellipsis-2026-08-22.md)
+- [Full-corpus fresh review keeps visual watches honest](full-corpus-fresh-review-2026-08-23.md)
 
 ### Shapes, contours, and attachment clarity
 

@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::graph::{Direction, EdgeKind, Graph, Node};
 use crate::portals::{
     nudge_portal_x_from_corners, title_safe_portal_x, PortalColumnPreference, PortalSlots,
-    BT_SIBLING_CHAIN_TITLE_MARGIN,
+    BT_SIBLING_CHAIN_MIN_CORRIDOR_GAP, BT_SIBLING_CHAIN_TITLE_MARGIN,
 };
 use crate::style::StyleChars;
 
@@ -337,8 +337,49 @@ pub(crate) fn plan_bt_sibling_scene(
         .collect()
 }
 
+/// Return the titled boundaries owned by the strict BT sibling-chain scene.
+///
+/// Portal projection uses this selector to apply a final, topology-owned
+/// border seam after generic repair passes. Keeping the predicate here makes
+/// the visual marker follow the same scene contract as the route planner.
+pub(crate) fn strict_chain_subgraph_ids(graph: &Graph) -> Option<HashSet<String>> {
+    (graph.direction == Direction::BT).then_some(())?;
+    let transitions = detect_strict_chain(graph)?;
+    let mut ids = HashSet::new();
+    for transition in transitions {
+        ids.insert(transition.source_subgraph_id);
+        ids.insert(transition.target_subgraph_id);
+    }
+    Some(ids)
+}
+
+/// Return the titled boundaries owned by the exact two-parallel-rail BT
+/// sibling target-entry scene. The target-entry planner already consumes this
+/// graph-owned selector; final portal projection and critic acceptance reuse
+/// it so border seams cannot broaden to generic sibling crossings.
+pub(crate) fn sibling_target_entry_subgraph_ids(graph: &Graph) -> Option<HashSet<String>> {
+    (graph.direction == Direction::BT).then_some(())?;
+    let scene = graph.bt_sibling_target_entry_scene()?;
+    Some(HashSet::from([
+        scene.source_subgraph_id,
+        scene.target_subgraph_id,
+    ]))
+}
+
+/// Return the titled boundaries owned by the exact direct three-rail BT
+/// sibling scene. The graph selector owns the topology; final projection and
+/// critic acceptance reuse the same result so this seam cannot broaden to
+/// crossed, nested, or generic parallel edges.
+pub(crate) fn direct_parallel_sibling_subgraph_ids(graph: &Graph) -> Option<HashSet<String>> {
+    let scene = graph.bt_direct_parallel_sibling_scene()?;
+    Some(HashSet::from([
+        scene.source_subgraph_id,
+        scene.target_subgraph_id,
+    ]))
+}
+
 fn detect_strict_chain(graph: &Graph) -> Option<Vec<Transition>> {
-    if graph.subgraphs.len() < 3
+    if graph.subgraphs.len() < 2
         || graph.has_cycles()
         || graph.edges.iter().any(|edge| edge.is_back_edge)
     {
@@ -550,6 +591,10 @@ fn choose_corridor_row(
     canvas: &Canvas,
     graph: &Graph,
 ) -> Option<usize> {
+    let inter_border_gap = source_top_y.saturating_sub(target_bottom_y.saturating_add(1));
+    if inter_border_gap < BT_SIBLING_CHAIN_MIN_CORRIDOR_GAP {
+        return None;
+    }
     let first = target_bottom_y.checked_add(2)?;
     let last = source_top_y.checked_sub(2)?;
     let midpoint = first + (last - first) / 2;

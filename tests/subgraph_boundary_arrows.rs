@@ -164,6 +164,72 @@ fn exact_two_bt_siblings_keep_each_target_entry_distinct() {
 }
 
 #[test]
+fn strict_bt_sibling_portals_show_directional_border_seams() {
+    for fixture in [
+        "collision_sibling_triple_bt",
+        "subgraph_chain_bt",
+        "subgraph_multi_bt",
+    ] {
+        for optimized in [false, true] {
+            let (_graph, frame) = render_fixture_output(fixture, BaseStyle::Unicode, optimized);
+            assert!(
+                frame.contains('┬') && frame.contains('┴'),
+                "strict BT sibling portals need directional border seams for {fixture} optimized={optimized}:\n{frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn exact_bt_sibling_target_portals_show_directional_border_seams() {
+    for optimized in [false, true] {
+        let (_graph, frame) = render_fixture_output(
+            "collision_sibling_subgraphs_bt",
+            BaseStyle::Unicode,
+            optimized,
+        );
+        assert!(
+            frame.contains('┬') && frame.contains('┴'),
+            "exact BT sibling target portals need directional border seams optimized={optimized}:\n{frame}"
+        );
+    }
+}
+
+#[test]
+fn two_group_bt_scene_compacts_and_traces_the_cross_boundary_edge() {
+    let mut failures = Vec::new();
+
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let report = render_fixture("subgraph_multi_bt", style, optimized);
+            if report.raw.arrowheads != 3
+                || !report.raw.shaftless_arrowheads.is_empty()
+                || !report.geometry.errors.is_empty()
+                || !report.geometry.untraced_fallback_edges.is_empty()
+                || report.display.height > 34
+                || !report.critic.findings.is_empty()
+            {
+                failures.push(format!(
+                    "{style:?} optimized={optimized}: arrows={} shaftless={:?} geometry={:?} untraced={:?} height={} critic={:?}",
+                    report.raw.arrowheads,
+                    report.raw.shaftless_arrowheads,
+                    report.geometry.errors,
+                    report.geometry.untraced_fallback_edges,
+                    report.display.height,
+                    report.critic.findings
+                ));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "two-group BT scene corridor regressions:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
 fn exact_td_mixed_target_keeps_both_entries_visible_across_matrix() {
     let mut failures = Vec::new();
 
@@ -316,6 +382,18 @@ fn direct_bt_subgraph_portals_keep_a_quiet_turn_shaft() {
             assert!(
                 forbidden.iter().all(|pattern| !frame.contains(pattern)),
                 "direct BT portal turn must keep a quiet shaft for {style:?} optimized={optimized}:\n{frame}"
+            );
+            let title_row = frame
+                .lines()
+                .position(|line| line.contains("Group 2"))
+                .expect("direct BT target title row");
+            let title_clearance_row = frame
+                .lines()
+                .nth(title_row.saturating_sub(1))
+                .expect("direct BT target title clearance row");
+            assert!(
+                !title_clearance_row.contains('-') && !title_clearance_row.contains('─'),
+                "direct BT target title clearance row must stay free of a horizontal turn for {style:?} optimized={optimized}:\n{frame}"
             );
             if style == BaseStyle::Unicode {
                 assert!(
@@ -504,6 +582,18 @@ fn nested_bt_external_entry_keeps_a_quiet_target_turn() {
                 BaseStyle::Unicode => ["└┐", "┌┘"],
                 _ => unreachable!("test matrix only includes ASCII and Unicode"),
             };
+            let deep_title_row = frame
+                .lines()
+                .position(|line| line.contains("Deep"))
+                .expect("nested BT direct child title row");
+            let deep_clearance_row = frame
+                .lines()
+                .nth(deep_title_row.saturating_sub(1))
+                .expect("nested BT direct child title clearance row");
+            assert!(
+                !deep_clearance_row.contains('-') && !deep_clearance_row.contains('─'),
+                "nested BT direct child title clearance row must stay free of a horizontal turn for {style:?} optimized={optimized}:\n{frame}"
+            );
             assert!(
                 forbidden.iter().all(|pattern| !frame.contains(pattern)),
                 "nested BT external entry must keep a quiet target turn for {style:?} optimized={optimized}:\n{frame}"
@@ -812,6 +902,18 @@ fn bt_parallel_scene_keeps_both_internal_target_entries_visible() {
 }
 
 #[test]
+fn bt_parallel_unicode_portals_show_directional_border_seams() {
+    for optimized in [false, true] {
+        let (_graph, frame) =
+            render_fixture_output("subgraph_parallel_bt", BaseStyle::Unicode, optimized);
+        assert!(
+            frame.contains('┬') && frame.contains('┴'),
+            "BT parallel portal crossings should use explicit Unicode border seams for optimized={optimized}:\n{frame}"
+        );
+    }
+}
+
+#[test]
 fn td_parallel_portal_seams_are_not_critic_findings() {
     for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
         for optimized in [false, true] {
@@ -821,6 +923,38 @@ fn td_parallel_portal_seams_are_not_critic_findings() {
                 "topology-owned TD portal seams should not be reported as defects for {style:?} optimized={optimized}: {:?}",
                 report.critic.findings
             );
+        }
+    }
+}
+
+#[test]
+fn strict_bt_sibling_chain_compacts_only_excess_inter_group_corridor() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, outcome) =
+                render_fixture_outcome("collision_sibling_triple_bt", style, optimized);
+            let report = evidence::build(&graph, &outcome);
+            let mut subgraphs = report.geometry_trace.subgraphs.clone();
+            subgraphs.sort_by_key(|subgraph| subgraph.bounds.y);
+
+            assert_eq!(subgraphs.len(), 3);
+            for pair in subgraphs.windows(2) {
+                let upper = &pair[0].bounds;
+                let lower = &pair[1].bounds;
+                assert_eq!(
+                    lower.y.saturating_sub(upper.y + upper.height),
+                    3,
+                    "strict BT sibling chain should retain exactly one route corridor row for {style:?} optimized={optimized}:\n{}",
+                    outcome.output
+                );
+            }
+            assert!(
+                outcome.output.contains("Group 1")
+                    && outcome.output.contains("Group 2")
+                    && outcome.output.contains("Group 3")
+            );
+            assert!(report.geometry.errors.is_empty());
+            assert!(report.geometry.untraced_fallback_edges.is_empty());
         }
     }
 }

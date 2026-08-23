@@ -36,7 +36,10 @@ pub(super) use boundary_fan_in::plan_boundary_fan_in_scene;
 pub(super) use bt_multi_entry::plan_bt_multi_entry_scene;
 pub(super) use bt_parallel::plan_bt_parallel_scene;
 pub(super) use bt_parallel_sibling::plan_bt_parallel_sibling_scene;
-pub(super) use bt_sibling_scene::plan_bt_sibling_scene;
+pub(super) use bt_sibling_scene::{
+    direct_parallel_sibling_subgraph_ids, plan_bt_sibling_scene, sibling_target_entry_subgraph_ids,
+    strict_chain_subgraph_ids,
+};
 pub(super) use bt_sibling_target::plan_bt_sibling_target_scene;
 pub use convergence::route_convergent_edges;
 pub(super) use database_fan_in::{

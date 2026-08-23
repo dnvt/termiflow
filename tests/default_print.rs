@@ -46,6 +46,40 @@ fn audit_flag_emits_clean_visual_summary_for_simple_diagram() {
 }
 
 #[test]
+fn audit_flag_surfaces_route_clarity_watch_details() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .arg("--audit")
+        .write_stdin(include_str!(
+            "fixtures/inputs/collision_sibling_triple_bt.md"
+        ))
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("audit verdict=NeedsReview"),
+        "expected the combined audit verdict to surface the route watch, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("audit route status=inconclusive"),
+        "expected the route status to be visible, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("subgraph_portal_ownership_requires_human_review"),
+        "expected the route finding code to be visible, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cells="),
+        "expected route finding coordinates to be visible, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("audit verdict=Clean"),
+        "a route watch must not be reported as an unqualified clean audit, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn audit_flag_keeps_diagram_output_newline_terminated() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     let assert = cmd

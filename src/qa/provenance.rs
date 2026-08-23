@@ -877,11 +877,22 @@ fn digest_file_set(root: &Path, paths: &[String]) -> Result<String> {
     let mut encoded = Vec::new();
     for relative in paths {
         let path = root.join(relative);
-        let bytes = fs::read(&path)
-            .with_context(|| format!("read source identity file {}", path.display()))?;
         encoded.extend_from_slice(relative.as_bytes());
         encoded.push(0);
-        encoded.extend_from_slice(&bytes);
+        match fs::read(&path) {
+            Ok(bytes) => encoded.extend_from_slice(&bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // `git ls-files` intentionally includes tracked paths that a
+                // dirty worktree has deleted or moved. Bind that state into
+                // provenance instead of failing before the identity can
+                // describe the in-progress rename/delete experiment.
+                encoded.extend_from_slice(b"<deleted>");
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("read source identity file {}", path.display()));
+            }
+        }
         encoded.push(0);
     }
     Ok(common::sha256_bytes(&encoded))

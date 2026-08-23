@@ -2636,7 +2636,18 @@ pub(super) fn route_cross_subgraph_bt(
                         }
                         reserved_inside_y
                     } else {
-                        base_inside_y
+                        // Sibling-subgraph entries have a boundary corridor
+                        // available for one extra quiet row. External sources
+                        // do not: moving their turn upward merely attaches a
+                        // horizontal hook to the arrow (for example the
+                        // compact collision-edge corner scene).
+                        if from_sg.is_some() {
+                            bt_title_safe_entry_y_with_margin(tgt_sg, 1)
+                                .filter(|reserved_inside_y| arrow_y < *reserved_inside_y)
+                                .unwrap_or(base_inside_y)
+                        } else {
+                            base_inside_y
+                        }
                     };
 
                     draw_line_primary(

@@ -44,7 +44,9 @@ pub(crate) fn title_margin_for_direction(direction: Direction) -> usize {
 }
 
 /// Return the target members of a strict BT sibling chain that can reserve one
-/// additional title-clearance row as a scene transaction.
+/// additional title-clearance row as a scene transaction. A two-group chain is
+/// valid as well: it is the smallest topology that still has a titled source,
+/// a titled target, and one inter-group corridor to own.
 ///
 /// The same live-topology predicate is consumed by layout and rendering. It
 /// deliberately accepts no fixture names or labels, and rejects any scene
@@ -55,7 +57,7 @@ pub(crate) fn bt_sibling_chain_target_ids(
 ) -> Option<HashSet<String>> {
     if graph.direction != Direction::BT
         || graph.has_cycles()
-        || graph.subgraphs.len() < 3
+        || graph.subgraphs.len() < 2
         || graph.edges.iter().any(|edge| edge.is_back_edge)
     {
         return None;
@@ -76,7 +78,7 @@ pub(crate) fn bt_sibling_chain_target_ids(
         })
         .collect();
 
-    if chain.len() != graph.subgraphs.len() || chain.len() < 3 {
+    if chain.len() != graph.subgraphs.len() || chain.len() < 2 {
         return None;
     }
 
@@ -741,11 +743,21 @@ const TD_SIBLING_EXTRA_TITLE_PADDING: usize = 1;
 /// established behavior.
 pub(crate) const BT_SIBLING_CHAIN_TITLE_MARGIN: usize = 1;
 
+/// Minimum inter-border gap required by the strict BT sibling route's
+/// two-cell target/source offsets to leave one usable corridor row.
+pub(crate) const BT_SIBLING_CHAIN_MIN_CORRIDOR_GAP: usize = 3;
+
 /// Shared policy for the strict three-edge BT parallel-sibling scene. Layout
 /// and route lowering must agree on this margin or a title-safe boundary lane
 /// can diverge from the lane occupied by its node pair.
 pub(crate) const BT_PARALLEL_TITLE_MARGIN: usize = 1;
 pub(crate) const BT_PARALLEL_MIN_LANE_GAP: usize = 4;
+
+/// At the final fixed-envelope transaction, prefer moving the first paired
+/// rail one cell away from the visible BT title when that lane is already
+/// title-safe and keeps the complete three-rail assignment legal. This is a
+/// scene-local preference, not a generic title-margin change.
+pub(crate) const BT_PARALLEL_FIRST_RAIL_SHIFT: usize = 1;
 
 /// Keep the receiver portal outside the complete BT title token while the
 /// layout owner aligns the receiver node to that same lane.

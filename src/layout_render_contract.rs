@@ -12,7 +12,7 @@ use crate::geom::Rect;
 use crate::graph::{Direction, EdgeKind, Graph, NodeShape};
 use crate::portals::{
     nudge_portal_x_from_corners, title_safe_portal_x, PortalColumnPreference,
-    BT_SIBLING_CHAIN_TITLE_MARGIN,
+    BT_SIBLING_CHAIN_MIN_CORRIDOR_GAP, BT_SIBLING_CHAIN_TITLE_MARGIN,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +70,7 @@ pub(crate) fn strict_bt_transitions(
     bounds: &HashMap<String, Rect>,
 ) -> Option<Vec<BtSiblingTransition>> {
     if graph.direction != Direction::BT
-        || graph.subgraphs.len() < 3
+        || graph.subgraphs.len() < 2
         || graph.has_cycles()
         || graph.edges.iter().any(|edge| edge.is_back_edge)
     {
@@ -666,7 +666,7 @@ pub(crate) fn build_bt_sibling_endpoint_contract(
         let corridor_height = source_boundary_row
             .saturating_sub(target_boundary_row)
             .saturating_sub(1);
-        if corridor_height < 4 {
+        if corridor_height < BT_SIBLING_CHAIN_MIN_CORRIDOR_GAP {
             return None;
         }
         let corridor = Rect::new(
@@ -766,6 +766,7 @@ mod tests {
     fn strict_bt_contract_is_deterministic_and_keeps_shared_frame_columns() {
         for fixture in [
             "tests/fixtures/inputs/collision_sibling_triple_bt.md",
+            "tests/fixtures/inputs/subgraph_multi_bt.md",
             "tests/fixtures/inputs/subgraph_chain_bt.md",
         ] {
             let (graph, contract) = laid_out_fixture(fixture);
@@ -779,7 +780,7 @@ mod tests {
                 transition.title_clearance_proven
                     && transition.corridor.width
                         == transition.source_lane.abs_diff(transition.target_lane) + 1
-                    && transition.corridor.height >= 4
+                    && transition.corridor.height >= BT_SIBLING_CHAIN_MIN_CORRIDOR_GAP
             }));
 
             let frame_spans: HashSet<(usize, usize)> = graph

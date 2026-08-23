@@ -9,8 +9,8 @@ use crate::portals::{
     bt_sibling_chain_target_ids, bt_single_external_entry_source_center_allowed,
     bt_title_margin_for_edge, compute_envelopes, nudge_portal_x_from_corners,
     td_terminal_entry_portal_lanes, td_terminal_entry_scene_subgraph, title_margin_for_direction,
-    title_safe_portal_x, PortalColumnPreference, SubgraphEnvelope, BT_PARALLEL_MIN_LANE_GAP,
-    BT_PARALLEL_TITLE_MARGIN, BT_SIBLING_CHAIN_TITLE_MARGIN,
+    title_safe_portal_x, PortalColumnPreference, SubgraphEnvelope, BT_PARALLEL_FIRST_RAIL_SHIFT,
+    BT_PARALLEL_MIN_LANE_GAP, BT_PARALLEL_TITLE_MARGIN, BT_SIBLING_CHAIN_TITLE_MARGIN,
 };
 use crate::render::sibling_subgraph_fan_in_identity;
 use crate::render::sibling_target_entry_identity;
@@ -1542,7 +1542,6 @@ fn align_bt_parallel_sibling_lanes(
     let Some((_, lanes)) = best else {
         return false;
     };
-
     let mut proposals = Vec::with_capacity(edges.len() * 2);
     for (edge, lane) in edges.iter().zip(lanes) {
         let Some(source_rect) = placement.node_rects.get(&edge.from).copied() else {
@@ -1587,6 +1586,168 @@ fn align_bt_parallel_sibling_lanes(
         changed |= set_node_x(placement, &node_id, candidate.x);
     }
     changed
+}
+
+/// Apply the H154 fixed-envelope transaction once, after the complete layout
+/// pipeline has settled. The ordinary lane allocator runs during each bounded
+/// envelope resolution; a relative preference there is consumed once per
+/// resolution and cannot own the final title boundary. This final, exact
+/// three-rail transaction moves only the first paired source/target lane by
+/// one legal cell, then preserves both previous left anchors while allowing
+/// the right edge to grow.
+pub(super) fn finalize_bt_parallel_first_rail(
+    graph: &Graph,
+    config: &CoarseLayoutConfig,
+    placement: &mut Placement,
+    envelopes: &mut HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    if graph.direction != Direction::BT {
+        return false;
+    }
+
+    // Reuse the exact topology selector with the live envelope geometry. The
+    // layout graph has not yet copied these bounds back onto Graph, so create a
+    // bounds-only clone rather than broadening the selector or matching a
+    // fixture name.
+    let mut bounded_graph = graph.clone();
+    for subgraph in &mut bounded_graph.subgraphs {
+        let Some(envelope) = envelopes.get(&subgraph.id) else {
+            return false;
+        };
+        subgraph.bounds = crate::graph::Rectangle::new(
+            envelope.outer.x,
+            envelope.outer.y,
+            envelope.outer.width,
+            envelope.outer.height,
+        );
+    }
+    let Some(scene) = bounded_graph.bt_direct_parallel_sibling_scene() else {
+        return false;
+    };
+
+    let mut edges: Vec<_> = scene
+        .edge_indices
+        .iter()
+        .filter_map(|index| graph.edges.get(*index))
+        .collect();
+    edges.sort_by_key(|edge| {
+        (
+            placement
+                .node_rects
+                .get(&edge.from)
+                .map(|rect| rect_center_x(*rect)),
+            placement
+                .node_rects
+                .get(&edge.to)
+                .map(|rect| rect_center_x(*rect)),
+            edge.from.as_str(),
+            edge.to.as_str(),
+        )
+    });
+    if edges.len() != 3 {
+        return false;
+    }
+
+    let mut current_lanes = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        let (Some(source_rect), Some(target_rect)) = (
+            placement.node_rects.get(&edge.from),
+            placement.node_rects.get(&edge.to),
+        ) else {
+            return false;
+        };
+        current_lanes.push((rect_center_x(*source_rect), rect_center_x(*target_rect)));
+    }
+    if current_lanes
+        .iter()
+        .any(|(source_lane, target_lane)| source_lane != target_lane)
+        || current_lanes.windows(2).any(|pair| pair[1].0 <= pair[0].0)
+    {
+        return false;
+    }
+
+    let first_lane = current_lanes[0].0;
+    let shifted_first_lane = first_lane.saturating_add(BT_PARALLEL_FIRST_RAIL_SHIFT);
+    let candidate_lanes = [shifted_first_lane, current_lanes[1].0, current_lanes[2].0];
+    if candidate_lanes
+        .windows(2)
+        .any(|pair| pair[1] - pair[0] < BT_PARALLEL_MIN_LANE_GAP)
+    {
+        return false;
+    }
+
+    for subgraph_id in [&scene.source_subgraph_id, &scene.target_subgraph_id] {
+        let Some(subgraph) = graph.get_subgraph(subgraph_id) else {
+            return false;
+        };
+        let Some(bounds) = envelopes.get(subgraph_id).map(|envelope| envelope.outer) else {
+            return false;
+        };
+        let safe_lane = nudge_portal_x_from_corners(
+            bounds.x,
+            bounds.width,
+            subgraph.title.as_deref(),
+            Direction::BT,
+            title_safe_portal_x(
+                bounds.x,
+                bounds.width,
+                subgraph.title.as_deref(),
+                shifted_first_lane,
+                Direction::BT,
+                BT_PARALLEL_TITLE_MARGIN,
+                PortalColumnPreference::Directional,
+            ),
+        );
+        if safe_lane != shifted_first_lane {
+            return false;
+        }
+    }
+
+    let mut proposals = Vec::with_capacity(2);
+    for edge in edges.iter().take(1) {
+        let (Some(source_rect), Some(target_rect)) = (
+            placement.node_rects.get(&edge.from).copied(),
+            placement.node_rects.get(&edge.to).copied(),
+        ) else {
+            return false;
+        };
+        let (Some(source_candidate), Some(target_candidate)) = (
+            centered_rect_at_x(source_rect, shifted_first_lane),
+            centered_rect_at_x(target_rect, shifted_first_lane),
+        ) else {
+            return false;
+        };
+        proposals.push((edge.from.clone(), source_candidate));
+        proposals.push((edge.to.clone(), target_candidate));
+    }
+
+    let moved_ids: HashSet<&str> = proposals.iter().map(|(id, _)| id.as_str()).collect();
+    if proposals.iter().any(|(_, candidate)| {
+        !rect_is_inside(*candidate, placement.canvas)
+            || graph
+                .nodes
+                .iter()
+                .filter(|node| !moved_ids.contains(node.id.as_str()))
+                .filter_map(|node| placement.node_rects.get(&node.id))
+                .any(|rect| rects_overlap(*rect, *candidate))
+    }) || proposals.iter().enumerate().any(|(index, (_, candidate))| {
+        proposals
+            .iter()
+            .skip(index + 1)
+            .any(|(_, other)| rects_overlap(*candidate, *other))
+    }) {
+        return false;
+    }
+
+    let previous_envelopes = envelopes.clone();
+    for (node_id, candidate) in proposals {
+        set_node_x(placement, &node_id, candidate.x);
+        placement.canvas.width = placement.canvas.width.max(candidate.right());
+    }
+    *envelopes = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
+    preserve_envelope_left_edges(&previous_envelopes, envelopes);
+    adjust_portal_slots_for_title(envelopes, graph);
+    true
 }
 
 /// Align the receiver nodes of a bounded two-subgraph BT scene to the

@@ -621,7 +621,7 @@ pub(super) fn reinforce_subgraph_portals(
     }
 }
 
-/// Re-apply the topology-owned TD seam after final provenance and repair
+/// Re-apply topology-owned vertical seams after final provenance and repair
 /// passes. Those passes intentionally normalize edge-owned junctions, so this
 /// explicit portal projection must be the last glyph owner before the semantic
 /// frame is captured.
@@ -639,59 +639,86 @@ pub(super) fn finalize_td_parallel_portal_seams(
             || canvas::is_arrow(c)
     }
 
-    let Some((subgraph_id, ..)) = graph.td_parallel_external_attachment_ids() else {
-        return;
-    };
-    let Some(portals) = slots.get(&subgraph_id) else {
-        return;
-    };
-    if portals.top.len() != 1 || portals.bottom.len() != 1 {
+    let mut seam_subgraph_ids = HashSet::new();
+    if let Some(subgraph_id) = graph
+        .td_parallel_external_attachment_ids()
+        .map(|(subgraph_id, ..)| subgraph_id)
+    {
+        seam_subgraph_ids.insert(subgraph_id);
+    }
+    if let Some(subgraph_id) =
+        crate::render::bt_parallel_identity::scene_for(graph).map(|scene| scene.subgraph_id)
+    {
+        seam_subgraph_ids.insert(subgraph_id);
+    }
+    if let Some(subgraph_ids) = crate::render::edge::strict_chain_subgraph_ids(graph) {
+        seam_subgraph_ids.extend(subgraph_ids);
+    }
+    if let Some(subgraph_ids) = crate::render::edge::sibling_target_entry_subgraph_ids(graph) {
+        seam_subgraph_ids.extend(subgraph_ids);
+    }
+    if let Some(subgraph_ids) = crate::render::edge::direct_parallel_sibling_subgraph_ids(graph) {
+        seam_subgraph_ids.extend(subgraph_ids);
+    }
+    if seam_subgraph_ids.is_empty() {
         return;
     }
     let Some((top_seam, bottom_seam)) = vertical_portal_seam(chars, subgraph_chars) else {
         return;
     };
-    let Some(subgraph) = graph.get_subgraph(&subgraph_id) else {
-        return;
-    };
-    let bounds = &subgraph.bounds;
-    if !bounds.is_valid() {
-        return;
-    }
 
-    let top_y = bounds.y;
-    let bottom_y = bounds.y + bounds.height.saturating_sub(1);
-    for (slot, y, seam) in [
-        (portals.top.iter().copied().next(), top_y, top_seam),
-        (portals.bottom.iter().copied().next(), bottom_y, bottom_seam),
-    ] {
-        let Some(slot) = slot else {
+    for subgraph_id in seam_subgraph_ids {
+        let Some(portals) = slots.get(&subgraph_id) else {
             continue;
         };
-        let px = clamp_horizontal(bounds, slot);
-        if y >= canvas.height {
+        let Some(subgraph) = graph.get_subgraph(&subgraph_id) else {
+            continue;
+        };
+        let bounds = &subgraph.bounds;
+        if !bounds.is_valid() {
             continue;
         }
-        let above = if y > 0 { canvas.get(px, y - 1) } else { ' ' };
-        let below = if y + 1 < canvas.height {
-            canvas.get(px, y + 1)
-        } else {
-            ' '
-        };
-        let current = canvas.get(px, y);
-        if (is_verticalish(above, chars, subgraph_chars)
-            || is_verticalish(below, chars, subgraph_chars))
-            && !is_textual(current)
-            && !canvas::is_arrow(current)
+
+        let top_y = bounds.y;
+        let bottom_y = bounds.y + bounds.height.saturating_sub(1);
+        for (slot, y, seam) in portals
+            .top
+            .iter()
+            .copied()
+            .map(|slot| (slot, top_y, top_seam))
+            .chain(
+                portals
+                    .bottom
+                    .iter()
+                    .copied()
+                    .map(|slot| (slot, bottom_y, bottom_seam)),
+            )
         {
-            canvas.set_owned(
-                px,
-                y,
-                seam,
-                semantic::CellOwnerKind::PortalOpening,
-                &subgraph_id,
-                4,
-            );
+            let px = clamp_horizontal(bounds, slot);
+            if y >= canvas.height {
+                continue;
+            }
+            let above = if y > 0 { canvas.get(px, y - 1) } else { ' ' };
+            let below = if y + 1 < canvas.height {
+                canvas.get(px, y + 1)
+            } else {
+                ' '
+            };
+            let current = canvas.get(px, y);
+            if (is_verticalish(above, chars, subgraph_chars)
+                || is_verticalish(below, chars, subgraph_chars))
+                && !is_textual(current)
+                && !canvas::is_arrow(current)
+            {
+                canvas.set_owned(
+                    px,
+                    y,
+                    seam,
+                    semantic::CellOwnerKind::PortalOpening,
+                    &subgraph_id,
+                    4,
+                );
+            }
         }
     }
 }

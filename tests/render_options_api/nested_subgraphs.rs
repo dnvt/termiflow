@@ -1223,7 +1223,7 @@ fn render_with_feedback_keeps_bt_parallel_scene_boundary_and_fanout_cells_clean(
             termiflow::BaseStyle::Ascii => {
                 assert!(outcome
                     .output
-                    .contains("+-----------------|----------------+"));
+                    .contains("+-----------------+----------------+"));
                 assert!(outcome.output.contains("+-------+-------+"));
                 assert!(!outcome.output.contains("+-+"));
             }

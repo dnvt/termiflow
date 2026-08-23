@@ -7,6 +7,7 @@ pub(crate) mod persist;
 pub(crate) mod persist_ops;
 pub(crate) mod provenance;
 pub(crate) mod review;
+#[path = "../route_clarity.rs"]
 pub(crate) mod route_clarity;
 pub(crate) mod spec;
 pub(crate) mod validate;
