@@ -244,8 +244,23 @@ if ! "$root_dir/scripts/visual_validate.sh" \
   die "strict visual validation failed"
 fi
 
-if ! "$root_dir/scripts/review_visual_packet.sh" \
-  --packet "$packet_dir" --decisions "$decisions_file" "${history_args[@]}" --validate \
+if [[ -n "$history_path" ]]; then
+  review_command=(
+    "$root_dir/scripts/review_visual_packet.sh"
+    --packet "$packet_dir"
+    --decisions "$decisions_file"
+    --history "$history_file"
+    --validate
+  )
+else
+  review_command=(
+    "$root_dir/scripts/review_visual_packet.sh"
+    --packet "$packet_dir"
+    --decisions "$decisions_file"
+    --validate
+  )
+fi
+if ! "${review_command[@]}" \
   >"$tmp_dir/review.stdout" 2>"$tmp_dir/review.stderr"; then
   cat "$tmp_dir/review.stderr" >&2
   cat "$tmp_dir/review.stdout" >&2
@@ -273,8 +288,23 @@ if ! "$root_dir/scripts/visual_validate.sh" \
   cat "$tmp_dir/holdout-visual.stdout" >&2
   die "strict holdout visual validation failed"
 fi
-if ! "$root_dir/scripts/review_visual_packet.sh" \
-  --packet "$holdout_packet_dir" --decisions "$holdout_decisions_file" "${history_args[@]}" --validate \
+if [[ -n "$history_path" ]]; then
+  holdout_review_command=(
+    "$root_dir/scripts/review_visual_packet.sh"
+    --packet "$holdout_packet_dir"
+    --decisions "$holdout_decisions_file"
+    --history "$history_file"
+    --validate
+  )
+else
+  holdout_review_command=(
+    "$root_dir/scripts/review_visual_packet.sh"
+    --packet "$holdout_packet_dir"
+    --decisions "$holdout_decisions_file"
+    --validate
+  )
+fi
+if ! "${holdout_review_command[@]}" \
   >"$tmp_dir/holdout-review.stdout" 2>"$tmp_dir/holdout-review.stderr"; then
   cat "$tmp_dir/holdout-review.stderr" >&2
   cat "$tmp_dir/holdout-review.stdout" >&2

@@ -2842,36 +2842,20 @@ mod tests {
 
     #[test]
     #[cfg(feature = "maintainer-fixtures")]
-    fn bt_title_boundary_review_ignores_node_and_subgraph_border_corners() {
+    fn bt_title_boundary_review_accepts_exact_mixed_sibling_quiet_band() {
         let input = std::fs::read("tests/fixtures/inputs/collision_sibling_subgraphs_bt.md")
             .expect("read BT sibling title-hook fixture");
         let frame = render_fixture(&input, BaseStyle::Unicode, true);
         let report = analyze(&input, frame.as_bytes(), "unicode", "optimized")
             .expect("analyze BT sibling title-hook frame");
-        let hook = report["findings"]
-            .as_array()
-            .and_then(|items| {
+        assert!(
+            !report["findings"].as_array().is_some_and(|items| {
                 items
                     .iter()
-                    .find(|item| item["code"] == "bt_title_boundary_hook_requires_human_review")
-            })
-            .expect("real BT title hook should remain reviewable");
-        let cells = hook["cells"].as_array().expect("hook cells");
-        assert!(!cells.iter().any(|cell| {
-            matches!(
-                (cell["x"].as_u64(), cell["y"].as_u64()),
-                (Some(14), Some(43))
-                    | (Some(25), Some(43))
-                    | (Some(0), Some(46))
-                    | (Some(31), Some(46))
-            )
-        }));
-        assert!(cells.iter().any(|cell| {
-            matches!(
-                (cell["x"].as_u64(), cell["y"].as_u64()),
-                (Some(14), Some(14)) | (Some(17), Some(14))
-            )
-        }));
+                    .any(|item| item["code"] == "bt_title_boundary_hook_requires_human_review")
+            }),
+            "exact mixed BT sibling scene should keep its title band quiet: {report}"
+        );
     }
 
     #[test]

@@ -385,6 +385,21 @@ pub(crate) fn plan_bt_sibling_target_scene(
         if !lower_bt_fallback_plan(plan, canvas, style, graph, Some(owner)) {
             return reject_scene(canvas, &owner_id, "live scene lowering rejected the plan");
         }
+        // This exact topology owns every external crossing on the two sibling
+        // boundaries. Replace the precomputed generic slots with the physical
+        // lanes proven by the scene transaction; appending would leave stale
+        // center-biased seams for final portal projection to redraw beside the
+        // actual receiver-aligned rails.
+        portal_slots
+            .entry(scene.source_subgraph_id.clone())
+            .or_default()
+            .top
+            .clear();
+        portal_slots
+            .entry(scene.target_subgraph_id.clone())
+            .or_default()
+            .bottom
+            .clear();
         for claim in boundary_claims {
             let slots = portal_slots.entry(claim.boundary_id).or_default();
             match claim.side.as_str() {

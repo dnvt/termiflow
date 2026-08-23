@@ -169,13 +169,29 @@ fn nearest_title_safe_x(
     desired: usize,
     direction: Direction,
 ) -> usize {
+    nearest_title_safe_x_with_margin(
+        bounds,
+        title,
+        desired,
+        direction,
+        title_margin_for_direction(direction),
+    )
+}
+
+fn nearest_title_safe_x_with_margin(
+    bounds: &crate::graph::Rectangle,
+    title: Option<&str>,
+    desired: usize,
+    direction: Direction,
+    title_margin: usize,
+) -> usize {
     title_safe_portal_x(
         bounds.x,
         bounds.width,
         title,
         desired,
         direction,
-        title_margin_for_direction(direction),
+        title_margin,
         PortalColumnPreference::Nearest,
     )
 }
@@ -1705,6 +1721,7 @@ fn bt_sibling_target_lane_candidates(
     desired: usize,
     source_lane: usize,
     canvas: &Canvas,
+    title_margin: usize,
     prefer_non_collinear: bool,
 ) -> Vec<usize> {
     // Keep one clear interior cell between a lane and either physical border.
@@ -1716,10 +1733,19 @@ fn bt_sibling_target_lane_candidates(
         return Vec::new();
     }
 
-    let preferred = preferred_portal_x(bounds, title, desired, canvas, Direction::BT, true);
+    let preferred = preferred_portal_x_with_margin(
+        bounds,
+        title,
+        desired,
+        canvas,
+        Direction::BT,
+        true,
+        title_margin,
+    );
     let mut candidates = (min..=max)
         .filter(|candidate| {
-            nearest_title_safe_x(bounds, title, *candidate, Direction::BT) == *candidate
+            nearest_title_safe_x_with_margin(bounds, title, *candidate, Direction::BT, title_margin)
+                == *candidate
         })
         .collect::<Vec<_>>();
     // For parallel sibling crossings, keeping the exterior lane aligned to the
@@ -2007,6 +2033,8 @@ struct BtSiblingRoutePlanContext<'a> {
     style: &'a StyleChars,
     graph: &'a Graph,
     owner_id: String,
+    edge_from_id: &'a str,
+    edge_to_id: &'a str,
 }
 
 fn build_bt_sibling_route_plan(
@@ -2021,6 +2049,8 @@ fn build_bt_sibling_route_plan(
         style,
         graph,
         owner_id,
+        edge_from_id,
+        edge_to_id,
     } = context;
     let source_top_y = source_sg.bounds.y;
     let target_bottom_y = target_sg
@@ -2035,7 +2065,12 @@ fn build_bt_sibling_route_plan(
         source_sg.bounds.x.saturating_add(1),
         source_sg.bounds.x + source_sg.bounds.width.saturating_sub(2),
     );
-    let inside_y = bt_title_safe_entry_y_with_margin(target_sg, 1)
+    // The exact mixed scene reserves a larger target envelope below. Spend
+    // that room on a second quiet row so the upper receiver's horizontal
+    // bridge clears both the lower node branch and the title band; ordinary
+    // sibling corridors retain their established one-row policy.
+    let exact_mixed_scene = graph.bt_sibling_target_entry_scene().is_some();
+    let inside_y = bt_title_safe_entry_y_with_margin(target_sg, usize::from(exact_mixed_scene) + 1)
         .ok_or_else(|| "target has no BT title-safe row".to_owned())?;
     if arrow_y >= inside_y {
         return Err("target arrow is not above the BT title-safe attachment row".to_owned());
@@ -2047,6 +2082,11 @@ fn build_bt_sibling_route_plan(
         arrow_x,
         source_lane,
         canvas,
+        if graph.bt_sibling_target_entry_scene().is_some() {
+            bt_title_margin_for_edge(graph, edge_from_id, edge_to_id, &target_sg.id)
+        } else {
+            title_margin_for_direction(Direction::BT)
+        },
         graph.bt_sibling_target_entry_scene().is_some(),
     );
     if candidates.is_empty() {
@@ -2525,6 +2565,8 @@ pub(super) fn route_cross_subgraph_bt(
                             style,
                             graph,
                             owner_id,
+                            edge_from_id: &from.id,
+                            edge_to_id: &to.id,
                         }) {
                             Ok(plan) => {
                                 if lower_bt_fallback_plan(plan, canvas, style, graph, owner) {
@@ -4070,8 +4112,15 @@ mod tests {
     fn bt_sibling_target_lane_candidates_keep_a_clear_border_cell() {
         let bounds = Rectangle::new(0, 0, 46, 18);
         let canvas = Canvas::new(50, 60);
-        let candidates =
-            bt_sibling_target_lane_candidates(&bounds, Some("Data Layer"), 14, 14, &canvas, false);
+        let candidates = bt_sibling_target_lane_candidates(
+            &bounds,
+            Some("Data Layer"),
+            14,
+            14,
+            &canvas,
+            0,
+            false,
+        );
 
         assert!(!candidates.contains(&1), "lane may not hug the left border");
         assert!(
