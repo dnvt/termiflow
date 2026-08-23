@@ -413,6 +413,7 @@ fn build_packet(
                                 )));
                             }
                         }
+                        append_fallback_geometry_warning(&mut value, &stem)?;
                         value["route_clarity"] = route_report;
                         common::write_json(&evidence_path, &value)?;
                         evidence = Some(value);
@@ -585,6 +586,30 @@ fn build_packet(
     )?;
     persist::pause_if_requested("ready", stage)?;
     let _ = metadata_path;
+    Ok(())
+}
+
+fn append_fallback_geometry_warning(evidence: &mut Value, stem: &str) -> Result<()> {
+    let fallback_count = evidence
+        .get("geometry")
+        .and_then(|geometry| geometry.get("untraced_fallback_edges"))
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    if fallback_count == 0 {
+        return Ok(());
+    }
+
+    let warnings = evidence
+        .get_mut("warnings")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| anyhow!("{stem}: evidence.warnings is not a string list"))?;
+    let warning = format!("geometry:fallback_edges_requires_human_review:{fallback_count}");
+    if !warnings
+        .iter()
+        .any(|existing| existing.as_str() == Some(warning.as_str()))
+    {
+        warnings.push(Value::String(warning));
+    }
     Ok(())
 }
 
@@ -1145,4 +1170,43 @@ fn write_jsonl(path: &Path, values: &[Value]) -> Result<()> {
         content.push(b'\n');
     }
     common::write_bytes(path, &content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_geometry_warning_is_counted_and_idempotent() {
+        let mut evidence = json!({
+            "warnings": [],
+            "geometry": {
+                "untraced_fallback_edges": ["edge:0:A->B", "edge:1:A->C"]
+            }
+        });
+
+        append_fallback_geometry_warning(&mut evidence, "case").unwrap();
+        append_fallback_geometry_warning(&mut evidence, "case").unwrap();
+
+        assert_eq!(
+            evidence["warnings"],
+            json!(["geometry:fallback_edges_requires_human_review:2"])
+        );
+        assert_eq!(
+            evidence["geometry"]["untraced_fallback_edges"],
+            json!(["edge:0:A->B", "edge:1:A->C"])
+        );
+    }
+
+    #[test]
+    fn fallback_geometry_warning_is_quiet_for_traced_geometry() {
+        let mut evidence = json!({
+            "warnings": [],
+            "geometry": {"untraced_fallback_edges": []}
+        });
+
+        append_fallback_geometry_warning(&mut evidence, "case").unwrap();
+
+        assert_eq!(evidence["warnings"], json!([]));
+    }
 }

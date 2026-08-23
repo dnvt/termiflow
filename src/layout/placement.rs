@@ -36,6 +36,7 @@ const SPACING_FANOUT: usize = 1;
 const SPACING_MULTI_LABELED: usize = 4;
 const DENSE_EDGE_COUNT: usize = 6;
 const DENSE_LANE_PITCH: usize = 2;
+const DENSE_HORIZONTAL_COMPRESSION: usize = 2;
 #[derive(Debug)]
 pub(super) struct Placement {
     pub(super) positions: HashMap<String, Point>,
@@ -72,6 +73,7 @@ impl LayoutSpacingPolicy {
 
     fn spacing_for_layer(&self, graph: &Graph, layers: &[Vec<usize>], layer_idx: usize) -> usize {
         let layer = &layers[layer_idx];
+        let dense_horizontal = is_dense_horizontal_graph(graph, layers);
 
         // Check fan-out: source (in this layer) has multiple targets
         let mut has_fan_out = false;
@@ -426,10 +428,25 @@ impl LayoutSpacingPolicy {
         // For simple chains we honour the configured minimum horizontal spacing, which
         // already encodes the 2x compensation via SpacingConfig::for_direction.
         if matches!(graph.direction, Direction::LR | Direction::RL) {
+            let horizontal_minimum = self
+                .min_horizontal
+                .saturating_sub(if dense_horizontal {
+                    DENSE_HORIZONTAL_COMPRESSION
+                } else {
+                    0
+                })
+                .max(SPACING_MINIMAL);
             if !has_fan_out && !has_fan_in && !has_labels {
-                spacing = self.min_horizontal.max(spacing * 2);
+                spacing = horizontal_minimum.max(spacing * 2);
             } else {
-                spacing *= 2;
+                spacing = spacing
+                    .saturating_mul(2)
+                    .saturating_sub(if dense_horizontal {
+                        DENSE_HORIZONTAL_COMPRESSION
+                    } else {
+                        0
+                    })
+                    .max(SPACING_MINIMAL);
             }
 
             // Reserve enough primary-axis room for the widest edge label emitted
@@ -620,6 +637,15 @@ fn compute_primary_gaps(
         gaps.push(policy.spacing_for_layer(graph, layers, r));
     }
     gaps
+}
+
+fn is_dense_horizontal_graph(graph: &Graph, layers: &[Vec<usize>]) -> bool {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) {
+        return false;
+    }
+
+    let non_back_edges = graph.edges.iter().filter(|edge| !edge.is_back_edge).count();
+    graph.nodes.len() >= 20 && non_back_edges >= 20 && layers.iter().any(|layer| layer.len() >= 4)
 }
 
 fn database_target_requires_headroom(
@@ -1222,6 +1248,31 @@ mod tests {
         (graph, vec![vec![0], vec![1]])
     }
 
+    fn dense_horizontal_graph() -> (Graph, Vec<Vec<usize>>) {
+        let mut graph = Graph::new();
+        graph.direction = Direction::LR;
+        for index in 0..20 {
+            graph.add_node(Node::new(format!("n{index}"), format!("N{index}")));
+        }
+        for rank in 0..3 {
+            for offset in 0..5 {
+                let source = rank * 5 + offset;
+                let target = (rank + 1) * 5 + offset;
+                graph.add_edge(Edge::new(format!("n{source}"), format!("n{target}")));
+            }
+        }
+        for offset in 0..5 {
+            graph.add_edge(Edge::new(format!("n{offset}"), format!("n{}", 10 + offset)));
+        }
+        let layers = vec![
+            (0..5).collect(),
+            (5..10).collect(),
+            (10..15).collect(),
+            (15..20).collect(),
+        ];
+        (graph, layers)
+    }
+
     #[test]
     fn database_target_headroom_is_local_to_the_preceding_rank() {
         let (database_graph, database_layers) = two_layer_graph(NodeShape::Database);
@@ -1247,6 +1298,33 @@ mod tests {
             &database_layers,
             1
         ));
+    }
+
+    #[test]
+    fn horizontal_density_compression_is_topology_gated() {
+        let (dense_graph, dense_layers) = dense_horizontal_graph();
+        let (mut sparse_graph, sparse_layers) = two_layer_graph(NodeShape::Rectangle);
+        sparse_graph.direction = Direction::LR;
+        let config = CoarseLayoutConfig::default();
+        let policy = LayoutSpacingPolicy::new(
+            config.subgraph_gutter,
+            config.node_padding,
+            config.min_horizontal_spacing,
+            config.min_vertical_spacing,
+        );
+
+        assert!(is_dense_horizontal_graph(&dense_graph, &dense_layers));
+        assert!(!is_dense_horizontal_graph(&sparse_graph, &sparse_layers));
+        assert_eq!(
+            policy.spacing_for_layer(&dense_graph, &dense_layers, 0),
+            8,
+            "dense horizontal fan-out should use the compressed doubled gap"
+        );
+        assert_eq!(
+            policy.spacing_for_layer(&sparse_graph, &sparse_layers, 0),
+            4,
+            "a sparse horizontal control keeps its existing local gap"
+        );
     }
 
     #[test]
