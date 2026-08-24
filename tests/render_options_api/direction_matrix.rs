@@ -501,6 +501,45 @@ fn render_with_feedback_default_bt_subgraph_exits_keep_visible_arrow_shafts() {
 }
 
 #[test]
+fn render_with_feedback_keeps_vertical_subgraph_fanins_clear_of_adjacent_corners() {
+    for fixture in [
+        "tests/fixtures/inputs/subgraph_fanin_td.md",
+        "tests/fixtures/inputs/subgraph_fanin_bt.md",
+    ] {
+        let input = std::fs::read_to_string(fixture).unwrap();
+        for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+            for optimize_render in [false, true] {
+                let outcome = termiflow::render_with_feedback(
+                    &input,
+                    termiflow::RenderOptions::new()
+                        .with_style(style)
+                        .with_optimize_render(optimize_render),
+                )
+                .unwrap();
+
+                let adjacent_corner = outcome.output.lines().any(|row| {
+                    row.contains("++")
+                        || row.contains("+-+")
+                        || row.contains("└┐")
+                        || row.contains("┌┘")
+                });
+                assert!(
+                    !adjacent_corner,
+                    "strict vertical subgraph fan-in retained an adjacent route corner for {fixture} in {style:?}, optimize={optimize_render}\n{}",
+                    outcome.output
+                );
+                assert_eq!(
+                    outcome.critic_report.audit_summary().verdict,
+                    termiflow::AuditVerdict::Clean,
+                    "strict vertical subgraph fan-in should remain critic-clean for {fixture} in {style:?}, optimize={optimize_render}\n{}",
+                    outcome.output
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn render_with_feedback_places_supported_bt_subgraph_titles_on_bottom_interior_row() {
     for (fixture, title) in [
         ("tests/fixtures/inputs/subgraph_fanin_bt.md", "Data Sources"),

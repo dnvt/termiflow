@@ -807,6 +807,25 @@ fn exact_two_bt_siblings_leave_a_quiet_row_before_each_target_title() {
 }
 
 #[test]
+fn exact_two_bt_siblings_keep_lower_cross_branch_clear_of_internal_switchback() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (_graph, frame) =
+                render_fixture_output("collision_sibling_subgraphs_bt", style, optimized);
+            let ambiguous_shoulder = match style {
+                BaseStyle::Ascii => "+-+",
+                BaseStyle::Unicode => "┬─┘",
+                _ => unreachable!("regression matrix only uses ASCII and Unicode"),
+            };
+            assert!(
+                !frame.lines().any(|row| row.contains(ambiguous_shoulder)),
+                "BT sibling lower cross branch must keep a visible clearance shaft for {style:?} optimized={optimized}:\n{frame}"
+            );
+        }
+    }
+}
+
+#[test]
 fn exact_two_bt_siblings_route_clarity_is_clean_across_matrix() {
     let input_path = "tests/fixtures/inputs/collision_sibling_subgraphs_bt.md";
     let input = fs::read_to_string(input_path).expect("read exact BT mixed sibling fixture");

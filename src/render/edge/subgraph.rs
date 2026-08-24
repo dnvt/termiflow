@@ -26,10 +26,11 @@ use crate::portals::{
     bt_external_side_receiver_lane, bt_nested_boundary_lane_with_quiet_turn,
     bt_sibling_chain_target_ids, bt_single_external_entry_source_center_allowed,
     bt_target_portal_x_avoiding_single_cell_turn_with_source_center, bt_title_margin_for_edge,
-    td_nested_boundary_lane, td_sibling_portal_x, td_sibling_title_gutter,
-    td_single_external_entry_uses_literal_gutter_lane, td_terminal_entry_portal_lanes,
-    td_terminal_entry_scene_subgraph, td_terminal_entry_target_center, title_margin_for_direction,
-    title_safe_portal_x, PortalColumnPreference,
+    td_mixed_sibling_clearance_lane, td_nested_boundary_lane, td_sibling_portal_x,
+    td_sibling_title_gutter, td_single_external_entry_uses_literal_gutter_lane,
+    td_terminal_entry_portal_lanes, td_terminal_entry_scene_subgraph,
+    td_terminal_entry_target_center, title_margin_for_direction, title_safe_portal_x,
+    PortalColumnPreference,
 };
 
 pub(super) fn preferred_portal_x(
@@ -1242,7 +1243,29 @@ pub(super) fn route_cross_subgraph_td(
         });
         let direct_sibling_entry = enter_subgraphs.len() == 1;
         let baseline_sibling_entry_x = if direct_sibling_entry {
-            td_sibling_portal_x(graph, &from.id, &to.id, requested_arrow_x, graph.direction)
+            let mixed_clearance_lane = from_sg
+                .and_then(|source_id| graph.get_subgraph(source_id))
+                .and_then(|source_sg| {
+                    td_mixed_sibling_clearance_lane(
+                        graph,
+                        &from.id,
+                        &to.id,
+                        requested_arrow_x,
+                        graph.direction,
+                        Rect::new(
+                            source_sg.bounds.x,
+                            source_sg.bounds.y,
+                            source_sg.bounds.width,
+                            source_sg.bounds.height,
+                        ),
+                        Rect::new(sg.bounds.x, sg.bounds.y, sg.bounds.width, sg.bounds.height),
+                        current_x,
+                    )
+                });
+            mixed_clearance_lane
+                .or_else(|| {
+                    td_sibling_portal_x(graph, &from.id, &to.id, requested_arrow_x, graph.direction)
+                })
                 .unwrap_or(final_entry_x)
         } else {
             td_sibling_portal_x(graph, &from.id, &to.id, final_entry_x, graph.direction)
@@ -1319,7 +1342,14 @@ pub(super) fn route_cross_subgraph_td(
                     set_route_edge_char(canvas, x, outside_y, style.edge_h, style, owner);
                 }
 
-                let end_corner = if entry_x > current_x {
+                let end_corner = if direct_sibling_entry && entry_x.abs_diff(current_x) == 1 {
+                    // There is no interior horizontal cell between adjacent
+                    // corners. Keep the short shoulder as one route edge and
+                    // let the next-row vertical shaft provide the bend; this
+                    // is the same fail-closed geometry used by the TD fan-out
+                    // lowerer and avoids a human-visible `++`/`└┐` seam.
+                    style.edge_h
+                } else if entry_x > current_x {
                     style.corner_dr
                 } else {
                     style.corner_dl
