@@ -1002,7 +1002,7 @@ pub(crate) fn td_sibling_portal_x(
     let target_id = graph.get_node_subgraph(to_id)?;
     let source = graph.get_subgraph(source_id)?;
     let target = graph.get_subgraph(target_id)?;
-    td_sibling_portal_x_with_bounds(
+    let result = td_sibling_portal_x_with_bounds(
         graph,
         from_id,
         to_id,
@@ -1020,7 +1020,117 @@ pub(crate) fn td_sibling_portal_x(
             target.bounds.width,
             target.bounds.height,
         ),
-    )
+        graph.get_node(from_id)?.center_x(),
+    );
+    result
+}
+
+/// Select a shared TD/TB sibling lane for the small mixed fan-out where two
+/// distinct source nodes cross the same pair of titled subgraphs. The normal
+/// sibling policy intentionally rejects that non-unique boundary pair; this
+/// narrower policy only intervenes when its selected title-safe lane is one
+/// cell from the active source stem, which would compose into adjacent
+/// corners beside the other crossing's vertical shaft.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn td_mixed_sibling_clearance_lane(
+    graph: &Graph,
+    from_id: &str,
+    to_id: &str,
+    desired_x: usize,
+    direction: Direction,
+    source_bounds: Rect,
+    target_bounds: Rect,
+    source_lane: usize,
+) -> Option<usize> {
+    if !matches!(direction, Direction::TD | Direction::TB)
+        || source_bounds.width == 0
+        || source_bounds.height == 0
+        || target_bounds.width == 0
+        || target_bounds.height == 0
+        || source_bounds.y >= target_bounds.y
+        || source_bounds.bottom() > target_bounds.y
+    {
+        return None;
+    }
+    let (exit_subgraphs, enter_subgraphs) = graph.edge_boundary_crossings(from_id, to_id);
+    if exit_subgraphs.len() != 1 || enter_subgraphs.len() != 1 {
+        return None;
+    }
+    let source_id = exit_subgraphs[0];
+    let target_id = enter_subgraphs[0];
+    let source = graph.get_subgraph(source_id)?;
+    let target = graph.get_subgraph(target_id)?;
+    if source.parent_id.as_deref() != target.parent_id.as_deref()
+        || target.title.is_none()
+        || source_id == target_id
+    {
+        return None;
+    }
+
+    let mut endpoint_pairs = HashSet::new();
+    let crossing_count = graph
+        .edges
+        .iter()
+        .filter(|edge| !edge.is_back_edge)
+        .filter(|edge| edge.kind == EdgeKind::Arrow && edge.label.is_none())
+        .filter(|edge| {
+            let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+            exits.len() == 1 && enters.len() == 1 && exits[0] == source_id && enters[0] == target_id
+        })
+        .inspect(|edge| {
+            endpoint_pairs.insert((edge.from.clone(), edge.to.clone()));
+        })
+        .count();
+    if crossing_count != 2 || endpoint_pairs.len() != crossing_count {
+        return None;
+    }
+
+    let min_x = target_bounds.x.saturating_add(1);
+    let max_x = target_bounds
+        .x
+        .saturating_add(target_bounds.width.saturating_sub(2));
+    if min_x > max_x {
+        return None;
+    }
+    let title_margin = title_margin_for_direction(direction);
+    let initial = title_safe_portal_x(
+        target_bounds.x,
+        target_bounds.width,
+        target.title.as_deref(),
+        desired_x,
+        direction,
+        title_margin,
+        PortalColumnPreference::Directional,
+    );
+    if initial.abs_diff(source_lane) != 1 {
+        return None;
+    }
+
+    (min_x..=max_x)
+        .filter(|candidate| candidate.abs_diff(source_lane) >= 3)
+        .map(|candidate| {
+            (
+                candidate,
+                title_safe_portal_x(
+                    target_bounds.x,
+                    target_bounds.width,
+                    target.title.as_deref(),
+                    candidate,
+                    direction,
+                    title_margin,
+                    PortalColumnPreference::Nearest,
+                ),
+            )
+        })
+        .filter(|(candidate, resolved)| candidate == resolved)
+        .map(|(candidate, _)| candidate)
+        .min_by_key(|candidate| {
+            (
+                candidate.abs_diff(initial),
+                candidate.abs_diff(desired_x),
+                *candidate,
+            )
+        })
 }
 
 /// Select the one vertical lane shared by a nested TD/TB boundary chain.
@@ -1180,6 +1290,7 @@ fn bt_nested_boundary_lane_candidates_with_bounds(
 
 /// Layout-aware form of [`td_sibling_portal_x`] that accepts live envelope
 /// bounds while retaining the graph's topology and title metadata.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn td_sibling_portal_x_with_bounds(
     graph: &Graph,
     from_id: &str,
@@ -1188,6 +1299,7 @@ pub(crate) fn td_sibling_portal_x_with_bounds(
     direction: Direction,
     source_bounds: Rect,
     target_bounds: Rect,
+    source_lane: usize,
 ) -> Option<usize> {
     if !matches!(direction, Direction::TD | Direction::TB)
         || source_bounds.width == 0
@@ -1272,7 +1384,16 @@ pub(crate) fn td_sibling_portal_x_with_bounds(
     } else {
         td_sibling_title_gutter(graph, target_id)
     };
-    let lane = title_safe_portal_x_with_text_padding_sides(
+    let title_margin = if gutter.leading_extra_padding > 0 || gutter.trailing_extra_padding > 0 {
+        // Keep one quiet cell outside the visible title text while
+        // preserving the topology-owned interior lane. A wider margin
+        // collapses the left lane onto the border in narrow sibling
+        // envelopes and produces a visually worse route.
+        1
+    } else {
+        0
+    };
+    let mut lane = title_safe_portal_x_with_text_padding_sides(
         target_bounds.x,
         target_bounds.width,
         target.title.as_deref(),
@@ -1280,17 +1401,56 @@ pub(crate) fn td_sibling_portal_x_with_bounds(
         direction,
         gutter.leading_extra_padding,
         gutter.trailing_extra_padding,
-        if gutter.leading_extra_padding > 0 || gutter.trailing_extra_padding > 0 {
-            // Keep one quiet cell outside the visible title text while
-            // preserving the topology-owned interior lane. A wider margin
-            // collapses the left lane onto the border in narrow sibling
-            // envelopes and produces a visually worse route.
-            1
-        } else {
-            0
-        },
+        title_margin,
         PortalColumnPreference::Nearest,
     );
+
+    // A mixed fan-out can place one sibling lane immediately beside the
+    // source stem while another route already owns the neighboring vertical
+    // cell. The two corner glyphs then compose into `++`/`└┐` even though the
+    // route is connected. Move only this topology-owned lane to the nearest
+    // title-safe alternative with a real shaft cell between the turns. The
+    // source lane is supplied by both layout and rendering so portal slots
+    // and final lowering share the same proof.
+    if lane.abs_diff(source_lane) == 1 {
+        let mut candidates = [
+            lane.saturating_sub(2),
+            lane.saturating_add(2),
+            desired_x.saturating_sub(2),
+            desired_x.saturating_add(2),
+        ]
+        .into_iter()
+        .filter(|candidate| {
+            *candidate >= min_x && *candidate <= max_x && candidate.abs_diff(source_lane) >= 2
+        })
+        .map(|candidate| {
+            title_safe_portal_x_with_text_padding_sides(
+                target_bounds.x,
+                target_bounds.width,
+                target.title.as_deref(),
+                candidate,
+                direction,
+                gutter.leading_extra_padding,
+                gutter.trailing_extra_padding,
+                title_margin,
+                PortalColumnPreference::Nearest,
+            )
+        })
+        .filter(|candidate| {
+            *candidate >= min_x && *candidate <= max_x && candidate.abs_diff(source_lane) >= 2
+        })
+        .collect::<Vec<_>>();
+        candidates.sort_by_key(|candidate| {
+            (
+                candidate.abs_diff(lane),
+                candidate.abs_diff(desired_x),
+                *candidate,
+            )
+        });
+        if let Some(candidate) = candidates.into_iter().next() {
+            lane = candidate;
+        }
+    }
     (lane.abs_diff(desired_x) >= TD_SIBLING_LANE_OFFSET).then_some(lane)
 }
 
@@ -1997,7 +2157,8 @@ fn collect_portal_slots_with_bounds(
                         let sibling_lane = exit_subgraphs.first().and_then(|source_id| {
                             let source_bounds =
                                 current_subgraph_bounds(graph, current_bounds, source_id)?;
-                            td_sibling_portal_x_with_bounds(
+                            let source_lane = node_center_x(node_rects, &edge.from, from);
+                            td_mixed_sibling_clearance_lane(
                                 graph,
                                 &edge.from,
                                 &edge.to,
@@ -2005,7 +2166,20 @@ fn collect_portal_slots_with_bounds(
                                 direction,
                                 source_bounds,
                                 target_bounds,
+                                source_lane,
                             )
+                            .or_else(|| {
+                                td_sibling_portal_x_with_bounds(
+                                    graph,
+                                    &edge.from,
+                                    &edge.to,
+                                    target_center_x,
+                                    direction,
+                                    source_bounds,
+                                    target_bounds,
+                                    source_lane,
+                                )
+                            })
                         });
                         sibling_lane.unwrap_or_else(|| {
                             let margin = td_single_external_entry_uses_literal_gutter_lane(

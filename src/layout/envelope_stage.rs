@@ -8,12 +8,14 @@ use crate::portals::{
     bt_external_entry_source_center_lane, bt_external_side_receiver_lane,
     bt_sibling_chain_target_ids, bt_single_external_entry_source_center_allowed,
     bt_title_margin_for_edge, compute_envelopes, nudge_portal_x_from_corners,
-    td_terminal_entry_portal_lanes, td_terminal_entry_scene_subgraph, title_margin_for_direction,
-    title_safe_portal_x, PortalColumnPreference, SubgraphEnvelope, BT_PARALLEL_FIRST_RAIL_SHIFT,
+    strict_simple_subgraph_fanin_lanes, td_terminal_entry_portal_lanes,
+    td_terminal_entry_scene_subgraph, title_margin_for_direction, title_safe_portal_x,
+    PortalColumnPreference, SubgraphEnvelope, BT_PARALLEL_FIRST_RAIL_SHIFT,
     BT_PARALLEL_MIN_LANE_GAP, BT_PARALLEL_TITLE_MARGIN, BT_SIBLING_CHAIN_TITLE_MARGIN,
 };
 use crate::render::sibling_subgraph_fan_in_identity;
 use crate::render::sibling_target_entry_identity;
+use crate::render::subgraph_fan_in_identity;
 
 use super::constraints::*;
 use super::placement::Placement;
@@ -4066,6 +4068,28 @@ pub(super) fn resolve_subgraph_envelopes(
         adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
     }
 
+    // Keep the external receiver of the exact boundary-owned fan-in scene on
+    // the median source lane. An even-width receiver can otherwise land one
+    // cell beside the middle source lane after titled-envelope padding is
+    // applied; the identity lowerer then has no Manhattan path to the middle
+    // port that avoids an adjacent pair of same-edge corners. This transaction
+    // is deliberately limited to the strict selector consumed by
+    // `boundary_fan_in`: flat, titled, vertical, one-subgraph fan-in with no
+    // unrelated edge or node ownership. Ambiguous scenes retain their current
+    // fail-closed route policy.
+    if matches!(
+        input.graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) && align_vertical_subgraph_fan_in_target_centers(
+        input.graph,
+        placement,
+        &subgraph_envelopes,
+    ) {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
     // A disconnected top-level node may be laid out in the gap between two
     // horizontal subgraphs. If its box is wider than that gap, it can overlap
     // a foreign subgraph even though no edge crosses that boundary. Move the
@@ -4080,6 +4104,118 @@ pub(super) fn resolve_subgraph_envelopes(
     }
 
     subgraph_envelopes
+}
+
+/// Align the external receiver of a strict boundary-owned fan-in scene to the
+/// median source lane. The route planner preserves centered target ports, so
+/// this is the narrowest geometry owner that can remove a one-cell receiver
+/// parity mismatch without changing glyph semantics or adding a detour.
+fn align_vertical_subgraph_fan_in_target_centers(
+    graph: &Graph,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) || graph.subgraphs.len() != 1
+    {
+        return false;
+    }
+
+    let subgraph = &graph.subgraphs[0];
+    if subgraph.parent_id.is_some() || !subgraph.child_ids.is_empty() || subgraph.title.is_none() {
+        return false;
+    }
+    let Some(envelope) = envelopes.get(&subgraph.id) else {
+        return false;
+    };
+    // The layout graph does not receive its final subgraph bounds until the
+    // outer layout stage returns. Give the shared strict selector the live
+    // envelope it will consume later in rendering instead of asking it to
+    // validate against the parser's still-empty rectangle.
+    let mut bounded_graph = graph.clone();
+    bounded_graph.subgraphs[0].bounds = crate::graph::Rectangle::new(
+        envelope.outer.x,
+        envelope.outer.y,
+        envelope.outer.width,
+        envelope.outer.height,
+    );
+
+    let mut proposals = Vec::new();
+    for target in &bounded_graph.nodes {
+        if bounded_graph.get_node_subgraph(&target.id).is_some()
+            || subgraph_fan_in_identity::target_port_count(&bounded_graph, &target.id).is_none()
+        {
+            continue;
+        }
+        let Some(lanes) = strict_simple_subgraph_fanin_lanes(
+            &bounded_graph,
+            &placement.node_rects,
+            &target.id,
+            &subgraph.id,
+            bounded_graph.direction,
+        ) else {
+            continue;
+        };
+        if lanes.len() < 3 {
+            continue;
+        }
+        let Some(target_rect) = placement.node_rects.get(&target.id).copied() else {
+            return false;
+        };
+
+        let physically_separated = match graph.direction {
+            Direction::TD | Direction::TB => target_rect.y >= envelope.outer.bottom(),
+            Direction::BT => target_rect.bottom() <= envelope.outer.y,
+            Direction::LR | Direction::RL => false,
+        };
+        if !physically_separated {
+            continue;
+        }
+
+        let median_lane = lanes[lanes.len() / 2];
+        let Some(candidate) = centered_rect_at_x(target_rect, median_lane) else {
+            return false;
+        };
+        if candidate == target_rect {
+            continue;
+        }
+        if candidate.x < placement.canvas.x
+            || candidate.y < placement.canvas.y
+            || candidate.bottom() > placement.canvas.bottom()
+            || rects_overlap(candidate, envelope.outer)
+            || bounded_graph
+                .nodes
+                .iter()
+                .filter(|other| other.id != target.id)
+                .filter_map(|other| placement.node_rects.get(&other.id))
+                .any(|other| rects_overlap(candidate, *other))
+        {
+            return false;
+        }
+        proposals.push((target.id.clone(), candidate));
+    }
+
+    if proposals.len() != 1 {
+        return false;
+    }
+
+    let mut changed = false;
+    for (target_id, candidate) in proposals {
+        changed |= set_node_x(placement, &target_id, candidate.x);
+    }
+    if changed {
+        placement.canvas.width = placement.canvas.width.max(
+            placement
+                .node_rects
+                .values()
+                .map(Rect::right)
+                .max()
+                .unwrap_or(placement.canvas.width),
+        );
+    }
+    changed
 }
 
 /// Keep a terminal external target out of the horizontal bands occupied by

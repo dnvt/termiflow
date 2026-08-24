@@ -15,6 +15,7 @@ use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
 use super::super::fallback_route::FallbackRoutePlan;
+use super::super::fallback_route::PortalEntryDecision;
 use super::super::provenance::edge_owner_id;
 use super::super::semantic::CellOwnerKind;
 use super::edge_primitives::{
@@ -154,18 +155,31 @@ pub(crate) fn plan_bt_sibling_target_scene(
             graph,
         );
 
+        let (lower_source_x, lower_source_y) = edge_exit_point(source_lower, Direction::BT);
         let (lower_arrow_x, lower_arrow_y) =
             adjusted_edge_entry_point(target_lower, Direction::BT, graph);
-        let (lower_source_x, lower_source_y) = edge_exit_point(source_lower, Direction::BT);
+        // The lower source also owns an internal branch. Keep the scene's
+        // cross branch at least three columns from that source lane so its
+        // horizontal shoulder retains two visible shaft cells instead of
+        // forming the tiny `+-+` switchback against the internal route.
+        let lower_cross_arrow_x = edge_entry_candidates(target_lower, Direction::BT)
+            .into_iter()
+            .filter(|(candidate_x, candidate_y)| {
+                *candidate_y == lower_arrow_y
+                    && candidate_x.abs_diff(lower_source_x) >= PREFERRED_TARGET_ENTRY_GAP
+            })
+            .min_by_key(|(candidate_x, _)| candidate_x.abs_diff(lower_arrow_x))
+            .map(|(candidate_x, _)| candidate_x)
+            .unwrap_or(lower_arrow_x);
         let lower_fanout_y = lower_source_y.saturating_sub(spacing.stem_length_vertical);
-        if lower_arrow_x >= simulation.width || lower_fanout_y >= simulation.height {
+        if lower_cross_arrow_x >= simulation.width || lower_fanout_y >= simulation.height {
             continue;
         }
-        if lower_source_x != lower_arrow_x {
-            let (left, right) = if lower_source_x < lower_arrow_x {
-                (lower_source_x, lower_arrow_x)
+        if lower_source_x != lower_cross_arrow_x {
+            let (left, right) = if lower_source_x < lower_cross_arrow_x {
+                (lower_source_x, lower_cross_arrow_x)
             } else {
-                (lower_arrow_x, lower_source_x)
+                (lower_cross_arrow_x, lower_source_x)
             };
             for x in left.saturating_add(1)..right {
                 set_route_edge_char(
@@ -186,7 +200,7 @@ pub(crate) fn plan_bt_sibling_target_scene(
             );
             set_route_char(
                 &mut simulation,
-                lower_arrow_x,
+                lower_cross_arrow_x,
                 lower_fanout_y,
                 style.corner_ur,
                 Some(owner),
@@ -195,9 +209,9 @@ pub(crate) fn plan_bt_sibling_target_scene(
         let lower_cross_outcome = route_cross_subgraph_bt(
             source_lower,
             target_lower,
-            lower_arrow_x,
+            lower_cross_arrow_x,
             lower_fanout_y,
-            lower_arrow_x,
+            lower_cross_arrow_x,
             lower_arrow_y,
             &mut simulation,
             style,
@@ -210,7 +224,7 @@ pub(crate) fn plan_bt_sibling_target_scene(
             }
             continue;
         }
-        if lower_source_x != lower_arrow_x {
+        if lower_source_x != lower_cross_arrow_x {
             set_route_char(
                 &mut simulation,
                 lower_source_x,
@@ -220,7 +234,7 @@ pub(crate) fn plan_bt_sibling_target_scene(
             );
             set_route_char(
                 &mut simulation,
-                lower_arrow_x,
+                lower_cross_arrow_x,
                 lower_fanout_y,
                 style.corner_ur,
                 Some(owner),
@@ -228,7 +242,7 @@ pub(crate) fn plan_bt_sibling_target_scene(
         }
         set_route_char(
             &mut simulation,
-            lower_arrow_x,
+            lower_cross_arrow_x,
             lower_arrow_y,
             style.arrow_up,
             Some(owner),
@@ -335,6 +349,43 @@ pub(crate) fn plan_bt_sibling_target_scene(
                 continue;
             }
             plan.push_paint(paint.point.x, paint.point.y, paint.glyph);
+        }
+
+        // The widened lower cross branch deliberately enters the receiver on
+        // `lower_cross_arrow_x`, not on the receiver's parity-biased center.
+        // Carry that physical lane into the same decision record consumed by
+        // portal tracing; otherwise the visual route is correct while the
+        // evidence layer reconstructs the stale center column and reports a
+        // false missing portal slot.
+        let target_bottom = target_subgraph
+            .bounds
+            .y
+            .saturating_add(target_subgraph.bounds.height.saturating_sub(1));
+        if let Some(portal_x) = plan
+            .boundary_claims
+            .iter()
+            .find(|claim| {
+                claim.boundary_id == target_subgraph.id
+                    && claim.side == "bottom"
+                    && claim.y == target_bottom
+                    && claim.x == lower_cross_arrow_x
+            })
+            .map(|claim| claim.x)
+        {
+            let Some(edge) = graph.edges.get(scene.lower_cross_edge_index) else {
+                continue;
+            };
+            plan.set_target_entry_decision(PortalEntryDecision {
+                edge_id: edge_owner_id(scene.lower_cross_edge_index, edge),
+                owner_id: owner_id.clone(),
+                target_node_id: target_lower.id.clone(),
+                boundary_id: target_subgraph.id.clone(),
+                side: "bottom".to_owned(),
+                portal_x,
+                portal_y: target_bottom,
+                arrow_x: lower_cross_arrow_x,
+                arrow_y: lower_arrow_y,
+            });
         }
 
         if plan.validation_error(canvas.width, canvas.height).is_some() {

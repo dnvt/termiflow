@@ -462,6 +462,41 @@ fn render_with_feedback_keeps_complex_td_subgraph_titles_clean() {
 }
 
 #[test]
+fn render_with_feedback_keeps_complex_td_mixed_fanout_turns_readable() {
+    let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md").unwrap();
+
+    for style in [termiflow::BaseStyle::Ascii, termiflow::BaseStyle::Unicode] {
+        for optimize in [false, true] {
+            let outcome = termiflow::render_with_feedback(
+                &input,
+                termiflow::RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimize),
+            )
+            .unwrap();
+            let ambiguous_shoulder = if style == termiflow::BaseStyle::Ascii {
+                vec!["++", "+-+"]
+            } else {
+                vec!["└┐", "└─┐", "┌─┘"]
+            };
+            assert!(
+                !ambiguous_shoulder
+                    .iter()
+                    .any(|pattern| outcome.output.lines().any(|line| line.contains(pattern))),
+                "mixed TD sibling fan-out must retain a readable boundary corridor for {style:?}, optimize={optimize}\n{}",
+                outcome.output
+            );
+            assert_eq!(
+                outcome.critic_report.audit_summary().verdict,
+                termiflow::AuditVerdict::Clean,
+                "mixed TD sibling fan-out should remain critic-clean for {style:?}, optimize={optimize}\n{}",
+                outcome.output
+            );
+        }
+    }
+}
+
+#[test]
 fn render_with_feedback_keeps_complex_td_data_layer_bottom_exit_portals_distinct() {
     let input = std::fs::read_to_string("tests/fixtures/inputs/subgraph_complex_td.md").unwrap();
     let parsed = termiflow::parse(&input, false).unwrap();
