@@ -1106,3 +1106,178 @@ fn strict_bt_sibling_chain_compacts_only_excess_inter_group_corridor() {
         }
     }
 }
+
+#[test]
+fn collision_sibling_triple_route_ownership_oracle_covers_matrix() {
+    let mut failures = Vec::new();
+
+    for direction in ["bt", "lr", "rl", "td"] {
+        let input_path = format!("tests/fixtures/inputs/collision_sibling_triple_{direction}.md");
+        let input = fs::read_to_string(&input_path).expect("read triple sibling fixture");
+
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let mut parsed = parse(&input, false)
+                    .expect("parse triple sibling fixture")
+                    .graph;
+                let mut config = Config {
+                    composite_style: CompositeStyle::from_base(style),
+                    optimize_render: optimized,
+                    ..Default::default()
+                };
+                config.spacing = config.spacing.for_direction(parsed.direction);
+                measure::measure_graph(&mut parsed, &config);
+                let (graph, outcome) = layout_and_render_with_feedback(parsed, config)
+                    .expect("render triple sibling fixture");
+                let report = evidence::build(&graph, &outcome);
+
+                let mut crossings = BTreeSet::new();
+                for edge in &graph.edges {
+                    let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+                    if exits.is_empty() && enters.is_empty() {
+                        continue;
+                    }
+                    if exits.len() != 1 || enters.len() != 1 {
+                        failures.push(format!(
+                            "{direction} {style:?} optimized={optimized}: edge {} has boundary crossings exits={exits:?} enters={enters:?}",
+                            format!("{}->{}", edge.from, edge.to),
+                        ));
+                        continue;
+                    }
+                    crossings.insert((
+                        edge.from.clone(),
+                        edge.to.clone(),
+                        exits[0].to_owned(),
+                        enters[0].to_owned(),
+                    ));
+                }
+
+                let expected_crossings = BTreeSet::from([
+                    (
+                        "A2".to_owned(),
+                        "B".to_owned(),
+                        "G1".to_owned(),
+                        "G2".to_owned(),
+                    ),
+                    (
+                        "B2".to_owned(),
+                        "C".to_owned(),
+                        "G2".to_owned(),
+                        "G3".to_owned(),
+                    ),
+                ]);
+                if crossings != expected_crossings {
+                    failures.push(format!(
+                        "{direction} {style:?} optimized={optimized}: boundary ownership changed: {crossings:?}"
+                    ));
+                }
+
+                if report.geometry.traced_edges != 5
+                    || report.geometry.errors.len() != 0
+                    || !report.geometry.untraced_fallback_edges.is_empty()
+                    || report.raw.arrowheads != 5
+                    || !report.raw.shaftless_arrowheads.is_empty()
+                    || !report.critic.findings.is_empty()
+                {
+                    failures.push(format!(
+                        "{direction} {style:?} optimized={optimized}: geometry={:?} raw={:?} critic={:?}",
+                        report.geometry, report.raw, report.critic.findings
+                    ));
+                }
+
+                for (from, to, exit, enter) in expected_crossings {
+                    let Some(edge) = report
+                        .geometry_trace
+                        .edges
+                        .iter()
+                        .find(|edge| edge.from == from && edge.to == to)
+                    else {
+                        failures.push(format!(
+                            "{direction} {style:?} optimized={optimized}: missing geometry trace for {from}->{to}"
+                        ));
+                        continue;
+                    };
+                    if edge.exits != [exit.clone()] || edge.enters != [enter.clone()] {
+                        failures.push(format!(
+                            "{direction} {style:?} optimized={optimized}: geometry ownership for {}->{} is exits={:?} enters={:?}",
+                            from, to, edge.exits, edge.enters
+                        ));
+                    }
+                }
+
+                if direction == "bt" {
+                    let mut portal_claims = report
+                        .portal_trace
+                        .boundaries
+                        .iter()
+                        .filter(|boundary| {
+                            (boundary.boundary_id == "G1" && boundary.crossing == "exit")
+                                || (boundary.boundary_id == "G2"
+                                    && (boundary.crossing == "exit"
+                                        || boundary.crossing == "enter"))
+                                || (boundary.boundary_id == "G3" && boundary.crossing == "enter")
+                        })
+                        .collect::<Vec<_>>();
+                    portal_claims.sort_by(|left, right| {
+                        (
+                            left.edge_id.as_str(),
+                            left.boundary_id.as_str(),
+                            left.crossing.as_str(),
+                        )
+                            .cmp(&(
+                                right.edge_id.as_str(),
+                                right.boundary_id.as_str(),
+                                right.crossing.as_str(),
+                            ))
+                    });
+                    if portal_claims.len() != 4
+                        || portal_claims.iter().any(|claim| claim.slot_x.is_none())
+                    {
+                        failures.push(format!(
+                            "{direction} {style:?} optimized={optimized}: portal claims are not fully owned: {portal_claims:?}"
+                        ));
+                    }
+
+                    for claim in portal_claims {
+                        let Some(slot_x) = claim.slot_x else {
+                            continue;
+                        };
+                        let Some(boundary) = graph.get_subgraph(&claim.boundary_id) else {
+                            failures.push(format!(
+                                "{direction} {style:?} optimized={optimized}: missing subgraph {}",
+                                claim.boundary_id
+                            ));
+                            continue;
+                        };
+                        let y = if claim.crossing == "exit" {
+                            boundary.bounds.y
+                        } else {
+                            boundary
+                                .bounds
+                                .y
+                                .saturating_add(boundary.bounds.height.saturating_sub(1))
+                        };
+                        let owned = report.portal_trace.cells.iter().find(|cell| {
+                            cell.boundary_id == claim.boundary_id
+                                && cell.side == claim.side
+                                && cell.x == slot_x
+                                && cell.y == y
+                        });
+                        if owned.is_none_or(|cell| cell.owner_kind != "PortalOpening") {
+                            failures.push(format!(
+                                "{direction} {style:?} optimized={optimized}: portal slot ({slot_x},{y}) for {} is not a PortalOpening: {owned:?}",
+                                claim.edge_id
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "triple sibling route-ownership oracle failures:\n{}",
+        failures.join("\n")
+    );
+}
