@@ -139,6 +139,7 @@ fn perceptual_decision(frame_sha256: &str, evidence_sha256: &str) -> Value {
         "evidence_sha256": evidence_sha256,
         "decision": "pass",
         "severity": "P3",
+        "watch_class": "not_applicable",
         "dimensions": ["semantic", "containment", "route", "text", "readability"],
         "cells": [{"x": 0, "y": 0, "note": "frame is readable"}],
         "finding": "none",

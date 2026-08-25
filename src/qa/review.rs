@@ -354,6 +354,17 @@ fn validate_fresh_decision(decision: &Value) -> Result<()> {
     if review_kind(decision)? != PERCEPTUAL_REVIEW {
         bail!("fresh perceptual review cannot include machine structural decision for {case_id}");
     }
+    let decision_kind = non_empty_string(decision.get("decision"), "decision kind")?;
+    let watch_class = non_empty_string(decision.get("watch_class"), "decision watch_class")?;
+    if !WATCH_CLASSES.contains(&watch_class.as_str()) {
+        bail!("invalid watch_class for {case_id}: {watch_class}");
+    }
+    if decision_kind == "pass" && watch_class != "not_applicable" {
+        bail!("pass decision {case_id} must use watch_class=not_applicable");
+    }
+    if decision_kind != "pass" && watch_class == "not_applicable" {
+        bail!("non-pass decision {case_id} cannot use watch_class=not_applicable");
+    }
     if decision.get("carry_forward").is_some() {
         bail!("fresh perceptual review cannot include carry-forward decision for {case_id}");
     }
@@ -370,13 +381,40 @@ fn validate_fresh_decision(decision: &Value) -> Result<()> {
     {
         bail!("fresh perceptual review has a stale H152 next command for {case_id}");
     }
-    if matches!(decision["decision"].as_str(), Some("watch" | "fail"))
+    if decision_kind != "pass" {
+        let observation = non_empty_string(decision.get("observation"), "decision observation")?;
+        if observation.contains("AI one-frame inspection")
+            || observation.contains("nullxnull")
+            || observation.contains("warning-bearing interaction is retained")
+        {
+            bail!(
+                "fresh perceptual review must replace templated observation with visible details for {case_id}"
+            );
+        }
+        let finding = non_empty_string(decision.get("finding"), "decision finding")?;
+        if finding == "none" || finding == "stable-human-readable-id-or-none" {
+            bail!("fresh non-pass review requires a concrete finding for {case_id}");
+        }
+        non_empty_string(decision.get("owner_layer"), "decision owner_layer")?;
+    }
+    if matches!(decision_kind.as_str(), "watch" | "fail")
         && decision["cells"].as_array().is_some_and(Vec::is_empty)
     {
         bail!(
             "fresh {kind} review must bind a watch/fail to exact frame cells for {case_id}",
             kind = decision["decision"]
         );
+    }
+    if decision_kind != "pass"
+        && decision["cells"].as_array().is_some_and(|cells| {
+            cells.iter().any(|cell| {
+                cell["note"]
+                    .as_str()
+                    .is_some_and(|note| note.contains("frame-level watch"))
+            })
+        })
+    {
+        bail!("fresh non-pass review requires visible cell details for {case_id}");
     }
     Ok(())
 }
@@ -1280,6 +1318,7 @@ mod tests {
             "evidence_sha256": "evidence",
             "decision": "watch",
             "severity": "P2",
+            "watch_class": "topology_ambiguous",
             "dimensions": ["route", "readability"],
             "cells": [],
             "finding": "route-watch",
@@ -1287,6 +1326,7 @@ mod tests {
             "hypothesis": GENERIC_WATCH_HYPOTHESIS,
             "expected_observation_if_true": "the matched frame keeps the route attached",
             "falsifier": "a detached route or visible overlap",
+            "owner_layer": "routing",
             "affected_homologs": [],
             "next_command": "scripts/review_visual_packet.sh --packet h155 --decisions fresh --next",
             "reviewer": "ai",
