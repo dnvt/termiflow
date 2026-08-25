@@ -27,7 +27,10 @@ const GENERIC_WATCH_OBSERVATION: &str =
     "Route or local visual density remains a conservative human-eye watch; the marked cells need matched review.";
 const GENERIC_WATCH_HYPOTHESIS: &str =
     "The current topology-owned route/boundary interaction remains a human-eye ownership or density watch even though the frame is structurally renderable.";
-const LEGACY_CARRY_FORWARD_OWNER: &str = "visual-review/legacy-carry-forward";
+const LEGACY_CARRY_FORWARD_OWNER: &str = "reviewer_calibration";
+const LEGACY_REBOUND_OWNER: &str = "visual-review/legacy-carry-forward";
+const DUPLICATED_REBOUND_HYPOTHESIS: &str =
+    "The fresh packet should retain this watch across its homologs.";
 
 #[derive(Debug, Default)]
 struct DecisionState {
@@ -495,6 +498,14 @@ fn rebind_exact_successful_decisions(
         } else if let Some(object) = rebound.as_object_mut() {
             object.remove("run_id");
         }
+        rebound["next_command"] = Value::String(format!(
+            "scripts/review_visual_packet.sh --packet {} --decisions {} --next",
+            current_packet.display(),
+            current_decisions_path.display()
+        ));
+        if let Some(hypothesis) = rebound.get("hypothesis").and_then(Value::as_str) {
+            rebound["hypothesis"] = Value::String(collapse_rebound_hypothesis(hypothesis));
+        }
         let prior_bytes = serde_json::to_vec(prior_decision).context("serialize prior decision")?;
         rebound["carry_forward"] = json!({
             "schema": "termiflow.visual_review.carry_forward.v1",
@@ -505,16 +516,22 @@ fn rebind_exact_successful_decisions(
             "prior_policy_sha256": prior_row["policy"]["sha256"],
             "reason": "exact fixture/style/mode, frame, evidence, and effective-policy equality",
         });
-        if rebound["watch_class"] != "not_applicable"
-            && rebound
-                .get("owner_layer")
-                .and_then(Value::as_str)
-                .is_none_or(|owner| owner.trim().is_empty())
-        {
+        let prior_owner = rebound
+            .get("owner_layer")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let needs_review_calibration = rebound["watch_class"] != "not_applicable"
+            && prior_owner
+                .as_deref()
+                .is_none_or(|owner| owner.trim().is_empty() || owner == LEGACY_REBOUND_OWNER);
+        if needs_review_calibration {
             rebound["owner_layer"] = Value::String(LEGACY_CARRY_FORWARD_OWNER.to_owned());
             rebound["carry_forward"]["owner_layer_provenance"] = Value::String(
-                "legacy decision lacked owner_layer; preserved as an explicit review-workflow watch"
-                    .to_owned(),
+                if prior_owner.as_deref() == Some(LEGACY_REBOUND_OWNER) {
+                    "prior decision used legacy visual-review/legacy-carry-forward; normalized as reviewer_calibration for current-epoch learning".to_owned()
+                } else {
+                    "legacy decision lacked owner_layer; rebound as reviewer_calibration for current-epoch learning".to_owned()
+                },
             );
             legacy_owner_layer_filled += 1;
         }
@@ -555,6 +572,17 @@ fn rebind_exact_successful_decisions(
             current_decisions_path.display()
         ),
     }))
+}
+
+fn collapse_rebound_hypothesis(hypothesis: &str) -> String {
+    let duplicated = format!("{DUPLICATED_REBOUND_HYPOTHESIS} {DUPLICATED_REBOUND_HYPOTHESIS}");
+    let mut normalized = hypothesis.to_owned();
+    while normalized.ends_with(&duplicated) {
+        let prefix_len = normalized.len() - duplicated.len();
+        normalized.truncate(prefix_len);
+        normalized.push_str(DUPLICATED_REBOUND_HYPOTHESIS);
+    }
+    normalized
 }
 
 fn same_review_identity(current: &Value, prior: &Value) -> bool {

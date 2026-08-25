@@ -289,6 +289,14 @@ fn review_rebinds_only_exact_renderable_rows_and_preserves_history() {
     legacy_decision["watch_class"] = Value::String("topology_ambiguous".to_owned());
     legacy_decision["finding"] = Value::String("legacy-topology-watch".to_owned());
     legacy_decision["cells"] = json!([{"x": 0, "y": 0, "note": "legacy route ownership watch"}]);
+    legacy_decision["next_command"] = Value::String(
+        "scripts/review_visual_packet.sh --packet stale --decisions stale --fresh --next"
+            .to_owned(),
+    );
+    legacy_decision["hypothesis"] = Value::String(
+        "The route remains ambiguous. The fresh packet should retain this watch across its homologs. The fresh packet should retain this watch across its homologs."
+            .to_owned(),
+    );
     legacy_decision
         .as_object_mut()
         .expect("legacy decision object")
@@ -332,10 +340,22 @@ fn review_rebinds_only_exact_renderable_rows_and_preserves_history() {
     );
     assert_eq!(rebound["decision"], "watch");
     assert_eq!(rebound["frame_sha256"], frame_sha256);
-    assert_eq!(rebound["owner_layer"], "visual-review/legacy-carry-forward");
+    assert_eq!(rebound["owner_layer"], "reviewer_calibration");
+    assert_eq!(
+        rebound["next_command"],
+        format!(
+            "scripts/review_visual_packet.sh --packet {} --decisions {} --next",
+            current_packet.display(),
+            current_decisions.display()
+        )
+    );
+    assert_eq!(
+        rebound["hypothesis"],
+        "The route remains ambiguous. The fresh packet should retain this watch across its homologs."
+    );
     assert_eq!(
         rebound["carry_forward"]["owner_layer_provenance"],
-        "legacy decision lacked owner_layer; preserved as an explicit review-workflow watch"
+        "legacy decision lacked owner_layer; rebound as reviewer_calibration for current-epoch learning"
     );
 
     fs::remove_dir_all(root).expect("remove temporary rebind packets");
