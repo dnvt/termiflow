@@ -17,6 +17,12 @@ const DECISIONS: &[&str] = &["pass", "fail", "watch", "unclear"];
 const SEVERITIES: &[&str] = &["P0", "P1", "P2", "P3"];
 const DIMENSIONS: &[&str] = &["semantic", "containment", "route", "text", "readability"];
 const REVIEWERS: &[&str] = &["ai", "human", "machine"];
+const WATCH_CLASSES: &[&str] = &[
+    "confirmed_flaw",
+    "topology_ambiguous",
+    "inconclusive",
+    "not_applicable",
+];
 const GENERIC_WATCH_OBSERVATION: &str =
     "Route or local visual density remains a conservative human-eye watch; the marked cells need matched review.";
 const GENERIC_WATCH_HYPOTHESIS: &str =
@@ -239,7 +245,7 @@ fn resolve_decision_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn load_manifest(packet: &Path) -> Result<BTreeMap<String, Value>> {
+pub(crate) fn load_manifest(packet: &Path) -> Result<BTreeMap<String, Value>> {
     if !packet.join("COMPLETE.json").is_file() {
         bail!(
             "missing completion marker: {}",
@@ -521,7 +527,7 @@ fn same_review_hashes(current: &Value, prior: &Value) -> bool {
     .all(|(section, field)| current[*section][*field] == prior[*section][*field])
 }
 
-fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result<()> {
+pub(crate) fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result<()> {
     if decision["schema"].as_str() != Some(DECISION_SCHEMA) {
         bail!("decision schema must be {DECISION_SCHEMA}");
     }
@@ -554,6 +560,19 @@ fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result
     }
     if !SEVERITIES.contains(&decision["severity"].as_str().unwrap_or_default()) {
         bail!("invalid severity for {case_id}");
+    }
+    if let Some(watch_class) = decision.get("watch_class") {
+        let class = non_empty_string(Some(watch_class), "decision watch_class")?;
+        if !WATCH_CLASSES.contains(&class.as_str()) {
+            bail!("invalid watch_class for {case_id}: {class}");
+        }
+        let decision_kind = decision["decision"].as_str().unwrap_or_default();
+        if decision_kind == "pass" && class != "not_applicable" {
+            bail!("pass decision {case_id} must use watch_class=not_applicable");
+        }
+        if decision_kind != "pass" && class == "not_applicable" {
+            bail!("non-pass decision {case_id} cannot use watch_class=not_applicable");
+        }
     }
     let dimensions = decision["dimensions"]
         .as_array()
@@ -613,7 +632,7 @@ fn row_run_id(row: &Value) -> Option<&str> {
         })
 }
 
-fn review_kind(decision: &Value) -> Result<&'static str> {
+pub(crate) fn review_kind(decision: &Value) -> Result<&'static str> {
     let reviewer = non_empty_string(decision.get("reviewer"), "decision reviewer")?;
     if !REVIEWERS.contains(&reviewer.as_str()) {
         bail!("unsupported reviewer: {reviewer}");
@@ -879,7 +898,7 @@ fn frame_payload(
         serde_json::from_slice(&evidence_bytes).context("parse review evidence")?;
     let evidence_hash = evidence_ref["sha256"].as_str().unwrap_or_default();
     let style_provenance = style_provenance(row, &evidence);
-    Ok(json!({
+    let mut payload = json!({
         "schema": FRAME_SCHEMA,
         "case_id": row["case_id"],
         "run_id": row_run_id(row).unwrap_or_default(),
@@ -944,7 +963,13 @@ fn frame_payload(
             "run_id": row_run_id(row).unwrap_or_default(),
             "policy_sha256": row["policy"]["sha256"],
         },
-    }))
+    });
+    payload["decision_form"]["watch_class"] =
+        Value::String("confirmed_flaw|topology_ambiguous|inconclusive|not_applicable".to_owned());
+    payload["decision_form"]["owner_layer"] = Value::String(
+        "routing|layout|glyph_projection|text|fixture|oracle|reviewer_calibration".to_owned(),
+    );
+    Ok(payload)
 }
 
 fn style_provenance(row: &Value, evidence: &Value) -> Value {

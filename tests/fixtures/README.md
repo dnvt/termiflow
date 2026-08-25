@@ -162,6 +162,15 @@ scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-r
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --fresh --record /tmp/one-review.json
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --fresh --validate
 
+# Convert the completed one-frame ledger into typed, hash-bound learning
+# classes and grouped falsifiable hypotheses. Strict mode requires every
+# renderable row to be classified; run once per policy lane.
+scripts/visual_learning.sh \
+  --packet /path/to/packet \
+  --decisions /tmp/full-review-decisions.jsonl \
+  --output /tmp/full-review-learning.json \
+  --strict
+
 # Govern expected-error rows with a separate policy ledger. These rows are
 # reviewed for exit status, stdout, stderr, and the declared error contract;
 # they are not perceptual golden decisions.
@@ -213,9 +222,11 @@ done
    related fixtures, and choose the next targeted command before moving on
 8. **The loop is self-improving** - generate schema-bound golden canaries,
    inspect rendered frames with machine evidence plus human-eye row/column and
-   glyph observations, record a falsifiable fix hypothesis, run homolog and
-   evaluator-owned holdout checks, then preserve the lesson and next target in
-   the cycle receipt
+   glyph observations, classify each decision as a confirmed flaw, topology
+   ambiguity, or inconclusive review, group repeated observations into
+   falsifiable hypotheses, run homolog and evaluator-owned holdout checks, then
+   preserve the lesson and next target in the cycle receipt. A strict learning
+   report is required before a lane can be treated as complete.
 
 ## Visual cycle receipt
 

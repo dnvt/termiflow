@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "termiflow.visual_learning.report.v1",
+  "title": "TermiFlow visual-review learning report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "version",
+    "packet",
+    "decisions",
+    "coverage",
+    "class_counts",
+    "family_counts",
+    "hypotheses",
+    "next_actions"
+  ],
+  "properties": {
+    "schema": {"const": "termiflow.visual_learning.report.v1"},
+    "version": {"const": 1},
+    "packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "complete_sha256", "manifest_sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "complete_sha256": {"$ref": "#/$defs/sha256"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "decisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "reviewed",
+        "renderable_rows",
+        "expected_error_rows",
+        "strict",
+        "missing_case_ids"
+      ],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "reviewed": {"type": "integer", "minimum": 0},
+        "renderable_rows": {"type": "integer", "minimum": 0},
+        "expected_error_rows": {"type": "integer", "minimum": 0},
+        "strict": {"type": "boolean"},
+        "missing_case_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "unclassified_case_ids"],
+      "properties": {
+        "status": {"enum": ["classified", "needs_iteration"]},
+        "unclassified_case_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "class_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "family_counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {"type": "integer", "minimum": 0}
+      }
+    },
+    "hypotheses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "hypothesis_id",
+          "watch_class",
+          "promotion",
+          "owner_layer",
+          "hypothesis",
+          "falsifier",
+          "next_command",
+          "affected_homologs",
+          "fixture_families",
+          "case_ids"
+        ],
+        "properties": {
+          "hypothesis_id": {"$ref": "#/$defs/sha256"},
+          "watch_class": {
+            "enum": ["confirmed_flaw", "topology_ambiguous", "inconclusive"]
+          },
+          "promotion": {
+            "enum": [
+              "candidate_renderer_hypothesis",
+              "fixture_oracle_policy_needed",
+              "reviewer_calibration_needed"
+            ]
+          },
+          "owner_layer": {"type": "string", "minLength": 1},
+          "hypothesis": {"type": "string", "minLength": 1},
+          "falsifier": {"type": "string", "minLength": 1},
+          "next_command": {"type": "string", "minLength": 1},
+          "affected_homologs": {"type": "array", "items": {"type": "string"}},
+          "fixture_families": {"type": "array", "items": {"type": "string"}},
+          "case_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "next_actions": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
