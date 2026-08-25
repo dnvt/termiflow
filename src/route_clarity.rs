@@ -1356,6 +1356,60 @@ fn is_direct_parallel_bt_sibling_scene(graph: &termiflow::Graph) -> bool {
     source_endpoints == source_ids && target_endpoints == target_ids
 }
 
+/// Return whether an exact direct three-rail BT scene has a readable title
+/// band in the current frame.
+///
+/// The route-clarity oracle deliberately measures the visible title text,
+/// rather than relying on a fixture name, title literal, style, or coordinate.
+/// Three empty cells between the final title character and the first of the
+/// three interior rails are the minimum proven quiet band for this selector.
+fn direct_parallel_bt_title_band_is_clear(
+    graph: &termiflow::Graph,
+    frame: &str,
+    subgraph: &termiflow::graph::Subgraph,
+    (origin_x, origin_y): (usize, usize),
+) -> bool {
+    if !is_direct_parallel_bt_sibling_scene(graph) {
+        return false;
+    }
+
+    let Some((_, title_end)) = termiflow::graph::subgraph_title_text_span(
+        subgraph.bounds.x,
+        subgraph.bounds.width,
+        subgraph.title.as_deref().unwrap_or_default(),
+        graph.direction,
+    ) else {
+        return false;
+    };
+    let title_row = termiflow::graph::subgraph_title_row(
+        subgraph.bounds.y,
+        subgraph.bounds.height,
+        graph.direction,
+    );
+    let lines: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+    let Some(row) = lines.get(title_row.saturating_sub(origin_y)) else {
+        return false;
+    };
+
+    let interior_start = subgraph.bounds.x.saturating_add(1).saturating_sub(origin_x);
+    let interior_end = subgraph
+        .bounds
+        .x
+        .saturating_add(subgraph.bounds.width.saturating_sub(1))
+        .saturating_sub(origin_x);
+    if interior_start >= interior_end {
+        return false;
+    }
+
+    let rails = (interior_start..interior_end)
+        .filter(|x| row.get(*x).copied().is_some_and(is_vertical_route_glyph))
+        .collect::<Vec<_>>();
+    rails.len() == 3
+        && rails
+            .first()
+            .is_some_and(|first| *first >= title_end.saturating_sub(origin_x).saturating_add(4))
+}
+
 fn origin(graph: &termiflow::Graph) -> (usize, usize) {
     (
         graph
@@ -1482,12 +1536,11 @@ fn bt_title_boundary_hook_findings(
             }
         }
 
-        // A repaired strict BT parallel scene may no longer contain a
-        // literal horizontal elbow, while a rail can still pierce the title
-        // row and visually read as a title suffix (`Target |`). Keep that
-        // topology-owned ambiguity in the human queue. The predicate is
-        // based on the direct boundary pair count, never on fixture names or
-        // title text, and records the exact title-row rail cells.
+        // A strict BT parallel scene may no longer contain a literal
+        // horizontal elbow, while a rail can still pierce the title row and
+        // visually read as a title suffix (`Target |`). Keep that ambiguity
+        // queued unless the exact graph selector and the measured visible
+        // title-to-rail quiet band both prove the canonical scene is clear.
         if cells.is_empty() {
             let mut parallel_boundary_pairs = HashMap::<(String, String), usize>::new();
             for edge in graph.edges.iter().filter(|edge| !edge.is_back_edge) {
@@ -1504,6 +1557,16 @@ fn bt_title_boundary_hook_findings(
             let is_strict_parallel_boundary = graph.direction == termiflow::graph::Direction::BT
                 && parallel_boundary_pairs.values().copied().max().unwrap_or(0) >= 3;
             if is_strict_parallel_boundary {
+                if is_direct_parallel_bt_sibling_scene(graph)
+                    && direct_parallel_bt_title_band_is_clear(
+                        graph,
+                        frame,
+                        subgraph,
+                        (origin_x, origin_y),
+                    )
+                {
+                    continue;
+                }
                 let title_row = title_y.saturating_sub(origin_y);
                 if let Some(row) = lines.get(title_row) {
                     for x in subgraph.bounds.x.saturating_add(1)
@@ -2828,16 +2891,65 @@ mod tests {
 
     #[test]
     #[cfg(feature = "maintainer-fixtures")]
-    fn bt_title_boundary_review_queues_repaired_parallel_turn_for_human_review() {
+    fn bt_title_boundary_review_accepts_proven_quiet_band_and_rejects_narrow_band() {
         let input = std::fs::read("tests/fixtures/inputs/collision_parallel_edges_bt.md")
             .expect("read BT parallel fixture");
-        let frame = render_fixture(&input, BaseStyle::Ascii, true);
-        let report = analyze(&input, frame.as_bytes(), "ascii", "optimized")
-            .expect("analyze BT parallel frame");
-        assert_eq!(report["status"], "inconclusive");
-        assert!(report["findings"].as_array().is_some_and(|items| items
-            .iter()
-            .any(|item| { item["code"] == "bt_title_boundary_hook_requires_human_review" })));
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            let style_name = if style == BaseStyle::Ascii {
+                "ascii"
+            } else {
+                "unicode"
+            };
+            let rail = if style == BaseStyle::Ascii {
+                '|'
+            } else {
+                '│'
+            };
+            for optimized in [false, true] {
+                let frame = render_fixture(&input, style, optimized);
+                let mode_name = if optimized { "optimized" } else { "default" };
+                let report = analyze(&input, frame.as_bytes(), style_name, mode_name)
+                    .expect("analyze BT parallel frame");
+                assert_eq!(report["status"], "clean", "clean positive: {report}");
+                assert!(!report["findings"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| {
+                        item["code"] == "bt_title_boundary_hook_requires_human_review"
+                    })));
+
+                let title_row = frame
+                    .lines()
+                    .position(|line| line.contains("Target"))
+                    .expect("Target title row");
+                let row = frame
+                    .lines()
+                    .nth(title_row)
+                    .expect("Target title line")
+                    .chars()
+                    .collect::<Vec<_>>();
+                let title_chars = "Target".chars().collect::<Vec<_>>();
+                let title_end = row
+                    .windows(title_chars.len())
+                    .position(|window| window == title_chars.as_slice())
+                    .map(|start| start + title_chars.len() - 1)
+                    .expect("Target title span");
+                let first_rail = (title_end + 1..row.len())
+                    .find(|x| row.get(*x).copied() == Some(rail))
+                    .expect("first title-row rail");
+                assert!(first_rail >= title_end + 4, "fixture must have quiet band");
+
+                let mutated =
+                    replace_frame_cell(&frame, first_rail.saturating_sub(1), title_row, rail);
+                let narrow = analyze(&input, mutated.as_bytes(), style_name, mode_name)
+                    .expect("analyze narrow BT parallel title band");
+                assert_eq!(narrow["status"], "inconclusive", "narrow band: {narrow}");
+                assert!(narrow["findings"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|item| {
+                        item["code"] == "bt_title_boundary_hook_requires_human_review"
+                    })));
+            }
+        }
     }
 
     #[test]
