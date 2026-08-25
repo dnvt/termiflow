@@ -51,14 +51,14 @@ Regenerate them after intentional rendering changes.
 
 ## Test Counts
 
-- **241 input files** (220 clean successes, 18 successes with warnings, 3
+- **242 input files** (221 clean successes, 18 successes with warnings, 3
   expected errors); the typed contracts live in `metadata.json`
 - **482 expected outputs** (ASCII + Unicode per input)
-- **964 ordinary visual rows** (ASCII + Unicode × default + optimized per
+- **968 ordinary visual rows** (ASCII + Unicode × default + optimized per
   input; expected-error rows follow their declared error policy)
 - **4 directions tested**: TD, LR, BT, RL
 
-The complete packet currently contains **952 renderable review rows** plus
+The complete packet currently contains **956 renderable review rows** plus
 **12 expected-error policy rows**. Every renderable row receives a
 hash-bound `termiflow.route_clarity.v1` report before it can enter the
 one-frame reviewer queue. Route `risk` and `inconclusive` statuses are
@@ -71,7 +71,7 @@ Renderer-wide work has a second full-corpus policy lane. The canonical packet
 injects the requested `--style` for comparable ASCII/Unicode homologs. The
 authored-policy packet is generated with `--respect-input-style` so native
 `%% termiflow:` style, wrapping, spacing, and composite directives are not
-overridden. It covers the same 241 inputs, 964 rows, 952 renderable decisions,
+overridden. It covers the same 242 inputs, 968 rows, 956 renderable decisions,
 and 12 expected-error policy decisions. The 20 directive-bearing inputs are
 high-risk, but every other input remains a no-override control; a row from
 one lane cannot cover the other.
@@ -162,6 +162,15 @@ scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-r
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/full-review-decisions.jsonl --fresh --record /tmp/one-review.json
 scripts/review_visual_packet.sh --packet /path/to/packet --decisions /tmp/review-decisions.jsonl --fresh --validate
 
+# Convert the completed one-frame ledger into typed, hash-bound learning
+# classes and grouped falsifiable hypotheses. Strict mode requires every
+# renderable row to be classified; run once per policy lane.
+scripts/visual_learning.sh \
+  --packet /path/to/packet \
+  --decisions /tmp/full-review-decisions.jsonl \
+  --output /tmp/full-review-learning.json \
+  --strict
+
 # Govern expected-error rows with a separate policy ledger. These rows are
 # reviewed for exit status, stdout, stderr, and the declared error contract;
 # they are not perceptual golden decisions.
@@ -213,9 +222,11 @@ done
    related fixtures, and choose the next targeted command before moving on
 8. **The loop is self-improving** - generate schema-bound golden canaries,
    inspect rendered frames with machine evidence plus human-eye row/column and
-   glyph observations, record a falsifiable fix hypothesis, run homolog and
-   evaluator-owned holdout checks, then preserve the lesson and next target in
-   the cycle receipt
+   glyph observations, classify each decision as a confirmed flaw, topology
+   ambiguity, or inconclusive review, group repeated observations into
+   falsifiable hypotheses, run homolog and evaluator-owned holdout checks, then
+   preserve the lesson and next target in the cycle receipt. A strict learning
+   report is required before a lane can be treated as complete.
 
 ## Visual cycle receipt
 

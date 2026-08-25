@@ -3,6 +3,7 @@ pub(crate) mod common;
 pub(crate) mod error_policy;
 pub(crate) mod golden;
 pub(crate) mod holdout;
+pub(crate) mod learning;
 pub(crate) mod persist;
 pub(crate) mod persist_ops;
 pub(crate) mod provenance;

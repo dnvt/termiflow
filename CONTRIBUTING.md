@@ -45,6 +45,7 @@ scripts/review_visual_packet.sh --packet /tmp/termiflow-visual-packet --decision
 scripts/review_visual_packet.sh --packet /tmp/termiflow-visual-packet --decisions /tmp/termiflow-review-decisions.jsonl --next
 scripts/review_visual_packet.sh --packet /tmp/termiflow-visual-packet --decisions /tmp/termiflow-review-decisions.jsonl --record /tmp/one-review.json
 scripts/review_visual_packet.sh --packet /tmp/termiflow-visual-packet --decisions /tmp/termiflow-review-decisions.jsonl --validate
+scripts/visual_learning.sh --packet /tmp/termiflow-visual-packet --decisions /tmp/termiflow-review-decisions.jsonl --output /tmp/termiflow-review-learning.json --strict
 ```
 
 For a canonical Mermaid-schema canary, use
@@ -54,6 +55,11 @@ one-frame perceptual ledger and before golden approval. Continue with
 `scripts/review_visual_packet.sh` one frame at a time, close the accepted fix or
 hold with `scripts/visual_cycle.sh`, and use the separate intent-bound golden
 approval command only for an intentional rendering change.
+
+After the fresh ledger validates, run `scripts/visual_learning.sh --strict` for
+each policy lane. Its typed classes separate confirmed renderer flaws from
+topology/oracle ambiguity and inconclusive human-eye evidence, then preserve
+falsifiable hypotheses for the next focused cycle.
 
 The package and publish commands are clean-checkout release gates; a dirty
 working tree must not be hidden with `--allow-dirty`. The visual commands are

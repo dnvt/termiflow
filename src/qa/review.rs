@@ -17,10 +17,17 @@ const DECISIONS: &[&str] = &["pass", "fail", "watch", "unclear"];
 const SEVERITIES: &[&str] = &["P0", "P1", "P2", "P3"];
 const DIMENSIONS: &[&str] = &["semantic", "containment", "route", "text", "readability"];
 const REVIEWERS: &[&str] = &["ai", "human", "machine"];
+const WATCH_CLASSES: &[&str] = &[
+    "confirmed_flaw",
+    "topology_ambiguous",
+    "inconclusive",
+    "not_applicable",
+];
 const GENERIC_WATCH_OBSERVATION: &str =
     "Route or local visual density remains a conservative human-eye watch; the marked cells need matched review.";
 const GENERIC_WATCH_HYPOTHESIS: &str =
     "The current topology-owned route/boundary interaction remains a human-eye ownership or density watch even though the frame is structurally renderable.";
+const LEGACY_CARRY_FORWARD_OWNER: &str = "visual-review/legacy-carry-forward";
 
 #[derive(Debug, Default)]
 struct DecisionState {
@@ -239,7 +246,7 @@ fn resolve_decision_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn load_manifest(packet: &Path) -> Result<BTreeMap<String, Value>> {
+pub(crate) fn load_manifest(packet: &Path) -> Result<BTreeMap<String, Value>> {
     if !packet.join("COMPLETE.json").is_file() {
         bail!(
             "missing completion marker: {}",
@@ -348,6 +355,17 @@ fn validate_fresh_decision(decision: &Value) -> Result<()> {
     if review_kind(decision)? != PERCEPTUAL_REVIEW {
         bail!("fresh perceptual review cannot include machine structural decision for {case_id}");
     }
+    let decision_kind = non_empty_string(decision.get("decision"), "decision kind")?;
+    let watch_class = non_empty_string(decision.get("watch_class"), "decision watch_class")?;
+    if !WATCH_CLASSES.contains(&watch_class.as_str()) {
+        bail!("invalid watch_class for {case_id}: {watch_class}");
+    }
+    if decision_kind == "pass" && watch_class != "not_applicable" {
+        bail!("pass decision {case_id} must use watch_class=not_applicable");
+    }
+    if decision_kind != "pass" && watch_class == "not_applicable" {
+        bail!("non-pass decision {case_id} cannot use watch_class=not_applicable");
+    }
     if decision.get("carry_forward").is_some() {
         bail!("fresh perceptual review cannot include carry-forward decision for {case_id}");
     }
@@ -364,13 +382,40 @@ fn validate_fresh_decision(decision: &Value) -> Result<()> {
     {
         bail!("fresh perceptual review has a stale H152 next command for {case_id}");
     }
-    if matches!(decision["decision"].as_str(), Some("watch" | "fail"))
+    if decision_kind != "pass" {
+        let observation = non_empty_string(decision.get("observation"), "decision observation")?;
+        if observation.contains("AI one-frame inspection")
+            || observation.contains("nullxnull")
+            || observation.contains("warning-bearing interaction is retained")
+        {
+            bail!(
+                "fresh perceptual review must replace templated observation with visible details for {case_id}"
+            );
+        }
+        let finding = non_empty_string(decision.get("finding"), "decision finding")?;
+        if finding == "none" || finding == "stable-human-readable-id-or-none" {
+            bail!("fresh non-pass review requires a concrete finding for {case_id}");
+        }
+        non_empty_string(decision.get("owner_layer"), "decision owner_layer")?;
+    }
+    if matches!(decision_kind.as_str(), "watch" | "fail")
         && decision["cells"].as_array().is_some_and(Vec::is_empty)
     {
         bail!(
             "fresh {kind} review must bind a watch/fail to exact frame cells for {case_id}",
             kind = decision["decision"]
         );
+    }
+    if decision_kind != "pass"
+        && decision["cells"].as_array().is_some_and(|cells| {
+            cells.iter().any(|cell| {
+                cell["note"]
+                    .as_str()
+                    .is_some_and(|note| note.contains("frame-level watch"))
+            })
+        })
+    {
+        bail!("fresh non-pass review requires visible cell details for {case_id}");
     }
     Ok(())
 }
@@ -404,6 +449,7 @@ fn rebind_exact_successful_decisions(
     )?;
     let mut candidates = Vec::new();
     let mut rebound_warning = 0usize;
+    let mut legacy_owner_layer_filled = 0usize;
     let mut skipped_changed = 0usize;
     let mut skipped_missing_history = 0usize;
     let mut skipped_without_perceptual = 0usize;
@@ -459,6 +505,19 @@ fn rebind_exact_successful_decisions(
             "prior_policy_sha256": prior_row["policy"]["sha256"],
             "reason": "exact fixture/style/mode, frame, evidence, and effective-policy equality",
         });
+        if rebound["watch_class"] != "not_applicable"
+            && rebound
+                .get("owner_layer")
+                .and_then(Value::as_str)
+                .is_none_or(|owner| owner.trim().is_empty())
+        {
+            rebound["owner_layer"] = Value::String(LEGACY_CARRY_FORWARD_OWNER.to_owned());
+            rebound["carry_forward"]["owner_layer_provenance"] = Value::String(
+                "legacy decision lacked owner_layer; preserved as an explicit review-workflow watch"
+                    .to_owned(),
+            );
+            legacy_owner_layer_filled += 1;
+        }
         rebound["timestamp"] = Value::String(common::now_label());
         validate_decision(&rebound, current_rows)?;
         history.guard_decision(current_row, &rebound, &prior_resolved_history_ids)?;
@@ -484,6 +543,7 @@ fn rebind_exact_successful_decisions(
         "schema": "termiflow.visual_review.rebind.v1",
         "rebound": candidates.len(),
         "rebound_warning": rebound_warning,
+        "legacy_owner_layer_filled": legacy_owner_layer_filled,
         "skipped_changed": skipped_changed,
         "skipped_missing_history": skipped_missing_history,
         "skipped_without_perceptual": skipped_without_perceptual,
@@ -521,7 +581,7 @@ fn same_review_hashes(current: &Value, prior: &Value) -> bool {
     .all(|(section, field)| current[*section][*field] == prior[*section][*field])
 }
 
-fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result<()> {
+pub(crate) fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result<()> {
     if decision["schema"].as_str() != Some(DECISION_SCHEMA) {
         bail!("decision schema must be {DECISION_SCHEMA}");
     }
@@ -554,6 +614,19 @@ fn validate_decision(decision: &Value, rows: &BTreeMap<String, Value>) -> Result
     }
     if !SEVERITIES.contains(&decision["severity"].as_str().unwrap_or_default()) {
         bail!("invalid severity for {case_id}");
+    }
+    if let Some(watch_class) = decision.get("watch_class") {
+        let class = non_empty_string(Some(watch_class), "decision watch_class")?;
+        if !WATCH_CLASSES.contains(&class.as_str()) {
+            bail!("invalid watch_class for {case_id}: {class}");
+        }
+        let decision_kind = decision["decision"].as_str().unwrap_or_default();
+        if decision_kind == "pass" && class != "not_applicable" {
+            bail!("pass decision {case_id} must use watch_class=not_applicable");
+        }
+        if decision_kind != "pass" && class == "not_applicable" {
+            bail!("non-pass decision {case_id} cannot use watch_class=not_applicable");
+        }
     }
     let dimensions = decision["dimensions"]
         .as_array()
@@ -613,7 +686,7 @@ fn row_run_id(row: &Value) -> Option<&str> {
         })
 }
 
-fn review_kind(decision: &Value) -> Result<&'static str> {
+pub(crate) fn review_kind(decision: &Value) -> Result<&'static str> {
     let reviewer = non_empty_string(decision.get("reviewer"), "decision reviewer")?;
     if !REVIEWERS.contains(&reviewer.as_str()) {
         bail!("unsupported reviewer: {reviewer}");
@@ -879,7 +952,7 @@ fn frame_payload(
         serde_json::from_slice(&evidence_bytes).context("parse review evidence")?;
     let evidence_hash = evidence_ref["sha256"].as_str().unwrap_or_default();
     let style_provenance = style_provenance(row, &evidence);
-    Ok(json!({
+    let mut payload = json!({
         "schema": FRAME_SCHEMA,
         "case_id": row["case_id"],
         "run_id": row_run_id(row).unwrap_or_default(),
@@ -944,7 +1017,13 @@ fn frame_payload(
             "run_id": row_run_id(row).unwrap_or_default(),
             "policy_sha256": row["policy"]["sha256"],
         },
-    }))
+    });
+    payload["decision_form"]["watch_class"] =
+        Value::String("confirmed_flaw|topology_ambiguous|inconclusive|not_applicable".to_owned());
+    payload["decision_form"]["owner_layer"] = Value::String(
+        "routing|layout|glyph_projection|text|fixture|oracle|reviewer_calibration".to_owned(),
+    );
+    Ok(payload)
 }
 
 fn style_provenance(row: &Value, evidence: &Value) -> Value {
@@ -1255,6 +1334,7 @@ mod tests {
             "evidence_sha256": "evidence",
             "decision": "watch",
             "severity": "P2",
+            "watch_class": "topology_ambiguous",
             "dimensions": ["route", "readability"],
             "cells": [],
             "finding": "route-watch",
@@ -1262,6 +1342,7 @@ mod tests {
             "hypothesis": GENERIC_WATCH_HYPOTHESIS,
             "expected_observation_if_true": "the matched frame keeps the route attached",
             "falsifier": "a detached route or visible overlap",
+            "owner_layer": "routing",
             "affected_homologs": [],
             "next_command": "scripts/review_visual_packet.sh --packet h155 --decisions fresh --next",
             "reviewer": "ai",

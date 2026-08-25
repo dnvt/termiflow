@@ -1,7 +1,7 @@
 //! Subgraph boundary and portal routing policy.
 
 use crate::geom::Rect;
-use crate::graph::{Direction, EdgeKind, Graph, Node};
+use crate::graph::{Direction, EdgeKind, Graph, Node, NodeShape};
 use crate::orientation::OrientedCoords;
 use crate::style::StyleChars;
 
@@ -355,6 +355,400 @@ fn direct_td_sibling_pair<'a>(
         })
         .count();
     (direct_pair_count == 1).then_some((source, target))
+}
+
+/// Return the strictly bounded TD/TB topology whose entry routes currently
+/// form title-adjacent hooks in the visual corpus.
+///
+/// This is deliberately a graph contract, not a fixture or label selector:
+/// two titled, flat sibling groups; one external entry into the first group;
+/// one internal edge there; two one-to-one cross-group edges; and two exits
+/// from the second group into one external terminal. Database receivers are
+/// the only non-rectangle target shape admitted by this epoch. Near-misses
+/// fail closed so the generic renderer remains responsible for them.
+fn td_complex_title_portal_pair(
+    graph: &Graph,
+) -> Option<(&crate::graph::Subgraph, &crate::graph::Subgraph)> {
+    if !matches!(graph.direction, Direction::TD | Direction::TB)
+        || graph.subgraphs.len() != 2
+        || graph.nodes.len() != 6
+        || graph.edges.len() != 6
+        || graph.has_cycles()
+    {
+        return None;
+    }
+
+    let groups = graph
+        .subgraphs
+        .iter()
+        .filter(|group| {
+            group.parent_id.is_none()
+                && group.child_ids.is_empty()
+                && group
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| !title.is_empty())
+                && group.node_ids.len() == 2
+                && group.node_ids.iter().all(|node_id| {
+                    graph.get_node(node_id).is_some()
+                        && graph.get_node_subgraph(node_id) == Some(group.id.as_str())
+                })
+                && group.bounds.is_valid()
+        })
+        .collect::<Vec<_>>();
+    if groups.len() != 2 || groups[0].bounds.y == groups[1].bounds.y {
+        return None;
+    }
+
+    let (source_group, target_group) = if groups[0].bounds.y < groups[1].bounds.y {
+        (groups[0], groups[1])
+    } else {
+        (groups[1], groups[0])
+    };
+    if source_group
+        .bounds
+        .y
+        .saturating_add(source_group.bounds.height)
+        >= target_group.bounds.y
+        || source_group.bounds.x
+            >= target_group
+                .bounds
+                .x
+                .saturating_add(target_group.bounds.width)
+        || target_group.bounds.x
+            >= source_group
+                .bounds
+                .x
+                .saturating_add(source_group.bounds.width)
+    {
+        return None;
+    }
+
+    let source_nodes = source_group
+        .node_ids
+        .iter()
+        .filter_map(|node_id| graph.get_node(node_id))
+        .collect::<Vec<_>>();
+    let target_nodes = target_group
+        .node_ids
+        .iter()
+        .filter_map(|node_id| graph.get_node(node_id))
+        .collect::<Vec<_>>();
+    if source_nodes.len() != 2
+        || target_nodes.len() != 2
+        || source_nodes
+            .iter()
+            .any(|node| node.shape != NodeShape::Rectangle)
+        || target_nodes
+            .iter()
+            .any(|node| node.shape != NodeShape::Database)
+    {
+        return None;
+    }
+
+    let external_nodes = graph
+        .nodes
+        .iter()
+        .filter(|node| graph.get_node_subgraph(&node.id).is_none())
+        .collect::<Vec<_>>();
+    if external_nodes.len() != 2
+        || external_nodes
+            .iter()
+            .any(|node| node.shape != NodeShape::Rectangle)
+    {
+        return None;
+    }
+
+    let ordinary_edges = graph
+        .edges
+        .iter()
+        .filter(|edge| !edge.is_back_edge && edge.kind == EdgeKind::Arrow && edge.label.is_none())
+        .collect::<Vec<_>>();
+    if ordinary_edges.len() != graph.edges.len() {
+        return None;
+    }
+
+    let external_entry_edges = ordinary_edges
+        .iter()
+        .filter(|edge| {
+            graph.get_node_subgraph(&edge.from).is_none()
+                && graph.get_node_subgraph(&edge.to) == Some(source_group.id.as_str())
+        })
+        .collect::<Vec<_>>();
+    if external_entry_edges.len() != 1 {
+        return None;
+    }
+    let entry_source = external_entry_edges[0].from.as_str();
+    let entry_target = external_entry_edges[0].to.as_str();
+    if !source_group.node_ids.contains(entry_target) {
+        return None;
+    }
+
+    let internal_source_edges = ordinary_edges
+        .iter()
+        .filter(|edge| {
+            source_group.node_ids.contains(&edge.from) && source_group.node_ids.contains(&edge.to)
+        })
+        .collect::<Vec<_>>();
+    let internal_target_edges = ordinary_edges
+        .iter()
+        .filter(|edge| {
+            target_group.node_ids.contains(&edge.from) && target_group.node_ids.contains(&edge.to)
+        })
+        .collect::<Vec<_>>();
+    if internal_source_edges.len() != 1 || !internal_target_edges.is_empty() {
+        return None;
+    }
+
+    let cross_edges = ordinary_edges
+        .iter()
+        .filter(|edge| {
+            source_group.node_ids.contains(&edge.from) && target_group.node_ids.contains(&edge.to)
+        })
+        .collect::<Vec<_>>();
+    let cross_sources = cross_edges
+        .iter()
+        .map(|edge| edge.from.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let cross_targets = cross_edges
+        .iter()
+        .map(|edge| edge.to.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    if cross_edges.len() != 2 || cross_sources.len() != 2 || cross_targets.len() != 2 {
+        return None;
+    }
+
+    let exit_edges = ordinary_edges
+        .iter()
+        .filter(|edge| {
+            target_group.node_ids.contains(&edge.from)
+                && graph.get_node_subgraph(&edge.to).is_none()
+        })
+        .collect::<Vec<_>>();
+    if exit_edges.len() != 2
+        || exit_edges
+            .iter()
+            .any(|edge| edge.to == entry_source || edge.from == entry_source)
+        || exit_edges[0].to != exit_edges[1].to
+    {
+        return None;
+    }
+
+    // The six edge categories above must account for the entire graph. This
+    // rejects extra outside branches and ambiguous owners without relying on
+    // node IDs, title text, fixture names, or fixed coordinates.
+    (external_entry_edges.len()
+        + internal_source_edges.len()
+        + cross_edges.len()
+        + exit_edges.len()
+        == ordinary_edges.len())
+    .then_some((source_group, target_group))
+}
+
+/// Prefer the already-owned source lane as the receiving arrow lane when it
+/// is physically inside the target node and outside its title span. Keeping a
+/// proven lane straight avoids manufacturing a title-adjacent elbow merely
+/// to return to the node centerline.
+pub(crate) fn td_complex_title_portal_source_lane(
+    from: &Node,
+    to: &Node,
+    stem_start_x: usize,
+    graph: &Graph,
+) -> Option<usize> {
+    let (source_group, target_group) = td_complex_title_portal_pair(graph)?;
+    let from_subgraph = graph.get_node_subgraph(&from.id);
+    let to_subgraph = graph.get_node_subgraph(&to.id);
+    let receiver_group = if from_subgraph.is_none() && to_subgraph == Some(source_group.id.as_str())
+    {
+        source_group
+    } else if from_subgraph == Some(source_group.id.as_str())
+        && to_subgraph == Some(target_group.id.as_str())
+    {
+        target_group
+    } else {
+        return None;
+    };
+    let min_node_x = to.x.saturating_add(1);
+    let max_node_x = to.x.saturating_add(to.width.saturating_sub(2));
+    if stem_start_x < min_node_x || stem_start_x > max_node_x {
+        return None;
+    }
+    (stem_start_x >= receiver_group.bounds.x.saturating_add(1)
+        && stem_start_x
+            <= receiver_group
+                .bounds
+                .x
+                .saturating_add(receiver_group.bounds.width.saturating_sub(2)))
+    .then_some(stem_start_x)
+}
+
+pub(super) fn td_complex_title_portal_entry_x(
+    from: &Node,
+    to: &Node,
+    stem_start_x: usize,
+    arrow_y: usize,
+    graph: &Graph,
+) -> Option<usize> {
+    let receiver_group = graph
+        .get_node_subgraph(&to.id)
+        .and_then(|subgraph_id| graph.get_subgraph(subgraph_id))?;
+    if arrow_y <= receiver_group.bounds.y
+        || is_subgraph_title_cell(
+            graph,
+            stem_start_x,
+            subgraph_title_y(&receiver_group.bounds, graph.direction),
+        )
+    {
+        return None;
+    }
+    td_complex_title_portal_source_lane(from, to, stem_start_x, graph)
+}
+
+/// Lower one entry of the bounded complex-TD scene through a source-centred
+/// target portal, then make the only horizontal turn on the quiet row above
+/// the receiving node. The old generic path turns immediately above the
+/// target border, which makes a connected route read like a stray mini-corner
+/// beside the group title. If any geometry precondition is not proven, this
+/// returns `false` and the established route policy remains in charge.
+#[allow(clippy::too_many_arguments)]
+fn route_td_complex_title_portal_corridor(
+    from: &Node,
+    to: &Node,
+    stem_start_x: usize,
+    stem_start_y: usize,
+    arrow_x: usize,
+    arrow_y: usize,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+    owner: Option<RouteOwner<'_>>,
+) -> bool {
+    let Some((source_group, target_group)) = td_complex_title_portal_pair(graph) else {
+        return false;
+    };
+    let source_group_id = graph.get_node_subgraph(&from.id);
+    let target_group_id = graph.get_node_subgraph(&to.id);
+    let enters_first_from_outside =
+        source_group_id.is_none() && target_group_id == Some(source_group.id.as_str());
+    let crosses_to_second = source_group_id == Some(source_group.id.as_str())
+        && target_group_id == Some(target_group.id.as_str());
+    if !enters_first_from_outside && !crosses_to_second {
+        return false;
+    }
+
+    let receiver_group = if enters_first_from_outside {
+        source_group
+    } else {
+        target_group
+    };
+    let border_y = receiver_group.bounds.y;
+    let min_portal_x = receiver_group.bounds.x.saturating_add(1);
+    let max_portal_x = receiver_group
+        .bounds
+        .x
+        .saturating_add(receiver_group.bounds.width.saturating_sub(2));
+    let portal_x = stem_start_x;
+    if portal_x < min_portal_x || portal_x > max_portal_x || arrow_y <= border_y {
+        return false;
+    }
+
+    let title_y = subgraph_title_y(&receiver_group.bounds, graph.direction);
+    if is_subgraph_title_cell(graph, portal_x, title_y) {
+        return false;
+    }
+
+    let min_bridge_y = if enters_first_from_outside {
+        title_y.saturating_add(1)
+    } else {
+        td_title_safe_entry_y(receiver_group)
+    };
+    let bridge_y = arrow_y.saturating_sub(1).max(min_bridge_y);
+    if bridge_y < min_bridge_y
+        || bridge_y <= border_y.saturating_add(1)
+        || bridge_y >= canvas.height
+    {
+        return false;
+    }
+
+    let owner_id = owner
+        .map(|route_owner| route_owner.id.to_owned())
+        .unwrap_or_else(|| edge_route_owner_id(graph, &from.id, &to.id));
+    let mut plan = FallbackRoutePlan::new(owner_id, "td-complex-title-portal-corridor");
+    if crosses_to_second {
+        let source_border_y = source_group
+            .bounds
+            .y
+            .saturating_add(source_group.bounds.height.saturating_sub(1));
+        plan.set_source_attachment(
+            source_group.id.clone(),
+            "bottom",
+            stem_start_x,
+            source_border_y,
+        );
+    }
+    if crosses_to_second {
+        plan.set_target_attachment(receiver_group.id.clone(), "top", portal_x, border_y);
+        plan.set_arrow_attachment(arrow_x, arrow_y);
+    }
+    plan.claim_boundary(
+        receiver_group.id.clone(),
+        "top",
+        portal_x,
+        border_y,
+        style.edge_v,
+    );
+    if crosses_to_second {
+        let source_border_y = source_group
+            .bounds
+            .y
+            .saturating_add(source_group.bounds.height.saturating_sub(1));
+        plan.claim_boundary(
+            source_group.id.clone(),
+            "bottom",
+            stem_start_x,
+            source_border_y,
+            style.edge_v,
+        );
+    }
+    plan.push_vertical(stem_start_x, stem_start_y, bridge_y, style.edge_v);
+
+    if portal_x != arrow_x {
+        let arrow_is_right = arrow_x > portal_x;
+        plan.push_corner(
+            portal_x,
+            bridge_y,
+            if arrow_is_right {
+                style.corner_ul
+            } else {
+                style.corner_ur
+            },
+        );
+        plan.push_horizontal(bridge_y, portal_x, arrow_x, style.edge_h);
+        plan.push_corner(
+            arrow_x,
+            bridge_y,
+            if arrow_is_right {
+                style.corner_dr
+            } else {
+                style.corner_dl
+            },
+        );
+    }
+    if bridge_y != arrow_y {
+        plan.push_vertical(arrow_x, bridge_y, arrow_y, style.edge_v);
+    }
+
+    if let Some(reason) = plan.validation_error(canvas.width, canvas.height) {
+        canvas.record_fallback_route_rejection(
+            plan.owner_id.clone(),
+            plan.strategy.clone(),
+            reason,
+        );
+        return false;
+    }
+
+    lower_td_fallback_plan(plan, canvas, style, owner);
+    true
 }
 
 fn td_sibling_corridor_row(source_border_y: usize, target_border_y: usize) -> Option<usize> {
@@ -1157,6 +1551,27 @@ pub(super) fn route_cross_subgraph_td(
     };
     if !sg.bounds.is_valid() {
         return false;
+    }
+
+    if route_td_complex_title_portal_corridor(
+        from,
+        to,
+        stem_start_x,
+        stem_start_y,
+        arrow_x,
+        arrow_y,
+        canvas,
+        style,
+        graph,
+        owner,
+    ) {
+        if debug_timing {
+            eprintln!(
+                "  cross-subgraph complex title portal corridor {} -> {}",
+                from.id, to.id
+            );
+        }
+        return true;
     }
 
     if route_td_terminal_entry_quiet_band(

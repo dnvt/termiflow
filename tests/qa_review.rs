@@ -139,6 +139,7 @@ fn perceptual_decision(frame_sha256: &str, evidence_sha256: &str) -> Value {
         "evidence_sha256": evidence_sha256,
         "decision": "pass",
         "severity": "P3",
+        "watch_class": "not_applicable",
         "dimensions": ["semantic", "containment", "route", "text", "readability"],
         "cells": [{"x": 0, "y": 0, "note": "frame is readable"}],
         "finding": "none",
@@ -275,6 +276,31 @@ fn review_rebinds_only_exact_renderable_rows_and_preserves_history() {
 
     let prior_decisions = root.join("prior-decisions.jsonl");
     write_prior_decision(&prior_decisions, &frame_sha256, &evidence_sha256);
+    let mut legacy_decision: Value = serde_json::from_str(
+        fs::read_to_string(&prior_decisions)
+            .expect("read legacy prior decision")
+            .lines()
+            .next()
+            .expect("legacy prior decision line"),
+    )
+    .expect("parse legacy prior decision");
+    legacy_decision["decision"] = Value::String("watch".to_owned());
+    legacy_decision["severity"] = Value::String("P2".to_owned());
+    legacy_decision["watch_class"] = Value::String("topology_ambiguous".to_owned());
+    legacy_decision["finding"] = Value::String("legacy-topology-watch".to_owned());
+    legacy_decision["cells"] = json!([{"x": 0, "y": 0, "note": "legacy route ownership watch"}]);
+    legacy_decision
+        .as_object_mut()
+        .expect("legacy decision object")
+        .remove("owner_layer");
+    fs::write(
+        &prior_decisions,
+        format!(
+            "{}\n",
+            serde_json::to_string(&legacy_decision).expect("serialize legacy prior decision")
+        ),
+    )
+    .expect("write legacy prior decision");
     let current_decisions = root.join("current-decisions.jsonl");
     let result = run_review(
         &current_packet,
@@ -291,6 +317,7 @@ fn review_rebinds_only_exact_renderable_rows_and_preserves_history() {
     assert!(result.status.success(), "rebind failed: {result:?}");
     let summary: Value = serde_json::from_slice(&result.stdout).expect("parse rebind summary");
     assert_eq!(summary["rebound"], 1);
+    assert_eq!(summary["legacy_owner_layer_filled"], 1);
     let rebound: Value = serde_json::from_str(
         fs::read_to_string(&current_decisions)
             .expect("read rebound decision")
@@ -303,8 +330,13 @@ fn review_rebinds_only_exact_renderable_rows_and_preserves_history() {
         rebound["carry_forward"]["schema"],
         "termiflow.visual_review.carry_forward.v1"
     );
-    assert_eq!(rebound["decision"], "pass");
+    assert_eq!(rebound["decision"], "watch");
     assert_eq!(rebound["frame_sha256"], frame_sha256);
+    assert_eq!(rebound["owner_layer"], "visual-review/legacy-carry-forward");
+    assert_eq!(
+        rebound["carry_forward"]["owner_layer_provenance"],
+        "legacy decision lacked owner_layer; preserved as an explicit review-workflow watch"
+    );
 
     fs::remove_dir_all(root).expect("remove temporary rebind packets");
 }

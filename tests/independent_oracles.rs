@@ -3377,12 +3377,9 @@ fn database_terminal_entry_raw_frame_errors(
             for y in start_y..end_y {
                 if rendered_char(arrow_x, y) == Some(chars.arrow_right) {
                     arrow_cells.push((arrow_x, y));
-                    if !matches!(
-                        rendered_char(contour_x, y),
-                        Some(glyph) if glyph == chars.v || glyph == chars.junction_left
-                    ) {
+                    if rendered_char(contour_x, y) != Some(chars.v) {
                         errors.push(format!(
-                            "LR database contour at ({contour_x},{y}) is not intact"
+                            "LR terminal database arrow-adjacent wall at ({contour_x},{y}) is not preserved"
                         ));
                     }
                 }
@@ -3396,12 +3393,9 @@ fn database_terminal_entry_raw_frame_errors(
             for y in start_y..end_y {
                 if rendered_char(arrow_x, y) == Some(chars.arrow_left) {
                     arrow_cells.push((arrow_x, y));
-                    if !matches!(
-                        rendered_char(contour_x, y),
-                        Some(glyph) if glyph == chars.v || glyph == chars.junction_right
-                    ) {
+                    if rendered_char(contour_x, y) != Some(chars.v) {
                         errors.push(format!(
-                            "RL database contour at ({contour_x},{y}) is not intact"
+                            "RL terminal database arrow-adjacent wall at ({contour_x},{y}) is not preserved"
                         ));
                     }
                 }

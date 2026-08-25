@@ -1,7 +1,7 @@
 ---
 name: termiflow-visual-review
 description: Review TermiFlow ASCII and Unicode diagram frames for human-visible semantic, routing, containment, text, and rendering defects with hash-bound evidence and targeted self-improvement.
-version: 0.1.8
+version: 0.1.9
 allowed-tools: [Read, Grep, Bash]
 ---
 
@@ -61,6 +61,13 @@ see.
 - Do not overwrite goldens or decisions in place. Use the Rust QA command and
   the guarded Bash wrapper; source fixes require a fresh packet and a second
   inspection.
+- Every fresh perceptual decision must carry a typed `watch_class`: use
+  `not_applicable` only for `pass`, and classify every non-pass as
+  `confirmed_flaw`, `topology_ambiguous`, or `inconclusive`. The strict
+  learning report is the boundary that prevents conservative machine signals
+  from becoming unexamined renderer defects. Non-pass records must also name
+  an `owner_layer`, a concrete `finding`, and visible cell anchors; templated
+  “AI inspected this frame” or `nullxnull` observations are rejected.
 - Use Rust and Bash only. Do not create or invoke Python/Ruby files or scripts.
 
 ## Workflow
@@ -97,7 +104,16 @@ see.
    `--validate --history HISTORY.jsonl`; exception rows require perceptual
    decisions even if a machine pre-screen exists. The validator reports open
    historical risk separately from row coverage.
-7. Close an accepted improvement cycle with
+7. Classify the completed lane with
+   `scripts/visual_learning.sh --packet PACKET --decisions DECISIONS
+   --output LEARNING.json --strict`. This checks that every renderable row has
+   one typed perceptual decision, groups repeated observations into
+   falsifiable hypotheses, and promotes the next action to the correct owner:
+   renderer for `confirmed_flaw`, fixture/oracle policy for
+   `topology_ambiguous`, and reviewer calibration for `inconclusive`. Run it
+   for both the canonical and authored/no-override packets; never use an
+   unclassified report as release or golden evidence.
+8. Close an accepted improvement cycle with
    `scripts/visual_cycle.sh --packet PACKET --decisions DECISIONS --record
    CYCLE.json --output RECEIPT.json`. The cycle record must bind the packet and
    decision hashes, exact observation details, owner-layer hypothesis,
@@ -174,7 +190,7 @@ focused test or homolog comparison. Use `fail` when the diagram is misleading,
 topology is lost, or a required visual contract is violated. Use `unclear` when
 the packet or frame cannot support a reliable judgment; do not guess.
 
-Every non-pass decision must include a falsifier. Good hypotheses name a
+Every non-pass decision must include a falsifier and a `watch_class`. Good hypotheses name a
 rendering boundary, for example `fanout_fallback_edge_kind_loss`,
 `portal_marker_conflation`, `vertical_edge_label_hard_truncation`, or
 `fixture_wrap_contract_mismatch`. For titled BT boundaries also use the named
@@ -206,7 +222,8 @@ For each `watch` or `fail`:
 9. After a renderer or routing fix, rerun the complete existing fixture corpus
    in both the requested-style and authored-policy/no-override lanes, and
    drain both full one-frame decision ledgers with the history ledger loaded.
-   Promote the lesson only after focused defect rows, direction/style/mode
+   Run `scripts/visual_learning.sh --strict` for each completed lane before
+   promoting any hypothesis. Promote the lesson only after focused defect rows, direction/style/mode
    homologs, evaluator holdouts, authored-policy controls, and all ordinary
    corpus rows are separately accounted for.
 

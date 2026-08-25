@@ -872,6 +872,67 @@ fn exact_two_bt_siblings_route_clarity_is_clean_across_matrix() {
 }
 
 #[test]
+fn exact_two_bt_siblings_wide_labels_keep_lower_lane_clear_of_source_walls() {
+    let input_path = "tests/fixtures/inputs/collision_sibling_subgraphs_bt_wide_labels.md";
+    let input = fs::read_to_string(input_path).expect("read wide-label BT sibling fixture");
+
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let mut parsed = parse(&input, false)
+                .expect("parse wide-label BT sibling fixture")
+                .graph;
+            let mut config = Config {
+                composite_style: CompositeStyle::from_base(style),
+                optimize_render: optimized,
+                ..Default::default()
+            };
+            config.spacing = config.spacing.for_direction(parsed.direction);
+            measure::measure_graph(&mut parsed, &config);
+            let (graph, outcome) = layout_and_render_with_feedback(parsed, config)
+                .expect("render wide-label BT sibling fixture");
+            let report = evidence::build(&graph, &outcome);
+
+            assert_eq!(report.raw.arrowheads, 4);
+            assert!(report.raw.shaftless_arrowheads.is_empty());
+            assert!(report.geometry.errors.is_empty());
+            assert!(report.geometry.untraced_fallback_edges.is_empty());
+            assert!(report.critic.findings.is_empty(),
+                "wide-label BT sibling scene must be critic-clean for {style:?} optimized={optimized}: {:?}\n{}",
+                report.critic.findings, outcome.output);
+
+            let source = graph
+                .subgraphs
+                .iter()
+                .find(|subgraph| subgraph.id == "Left")
+                .expect("wide-label source subgraph");
+            let source_left = source.bounds.x;
+            let source_right = source
+                .bounds
+                .x
+                .saturating_add(source.bounds.width.saturating_sub(1));
+            let lower_entry = outcome
+                .portal_trace
+                .target_entry_coordinates("C")
+                .into_iter()
+                .find(|(edge_id, _, _)| edge_id == "edge:2:A->C")
+                .expect("wide-label lower cross entry");
+            assert!(lower_entry.1.abs_diff(source_left) >= 4);
+            assert!(lower_entry.1.abs_diff(source_right) >= 4);
+
+            if style == BaseStyle::Ascii {
+                assert!(
+                    !outcome.output.contains("++"),
+                    "wide-label ASCII sibling scene must keep a gap around the source wall\n{}",
+                    outcome.output
+                );
+            } else {
+                assert!(!outcome.output.contains("┼┘"));
+            }
+        }
+    }
+}
+
+#[test]
 fn direct_td_terminal_entries_use_target_center_portals_without_hooks() {
     for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
         for optimized in [false, true] {

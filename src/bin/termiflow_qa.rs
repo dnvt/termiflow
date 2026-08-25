@@ -26,6 +26,8 @@ enum Command {
     Golden(GoldenArgs),
     /// Emit or record one visual frame review at a time.
     Review(ReviewArgs),
+    /// Classify fresh visual decisions into auditable learning hypotheses.
+    Learn(LearnArgs),
     /// Validate a canonical Mermaid fixture spec and emit its deterministic manifest.
     Schema(SchemaArgs),
     /// Execute evaluator-owned holdout rows into a golden-free packet and receipt.
@@ -138,6 +140,22 @@ struct ReviewArgs {
     /// Require one valid decision for every selected reviewable row.
     #[arg(long)]
     validate: bool,
+}
+
+#[derive(Debug, Args)]
+struct LearnArgs {
+    /// Completed visual-audit packet directory.
+    #[arg(long)]
+    packet: PathBuf,
+    /// JSONL perceptual decision ledger.
+    #[arg(long)]
+    decisions: PathBuf,
+    /// Immutable learning report destination.
+    #[arg(long)]
+    output: PathBuf,
+    /// Require every renderable row and every decision to carry an explicit watch_class.
+    #[arg(long)]
+    strict: bool,
 }
 
 #[derive(Debug, Args)]
@@ -297,6 +315,12 @@ fn main() -> Result<()> {
             rebind_from_decisions: args.rebind_from_decisions,
             prescreen_clean: args.prescreen_clean,
             validate: args.validate,
+        }),
+        Command::Learn(args) => qa::learning::run(qa::learning::LearningArgs {
+            packet: args.packet,
+            decisions: args.decisions,
+            output: args.output,
+            strict: args.strict,
         }),
         Command::Schema(args) => qa::spec::run(qa::spec::SpecArgs {
             spec: args.spec,

@@ -43,7 +43,7 @@ pub(super) use bt_sibling_scene::{
 pub(super) use bt_sibling_target::plan_bt_sibling_target_scene;
 pub use convergence::route_convergent_edges;
 pub(super) use database_fan_in::{
-    repair_database_source_border, route_database_intermediate_scene,
+    database_terminal_target_id, repair_database_source_border, route_database_intermediate_scene,
 };
 pub(super) use dedicated_fan_in::route_dedicated_fan_in_edges;
 pub(super) use dense_crossing::plan_dense_crossing_scenes;
@@ -60,6 +60,7 @@ pub use fanout::route_divergent_edges;
 pub(super) use lr_rl_sibling_chain::plan_lr_rl_sibling_chain_scene;
 pub(super) use lr_rl_sibling_target::plan_lr_rl_sibling_target_scene;
 pub(super) use sibling_subgraph_fan_in::plan_sibling_subgraph_fan_in_scene;
+pub(crate) use subgraph::td_complex_title_portal_source_lane;
 pub(super) use td_sibling_target::plan_td_sibling_target_scene;
 pub(super) use vertical_fan_in::route_vertical_fan_in_edges;
 pub(super) use wide_terminal_fan_in::route_wide_terminal_fan_in_edges;
