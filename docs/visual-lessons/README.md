@@ -14,8 +14,8 @@ directories, and user-sensitive diagrams remain private.
 ## Review contract
 
 The denominator is the complete `tests/fixtures/inputs` corpus, not only the
-fixture that exposed the problem. A normal full cycle currently covers 241
-inputs and 964 packet rows: 952 renderable rows plus 12 separately governed
+fixture that exposed the problem. A normal full cycle currently covers 242
+inputs and 968 packet rows: 956 renderable rows plus 12 separately governed
 expected-error rows. Human-eye decisions remain distinct from machine critic,
 semantic, geometry, and golden checks.
 
@@ -77,6 +77,7 @@ Each lesson states its own status. Read these terms literally:
 - [LR/RL mixed targets need a quiet receiver shaft](lr-rl-mixed-target-receiver-shaft-2026-08-20.md)
 - [TD sibling corridors need a layout-owned turn band](td-sibling-corridor-turn-band-2026-08-13.md)
 - [TD sibling title gutters must preserve owned route rails](td-sibling-title-gutter-route-ownership-2026-08-20.md)
+- [Complex TD title portals need source-owned straight lanes](td-complex-title-portal-corridor-2026-08-25.md)
 - [Flat TD/TB external entries need a literal title-gutter lane](td-flat-external-title-gutter-2026-08-20.md)
 - [TD terminal entries need distinct target-center lanes](td-terminal-entry-center-alignment-2026-08-13.md)
 - [Dense vertical crossings need a quiet target shaft](dense-vertical-crossing-target-clearance-2026-08-13.md)

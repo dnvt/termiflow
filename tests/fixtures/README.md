@@ -51,14 +51,14 @@ Regenerate them after intentional rendering changes.
 
 ## Test Counts
 
-- **241 input files** (220 clean successes, 18 successes with warnings, 3
+- **242 input files** (221 clean successes, 18 successes with warnings, 3
   expected errors); the typed contracts live in `metadata.json`
 - **482 expected outputs** (ASCII + Unicode per input)
-- **964 ordinary visual rows** (ASCII + Unicode × default + optimized per
+- **968 ordinary visual rows** (ASCII + Unicode × default + optimized per
   input; expected-error rows follow their declared error policy)
 - **4 directions tested**: TD, LR, BT, RL
 
-The complete packet currently contains **952 renderable review rows** plus
+The complete packet currently contains **956 renderable review rows** plus
 **12 expected-error policy rows**. Every renderable row receives a
 hash-bound `termiflow.route_clarity.v1` report before it can enter the
 one-frame reviewer queue. Route `risk` and `inconclusive` statuses are
@@ -71,7 +71,7 @@ Renderer-wide work has a second full-corpus policy lane. The canonical packet
 injects the requested `--style` for comparable ASCII/Unicode homologs. The
 authored-policy packet is generated with `--respect-input-style` so native
 `%% termiflow:` style, wrapping, spacing, and composite directives are not
-overridden. It covers the same 241 inputs, 964 rows, 952 renderable decisions,
+overridden. It covers the same 242 inputs, 968 rows, 956 renderable decisions,
 and 12 expected-error policy decisions. The 20 directive-bearing inputs are
 high-risk, but every other input remains a no-override control; a row from
 one lane cannot cover the other.

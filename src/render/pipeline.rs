@@ -7,14 +7,15 @@ use super::canvas::{self, Canvas};
 use super::critic::{self, analyze, emit_debug_report};
 use super::cycle::{self, route_cycle_edge};
 use super::edge::{
-    plan_boundary_fan_in_scene, plan_bt_multi_entry_scene, plan_bt_parallel_scene,
-    plan_bt_parallel_sibling_scene, plan_bt_sibling_scene, plan_bt_sibling_target_scene,
-    plan_dense_crossing_scenes, plan_diamond_scenes, plan_lr_rl_sibling_chain_scene,
-    plan_lr_rl_sibling_target_scene, plan_sibling_subgraph_fan_in_scene,
-    plan_td_sibling_target_scene, repair_database_source_border, route_convergent_edges,
-    route_database_intermediate_scene, route_dedicated_fan_in_edges, route_divergent_edges,
-    route_fan_in_identity_edges, route_vertical_branch_rejoin_identity_edges,
-    route_vertical_fan_in_edges, route_wide_terminal_fan_in_edges,
+    database_terminal_target_id, plan_boundary_fan_in_scene, plan_bt_multi_entry_scene,
+    plan_bt_parallel_scene, plan_bt_parallel_sibling_scene, plan_bt_sibling_scene,
+    plan_bt_sibling_target_scene, plan_dense_crossing_scenes, plan_diamond_scenes,
+    plan_lr_rl_sibling_chain_scene, plan_lr_rl_sibling_target_scene,
+    plan_sibling_subgraph_fan_in_scene, plan_td_sibling_target_scene,
+    repair_database_source_border, route_convergent_edges, route_database_intermediate_scene,
+    route_dedicated_fan_in_edges, route_divergent_edges, route_fan_in_identity_edges,
+    route_vertical_branch_rejoin_identity_edges, route_vertical_fan_in_edges,
+    route_wide_terminal_fan_in_edges,
 };
 use super::labels::{
     draw_convergent_edge_label, draw_edge_label, draw_routed_edge_label, pad_string,
@@ -235,6 +236,11 @@ pub(super) fn render_with_feedback_with_contract(
     }
     let database_scene_claimed =
         route_database_intermediate_scene(&mut canvas, &chars, graph.direction, graph);
+    let database_terminal_target = if database_scene_claimed {
+        database_terminal_target_id(graph)
+    } else {
+        None
+    };
     if database_scene_claimed {
         render_stabilization_protected = true;
         planned_scene_edges.extend(0..graph.edges.len());
@@ -620,6 +626,7 @@ pub(super) fn render_with_feedback_with_contract(
             &chars,
             graph.direction,
             horizontal_fanout_sources.contains(node.id.as_str()),
+            database_terminal_target == Some(node.id.as_str()),
         );
         annotate_node_region(&mut canvas, node, &chars);
     }

@@ -2134,6 +2134,12 @@ fn collect_portal_slots_with_bounds(
                     let target_center_x = node_center_x(node_rects, &edge.to, to);
                     let x = if let Some(nested_lane) = nested_entry_lane {
                         nested_lane
+                    } else if let Some(complex_lane) =
+                        crate::render::edge::td_complex_title_portal_source_lane(
+                            from, to, source_x, graph,
+                        )
+                    {
+                        complex_lane
                     } else if let Some(&shared_x) =
                         shared_td_fanout_top_slots.get(&(edge.from.clone(), id.to_string()))
                     {

@@ -125,6 +125,33 @@ pub fn draw_node(
     style: &StyleChars,
     direction: Direction,
 ) {
+    draw_node_with_terminal_entry_policy(
+        canvas,
+        x,
+        y,
+        width,
+        height,
+        label_lines,
+        shape,
+        style,
+        direction,
+        false,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_node_with_terminal_entry_policy(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    label_lines: &[String],
+    shape: NodeShape,
+    style: &StyleChars,
+    direction: Direction,
+    preserve_database_terminal_entry_wall: bool,
+) {
     let label = label_lines.first().map(|s| s.as_str()).unwrap_or_default();
     match shape {
         NodeShape::Rectangle => {
@@ -142,9 +169,17 @@ pub fn draw_node(
         NodeShape::Hexagon => {
             draw_hexagon(canvas, x, y, width, height, label_lines, style, direction)
         }
-        NodeShape::Database => {
-            draw_database(canvas, x, y, width, height, label_lines, style, direction)
-        }
+        NodeShape::Database => draw_database(
+            canvas,
+            x,
+            y,
+            width,
+            height,
+            label_lines,
+            style,
+            direction,
+            preserve_database_terminal_entry_wall,
+        ),
         NodeShape::Subroutine => {
             draw_subroutine(canvas, x, y, width, height, label_lines, style, direction)
         }
@@ -219,8 +254,9 @@ pub(crate) fn draw_node_with_fanout_policy(
     style: &StyleChars,
     direction: Direction,
     preserve_horizontal_side_wall: bool,
+    preserve_database_terminal_entry_wall: bool,
 ) {
-    draw_node(
+    draw_node_with_terminal_entry_policy(
         canvas,
         x,
         y,
@@ -230,6 +266,7 @@ pub(crate) fn draw_node_with_fanout_policy(
         shape,
         style,
         direction,
+        preserve_database_terminal_entry_wall,
     );
 
     if !preserve_horizontal_side_wall || !matches!(direction, Direction::LR | Direction::RL) {
@@ -707,6 +744,7 @@ fn draw_database(
     label_lines: &[String],
     style: &StyleChars,
     direction: Direction,
+    preserve_terminal_entry_wall: bool,
 ) {
     let is_unicode = style.tl == '┌';
     let h = if is_unicode { '─' } else { '-' };
@@ -728,6 +766,39 @@ fn draw_database(
         style,
         direction,
     );
+
+    if preserve_terminal_entry_wall && matches!(direction, Direction::LR | Direction::RL) {
+        restore_arrow_adjacent_database_walls(canvas, x, y, width, height, style, direction);
+    }
+}
+
+/// Keep the terminal database contour distinct when the route arrow already
+/// owns the adjacent receiver cell. The strict scene policy is supplied by
+/// the graph-owned caller; generic database nodes retain draw_boxlike's
+/// existing junction inference.
+fn restore_arrow_adjacent_database_walls(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    style: &StyleChars,
+    direction: Direction,
+) {
+    let (wall_x, outside_x) = match direction {
+        Direction::LR => (x, x.saturating_sub(1)),
+        Direction::RL => (
+            x.saturating_add(width.saturating_sub(1)),
+            x.saturating_add(width),
+        ),
+        Direction::TD | Direction::TB | Direction::BT => return,
+    };
+
+    for row_y in y.saturating_add(1)..y.saturating_add(height.saturating_sub(1)) {
+        if is_arrow(canvas.get(outside_x, row_y)) {
+            canvas.set(wall_x, row_y, style.v);
+        }
+    }
 }
 
 /// Draw a subroutine box (double vertical lines on sides).
@@ -1108,6 +1179,7 @@ mod tests {
                     style,
                     direction,
                     true,
+                    false,
                 );
                 assert_eq!(
                     preserved.get(wall_x, 2),

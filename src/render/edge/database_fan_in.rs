@@ -22,6 +22,12 @@ struct DatabaseScene<'a> {
     target: &'a Node,
 }
 
+// Keep the terminal arrow visually separate from the outer-bypass corner.
+// The value includes the target-before cell, leaving two quiet cells between
+// the turn and the arrow for horizontal flow. Vertical routes retain their
+// existing one-cell approach because this P2 owns only the LR/RL defect.
+const HORIZONTAL_TERMINAL_ENTRY_APPROACH_CELLS: usize = 3;
+
 /// Route the strict intermediate-database scene, returning `true` only after
 /// all three edge paths pass the same reservation checks and are committed.
 pub(crate) fn route_database_intermediate_scene(
@@ -282,6 +288,13 @@ fn database_scene(graph: &Graph) -> Option<DatabaseScene<'_>> {
     })
 }
 
+/// Return the terminal database identity only for the strict transactional
+/// scene owned by this module. Callers use this semantic identity to apply
+/// terminal-entry policies without relying on fixture names or coordinates.
+pub(crate) fn database_terminal_target_id(graph: &Graph) -> Option<&str> {
+    database_scene(graph).map(|scene| scene.target.id.as_str())
+}
+
 fn outer_secondary_lane(canvas: &Canvas, graph: &Graph, coords: &OrientedCoords) -> Option<usize> {
     let (min_secondary, max_secondary) = graph.nodes.iter().fold(
         (usize::MAX, 0usize),
@@ -399,7 +412,12 @@ fn outer_bypass_path(
         )
     };
     let start_side = coords.with_secondary(first_primary.0, first_primary.1, side);
-    let target_before = coords.retreat(end.0, end.1, 1);
+    let target_retreat = if matches!(coords.direction, Direction::LR | Direction::RL) {
+        HORIZONTAL_TERMINAL_ENTRY_APPROACH_CELLS
+    } else {
+        1
+    };
+    let target_before = coords.retreat(end.0, end.1, target_retreat);
     let end_side = coords.with_secondary(target_before.0, target_before.1, side);
     let approach_side = coords.with_secondary(
         target_before.0,
@@ -644,6 +662,7 @@ fn source_branch_junction(
 mod tests {
     use super::{
         edge_entry_point, edge_exit_point, outer_bypass_path, route_database_intermediate_scene,
+        HORIZONTAL_TERMINAL_ENTRY_APPROACH_CELLS,
     };
     use crate::graph::{Direction, Edge, Graph, Node, NodeShape};
     use crate::orientation::OrientedCoords;
@@ -749,6 +768,40 @@ mod tests {
             assert!(
                 quiet_stem >= 3,
                 "{direction:?} database bypass needs source plus two quiet stem cells, got {quiet_stem}"
+            );
+        }
+    }
+
+    #[test]
+    fn horizontal_database_bypass_keeps_two_quiet_cells_before_terminal_arrow() {
+        for direction in [Direction::LR, Direction::RL] {
+            let graph = scene(direction);
+            let source = graph.get_node("A").expect("source node");
+            let intermediate = graph.get_node("B").expect("intermediate node");
+            let target = graph.get_node("C").expect("target node");
+            let coords = OrientedCoords::new(direction);
+            let end = edge_entry_point(target, direction);
+            let start = edge_exit_point(source, direction);
+            let side = coords.secondary_coord(start.0, start.1).saturating_add(5);
+            let path = outer_bypass_path(start, end, side, &coords, source, intermediate);
+            let target_secondary = coords.secondary_coord(end.0, end.1);
+
+            let mut final_segment_start = path.len().saturating_sub(1);
+            while final_segment_start > 0
+                && coords.secondary_coord(
+                    path[final_segment_start - 1].0,
+                    path[final_segment_start - 1].1,
+                ) == target_secondary
+            {
+                final_segment_start -= 1;
+            }
+            let final_segment = &path[final_segment_start..];
+
+            assert_eq!(final_segment.last().copied(), Some(end));
+            assert!(
+                final_segment.len() > HORIZONTAL_TERMINAL_ENTRY_APPROACH_CELLS,
+                "{direction:?} database bypass needs two quiet cells before the terminal arrow, got {:?}",
+                final_segment
             );
         }
     }

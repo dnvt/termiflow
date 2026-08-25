@@ -445,6 +445,28 @@ fn subgraph_complex_td_title_stays_clean() {
 }
 
 #[test]
+fn subgraph_complex_td_portal_corridor_has_no_mini_hook_artifact() {
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
+    let assert = cmd
+        .arg("tests/fixtures/inputs/subgraph_complex_td.md")
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        output.matches('↓').count(),
+        6,
+        "expected one visible TD arrow per semantic edge, got:\n{output}"
+    );
+    for artifact in ["└───┐", "└─┐", "++", "+-+"] {
+        assert!(
+            !output.contains(artifact),
+            "unexpected portal mini-hook artifact {artifact:?}:\n{output}"
+        );
+    }
+}
+
+#[test]
 fn subgraph_fanin_bt_title_renders_on_bottom_interior_row() {
     let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("tw");
     let assert = cmd

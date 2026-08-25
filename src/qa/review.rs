@@ -27,6 +27,7 @@ const GENERIC_WATCH_OBSERVATION: &str =
     "Route or local visual density remains a conservative human-eye watch; the marked cells need matched review.";
 const GENERIC_WATCH_HYPOTHESIS: &str =
     "The current topology-owned route/boundary interaction remains a human-eye ownership or density watch even though the frame is structurally renderable.";
+const LEGACY_CARRY_FORWARD_OWNER: &str = "visual-review/legacy-carry-forward";
 
 #[derive(Debug, Default)]
 struct DecisionState {
@@ -448,6 +449,7 @@ fn rebind_exact_successful_decisions(
     )?;
     let mut candidates = Vec::new();
     let mut rebound_warning = 0usize;
+    let mut legacy_owner_layer_filled = 0usize;
     let mut skipped_changed = 0usize;
     let mut skipped_missing_history = 0usize;
     let mut skipped_without_perceptual = 0usize;
@@ -503,6 +505,19 @@ fn rebind_exact_successful_decisions(
             "prior_policy_sha256": prior_row["policy"]["sha256"],
             "reason": "exact fixture/style/mode, frame, evidence, and effective-policy equality",
         });
+        if rebound["watch_class"] != "not_applicable"
+            && rebound
+                .get("owner_layer")
+                .and_then(Value::as_str)
+                .is_none_or(|owner| owner.trim().is_empty())
+        {
+            rebound["owner_layer"] = Value::String(LEGACY_CARRY_FORWARD_OWNER.to_owned());
+            rebound["carry_forward"]["owner_layer_provenance"] = Value::String(
+                "legacy decision lacked owner_layer; preserved as an explicit review-workflow watch"
+                    .to_owned(),
+            );
+            legacy_owner_layer_filled += 1;
+        }
         rebound["timestamp"] = Value::String(common::now_label());
         validate_decision(&rebound, current_rows)?;
         history.guard_decision(current_row, &rebound, &prior_resolved_history_ids)?;
@@ -528,6 +543,7 @@ fn rebind_exact_successful_decisions(
         "schema": "termiflow.visual_review.rebind.v1",
         "rebound": candidates.len(),
         "rebound_warning": rebound_warning,
+        "legacy_owner_layer_filled": legacy_owner_layer_filled,
         "skipped_changed": skipped_changed,
         "skipped_missing_history": skipped_missing_history,
         "skipped_without_perceptual": skipped_without_perceptual,

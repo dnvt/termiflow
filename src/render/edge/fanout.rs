@@ -17,7 +17,8 @@ use super::edge_primitives::{
 };
 use super::subgraph::{
     route_cross_subgraph_bt, route_cross_subgraph_td, route_divergent_into_subgraph_bt,
-    route_divergent_into_subgraph_horizontal, route_divergent_into_subgraph_td, BtRouteOutcome,
+    route_divergent_into_subgraph_horizontal, route_divergent_into_subgraph_td,
+    td_complex_title_portal_entry_x, BtRouteOutcome,
 };
 use super::{
     edge_route_owner_id, set_route_char, set_route_edge_char, set_route_endpoint_char,
@@ -488,9 +489,11 @@ pub fn route_divergent_edges(
                 }
             }
             let cross_arrow_x = if from_sg != to_sg {
-                td_single_incoming_route_x(from, target, arrow_x, arrow_y, graph).unwrap_or_else(
-                    || title_safe_td_entry_x(target, arrow_x, arrow_y, stem_start_y, graph),
-                )
+                td_complex_title_portal_entry_x(from, target, stem_start_x, arrow_y, graph)
+                    .or_else(|| td_single_incoming_route_x(from, target, arrow_x, arrow_y, graph))
+                    .unwrap_or_else(|| {
+                        title_safe_td_entry_x(target, arrow_x, arrow_y, stem_start_y, graph)
+                    })
             } else {
                 arrow_x
             };

@@ -27,6 +27,7 @@ use super::{route_divergent_edges, set_route_char, set_route_edge_char, RouteOwn
 const STRATEGY: &str = "bt-sibling-target-entry-identity";
 const PREFERRED_TARGET_ENTRY_GAP: usize = 3;
 const MINIMUM_TARGET_ENTRY_GAP: usize = 2;
+const MINIMUM_SOURCE_WALL_GAP: usize = 4;
 
 /// Reserve the exact mixed sibling/internal target scene as one transaction.
 ///
@@ -162,15 +163,36 @@ pub(crate) fn plan_bt_sibling_target_scene(
         // cross branch at least three columns from that source lane so its
         // horizontal shoulder retains two visible shaft cells instead of
         // forming the tiny `+-+` switchback against the internal route.
-        let lower_cross_arrow_x = edge_entry_candidates(target_lower, Direction::BT)
+        let Some(lower_cross_arrow_x) = edge_entry_candidates(target_lower, Direction::BT)
             .into_iter()
             .filter(|(candidate_x, candidate_y)| {
                 *candidate_y == lower_arrow_y
                     && candidate_x.abs_diff(lower_source_x) >= PREFERRED_TARGET_ENTRY_GAP
+                    // Keep the lower fan-out lane away from both physical
+                    // source walls.  A widened source node can move the
+                    // receiver's preferred lane onto the source border; the
+                    // resulting one-cell shoulder makes the route look like
+                    // an accidental `++`/`┼┘` seam even though every edge is
+                    // owned by this scene.  This is intentionally scoped to
+                    // the exact graph-owned four-edge topology.
+                    && candidate_x.abs_diff(source_subgraph.bounds.x) >= MINIMUM_SOURCE_WALL_GAP
+                    && candidate_x.abs_diff(
+                        source_subgraph
+                            .bounds
+                            .x
+                            .saturating_add(source_subgraph.bounds.width.saturating_sub(1)),
+                    ) >= MINIMUM_SOURCE_WALL_GAP
             })
             .min_by_key(|(candidate_x, _)| candidate_x.abs_diff(lower_arrow_x))
             .map(|(candidate_x, _)| candidate_x)
-            .unwrap_or(lower_arrow_x);
+        else {
+            // Never fall back to the parity-biased receiver lane after the
+            // topology-owned wall-clearance proof has rejected every
+            // candidate. That would silently reintroduce the very seam this
+            // scene is responsible for preventing; rejecting this port pair
+            // keeps the whole transaction fail-closed.
+            continue;
+        };
         let lower_fanout_y = lower_source_y.saturating_sub(spacing.stem_length_vertical);
         if lower_cross_arrow_x >= simulation.width || lower_fanout_y >= simulation.height {
             continue;

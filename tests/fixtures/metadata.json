@@ -121,6 +121,13 @@
       "stderr_contains": []
     },
     {
+      "name": "collision_sibling_subgraphs_bt_wide_labels",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
       "name": "collision_sibling_subgraphs_lr",
       "kind": "success",
       "direction": "LR",
