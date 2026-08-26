@@ -5,6 +5,7 @@
 //! existing human-facing output without changing the normal CLI contract.
 
 use super::critic::CriticReport;
+use super::provenance::edge_owner_id;
 use super::semantic::{CellOwnerKind, CellRole, SemanticFrame};
 use super::trace::{GeometryTrace, PortalTrace};
 use super::RenderOutcome;
@@ -79,7 +80,7 @@ pub struct GeometryReport {
 pub fn build(graph: &Graph, outcome: &RenderOutcome) -> RenderEvidence {
     let geometry_trace = GeometryTrace::from_graph(graph);
     let portal_trace = outcome.portal_trace.clone();
-    let mut geometry = geometry_report(graph, &geometry_trace);
+    let mut geometry = geometry_report(graph, &geometry_trace, &outcome.semantic_frame);
     apply_fallback_geometry_trace(&mut geometry, &portal_trace);
     RenderEvidence {
         schema: EVIDENCE_SCHEMA,
@@ -347,7 +348,11 @@ fn is_route_glyph(ch: char) -> bool {
     )
 }
 
-fn geometry_report(graph: &Graph, trace: &GeometryTrace) -> GeometryReport {
+fn geometry_report(
+    graph: &Graph,
+    trace: &GeometryTrace,
+    semantic_frame: &SemanticFrame,
+) -> GeometryReport {
     let mut report = GeometryReport {
         node_count: trace.nodes.len(),
         edge_count: trace.edges.len(),
@@ -379,18 +384,89 @@ fn geometry_report(graph: &Graph, trace: &GeometryTrace) -> GeometryReport {
                 .push(format!("edge {} has an unknown endpoint", edge.owner_id));
         }
         if edge.segments.is_empty() {
-            report.untraced_fallback_edges.push(edge.owner_id.clone());
+            if semantic_fallback_edge_is_covered(graph, edge, semantic_frame) {
+                report.traced_edges += 1;
+                report.segment_count += semantic_fallback_route_cell_count(edge, semantic_frame);
+            } else {
+                report.untraced_fallback_edges.push(edge.owner_id.clone());
+            }
         } else {
             report.traced_edges += 1;
             report.segment_count += edge.segments.len();
         }
     }
 
-    // The trace intentionally does not claim coverage for fallback routes.
-    // Keep the graph argument in the signature so the distinction remains an
-    // explicit seam when route coverage is expanded in a later phase.
-    let _ = graph;
     report
+}
+
+/// Treat a generic route as geometrically covered only when final semantic
+/// provenance identifies both a visible route cell and its terminal for the
+/// exact graph edge. This repairs an evidence false-negative: generic
+/// fallback lowering does not populate `Graph::edge_routes`, but its explicit
+/// canvas ownership is still stronger evidence than a glyph-only inference.
+/// Perceptual review and route-clarity findings remain independent gates.
+fn semantic_fallback_edge_is_covered(
+    graph: &Graph,
+    edge: &super::trace::EdgeTrace,
+    semantic_frame: &SemanticFrame,
+) -> bool {
+    let Some((edge_index, graph_edge)) = graph
+        .edges
+        .iter()
+        .enumerate()
+        .find(|(index, candidate)| edge.owner_id == edge_owner_id(*index, candidate))
+    else {
+        return false;
+    };
+
+    let owner_id = edge_owner_id(edge_index, graph_edge);
+    let mut route_cells = 0usize;
+    let mut terminal_cells = 0usize;
+
+    for cell in &semantic_frame.cells {
+        if cell.ch == ' ' || cell.owner_id.as_deref() != Some(owner_id.as_str()) {
+            continue;
+        }
+        match cell.owner_kind {
+            CellOwnerKind::EdgeSegment
+            | CellOwnerKind::CycleEdge
+            | CellOwnerKind::Junction
+            | CellOwnerKind::ArrowHead => {
+                route_cells += 1;
+                if cell.owner_kind == CellOwnerKind::ArrowHead
+                    || matches!(cell.role, CellRole::ArrowTip | CellRole::EndpointMarker)
+                {
+                    terminal_cells += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Keep this deliberately conservative. A single owned arrowhead is not a
+    // route; require an owned shaft/junction as well as a terminal.
+    route_cells >= 2 && terminal_cells >= 1
+}
+
+fn semantic_fallback_route_cell_count(
+    edge: &super::trace::EdgeTrace,
+    semantic_frame: &SemanticFrame,
+) -> usize {
+    semantic_frame
+        .cells
+        .iter()
+        .filter(|cell| {
+            cell.ch != ' '
+                && cell.owner_id.as_deref() == Some(edge.owner_id.as_str())
+                && matches!(
+                    cell.owner_kind,
+                    CellOwnerKind::EdgeSegment
+                        | CellOwnerKind::ArrowHead
+                        | CellOwnerKind::CycleEdge
+                        | CellOwnerKind::Junction
+                )
+        })
+        .count()
 }
 
 fn rectangles_overlap(left: &super::trace::NodeTrace, right: &super::trace::NodeTrace) -> bool {
@@ -512,10 +588,115 @@ mod tests {
         graph.add_edge(Edge::new("A", "B"));
 
         let trace = GeometryTrace::from_graph(&graph);
-        let report = geometry_report(&graph, &trace);
+        let report = geometry_report(&graph, &trace, &SemanticFrame::default());
         assert_eq!(report.errors, Vec::<String>::new());
         assert_eq!(report.traced_edges, 0);
         assert_eq!(report.untraced_fallback_edges.len(), 1);
+    }
+
+    #[test]
+    fn geometry_report_accepts_semantically_owned_generic_fallback_route() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::LR;
+        graph.add_node(Node::new("A", "A"));
+        graph.add_node(Node::new("B", "B"));
+        graph.add_edge(Edge::new("A", "B"));
+
+        let owner_id = edge_owner_id(0, &graph.edges[0]);
+        let frame = SemanticFrame {
+            width: 3,
+            height: 1,
+            cells: vec![
+                cell_with_owner(
+                    '-',
+                    CellRole::Horizontal,
+                    CellOwnerKind::EdgeSegment,
+                    &owner_id,
+                ),
+                cell_with_owner(
+                    '-',
+                    CellRole::Horizontal,
+                    CellOwnerKind::EdgeSegment,
+                    &owner_id,
+                ),
+                cell_with_owner('>', CellRole::ArrowTip, CellOwnerKind::ArrowHead, &owner_id),
+            ],
+        };
+
+        let trace = GeometryTrace::from_graph(&graph);
+        let report = geometry_report(&graph, &trace, &frame);
+        assert_eq!(report.traced_edges, 1);
+        assert_eq!(report.untraced_fallback_edges, Vec::<String>::new());
+        assert_eq!(report.segment_count, 3);
+    }
+
+    #[test]
+    fn geometry_report_keeps_ownerless_generic_fallback_untraced() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::LR;
+        graph.add_node(Node::new("A", "A"));
+        graph.add_node(Node::new("B", "B"));
+        graph.add_edge(Edge::new("A", "B"));
+
+        let frame = SemanticFrame {
+            width: 3,
+            height: 1,
+            cells: vec![
+                cell_with_owner(
+                    '-',
+                    CellRole::Horizontal,
+                    CellOwnerKind::EdgeSegment,
+                    "edge:1:X->Y",
+                ),
+                cell_with_owner(
+                    '-',
+                    CellRole::Horizontal,
+                    CellOwnerKind::EdgeSegment,
+                    "edge:1:X->Y",
+                ),
+                cell_with_owner(
+                    '>',
+                    CellRole::ArrowTip,
+                    CellOwnerKind::ArrowHead,
+                    "edge:1:X->Y",
+                ),
+            ],
+        };
+
+        let trace = GeometryTrace::from_graph(&graph);
+        let report = geometry_report(&graph, &trace, &frame);
+        assert_eq!(report.traced_edges, 0);
+        assert_eq!(report.untraced_fallback_edges.len(), 1);
+    }
+
+    #[test]
+    fn geometry_report_accepts_cycle_owned_arrow_terminal() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::LR;
+        graph.add_node(Node::new("A", "A"));
+        graph.add_node(Node::new("B", "B"));
+        graph.add_edge(Edge::new("A", "B"));
+
+        let owner_id = edge_owner_id(0, &graph.edges[0]);
+        let frame = SemanticFrame {
+            width: 2,
+            height: 1,
+            cells: vec![
+                cell_with_owner(
+                    '-',
+                    CellRole::Horizontal,
+                    CellOwnerKind::CycleEdge,
+                    &owner_id,
+                ),
+                cell_with_owner('>', CellRole::ArrowTip, CellOwnerKind::CycleEdge, &owner_id),
+            ],
+        };
+
+        let trace = GeometryTrace::from_graph(&graph);
+        let report = geometry_report(&graph, &trace, &frame);
+        assert_eq!(report.traced_edges, 1);
+        assert_eq!(report.untraced_fallback_edges, Vec::<String>::new());
+        assert_eq!(report.segment_count, 2);
     }
 
     #[test]

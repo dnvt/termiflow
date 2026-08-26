@@ -3959,6 +3959,70 @@ pub(super) fn route_divergent_into_subgraph_td(
             Some(branch_owner),
         );
     }
+
+    // This specialized cross-boundary fan-out is lowered directly onto the
+    // shared canvas and therefore has no ordinary Graph::edge_routes trace.
+    // Record the exact physical corridor as evidence, without reserving it
+    // against later projection stages.  Labels stay outside this contract:
+    // their text cells need a separate ownership and clearance hypothesis.
+    let can_record_subgraph_plan = targets.iter().all(|target| {
+        graph
+            .edges
+            .iter()
+            .find(|edge| !edge.is_back_edge && edge.from == source.id && edge.to == target.id)
+            .is_some_and(|edge| edge.label.is_none())
+    });
+    if can_record_subgraph_plan {
+        let mut plan = FallbackRoutePlan::new(fanout_owner_id, "subgraph-vertical-fanout");
+        plan.set_scene_coverage(
+            targets
+                .iter()
+                .map(|target| edge_route_owner_id(graph, &source.id, &target.id))
+                .collect::<Vec<_>>(),
+        );
+
+        let primary_glyph = coords.primary_edge_char(style);
+        if stem_y < outside_y {
+            plan.push_vertical(stem_x, stem_y, outside_y, primary_glyph);
+        }
+        if entry_x != stem_x {
+            plan.push_horizontal(turn_y, stem_x, entry_x, style.edge_h);
+        }
+        plan.push_vertical(entry_x, turn_y, entry_y, primary_glyph);
+        plan.push_vertical(entry_x, entry_y, branch_y, primary_glyph);
+        plan.push_horizontal(branch_y, min_x, max_x, style.edge_h);
+
+        // The top border is intentionally projected as a portal opening. It
+        // is the one foreign cell admitted by this cross-boundary contract.
+        if border_y >= turn_y && border_y <= entry_y {
+            plan.allow_shared_cell(entry_x, border_y);
+        }
+
+        for target in targets {
+            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let start_y = branch_y.saturating_add(1);
+            if start_y < arrow_y {
+                let edge_kind = graph
+                    .edges
+                    .iter()
+                    .find(|edge| {
+                        !edge.is_back_edge && edge.from == source.id && edge.to == target.id
+                    })
+                    .map(|edge| edge.kind)
+                    .unwrap_or(EdgeKind::Arrow);
+                let branch_style = style_for_edge_kind(style, edge_kind);
+                plan.push_vertical(
+                    arrow_x,
+                    start_y,
+                    arrow_y,
+                    coords.primary_edge_char(&branch_style),
+                );
+            }
+            plan.push_paint(arrow_x, arrow_y, canvas.get(arrow_x, arrow_y));
+        }
+
+        canvas.record_fallback_route_evidence(plan);
+    }
 }
 
 /// Route a horizontal fan-out from an external source into one subgraph.
@@ -4262,6 +4326,74 @@ pub(super) fn route_divergent_into_subgraph_horizontal(
             }
         };
         set_route_char(canvas, collector_x, *y, glyph, Some(fanout_owner));
+    }
+
+    // The specialized cross-boundary fan-out is lowered directly onto a
+    // shared canvas, so it has no ordinary Graph::edge_routes geometry.  Keep
+    // a non-reserving evidence contract for the stable unlabeled topology.
+    // Labeled branches remain quarantined until their text/portal ownership
+    // can be modeled without weakening the visual review gate.
+    let can_record_subgraph_plan = target_positions.iter().all(|(_, _, target)| {
+        graph
+            .edges
+            .iter()
+            .find(|edge| !edge.is_back_edge && edge.from == source.id && edge.to == target.id)
+            .is_some_and(|edge| edge.label.is_none())
+    });
+    if can_record_subgraph_plan {
+        let mut plan = FallbackRoutePlan::new(fanout_owner_id, "subgraph-horizontal-fanout");
+        plan.set_scene_coverage(
+            target_positions
+                .iter()
+                .map(|(_, _, target)| edge_route_owner_id(graph, &source.id, &target.id))
+                .collect::<Vec<_>>(),
+        );
+
+        plan.push_horizontal(
+            source_y,
+            source_x,
+            outside_x,
+            coords.primary_edge_char(style),
+        );
+        if source_y != entry_y {
+            plan.push_vertical(
+                outside_x,
+                source_y,
+                entry_y,
+                coords.secondary_edge_char(style),
+            );
+        }
+        plan.push_horizontal(
+            entry_y,
+            outside_x,
+            collector_x,
+            coords.primary_edge_char(style),
+        );
+        plan.push_vertical(collector_x, min_y, max_y, style.edge_v);
+
+        // PortalOpening is an intentional boundary projection, not an
+        // unowned route cell.  Admit exactly this crossing and no other
+        // foreign ownership.
+        plan.allow_shared_cell(border_x, entry_y);
+
+        for (arrow_x, arrow_y, target) in &arrows {
+            let edge_kind = graph
+                .edges
+                .iter()
+                .find(|edge| !edge.is_back_edge && edge.from == source.id && edge.to == target.id)
+                .map(|edge| edge.kind)
+                .unwrap_or(EdgeKind::Arrow);
+            let branch_style = style_for_edge_kind(style, edge_kind);
+            plan.push_horizontal(
+                *arrow_y,
+                collector_x,
+                *arrow_x,
+                coords.primary_edge_char(&branch_style),
+            );
+            plan.push_paint(*arrow_x, *arrow_y, canvas.get(*arrow_x, *arrow_y));
+        }
+
+        canvas.record_fallback_route_evidence(plan);
     }
 
     true

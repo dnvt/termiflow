@@ -475,6 +475,18 @@ impl LayoutSpacingPolicy {
                     .min(crate::spacing::MAX_LABEL_WIDTH);
                 spacing = spacing.max(widest_label.saturating_add(4));
             }
+
+            // The strict horizontal subgraph fan-in route owns one wall-clear
+            // exterior rail plus one target-facing shaft cell. Reserve the
+            // target-facing cell after the direction multiplier so this
+            // topology can spend exactly one primary cell without widening
+            // ordinary horizontal fan-in or any vertical scene.
+            if self
+                .horizontal_subgraph_identity_fan_in_count(graph, layers, layer_idx)
+                .is_some()
+            {
+                spacing = spacing.saturating_add(1);
+            }
         }
 
         spacing
@@ -616,6 +628,34 @@ impl LayoutSpacingPolicy {
                         .any(|source_idx| graph.nodes[*source_idx].id == edge.from)
             });
             has_current_source.then_some(count)
+        })
+    }
+
+    fn horizontal_subgraph_identity_fan_in_count(
+        &self,
+        graph: &Graph,
+        layers: &[Vec<usize>],
+        layer_idx: usize,
+    ) -> Option<usize> {
+        if !matches!(graph.direction, Direction::LR | Direction::RL) {
+            return None;
+        }
+
+        let current_layer = layers.get(layer_idx)?;
+        let next_layer = layers.get(layer_idx + 1)?;
+        next_layer.iter().find_map(|target_idx| {
+            let target_id = graph.nodes.get(*target_idx)?.id.as_str();
+            let count = subgraph_fan_in_identity::target_port_count(graph, target_id)?;
+            let all_sources_in_current_layer = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.to == target_id)
+                .all(|edge| {
+                    current_layer
+                        .iter()
+                        .any(|source_idx| graph.nodes[*source_idx].id == edge.from)
+                });
+            all_sources_in_current_layer.then_some(count)
         })
     }
 }
@@ -1324,6 +1364,53 @@ mod tests {
             policy.spacing_for_layer(&sparse_graph, &sparse_layers, 0),
             4,
             "a sparse horizontal control keeps its existing local gap"
+        );
+    }
+
+    #[test]
+    fn strict_horizontal_subgraph_fan_in_reserves_one_target_run_cell() {
+        let mut graph = Graph::new();
+        graph.add_node(Node::new("S1", "Source 1"));
+        graph.add_node(Node::new("S2", "Source 2"));
+        graph.add_node(Node::new("S3", "Source 3"));
+        graph.add_node(Node::new("Merge", "Merge"));
+        for source in ["S1", "S2", "S3"] {
+            graph.add_edge(Edge::new(source, "Merge"));
+        }
+        let mut subgraph = crate::graph::Subgraph::new("S", Some("Sources".to_owned()));
+        for source in ["S1", "S2", "S3"] {
+            subgraph.add_node(source);
+        }
+        graph.add_subgraph(subgraph);
+        for source in ["S1", "S2", "S3"] {
+            graph.associate_node_with_subgraph(source, "S");
+        }
+        let layers = vec![vec![0, 1, 2], vec![3]];
+        let config = CoarseLayoutConfig::default();
+        let policy = LayoutSpacingPolicy::new(
+            config.subgraph_gutter,
+            config.node_padding,
+            config.min_horizontal_spacing,
+            config.min_vertical_spacing,
+        );
+
+        for direction in [Direction::LR, Direction::RL] {
+            graph.direction = direction;
+            assert_eq!(
+                policy.horizontal_subgraph_identity_fan_in_count(&graph, &layers, 0),
+                Some(3)
+            );
+            assert_eq!(
+                policy.spacing_for_layer(&graph, &layers, 0),
+                11,
+                "strict horizontal fan-in needs one target-run cell for {direction:?}"
+            );
+        }
+
+        graph.direction = Direction::TD;
+        assert_eq!(
+            policy.horizontal_subgraph_identity_fan_in_count(&graph, &layers, 0),
+            None
         );
     }
 

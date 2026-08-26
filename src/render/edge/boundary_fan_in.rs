@@ -24,6 +24,7 @@ use super::super::subgraph_fan_in_identity;
 use super::{set_route_char, RouteOwner};
 
 const STRATEGY: &str = "strict-subgraph-boundary-fan-in-lanes";
+const HORIZONTAL_TURN_CLEARANCE: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoundarySide {
@@ -513,13 +514,27 @@ fn identity_turns(
                 outside_primary.saturating_sub(index.saturating_mul(2))
             }
         }
-        Direction::LR => outside_primary.saturating_add(index),
-        Direction::RL => outside_primary.saturating_sub(index),
+        Direction::LR => outside_primary
+            .saturating_add(HORIZONTAL_TURN_CLEARANCE)
+            .saturating_add(index),
+        Direction::RL => outside_primary
+            .saturating_sub(HORIZONTAL_TURN_CLEARANCE)
+            .saturating_sub(index),
     };
     if (moving_forward && turn_primary > target_primary)
         || (!moving_forward && turn_primary < target_primary)
     {
         return None;
+    }
+    if matches!(direction, Direction::LR | Direction::RL) {
+        let target_run = match direction {
+            Direction::LR => target_primary.saturating_sub(turn_primary),
+            Direction::RL => turn_primary.saturating_sub(target_primary),
+            Direction::TD | Direction::TB | Direction::BT => 0,
+        };
+        if target_run == 0 {
+            return None;
+        }
     }
 
     let mut turn = outside;
@@ -979,8 +994,9 @@ fn push_identity_route_corners(
 
 #[cfg(test)]
 mod tests {
-    use super::collector_glyph;
+    use super::{collector_glyph, identity_turns};
     use crate::graph::Direction;
+    use crate::orientation::OrientedCoords;
     use crate::style::BaseStyle;
 
     #[test]
@@ -995,5 +1011,21 @@ mod tests {
             collector_glyph(2, &[1, 2, 3], Direction::RL, style),
             style.cross
         );
+    }
+
+    #[test]
+    fn horizontal_identity_turns_preserve_one_target_run_cell() {
+        let lr = OrientedCoords::new(Direction::LR);
+        let rl = OrientedCoords::new(Direction::RL);
+
+        let (lr_turn, _) = identity_turns((20, 5), (24, 5), 2, Direction::LR, &lr)
+            .expect("LR route has one target run cell");
+        assert_eq!(lr_turn.0, 23);
+        assert!(identity_turns((20, 5), (23, 5), 2, Direction::LR, &lr).is_none());
+
+        let (rl_turn, _) = identity_turns((24, 5), (20, 5), 2, Direction::RL, &rl)
+            .expect("RL route has one target run cell");
+        assert_eq!(rl_turn.0, 21);
+        assert!(identity_turns((24, 5), (22, 5), 1, Direction::RL, &rl).is_none());
     }
 }

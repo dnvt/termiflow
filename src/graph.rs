@@ -996,6 +996,25 @@ impl Graph {
             return None;
         }
 
+        // The seam selector must agree with the route planner about endpoint
+        // order. Unique endpoints alone are not enough: a crossed three-rail
+        // permutation would otherwise qualify for final border-seam
+        // projection even though the transactional rail planner rejects it.
+        let mut ordered_pairs = self
+            .edges
+            .iter()
+            .map(|edge| {
+                Some((
+                    self.get_node(&edge.from)?.center_x(),
+                    self.get_node(&edge.to)?.center_x(),
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        ordered_pairs.sort_by_key(|(source_x, target_x)| (*source_x, *target_x));
+        if ordered_pairs.windows(2).any(|pair| pair[0].1 > pair[1].1) {
+            return None;
+        }
+
         Some(BtDirectParallelSiblingScene {
             source_subgraph_id: source_subgraph.id.clone(),
             target_subgraph_id: target_subgraph.id.clone(),
@@ -1353,6 +1372,42 @@ mod tests {
 
         graph.edges[0].label = Some("crossing".to_owned());
         assert!(graph.bt_direct_parallel_sibling_scene().is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "maintainer-fixtures")]
+    fn bt_direct_parallel_sibling_selector_rejects_crossed_three_rail_control() {
+        let mut graph = crate::parser::parse(
+            include_str!("../tests/fixtures/inputs/collision_parallel_edges_bt.md"),
+            false,
+        )
+        .expect("parse direct BT parallel fixture")
+        .graph;
+        for subgraph in &mut graph.subgraphs {
+            let y = if subgraph.id == "SG1" { 20 } else { 0 };
+            subgraph.bounds = Rectangle::new(0, y, 40, 18);
+        }
+        for (node_id, x) in [
+            ("A", 6),
+            ("B", 18),
+            ("C", 30),
+            ("D", 6),
+            ("E", 18),
+            ("F", 30),
+        ] {
+            graph
+                .get_node_mut(node_id)
+                .expect("direct BT parallel node")
+                .x = x;
+        }
+
+        graph.edges[0].to = "F".to_owned();
+        graph.edges[2].to = "D".to_owned();
+
+        assert!(
+            graph.bt_direct_parallel_sibling_scene().is_none(),
+            "crossed three-rail permutations must not receive H152 seam ownership"
+        );
     }
 
     #[test]

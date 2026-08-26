@@ -1250,7 +1250,7 @@ pub fn route_divergent_edges(
                 .is_some_and(|edge| edge.label.is_none())
         });
     if can_record_fallback_plan {
-        let mut plan = FallbackRoutePlan::new(fanout_owner_id, "generic-horizontal-fanout");
+        let mut plan = FallbackRoutePlan::new(fanout_owner_id.clone(), "generic-horizontal-fanout");
         plan.set_scene_coverage(
             target_positions
                 .iter()
@@ -1314,6 +1314,104 @@ pub fn route_divergent_edges(
         }
 
         canvas.record_fallback_route_plan(plan);
+    }
+
+    // Generic vertical fan-outs use the same shared collector/edge-branch
+    // ownership model as the horizontal fallback above. Record that split
+    // explicitly for evidence, but keep the admission narrower: labeled and
+    // subgraph routes have separate attachment semantics and must not be
+    // claimed by this generic contract.
+    let source_subgraph = graph.get_node_subgraph(&from.id);
+    let intra_subgraph_fanout = source_subgraph.is_some()
+        && target_positions
+            .iter()
+            .all(|(_, _, target)| graph.get_node_subgraph(&target.id) == source_subgraph);
+    let can_record_vertical_fallback_plan = (graph.subgraphs.is_empty() || intra_subgraph_fanout)
+        && matches!(direction, Direction::TD | Direction::TB | Direction::BT)
+        && target_positions.iter().all(|(_, _, target)| {
+            graph
+                .edges
+                .iter()
+                .find(|edge| !edge.is_back_edge && edge.from == from.id && edge.to == target.id)
+                .is_some_and(|edge| edge.label.is_none())
+        });
+    if can_record_vertical_fallback_plan {
+        let mut plan = FallbackRoutePlan::new(fanout_owner_id, "generic-vertical-fanout");
+        plan.set_scene_coverage(
+            target_positions
+                .iter()
+                .map(|(_, _, target)| edge_route_owner_id(graph, &from.id, &target.id))
+                .collect::<Vec<_>>(),
+        );
+
+        let primary_glyph = coords.primary_edge_char(style);
+        if stem_length > 0 {
+            let stem_end = coords.advance(stem_start_x, stem_start_y, stem_length - 1);
+            push_axis_aligned_plan_segment(
+                &mut plan,
+                (stem_start_x, stem_start_y),
+                stem_end,
+                primary_glyph,
+            );
+        }
+
+        let span_start_point = coords.with_secondary(junction_x, junction_y, span_start);
+        let span_end_point = coords.with_secondary(junction_x, junction_y, span_end);
+        push_axis_aligned_plan_segment(
+            &mut plan,
+            span_start_point,
+            span_end_point,
+            coords.secondary_edge_char(style),
+        );
+
+        if junction_secondary != src_secondary {
+            let source_point = coords.with_secondary(junction_x, junction_y, src_secondary);
+            let junction_point = coords.with_secondary(junction_x, junction_y, junction_secondary);
+            push_axis_aligned_plan_segment(
+                &mut plan,
+                source_point,
+                junction_point,
+                coords.secondary_edge_char(style),
+            );
+        }
+
+        for (_, _, target) in &target_positions {
+            let edge_kind = graph
+                .edges
+                .iter()
+                .find(|edge| !edge.is_back_edge && edge.from == from.id && edge.to == target.id)
+                .map(|edge| edge.kind)
+                .unwrap_or(EdgeKind::Arrow);
+            let branch_style = style_for_edge_kind(style, edge_kind);
+            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
+            let drop = coords.with_secondary(junction_x, junction_y, target_secondary);
+            let drop_start = coords.advance(drop.0, drop.1, 1);
+            if drop_start != (arrow_x, arrow_y) {
+                push_axis_aligned_plan_segment(
+                    &mut plan,
+                    drop_start,
+                    (arrow_x, arrow_y),
+                    coords.primary_edge_char(&branch_style),
+                );
+            }
+            plan.push_paint(arrow_x, arrow_y, canvas.get(arrow_x, arrow_y));
+        }
+
+        canvas.record_fallback_route_evidence(plan);
+    }
+}
+
+fn push_axis_aligned_plan_segment(
+    plan: &mut FallbackRoutePlan,
+    from: (usize, usize),
+    to: (usize, usize),
+    glyph: char,
+) {
+    if from.0 == to.0 {
+        plan.push_vertical(from.0, from.1, to.1, glyph);
+    } else if from.1 == to.1 {
+        plan.push_horizontal(from.1, from.0, to.0, glyph);
     }
 }
 
@@ -1664,5 +1762,76 @@ mod mixed_branch_tests {
             }),
             Some((51, 3))
         );
+    }
+}
+
+#[cfg(test)]
+mod generic_fanout_tests {
+    use super::{push_axis_aligned_plan_segment, route_divergent_edges};
+    use crate::graph::{Direction, Edge, Graph, Node};
+    use crate::render::canvas::Canvas;
+    use crate::render::fallback_route::FallbackRoutePlan;
+    use crate::spacing::SpacingConfig;
+    use crate::style::ASCII_CHARS;
+
+    #[test]
+    fn plan_helper_records_vertical_and_horizontal_segments() {
+        let mut plan = FallbackRoutePlan::new("fanout:R", "test");
+        push_axis_aligned_plan_segment(&mut plan, (2, 1), (2, 3), '|');
+        push_axis_aligned_plan_segment(&mut plan, (2, 3), (5, 3), '-');
+
+        let cells = plan.planned_cells();
+        assert_eq!(plan.segments.len(), 2);
+        assert!(cells.contains(&(2, 1)));
+        assert!(cells.contains(&(2, 3)));
+        assert!(cells.contains(&(5, 3)));
+    }
+
+    #[test]
+    fn generic_vertical_fanout_records_a_clean_shared_route_plan() {
+        let mut graph = Graph::new();
+        graph.direction = Direction::BT;
+
+        let mut source = Node::new("R", "R");
+        source.x = 12;
+        source.y = 12;
+        let mut targets = Vec::new();
+        for (id, x) in [("S1", 0), ("S2", 12), ("S3", 24)] {
+            let mut target = Node::new(id, id);
+            target.x = x;
+            target.y = 0;
+            targets.push(target);
+        }
+        graph.add_node(source);
+        for target in targets {
+            graph.add_node(target);
+        }
+        for target in ["S1", "S2", "S3"] {
+            graph.add_edge(Edge::new("R", target));
+        }
+
+        let source = graph.get_node("R").expect("source node");
+        let target_refs = ["S1", "S2", "S3"]
+            .into_iter()
+            .map(|id| graph.get_node(id).expect("target node"))
+            .collect::<Vec<_>>();
+        let mut canvas = Canvas::new(40, 20);
+        route_divergent_edges(
+            source,
+            &target_refs,
+            &mut canvas,
+            &ASCII_CHARS,
+            &SpacingConfig::default(),
+            Direction::BT,
+            &graph,
+        );
+
+        let trace = canvas
+            .fallback_route_traces()
+            .into_iter()
+            .find(|trace| trace.strategy == "generic-vertical-fanout")
+            .expect("generic vertical fanout trace");
+        assert_eq!(trace.covered_edge_ids.len(), 3);
+        assert!(trace.mismatches.is_empty(), "{:?}", trace.mismatches);
     }
 }

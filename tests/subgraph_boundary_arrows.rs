@@ -1139,8 +1139,9 @@ fn collision_sibling_triple_route_ownership_oracle_covers_matrix() {
                     }
                     if exits.len() != 1 || enters.len() != 1 {
                         failures.push(format!(
-                            "{direction} {style:?} optimized={optimized}: edge {} has boundary crossings exits={exits:?} enters={enters:?}",
-                            format!("{}->{}", edge.from, edge.to),
+                            "{direction} {style:?} optimized={optimized}: edge {}->{} has boundary crossings exits={exits:?} enters={enters:?}",
+                            edge.from,
+                            edge.to,
                         ));
                         continue;
                     }
@@ -1173,7 +1174,7 @@ fn collision_sibling_triple_route_ownership_oracle_covers_matrix() {
                 }
 
                 if report.geometry.traced_edges != 5
-                    || report.geometry.errors.len() != 0
+                    || !report.geometry.errors.is_empty()
                     || !report.geometry.untraced_fallback_edges.is_empty()
                     || report.raw.arrowheads != 5
                     || !report.raw.shaftless_arrowheads.is_empty()

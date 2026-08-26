@@ -59,20 +59,29 @@ pub(crate) fn plan_lr_rl_sibling_chain_scene(
         return HashSet::new();
     };
     let owner_id = scene_owner_id(&scene);
-    let Some(lanes) = choose_lanes(graph, &scene) else {
-        return reject_scene(canvas, &owner_id, "no distinct quiet corridor rows");
-    };
-    let Some(mut plan) = build_plan(graph, &scene, &lanes, canvas.width, canvas.height, style)
-    else {
+    // A strict chain is laid out on one common node row. Prefer that literal
+    // topology: the cross-group edges can remain straight and do not need the
+    // lower-band turns that look like a second, box-shaped subgraph wall. The
+    // quiet-corridor plan remains the fail-closed fallback for future scene
+    // variants whose aligned route cannot be proven collision-free.
+    let mut lane_candidates = Vec::new();
+    if let Some(lane) = aligned_lane(graph, &scene) {
+        lane_candidates.push(vec![lane; scene.transitions.len()]);
+    }
+    if let Some(lanes) = choose_lanes(graph, &scene) {
+        lane_candidates.push(lanes);
+    }
+    let Some((lanes, mut plan)) = lane_candidates.into_iter().find_map(|lanes| {
+        let plan = build_plan(graph, &scene, &lanes, canvas.width, canvas.height, style)?;
+        if plan.validation_error(canvas.width, canvas.height).is_some()
+            || plan_blocker(&plan, graph, canvas).is_some()
+        {
+            return None;
+        }
+        Some((lanes, plan))
+    }) else {
         return reject_scene(canvas, &owner_id, "no collision-free horizontal chain plan");
     };
-
-    if let Some(reason) = plan.validation_error(canvas.width, canvas.height) {
-        return reject_scene(canvas, &owner_id, &reason);
-    }
-    if let Some(reason) = plan_blocker(&plan, graph, canvas) {
-        return reject_scene(canvas, &owner_id, &reason);
-    }
 
     let owner = RouteOwner {
         kind: CellOwnerKind::EdgeSegment,
@@ -318,6 +327,25 @@ fn choose_lanes(graph: &Graph, scene: &Scene) -> Option<Vec<usize>> {
             .take(scene.transitions.len())
             .collect()
     })
+}
+
+fn aligned_lane(graph: &Graph, scene: &Scene) -> Option<usize> {
+    let first = scene.transitions.first()?;
+    let lane = edge_exit_point(graph.get_node(&first.source_node_id)?, graph.direction).1;
+    if scene.transitions.iter().all(|transition| {
+        let Some(source) = graph.get_node(&transition.source_node_id) else {
+            return false;
+        };
+        let Some(target) = graph.get_node(&transition.target_node_id) else {
+            return false;
+        };
+        edge_exit_point(source, graph.direction).1 == lane
+            && edge_entry_point(target, graph.direction).1 == lane
+    }) {
+        Some(lane)
+    } else {
+        None
+    }
 }
 
 fn build_plan(
@@ -729,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_horizontal_sibling_chain_separates_transition_rails() {
+    fn strict_horizontal_sibling_chain_prefers_direct_aligned_transitions() {
         for fixture in [
             "collision_sibling_triple_lr.md",
             "collision_sibling_triple_rl.md",
@@ -764,8 +792,8 @@ mod tests {
                         trace.boundary_claims.iter().map(|claim| claim.y).collect();
                     assert_eq!(
                         lanes.len(),
-                        2,
-                        "collinear transitions should use distinct quiet corridor rows for {fixture} {style:?} optimized={optimized}"
+                        1,
+                        "aligned strict horizontal transitions should stay on one direct row for {fixture} {style:?} optimized={optimized}"
                     );
                     assert_eq!(trace.entry_decisions.len(), 2);
                     assert!(trace.contract_digest.is_some());
@@ -788,6 +816,11 @@ mod tests {
                         ),
                         _ => unreachable!("focused sibling-chain test only uses ASCII and Unicode"),
                     }
+                    assert!(
+                        !outcome.output.contains("└──────────────────┘"),
+                        "strict horizontal chain retained a lower-corridor capsule for {fixture} {style:?} optimized={optimized}:\n{}",
+                        outcome.output
+                    );
                     for title in ["Group 1", "Group 2", "Group 3"] {
                         assert!(outcome.output.contains(title));
                     }
