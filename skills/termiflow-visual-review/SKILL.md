@@ -63,11 +63,14 @@ see.
   inspection.
 - Every fresh perceptual decision must carry a typed `watch_class`: use
   `not_applicable` only for `pass`, and classify every non-pass as
-  `confirmed_flaw`, `topology_ambiguous`, or `inconclusive`. The strict
-  learning report is the boundary that prevents conservative machine signals
-  from becoming unexamined renderer defects. Non-pass records must also name
-  an `owner_layer`, a concrete `finding`, and visible cell anchors; templated
-  “AI inspected this frame” or `nullxnull` observations are rejected.
+  `confirmed_flaw`, `topology_ambiguous`, or `inconclusive`. Every fresh
+  decision, including a clean `pass`, must also name at least one exact `x,y`
+  visible inspection anchor with a concrete cell note. A clean-pass anchor
+  records what was inspected, not a defect. The strict learning report is the
+  boundary that prevents conservative machine signals from becoming
+  unexamined renderer defects. Non-pass records must additionally name an
+  `owner_layer` and concrete `finding`; templated “AI inspected this frame” or
+  `nullxnull` observations are rejected.
 - Use Rust and Bash only. Do not create or invoke Python/Ruby files or scripts.
 
 ## Workflow
@@ -78,8 +81,8 @@ see.
    binary identity, expected-error count, route-clarity coverage, and argv/
    effective-policy provenance. For renderer-wide work, enumerate every
    non-symlink `tests/fixtures/inputs/*.md` file across every style/mode
-   combination in both lanes: the current inventory is 241 inputs, 964 rows,
-   952 renderable frames, and 12 expected-error rows per lane. A missing
+   combination in both lanes: the current inventory is 242 inputs, 968 rows,
+   956 renderable frames, and 12 expected-error rows per lane. A missing
    user-supplied path is a missing fixture, never an invented test.
 2. Run the conservative Rust prescreen through
    `scripts/review_visual_packet.sh ... --prescreen-clean`. Treat its count and
@@ -124,7 +127,8 @@ see.
 For a deliberate full perceptual pass, start with a fresh decisions file for
 each policy lane, omit `--prescreen-clean`, and add `--fresh` to every review
 command. Repeatedly pull one frame with `--fresh --next`, inspect it, and
-append the hash-bound observation with `--fresh --record` before requesting
+append the hash-bound observation plus an exact visible cell anchor with
+`--fresh --record` before requesting
 the next frame. Finish each lane with `--fresh --validate`. Fresh mode rejects
 machine structural decisions and `carry_forward` records, so exact rebinding
 cannot be mistaken for a new human-eye pass. When a prior visual history
@@ -274,7 +278,7 @@ immediately legible (for example, aligned parallel rails); record a watch when
 long cross-group rails, paired receiver hooks, or external-sink fan-in require
 global tracing. Every result remains an independent exact-hash decision: a
 clean homolog does not cover a different style, mode, policy lane, or
-regenerated frame. The current self-improving loop must continue draining all 952
+regenerated frame. The current self-improving loop must continue draining all 956
 renderable rows in both the canonical and no-override packets, with the 12
 expected-error rows governed separately, before a cycle or golden can be
 called complete.
@@ -367,7 +371,7 @@ lane before it can affect visual history or goldens.
 
 ### H99 lesson: minimum turn clearance is a perceptual invariant
 
-The current live corpus is 241 inputs, 964 rows per policy lane, 952
+The current live corpus is 242 inputs, 968 rows per policy lane, 956
 renderable frames, and 12 separately ledgered expected errors. Historical H84,
 H89, and H91 counts above describe their original epochs; do not use them for
 current coverage accounting.
@@ -391,7 +395,7 @@ style label alone cannot cover an authored control row.
 
 ### H100 lesson: collinear LR/RL sibling bridges stay straight
 
-The current live corpus is 241 inputs, 964 rows per policy lane, 952
+The current live corpus is 242 inputs, 968 rows per policy lane, 956
 renderable frames, and 12 separately ledgered expected errors. Historical
 counts above describe their source epochs and must not be substituted for the
 current denominator.
@@ -420,7 +424,7 @@ homologs without exporting the rule into unrelated topology.
 
 ### H101 lesson: TD sibling corridors need a layout-owned turn band
 
-The current live corpus is 241 inputs, 964 rows per policy lane, 952
+The current live corpus is 242 inputs, 968 rows per policy lane, 956
 renderable frames, and 12 separately ledgered expected-error rows.
 
 In the direct three-sibling TD chain, two exterior rows are not enough when a
@@ -487,8 +491,8 @@ repair instead. The focused regression and oracle commands are recorded in
 the public lesson
 [`dense-vertical-crossing-target-clearance-2026-08-13.md`](../../docs/visual-lessons/dense-vertical-crossing-target-clearance-2026-08-13.md).
 
-After this kind of routing fix, rebuild both complete 241-input policy lanes,
-validate the 964-row packets and separate 12-row expected-error ledgers, and
+After this kind of routing fix, rebuild both complete 242-input policy lanes,
+validate the 968-row packets and separate 12-row expected-error ledgers, and
 freshly inspect every affected direction/style/mode homolog before closing a
 watch or touching goldens.
 
@@ -507,7 +511,7 @@ scenes. Its focused regression is
 `tests/render_options_api/direction_matrix.rs`. Inspect both direct and
 crossed parallel homologs in both requested-style lanes before resolving any
 BT/LR/RL watch; this rule is not inferred for those directions. The complete
-241-input/964-row packets and 12-row error ledgers remain required, and no
+242-input/968-row packets and 12-row error ledgers remain required, and no
 golden approval follows from the focused repair.
 
 ### H106 lesson: mixed sibling targets need a real visual gap
@@ -525,7 +529,7 @@ changed edge identity, node/title collision, or a worsened tight, triple,
 nested, labeled, LR, or RL homolog. The machine-clean critic is not enough:
 fresh one-frame review must confirm the receiver is locally readable in both
 canonical requested-style and authored no-override lanes. The complete
-241-input/964-row matrix, separate 12-row error ledgers, open BT title-hook
+242-input/968-row matrix, separate 12-row error ledgers, open BT title-hook
 and TD chain watches, and golden gates remain active.
 
 ### H118/H119 current negative-loop guards
@@ -575,7 +579,7 @@ the source-side offset but left a target-side title-gutter elbow, so endpoint
 staging was explicitly falsified and retained as a watch. Do not retry that
 experiment as a generic source/target alignment rule. A successful BT follow-
 up must name target-side seam ownership, preserve every endpoint identity, and
-pass the complete 241-input/964-row canonical and authored/no-override review
+pass the complete 242-input/968-row canonical and authored/no-override review
 before a history resolution or golden approval.
 
 The complex BT scene is also an explicit negative control for the single-entry
@@ -622,7 +626,7 @@ the lower API → S1 title hook in all four ASCII/Unicode × default/optimized
 frames and in both policy lanes, while leaving the titled sibling groups and
 Data Layer nodes unchanged. The prior H127 shoulder did not recur. Keep this
 as a topology-gated source-node policy, not a generalized source-group rule;
-the shared sibling rail remains a named P2 watch and the full 952-renderable
+the shared sibling rail remains a named P2 watch and the full 956-renderable
 row perceptual queue must still be drained before any golden or release
 decision.
 

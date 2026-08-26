@@ -27,6 +27,10 @@ const GENERIC_WATCH_OBSERVATION: &str =
     "Route or local visual density remains a conservative human-eye watch; the marked cells need matched review.";
 const GENERIC_WATCH_HYPOTHESIS: &str =
     "The current topology-owned route/boundary interaction remains a human-eye ownership or density watch even though the frame is structurally renderable.";
+const GENERATED_PASS_OBSERVATION_SUFFIX: &str =
+    " reviewed for semantic direction, route continuity, border/portal ownership, spacing, glyph junctions, text/clipping, and tiny stray marks; no visible defect was found.";
+const GENERATED_PASS_HYPOTHESIS: &str =
+    "The accepted renderer changes remain isolated from this fixture and preserve the existing visual contract.";
 const LEGACY_CARRY_FORWARD_OWNER: &str = "reviewer_calibration";
 const LEGACY_REBOUND_OWNER: &str = "visual-review/legacy-carry-forward";
 const DUPLICATED_REBOUND_HYPOTHESIS: &str =
@@ -369,6 +373,11 @@ fn validate_fresh_decision(decision: &Value) -> Result<()> {
     if decision_kind != "pass" && watch_class == "not_applicable" {
         bail!("non-pass decision {case_id} cannot use watch_class=not_applicable");
     }
+    if decision["cells"].as_array().is_none_or(Vec::is_empty) {
+        bail!(
+            "fresh perceptual review must bind every decision to at least one exact visible inspection cell for {case_id}"
+        );
+    }
     if decision.get("carry_forward").is_some() {
         bail!("fresh perceptual review cannot include carry-forward decision for {case_id}");
     }
@@ -377,6 +386,16 @@ fn validate_fresh_decision(decision: &Value) -> Result<()> {
     {
         bail!(
             "fresh perceptual review must replace generic watch boilerplate with a frame-specific observation and hypothesis for {case_id}"
+        );
+    }
+    if decision_kind == "pass"
+        && (decision["observation"]
+            .as_str()
+            .is_some_and(|observation| observation.contains(GENERATED_PASS_OBSERVATION_SUFFIX))
+            || decision["hypothesis"].as_str() == Some(GENERATED_PASS_HYPOTHESIS))
+    {
+        bail!(
+            "fresh perceptual pass must replace generated observation and hypothesis with frame-specific human-eye evidence for {case_id}"
         );
     }
     if decision["next_command"]
@@ -1012,6 +1031,7 @@ fn frame_payload(
             "fresh_review": true,
             "machine_evidence_is_triage_only": true,
             "carry_forward_forbidden": true,
+            "every_fresh_decision_requires_exact_cells": true,
             "watch_or_fail_requires_exact_cells": true,
             "checks": [
                 "semantic topology and direction",
@@ -1026,7 +1046,7 @@ fn frame_payload(
             "decision": "pass|fail|watch|unclear",
             "severity": "P0|P1|P2|P3",
             "dimensions": DIMENSIONS,
-            "cells": [{"x": 0, "y": 0, "note": "optional precise cell observation"}],
+            "cells": [{"x": 0, "y": 0, "note": "required precise visible inspection anchor, including for a clean pass"}],
             "finding": "stable-human-readable-id-or-none",
             "observation": "what a human eye sees before source explanation",
             "hypothesis": "likely responsible layer or interaction",
@@ -1386,6 +1406,49 @@ mod tests {
 
         decision["cells"] = json!([{"x": 7, "y": 8, "note": "first rail touches title row"}]);
         validate_fresh_decision(&decision).expect("specific watch should validate");
+    }
+
+    #[test]
+    fn fresh_perceptual_pass_requires_anchor_and_rejects_generated_template() {
+        let row = json!({
+            "case_id": "case",
+            "stdout": {"sha256": "frame"},
+            "evidence": {"sha256": "evidence"}
+        });
+        let rows = BTreeMap::from([("case".to_owned(), row)]);
+        let mut decision = json!({
+            "schema": DECISION_SCHEMA,
+            "case_id": "case",
+            "frame_sha256": "frame",
+            "evidence_sha256": "evidence",
+            "decision": "pass",
+            "severity": "P3",
+            "watch_class": "not_applicable",
+            "dimensions": ["semantic", "route", "readability"],
+            "cells": [],
+            "finding": "none",
+            "observation": "Fresh fixture ascii optimized frame reviewed for semantic direction, route continuity, border/portal ownership, spacing, glyph junctions, text/clipping, and tiny stray marks; no visible defect was found.",
+            "hypothesis": GENERATED_PASS_HYPOTHESIS,
+            "expected_observation_if_true": "the inspected anchor remains readable in the matched homolog",
+            "falsifier": "a visible defect appears at the inspected anchor",
+            "affected_homologs": [],
+            "next_command": "scripts/review_visual_packet.sh --packet current --decisions fresh --next",
+            "reviewer": "ai",
+            "review_kind": PERCEPTUAL_REVIEW,
+            "timestamp": "now"
+        });
+        validate_decision(&decision, &rows).expect("base pass should validate");
+        assert!(validate_fresh_decision(&decision).is_err());
+
+        decision["cells"] =
+            json!([{"x": 8, "y": 3, "note": "right edge of the receiver box remains clear"}]);
+        assert!(validate_fresh_decision(&decision).is_err());
+
+        decision["observation"] = json!("At x=8,y=3 the receiver box edge, arrow junction, and adjacent whitespace remain distinct in this frame.");
+        decision["hypothesis"] =
+            json!("The receiver boundary owns the junction without stealing a route cell.");
+        validate_fresh_decision(&decision)
+            .expect("anchored frame-specific clean pass should validate");
     }
 
     #[test]

@@ -16,8 +16,10 @@ For every renderable packet row, the reviewer must:
    clipping, wrapping, CJK/emoji width, fallback glyphs, and tiny artifacts.
 3. Compare the relevant style/mode/direction homologs and matched controls.
 4. Record a frame-specific observation and a falsifiable ownership hypothesis.
-   A `watch` or `fail` must include exact `x,y` cells and a note for every
-   visible concern. A `pass` must still describe what was visibly checked.
+   Every fresh decision, including a clean `pass`, must include at least one
+   exact `x,y` inspection anchor with a visible-cell note. A `watch` or `fail`
+   must include exact cells and a note for every visible concern; a clean-pass
+   anchor records what was inspected, not a defect.
 5. Record the current frame, evidence, effective-policy, and run hashes. A
    fresh review may not contain a carry-forward record or stale next command.
 
@@ -29,7 +31,9 @@ stderr policy, and expected diagnostic text must be reviewed explicitly.
 Fresh means the reviewer opened the current packet row and wrote a new
 perceptual decision for that exact frame. Rebinding an unchanged frame is
 useful delta evidence, but it is not fresh visual coverage and cannot close a
-full-corpus acceptance gate.
+full-corpus acceptance gate. Aggregate coverage, repeated prose, and empty
+cell lists are not human-eye evidence; fresh passes must carry frame-specific
+observation prose, a falsifiable hypothesis, and an exact visible anchor.
 
 ## Evidence hierarchy
 
