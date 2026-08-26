@@ -9,6 +9,15 @@ published tag and link to the corresponding GitHub release.
   and maintenance.
 - Record intentional visual or schema changes with their reviewed decision.
 
+## [0.2.7] — 2026-08-26
+
+- Harden fresh visual review records so every full-corpus frame carries an
+  exact visible anchor and frame-specific human-eye rationale.
+- Re-run the canonical and authored Mermaid review lanes across all 242 input
+  fixtures, 968 packet rows, 956 renderable frames, and 12 expected errors.
+- Keep Rust 1.98.0 and the latest compatible reachable dependency graph bound
+  to the release candidate, with package, audit, and release contracts passing.
+
 ## [0.2.5] — 2026-08-20
 
 - Improve topology-owned portal lanes and title-gutter routing for difficult

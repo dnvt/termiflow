@@ -76,7 +76,7 @@ under `tests/fixtures/inputs` for its declared directions, ASCII/Unicode
 styles, and default/optimized modes. Each successful row carries a
 hash-bound `termiflow.route_clarity.v1` report. `clean` is only machine
 evidence; `risk` and `inconclusive` are conservative review signals and do
-not close the one-frame human-eye ledger. The current corpus produces 936
+not close the one-frame human-eye ledger. The current corpus produces 956
 renderable rows and 12 separately reviewed expected-error rows. Canary,
 holdout, residual, and machine-clean subsets never substitute for that full
 review.
@@ -84,8 +84,8 @@ review.
 Renderer-wide review has two complete policy lanes. The canonical packet
 injects the requested `--style`; the supplemental packet uses
 `--respect-input-style` so authored `%% termiflow:` directives are visible to
-the reviewer. Both packets enumerate all 237 inputs and require their own
-936 renderable decisions plus 12 expected-error policy decisions. The
+the reviewer. Both packets enumerate all 242 inputs and require their own
+956 renderable decisions plus 12 expected-error policy decisions. The
 directive-bearing inputs are prioritized, but the remaining no-override
 inputs are controls and cannot be dropped or covered by the canonical lane.
 
