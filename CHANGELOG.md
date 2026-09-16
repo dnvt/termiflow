@@ -8,8 +8,16 @@ published tag and link to the corresponding GitHub release.
 - Keep changes grouped by user-visible behavior, compatibility, documentation,
   and maintenance.
 - Record intentional visual or schema changes with their reviewed decision.
+
+## [0.2.8] — 2026-09-16
+
+- Strengthen topology-oracle and reviewer calibration for ambiguous diagram
+  seams, with clean full-corpus visual evidence and explicit human-eye review
+  provenance.
 - Refresh the stable Rust toolchain to 1.98.1 and direct dependencies to the
   latest audited releases, with the lockfile and currency receipt re-bound.
+- Keep release candidate, package, audit, and cross-platform visual contracts
+  bound to the exact source, toolchain, and dependency identities.
 
 ## [0.2.7] — 2026-08-26
 
