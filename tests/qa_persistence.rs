@@ -129,6 +129,8 @@ fn write_review_fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
         "finding": "none",
         "observation": "The complete frame is readable and visually connected.",
         "hypothesis": "No renderer defect is visible in this frame.",
+        "oracle_scope": "certified",
+        "oracle_reason": "The semantic endpoints and direction are known; this frame supplies the visual route evidence.",
         "expected_observation_if_true": "The homolog frame should preserve the same visible topology.",
         "falsifier": "A homolog or holdout frame shows a missing route, clipped label, or ambiguous endpoint.",
         "affected_homologs": [],

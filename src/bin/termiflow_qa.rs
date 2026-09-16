@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 #[path = "../qa/mod.rs"]
 mod qa;
 

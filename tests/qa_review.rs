@@ -52,7 +52,8 @@ fn write_packet(root: &Path) -> (String, String) {
         "route_clarity": {
             "schema": "termiflow.route_clarity.v1",
             "status": "not_applicable",
-            "findings": []
+            "findings": [],
+            "topology": {"oracle": {"schema": "termiflow.route_clarity.topology.v1", "scope": "certified"}}
         },
         "optimized": false,
         "repair_passes": 0,
@@ -145,6 +146,8 @@ fn perceptual_decision(frame_sha256: &str, evidence_sha256: &str) -> Value {
         "finding": "none",
         "observation": "The complete frame is readable and visually connected.",
         "hypothesis": "No renderer defect is visible in this frame.",
+        "oracle_scope": "certified",
+        "oracle_reason": "The semantic endpoints and direction are known; this frame supplies the visual route evidence.",
         "expected_observation_if_true": "The homolog frame should preserve the same visible topology.",
         "falsifier": "A homolog or holdout frame shows a missing route, clipped label, or ambiguous endpoint.",
         "affected_homologs": ["edge_kinds_lr.unicode", "edge_kinds_rl.ascii"],

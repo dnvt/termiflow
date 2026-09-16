@@ -91,6 +91,15 @@ fn route_clarity_audit_surface_is_public_and_hash_bound() {
 
     assert_eq!(report["source_sha256"].as_str().unwrap().len(), 64);
     assert_eq!(report["frame_sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        report["topology"]["oracle"]["schema"],
+        "termiflow.route_clarity.topology.v1"
+    );
+    assert_eq!(report["topology"]["oracle"]["direction"], "BT");
+    assert!(matches!(
+        report["topology"]["oracle"]["scope"].as_str(),
+        Some("certified" | "ambiguous" | "unsupported")
+    ));
     assert!(matches!(
         report["status"].as_str(),
         Some("risk" | "inconclusive")

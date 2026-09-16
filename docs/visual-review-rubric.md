@@ -9,7 +9,9 @@ they never replace visual judgment.
 For every renderable packet row, the reviewer must:
 
 1. Read the Mermaid schema and identify direction, topology, node/edge count,
-   subgraphs, labels, shapes, and any authored style directive.
+   subgraphs, labels, shapes, and any authored style directive. Record the
+   source-bound topology-oracle scope (`certified`, `ambiguous`, or
+   `unsupported`) and its reason before judging route ownership.
 2. Inspect the complete frame before reading the machine evidence. Check
    semantics, route continuity, crossings, overlap, portals, borders, titles,
    spacing, density, corners, junctions, seams, arrowhead attachment, labels,
@@ -22,6 +24,8 @@ For every renderable packet row, the reviewer must:
    anchor records what was inspected, not a defect.
 5. Record the current frame, evidence, effective-policy, and run hashes. A
    fresh review may not contain a carry-forward record or stale next command.
+   It must also record `oracle_scope` and a frame-specific `oracle_reason`;
+   semantic certification never substitutes for visual route evidence.
 
 Expected-error rows use a separate behavioral ledger: exit status, stdout,
 stderr policy, and expected diagnostic text must be reviewed explicitly.

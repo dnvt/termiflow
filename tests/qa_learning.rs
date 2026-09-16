@@ -31,7 +31,12 @@ fn write_packet(root: &Path) -> (String, String) {
         "raw": {"errors": []},
         "geometry": {"errors": [], "untraced_fallback_edges": []},
         "semantic": {"owner_counts": {"Unknown": 0}},
-        "route_clarity": {"schema": "termiflow.route_clarity.v1", "status": "clean", "findings": []}
+        "route_clarity": {
+            "schema": "termiflow.route_clarity.v1",
+            "status": "clean",
+            "findings": [],
+            "topology": {"oracle": {"schema": "termiflow.route_clarity.topology.v1", "scope": "ambiguous"}}
+        }
     }))
     .expect("serialize evidence");
     fs::create_dir_all(root.join("frames")).expect("create frame directory");
@@ -78,6 +83,8 @@ fn decision(frame_sha256: &str, evidence_sha256: &str, watch_class: Option<&str>
         "owner_layer": "routing",
         "observation": "A human-visible route ambiguity remains in this frame.",
         "hypothesis": "The route planner may allocate a visually ambiguous receiver lane.",
+        "oracle_scope": "ambiguous",
+        "oracle_reason": "The endpoint semantics are known, but receiver-lane ownership remains visually unproven.",
         "expected_observation_if_true": "A focused homolog check will show the same receiver ambiguity.",
         "falsifier": "A matched homolog is clear and the ambiguity cannot be reproduced.",
         "affected_homologs": ["edge_branch_rl"],

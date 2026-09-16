@@ -1,7 +1,7 @@
 ---
 name: termiflow-visual-review
 description: Review TermiFlow ASCII and Unicode diagram frames for human-visible semantic, routing, containment, text, and rendering defects with hash-bound evidence and targeted self-improvement.
-version: 0.1.9
+version: 0.1.10
 allowed-tools: [Read, Grep, Bash]
 ---
 
@@ -48,6 +48,15 @@ see.
   `termiflow.route_clarity.v1` report. Its `risk` or `inconclusive` status is a
   conservative reason to keep the row in the one-frame queue; even `clean` and
   `not_applicable` are evidence only and never replace the visual decision.
+- Every route report also carries a source-recomputed
+  `termiflow.route_clarity.topology.v1` profile. Treat `scope: certified` as
+  certification of semantic facts only: it never certifies a rendered route.
+  Treat `ambiguous` as a required visual ownership check and `unsupported` as
+  a fail-closed reviewer watch. Use its edge order, multiplicity, direction,
+  node shapes, labels, subgraph ancestry, boundary exits/entries, and cycle or
+  fan-in/fan-out features to state what is known before interpreting glyphs.
+  Never turn an oracle ambiguity into a renderer change without a frame-specific
+  defect and a falsifier.
 - The route-clarity oracle explicitly queues title-adjacent TD/TB and BT
   elbows (`+-+`, `┌─┘`, `└─┐`, and close Unicode variants) as human-review
   signals when they occur inside a titled subgraph with a declared boundary
@@ -70,7 +79,10 @@ see.
   boundary that prevents conservative machine signals from becoming
   unexamined renderer defects. Non-pass records must additionally name an
   `owner_layer` and concrete `finding`; templated “AI inspected this frame” or
-  `nullxnull` observations are rejected.
+  `nullxnull` observations are rejected. Fresh decisions must also record
+  `oracle_scope` (`certified`, `ambiguous`, or `unsupported`) and a concrete
+  `oracle_reason` explaining which semantic facts are known and which visual
+  ownership question remains open.
 - Use Rust and Bash only. Do not create or invoke Python/Ruby files or scripts.
 
 ## Workflow
@@ -89,7 +101,10 @@ see.
    every route-clarity status as structural evidence only; the route report is
    deliberately not a perceptual verdict.
 3. Pull one residual frame with `--next`. Read the complete frame payload and
-   inspect the rendered ASCII/Unicode block without opening source first.
+   inspect the rendered ASCII/Unicode block without opening source first. The
+   payload exposes `topology_oracle`; after the first visual observation, use
+   it to distinguish a semantic identity question from a route-projection
+   question, not to override what the frame visibly says.
 4. Use the checklist below. Stop at the first material ambiguity, but still
    record all dimensions that were actually inspected.
 5. If prior visual watches, failures, or human contradictions exist, pass the

@@ -13,6 +13,7 @@ const FRAME_SCHEMA: &str = "termiflow.visual_review.frame.v2";
 const COVERAGE_SCHEMA: &str = "termiflow.visual_review.coverage.v1";
 const STRUCTURAL_PRESCREEN: &str = "structural_prescreen";
 const PERCEPTUAL_REVIEW: &str = "perceptual";
+const TOPOLOGY_ORACLE_SCHEMA: &str = "termiflow.route_clarity.topology.v1";
 const DECISIONS: &[&str] = &["pass", "fail", "watch", "unclear"];
 const SEVERITIES: &[&str] = &["P0", "P1", "P2", "P3"];
 const DIMENSIONS: &[&str] = &["semantic", "containment", "route", "text", "readability"];
@@ -378,6 +379,14 @@ fn validate_fresh_decision(decision: &Value) -> Result<()> {
             "fresh perceptual review must bind every decision to at least one exact visible inspection cell for {case_id}"
         );
     }
+    let oracle_scope = non_empty_string(decision.get("oracle_scope"), "decision oracle_scope")?;
+    if !matches!(
+        oracle_scope.as_str(),
+        "certified" | "ambiguous" | "unsupported"
+    ) {
+        bail!("invalid oracle_scope for {case_id}: {oracle_scope}");
+    }
+    non_empty_string(decision.get("oracle_reason"), "decision oracle_reason")?;
     if decision.get("carry_forward").is_some() {
         bail!("fresh perceptual review cannot include carry-forward decision for {case_id}");
     }
@@ -916,6 +925,18 @@ fn evidence_is_structurally_clean(evidence: &Value) -> bool {
         && evidence["route_clarity"]["findings"]
             .as_array()
             .is_some_and(Vec::is_empty);
+    let topology_oracle_clean = evidence
+        .get("route_clarity")
+        .and_then(|route| route.get("topology"))
+        .and_then(|topology| topology.get("oracle"))
+        .and_then(Value::as_object)
+        .is_some_and(|oracle| {
+            oracle.get("schema").and_then(Value::as_str) == Some(TOPOLOGY_ORACLE_SCHEMA)
+                && matches!(
+                    oracle.get("scope").and_then(Value::as_str),
+                    Some("certified" | "ambiguous" | "unsupported")
+                )
+        });
     let optional_errors_are_empty = evidence
         .get("errors")
         .is_none_or(|value| matches!(value, Value::Array(values) if values.is_empty()));
@@ -926,6 +947,7 @@ fn evidence_is_structurally_clean(evidence: &Value) -> bool {
         && findings.is_empty()
         && geometry_errors.is_empty()
         && route_clarity_clean
+        && topology_oracle_clean
         && owner_counts.values().all(Value::is_u64)
         && warnings.iter().all(Value::is_string)
         && raw_errors.iter().all(Value::is_string)
@@ -999,6 +1021,7 @@ fn frame_payload(
         serde_json::from_slice(&evidence_bytes).context("parse review evidence")?;
     let evidence_hash = evidence_ref["sha256"].as_str().unwrap_or_default();
     let style_provenance = style_provenance(row, &evidence);
+    let topology_oracle = evidence["route_clarity"]["topology"]["oracle"].clone();
     let mut payload = json!({
         "schema": FRAME_SCHEMA,
         "case_id": row["case_id"],
@@ -1018,6 +1041,7 @@ fn frame_payload(
         "geometry": evidence["geometry"],
         "semantic": evidence["semantic"],
         "route_clarity": evidence["route_clarity"],
+        "topology_oracle": topology_oracle,
         "warnings": evidence["warnings"],
         "history": history.context(row, resolved_history_ids),
         "repair": {
@@ -1035,6 +1059,7 @@ fn frame_payload(
             "watch_or_fail_requires_exact_cells": true,
             "checks": [
                 "semantic topology and direction",
+                "semantic topology profile, edge multiplicity, boundary ownership, and explicit oracle uncertainty",
                 "route continuity, crossings, overlap, portals, borders, and titles",
                 "spacing, balance, density, corners, junctions, and seams",
                 "shaft-to-arrowhead continuity and endpoint ownership",
@@ -1056,6 +1081,8 @@ fn frame_payload(
             "next_command": "targeted test or review command",
             "reviewer": "ai|human",
             "review_kind": "perceptual",
+            "oracle_scope": "certified|ambiguous|unsupported",
+            "oracle_reason": "state what semantic facts are known and what visual route ownership remains unproven",
             "history_resolution": {
                 "schema": super::visual_history::HISTORY_RESOLUTION_SCHEMA,
                 "status": "falsified|repaired|superseded",
@@ -1187,7 +1214,8 @@ mod tests {
             "route_clarity": {
                 "schema": "termiflow.route_clarity.v1",
                 "status": "not_applicable",
-                "findings": []
+                "findings": [],
+                "topology": {"oracle": {"schema": TOPOLOGY_ORACLE_SCHEMA, "scope": "certified"}}
             }
         });
         assert!(evidence_is_structurally_clean(&clean));
@@ -1357,6 +1385,8 @@ mod tests {
                 "next_command": "none",
                 "reviewer": reviewer,
                 "review_kind": PERCEPTUAL_REVIEW,
+                "oracle_scope": "certified",
+                "oracle_reason": "The semantic endpoints are known; visual route ownership is not implicated by this unit frame.",
                 "timestamp": "now"
             });
             validate_decision(&decision, &rows).expect("perceptual decision should validate");
@@ -1395,6 +1425,8 @@ mod tests {
             "next_command": "scripts/review_visual_packet.sh --packet h155 --decisions fresh --next",
             "reviewer": "ai",
             "review_kind": PERCEPTUAL_REVIEW,
+            "oracle_scope": "ambiguous",
+            "oracle_reason": "The declared boundary relationship is known, but the frame must prove which visible seam owns the rail.",
             "timestamp": "now"
         });
         validate_decision(&decision, &rows).expect("base decision should validate");
@@ -1435,6 +1467,8 @@ mod tests {
             "next_command": "scripts/review_visual_packet.sh --packet current --decisions fresh --next",
             "reviewer": "ai",
             "review_kind": PERCEPTUAL_REVIEW,
+            "oracle_scope": "certified",
+            "oracle_reason": "The semantic endpoints and direction are known; this frame is the evidence for visual clearance.",
             "timestamp": "now"
         });
         validate_decision(&decision, &rows).expect("base pass should validate");

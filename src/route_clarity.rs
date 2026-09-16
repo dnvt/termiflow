@@ -6,7 +6,7 @@
 //! geometry, and the characters in the emitted frame. A risk is evidence that
 //! keeps a row in the one-frame queue; it is not perceptual approval.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -18,10 +18,49 @@ use termiflow::{
 };
 
 pub const SCHEMA: &str = "termiflow.route_clarity.v1";
+const TOPOLOGY_ORACLE_SCHEMA: &str = "termiflow.route_clarity.topology.v1";
 
 const ROUTE_NONE: u8 = 4;
 const STATUSES: &[&str] = &["risk", "inconclusive", "clean", "not_applicable"];
 const SEVERITIES: &[&str] = &["P0", "P1", "P2", "P3"];
+
+fn route_style_and_mode(style: &str, mode: &str) -> Result<(BaseStyle, bool)> {
+    let base_style = style
+        .parse::<BaseStyle>()
+        .map_err(|_| anyhow!("unsupported route-clarity style: {style}"))?;
+    let optimized = match mode {
+        "default" => false,
+        "optimized" => true,
+        other => return Err(anyhow!("unsupported route-clarity mode: {other}")),
+    };
+    Ok((base_style, optimized))
+}
+
+fn semantic_graph(source: &str) -> Result<termiflow::Graph> {
+    Ok(parse(source, false)
+        .context("parse route-clarity semantic graph")?
+        .graph)
+}
+
+fn prepared_graph(
+    source: &str,
+    base_style: BaseStyle,
+    optimized: bool,
+) -> Result<termiflow::Graph> {
+    let parsed = parse(source, false).context("parse route-clarity input")?;
+    let mut graph = parsed.graph;
+    // The packet renderer honors in-file directives (for example, intentional
+    // label wrapping). Resolve the same directive layer before measuring so
+    // the independent label check compares like with like.
+    let mut config = Config::from_parse_config(&parsed.config);
+    config.optimize_render = optimized;
+    config.composite_style = CompositeStyle::from_base(base_style);
+    config.spacing = config.spacing.for_direction(graph.direction);
+    measure::measure_graph(&mut graph, &config);
+    let (graph, _) = layout_and_render_with_feedback(graph, config)
+        .context("measure route-clarity graph geometry")?;
+    Ok(graph)
+}
 
 fn sha256_bytes(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -38,27 +77,9 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 pub fn analyze(input: &[u8], frame: &[u8], style: &str, mode: &str) -> Result<Value> {
     let source = std::str::from_utf8(input).context("route-clarity input is not UTF-8")?;
     let frame = std::str::from_utf8(frame).context("route-clarity frame is not UTF-8")?;
-    let base_style = style
-        .parse::<BaseStyle>()
-        .map_err(|_| anyhow!("unsupported route-clarity style: {style}"))?;
-    let optimized = match mode {
-        "default" => false,
-        "optimized" => true,
-        other => return Err(anyhow!("unsupported route-clarity mode: {other}")),
-    };
-
-    let parsed = parse(source, false).context("parse route-clarity input")?;
-    let mut graph = parsed.graph;
-    // The packet renderer honors in-file directives (for example, intentional
-    // label wrapping). Resolve the same directive layer before measuring so
-    // the independent label check compares like with like.
-    let mut config = Config::from_parse_config(&parsed.config);
-    config.optimize_render = optimized;
-    config.composite_style = CompositeStyle::from_base(base_style);
-    config.spacing = config.spacing.for_direction(graph.direction);
-    measure::measure_graph(&mut graph, &config);
-    let (graph, _) = layout_and_render_with_feedback(graph, config)
-        .context("measure route-clarity graph geometry")?;
+    let (base_style, optimized) = route_style_and_mode(style, mode)?;
+    let graph = prepared_graph(source, base_style, optimized)?;
+    let semantic_graph = semantic_graph(source)?;
 
     let mut findings = Vec::new();
     if frame.trim().is_empty() {
@@ -141,6 +162,7 @@ pub fn analyze(input: &[u8], frame: &[u8], style: &str, mode: &str) -> Result<Va
     let nonterminal_vertical_fan_in = nonterminal_vertical_fan_in_identity_family(&graph);
     let ordinary_fan_in = ordinary_fan_in_identity_family(&graph);
     let has_subgraphs = !graph.subgraphs.is_empty();
+    let topology_oracle = semantic_topology_profile(&semantic_graph);
     let status = if findings.is_empty() {
         if dense
             || dedicated_fan_in
@@ -180,6 +202,7 @@ pub fn analyze(input: &[u8], frame: &[u8], style: &str, mode: &str) -> Result<Va
             "edges": graph.edges.len(),
             "subgraphs": graph.subgraphs.len(),
             "dense_crossing_candidate": dense,
+            "oracle": topology_oracle,
         },
         "findings": findings,
     }))
@@ -219,6 +242,11 @@ pub fn validate_report(
         bail!("{label}: route-clarity mode does not match the row");
     }
 
+    let (base_style, optimized) = route_style_and_mode(style, mode)?;
+    let source = std::str::from_utf8(input).context("route-clarity input is not UTF-8")?;
+    let graph = prepared_graph(source, base_style, optimized)?;
+    let semantic_graph = semantic_graph(source)?;
+
     let topology = report
         .get("topology")
         .and_then(Value::as_object)
@@ -233,6 +261,30 @@ pub fn validate_report(
         .is_some_and(Value::is_boolean)
     {
         bail!("{label}: route-clarity topology.dense_crossing_candidate must be boolean");
+    }
+    let expected_counts = [
+        ("nodes", graph.nodes.len() as u64),
+        ("edges", graph.edges.len() as u64),
+        ("subgraphs", graph.subgraphs.len() as u64),
+    ];
+    for (field, expected) in expected_counts {
+        if topology.get(field).and_then(Value::as_u64) != Some(expected) {
+            bail!("{label}: route-clarity topology.{field} does not match the source graph");
+        }
+    }
+    let expected_dense = dense_crossing_input(&graph);
+    if topology
+        .get("dense_crossing_candidate")
+        .and_then(Value::as_bool)
+        != Some(expected_dense)
+    {
+        bail!(
+            "{label}: route-clarity topology.dense_crossing_candidate does not match the source graph"
+        );
+    }
+    let expected_oracle = semantic_topology_profile(&semantic_graph);
+    if topology.get("oracle") != Some(&expected_oracle) {
+        bail!("{label}: route-clarity topology.oracle is stale or incomplete");
     }
 
     let findings = report
@@ -291,6 +343,333 @@ fn finding(code: &str, severity: &str, message: impl Into<String>, cells: Vec<Va
 
 fn cell(x: usize, y: usize) -> Value {
     json!({"x": x, "y": y})
+}
+
+/// Build the semantic side of the route oracle without consulting renderer
+/// metadata or interpreting individual glyphs. The report intentionally
+/// carries both ordered edge records and grouped multiplicity records: edge
+/// order is the stable identity available to Mermaid's parsed graph, while a
+/// grouped pair makes parallel-edge ambiguity visible to a reviewer.
+fn semantic_topology_profile(graph: &termiflow::Graph) -> Value {
+    let node_id_set: HashSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
+    let duplicate_node_ids = node_id_set.len() != graph.nodes.len();
+    let unresolved_edge_endpoints = graph.edges.iter().any(|edge| {
+        !node_id_set.contains(edge.from.as_str()) || !node_id_set.contains(edge.to.as_str())
+    });
+
+    let mut node_records = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            json!({
+                "id": node.id,
+                "shape": node_shape_name(node.shape),
+                "label_present": !node.label.is_empty(),
+                "subgraph_chain": graph
+                    .node_subgraph_chain(&node.id)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    node_records.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+
+    let mut edge_records = Vec::with_capacity(graph.edges.len());
+    let mut pair_indices = BTreeMap::<(String, String), Vec<usize>>::new();
+    let mut boundary_indices = BTreeMap::<(Vec<String>, Vec<String>), Vec<usize>>::new();
+    for (index, edge) in graph.edges.iter().enumerate() {
+        let (exits, entries) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+        let exits = exits.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let entries = entries.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let relation = semantic_edge_relation(graph, &edge.from, &edge.to, &exits, &entries);
+        pair_indices
+            .entry((edge.from.clone(), edge.to.clone()))
+            .or_default()
+            .push(index);
+        boundary_indices
+            .entry((exits.clone(), entries.clone()))
+            .or_default()
+            .push(index);
+        edge_records.push(json!({
+            "index": index,
+            "from": edge.from,
+            "to": edge.to,
+            "kind": edge_kind_name(edge.kind),
+            "back_edge": edge.is_back_edge,
+            "label_present": edge.label.is_some(),
+            "from_subgraph_chain": graph
+                .node_subgraph_chain(&edge.from)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            "to_subgraph_chain": graph
+                .node_subgraph_chain(&edge.to)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            "boundary_exits": exits,
+            "boundary_entries": entries,
+            "relation": relation,
+        }));
+    }
+
+    let edge_pairs = pair_indices
+        .into_iter()
+        .map(|((from, to), edge_indices)| {
+            json!({
+                "from": from,
+                "to": to,
+                "count": edge_indices.len(),
+                "edge_indices": edge_indices,
+            })
+        })
+        .collect::<Vec<_>>();
+    let boundary_crossings = boundary_indices
+        .into_iter()
+        .filter(|((exits, entries), _)| !exits.is_empty() || !entries.is_empty())
+        .map(|((exits, entries), edge_indices)| {
+            json!({
+                "exits": exits,
+                "entries": entries,
+                "count": edge_indices.len(),
+                "edge_indices": edge_indices,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut subgraphs = graph.subgraphs.iter().collect::<Vec<_>>();
+    subgraphs.sort_by(|left, right| left.id.cmp(&right.id));
+    let subgraph_records = subgraphs
+        .iter()
+        .map(|subgraph| {
+            let mut node_ids = subgraph.node_ids.iter().cloned().collect::<Vec<_>>();
+            node_ids.sort();
+            json!({
+                "id": subgraph.id,
+                "title_present": subgraph.title.as_ref().is_some_and(|title| !title.is_empty()),
+                "parent_id": subgraph.parent_id,
+                "child_ids": subgraph.child_ids,
+                "node_ids": node_ids,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut sibling_subgraphs = Vec::new();
+    for (left_index, left) in subgraphs.iter().enumerate() {
+        for right in subgraphs.iter().skip(left_index + 1) {
+            if left.parent_id == right.parent_id {
+                sibling_subgraphs.push(json!({
+                    "left": left.id,
+                    "right": right.id,
+                    "shared_parent": left.parent_id,
+                }));
+            }
+        }
+    }
+
+    let has_fan_in = graph
+        .nodes
+        .iter()
+        .any(|node| graph.edges.iter().filter(|edge| edge.to == node.id).count() >= 2);
+    let has_fan_out = graph.nodes.iter().any(|node| {
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.from == node.id)
+            .count()
+            >= 2
+    });
+    let has_parallel_edges = edge_pairs
+        .iter()
+        .any(|pair| pair["count"].as_u64().is_some_and(|count| count > 1));
+    let has_boundary_crossings = !boundary_crossings.is_empty();
+    let has_nested_subgraphs = graph
+        .subgraphs
+        .iter()
+        .any(|subgraph| subgraph.parent_id.is_some() || !subgraph.child_ids.is_empty());
+    let has_edge_labels = graph.edges.iter().any(|edge| edge.label.is_some());
+    let has_non_arrow_edges = graph
+        .edges
+        .iter()
+        .any(|edge| edge.kind != termiflow::graph::EdgeKind::Arrow);
+    let has_non_rectangle_shapes = graph
+        .nodes
+        .iter()
+        .any(|node| node.shape != termiflow::graph::NodeShape::Rectangle);
+    let dense_crossing_candidate = dense_crossing_input(graph);
+
+    let mut scope_reasons = BTreeSet::new();
+    if has_parallel_edges {
+        scope_reasons.insert("parallel_edge_identity");
+    }
+    if has_boundary_crossings {
+        scope_reasons.insert("boundary_portal_ownership");
+    }
+    if has_nested_subgraphs {
+        scope_reasons.insert("nested_boundary_ownership");
+    }
+    if graph.has_cycles() {
+        scope_reasons.insert("cycle_route_ownership");
+    }
+    if has_edge_labels {
+        scope_reasons.insert("labeled_route_interpretation");
+    }
+    if has_non_arrow_edges {
+        scope_reasons.insert("non_arrow_marker_semantics");
+    }
+    if has_non_rectangle_shapes {
+        scope_reasons.insert("shape_clearance");
+    }
+    if has_fan_in {
+        scope_reasons.insert("fan_in_route_identity");
+    }
+    if has_fan_out {
+        scope_reasons.insert("fan_out_route_identity");
+    }
+    if dense_crossing_candidate {
+        scope_reasons.insert("dense_crossing_route_identity");
+    }
+    if !graph.warnings.is_empty() {
+        scope_reasons.insert("parser_warning");
+    }
+
+    let mut unsupported_reasons = BTreeSet::new();
+    if duplicate_node_ids {
+        unsupported_reasons.insert("duplicate_node_identity");
+    }
+    if unresolved_edge_endpoints {
+        unsupported_reasons.insert("unresolved_edge_endpoint");
+    }
+    let scope = if !unsupported_reasons.is_empty() {
+        "unsupported"
+    } else if !scope_reasons.is_empty() {
+        "ambiguous"
+    } else {
+        "certified"
+    };
+    let mut all_scope_reasons = unsupported_reasons
+        .into_iter()
+        .chain(scope_reasons)
+        .collect::<Vec<_>>();
+    all_scope_reasons.sort_unstable();
+
+    json!({
+        "schema": TOPOLOGY_ORACLE_SCHEMA,
+        "scope": scope,
+        "scope_reasons": all_scope_reasons,
+        "direction": direction_name(graph.direction),
+        "features": {
+            "has_cycles": graph.has_cycles(),
+            "has_fan_in": has_fan_in,
+            "has_fan_out": has_fan_out,
+            "has_parallel_edges": has_parallel_edges,
+            "has_boundary_crossings": has_boundary_crossings,
+            "has_nested_subgraphs": has_nested_subgraphs,
+            "has_node_labels": graph.nodes.iter().any(|node| !node.label.is_empty()),
+            "has_edge_labels": has_edge_labels,
+            "has_non_arrow_edges": has_non_arrow_edges,
+            "has_non_rectangle_shapes": has_non_rectangle_shapes,
+            "has_unresolved_edge_endpoints": unresolved_edge_endpoints,
+            "has_duplicate_node_ids": duplicate_node_ids,
+            "dense_crossing_candidate": dense_crossing_candidate,
+        },
+        "nodes": node_records,
+        "edges": edge_records,
+        "edge_pairs": edge_pairs,
+        "boundary_crossings": boundary_crossings,
+        "subgraphs": subgraph_records,
+        "sibling_subgraphs": sibling_subgraphs,
+        "route_ownership": {
+            "semantic_endpoints": "certified",
+            "visual_route_identity": "not_inferred",
+            "boundary_portal_ownership": if has_boundary_crossings {
+                "human_review_required"
+            } else {
+                "not_applicable"
+            },
+        },
+    })
+}
+
+fn direction_name(direction: termiflow::graph::Direction) -> &'static str {
+    match direction {
+        termiflow::graph::Direction::TD => "TD",
+        termiflow::graph::Direction::TB => "TB",
+        termiflow::graph::Direction::LR => "LR",
+        termiflow::graph::Direction::RL => "RL",
+        termiflow::graph::Direction::BT => "BT",
+    }
+}
+
+fn node_shape_name(shape: termiflow::graph::NodeShape) -> &'static str {
+    match shape {
+        termiflow::graph::NodeShape::Rectangle => "rectangle",
+        termiflow::graph::NodeShape::Rounded => "rounded",
+        termiflow::graph::NodeShape::Diamond => "diamond",
+        termiflow::graph::NodeShape::Circle => "circle",
+        termiflow::graph::NodeShape::Stadium => "stadium",
+        termiflow::graph::NodeShape::Asymmetric => "asymmetric",
+        termiflow::graph::NodeShape::Parallelogram => "parallelogram",
+        termiflow::graph::NodeShape::ParallelogramAlt => "parallelogram_alt",
+        termiflow::graph::NodeShape::Trapezoid => "trapezoid",
+        termiflow::graph::NodeShape::TrapezoidAlt => "trapezoid_alt",
+        termiflow::graph::NodeShape::Hexagon => "hexagon",
+        termiflow::graph::NodeShape::Database => "database",
+        termiflow::graph::NodeShape::Subroutine => "subroutine",
+        termiflow::graph::NodeShape::DoubleCircle => "double_circle",
+    }
+}
+
+fn edge_kind_name(kind: termiflow::graph::EdgeKind) -> &'static str {
+    match kind {
+        termiflow::graph::EdgeKind::Arrow => "arrow",
+        termiflow::graph::EdgeKind::Open => "open",
+        termiflow::graph::EdgeKind::Thick => "thick",
+        termiflow::graph::EdgeKind::Dotted => "dotted",
+        termiflow::graph::EdgeKind::Bidirectional => "bidirectional",
+        termiflow::graph::EdgeKind::CircleEnd => "circle_end",
+        termiflow::graph::EdgeKind::CrossEnd => "cross_end",
+    }
+}
+
+fn semantic_edge_relation(
+    graph: &termiflow::Graph,
+    from: &str,
+    to: &str,
+    exits: &[String],
+    entries: &[String],
+) -> &'static str {
+    if graph.get_node(from).is_none() || graph.get_node(to).is_none() {
+        return "unresolved_endpoint";
+    }
+    if exits.is_empty() && entries.is_empty() {
+        let from_container = graph.get_node_subgraph(from);
+        let to_container = graph.get_node_subgraph(to);
+        return if from_container.is_some() && from_container == to_container {
+            "subgraph_internal_edge"
+        } else if from_container.is_none() && to_container.is_none() {
+            "uncontained_node_edge"
+        } else {
+            "common_boundary_edge"
+        };
+    }
+    if exits.len() == 1 && entries.len() == 1 {
+        let exit = graph.get_subgraph(&exits[0]);
+        let entry = graph.get_subgraph(&entries[0]);
+        if let (Some(exit), Some(entry)) = (exit, entry) {
+            if exit.id != entry.id && exit.parent_id == entry.parent_id {
+                return "sibling_boundary_crossing";
+            }
+            if graph.is_subgraph_ancestor(&exit.id, &entry.id)
+                || graph.is_subgraph_ancestor(&entry.id, &exit.id)
+            {
+                return "nested_boundary_crossing";
+            }
+        }
+        return "boundary_crossing";
+    }
+    "multi_boundary_crossing"
 }
 
 fn dense_crossing_input(graph: &termiflow::Graph) -> bool {
@@ -2835,6 +3214,146 @@ mod tests {
             "ascii",
             "default",
             "test",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn semantic_topology_profile_certifies_a_simple_directed_graph() {
+        let graph = prepared_graph(
+            "graph TD\n    A[Start] --> B[End]\n",
+            BaseStyle::Ascii,
+            false,
+        )
+        .expect("prepare simple graph");
+        let profile = semantic_topology_profile(&graph);
+
+        assert_eq!(profile["schema"], TOPOLOGY_ORACLE_SCHEMA);
+        assert_eq!(profile["scope"], "certified");
+        assert_eq!(profile["direction"], "TD");
+        assert_eq!(profile["features"]["has_parallel_edges"], false);
+        assert_eq!(profile["edges"][0]["relation"], "uncontained_node_edge");
+        assert_eq!(profile["edge_pairs"][0]["count"], 1);
+    }
+
+    #[test]
+    fn semantic_topology_profile_preserves_parallel_edge_identity() {
+        let graph = prepared_graph(
+            "graph LR\n    A --> B\n    A --> B\n",
+            BaseStyle::Unicode,
+            true,
+        )
+        .expect("prepare parallel graph");
+        let profile = semantic_topology_profile(&graph);
+
+        assert_eq!(profile["scope"], "ambiguous");
+        assert_eq!(profile["features"]["has_parallel_edges"], true);
+        assert_eq!(profile["edge_pairs"][0]["count"], 2);
+        assert_eq!(profile["edge_pairs"][0]["edge_indices"], json!([0, 1]));
+        assert_eq!(profile["edges"].as_array().map(Vec::len), Some(2));
+        assert!(profile["scope_reasons"]
+            .as_array()
+            .is_some_and(|reasons| reasons
+                .iter()
+                .any(|reason| reason == "parallel_edge_identity")));
+    }
+
+    #[test]
+    fn semantic_topology_profile_classifies_cycles_labels_shapes_and_edge_kinds() {
+        let graph = prepared_graph(
+            "graph RL\n    A{Start} -->|go| B((End))\n    B -.-> A\n",
+            BaseStyle::Ascii,
+            false,
+        )
+        .expect("prepare feature graph");
+        let profile = semantic_topology_profile(&graph);
+
+        assert_eq!(profile["direction"], "RL");
+        assert_eq!(profile["features"]["has_cycles"], true);
+        assert_eq!(profile["features"]["has_edge_labels"], true);
+        assert_eq!(profile["features"]["has_non_arrow_edges"], true);
+        assert_eq!(profile["features"]["has_non_rectangle_shapes"], true);
+        assert!(profile["scope_reasons"].as_array().is_some_and(|reasons| {
+            [
+                "cycle_route_ownership",
+                "labeled_route_interpretation",
+                "non_arrow_marker_semantics",
+                "shape_clearance",
+            ]
+            .iter()
+            .all(|reason| reasons.iter().any(|actual| actual == reason))
+        }));
+    }
+
+    #[test]
+    fn semantic_topology_profile_records_nested_and_sibling_boundaries() {
+        let graph = prepared_graph(
+            "graph BT\nsubgraph Outer [Outer]\n    subgraph Inner [Inner]\n        A[A]\n    end\n    B[B]\nend\nsubgraph Sibling [Sibling]\n    C[C]\nend\nA --> C\nB --> C\n",
+            BaseStyle::Unicode,
+            true,
+        )
+        .expect("prepare nested boundary graph");
+        let profile = semantic_topology_profile(&graph);
+
+        assert_eq!(profile["direction"], "BT");
+        assert_eq!(profile["features"]["has_boundary_crossings"], true);
+        assert_eq!(profile["features"]["has_nested_subgraphs"], true);
+        assert!(profile["boundary_crossings"]
+            .as_array()
+            .is_some_and(|groups| !groups.is_empty()));
+        assert!(profile["subgraphs"].as_array().is_some_and(|subgraphs| {
+            subgraphs.iter().any(|subgraph| subgraph["id"] == "Inner")
+                && subgraphs
+                    .iter()
+                    .any(|subgraph| subgraph["parent_id"] == "Outer")
+        }));
+        assert!(profile["scope_reasons"].as_array().is_some_and(|reasons| {
+            reasons
+                .iter()
+                .any(|reason| reason == "boundary_portal_ownership")
+                && reasons
+                    .iter()
+                    .any(|reason| reason == "nested_boundary_ownership")
+        }));
+    }
+
+    #[test]
+    fn semantic_topology_profile_is_deterministic_across_repeated_preparation() {
+        for (direction, source) in [
+            ("TD", "graph TD\nA --> B\n"),
+            // The parser intentionally normalizes TB to TD; the oracle reports
+            // the resolved graph direction rather than preserving a spelling
+            // alias that cannot affect topology.
+            ("TD", "graph TB\nA --> B\n"),
+            ("LR", "graph LR\nA --> B\n"),
+            ("RL", "graph RL\nA --> B\n"),
+            ("BT", "graph BT\nA --> B\n"),
+        ] {
+            let first = semantic_topology_profile(
+                &prepared_graph(source, BaseStyle::Ascii, false).expect("prepare first graph"),
+            );
+            let second = semantic_topology_profile(
+                &prepared_graph(source, BaseStyle::Ascii, false).expect("prepare second graph"),
+            );
+            assert_eq!(first["direction"], direction);
+            assert_eq!(first, second, "profile changed for {direction}");
+        }
+    }
+
+    #[test]
+    fn report_validation_rejects_a_mutated_topology_oracle() {
+        let input = b"graph TD\nA --> B\n";
+        let frame = render_fixture(input, BaseStyle::Ascii, false);
+        let mut report = analyze(input, frame.as_bytes(), "ascii", "default").expect("report");
+        report["topology"]["oracle"]["schema"] = Value::String("stale".to_owned());
+
+        assert!(validate_report(
+            &report,
+            input,
+            frame.as_bytes(),
+            "ascii",
+            "default",
+            "mutated-oracle",
         )
         .is_err());
     }
