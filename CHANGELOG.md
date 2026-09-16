@@ -8,6 +8,8 @@ published tag and link to the corresponding GitHub release.
 - Keep changes grouped by user-visible behavior, compatibility, documentation,
   and maintenance.
 - Record intentional visual or schema changes with their reviewed decision.
+- Refresh the stable Rust toolchain to 1.98.1 and direct dependencies to the
+  latest audited releases, with the lockfile and currency receipt re-bound.
 
 ## [0.2.7] — 2026-08-26
 
