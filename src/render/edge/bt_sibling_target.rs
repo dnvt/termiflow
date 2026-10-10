@@ -239,6 +239,7 @@ pub(crate) fn plan_bt_sibling_target_scene(
             style,
             graph,
             Some(owner),
+            None,
         );
         if lower_cross_outcome != BtRouteOutcome::Handled {
             if debug {
@@ -299,6 +300,7 @@ pub(crate) fn plan_bt_sibling_target_scene(
             style,
             graph,
             Some(owner),
+            None,
         );
         if cross_outcome != BtRouteOutcome::Handled {
             if debug {

@@ -2965,6 +2965,7 @@ pub(super) fn route_cross_subgraph_bt(
     style: &StyleChars,
     graph: &Graph,
     owner: Option<RouteOwner<'_>>,
+    straight_arrow_x: Option<&mut usize>,
 ) -> BtRouteOutcome {
     let coords = OrientedCoords::new(Direction::BT);
     let from_sg = graph.get_node_subgraph(&from.id);
@@ -3159,6 +3160,20 @@ pub(super) fn route_cross_subgraph_bt(
                         } else {
                             base_inside_y
                         }
+                    };
+
+                    // A title-safe portal lane inside the target's flat entry edge
+                    // lands straight when the caller can move its arrowhead.
+                    let arrow_x = match straight_arrow_x {
+                        Some(final_arrow_x)
+                            if entry_x != arrow_x
+                                && straight_entry_x(from, to, entry_x, arrow_x, arrow_y, graph)
+                                    .is_some() =>
+                        {
+                            *final_arrow_x = entry_x;
+                            entry_x
+                        }
+                        _ => arrow_x,
                     };
 
                     draw_line_primary(

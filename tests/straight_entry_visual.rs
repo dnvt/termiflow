@@ -94,3 +94,73 @@ fn bt_subgraph_entry_keeps_a_straight_shaft_into_a_target_that_spans_the_lane() 
         }
     }
 }
+
+const BT_ALIGNED_TITLED_CHAIN: &str = "graph BT
+    subgraph Q3 [Q3]
+        n3[Test]
+    end
+    subgraph Q4 [Q4]
+        n4[Ship]
+    end
+    n3 --> n4
+";
+
+const BT_TITLE_SAFE_LANE: &str = "graph BT
+    subgraph G1 [Group 1]
+        A[Node A]
+    end
+    subgraph G2 [Group 2]
+        B[Node B]
+    end
+    A --> B
+";
+
+/// Counts the straight shaft cells behind the BT entry arrow into `label`
+/// before the first non-vertical glyph.
+fn bt_straight_run_into(frame: &str, label: &str) -> usize {
+    let rows = grid(frame);
+    let label_row = rows
+        .iter()
+        .position(|row| row.iter().collect::<String>().contains(label))
+        .unwrap_or_else(|| panic!("label {label} not found:\n{frame}"));
+    let arrow_row = label_row + 2;
+    let arrow_x = rows[arrow_row]
+        .iter()
+        .position(|glyph| matches!(glyph, '↑' | '^'))
+        .unwrap_or_else(|| panic!("entry arrow under {label}:\n{frame}"));
+    rows[arrow_row + 1..]
+        .iter()
+        .take_while(|row| matches!(row.get(arrow_x), Some('│' | '|')))
+        .count()
+}
+
+#[test]
+fn bt_titled_entry_keeps_an_aligned_lane_straight_through_the_title_row() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let frame = render(BT_ALIGNED_TITLED_CHAIN, style, optimized);
+            let run = bt_straight_run_into(&frame, "Ship");
+            let rows = frame.lines().count();
+            let ship_row = frame.lines().position(|l| l.contains("Ship")).unwrap();
+            let test_row = frame.lines().position(|l| l.contains("Test")).unwrap();
+            assert!(
+                ship_row < test_row && run + 4 >= test_row - ship_row,
+                "aligned Test -> Ship must stay on one lane (run {run}, rows {rows}) ({style:?} optimized={optimized}):\n{frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bt_titled_entry_lands_on_a_title_safe_lane_inside_the_target() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let frame = render(BT_TITLE_SAFE_LANE, style, optimized);
+            let run = bt_straight_run_into(&frame, "Node B");
+            assert!(
+                run >= 4,
+                "the portal lane must run straight from the border into Node B (run {run}) ({style:?} optimized={optimized}):\n{frame}"
+            );
+        }
+    }
+}

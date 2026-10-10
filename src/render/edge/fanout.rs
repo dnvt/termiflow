@@ -606,6 +606,7 @@ pub fn route_divergent_edges(
                     style,
                     graph,
                     Some(route_owner),
+                    Some(&mut arrow_x),
                 ) {
                     BtRouteOutcome::Handled | BtRouteOutcome::Rejected => {
                         set_route_char(
