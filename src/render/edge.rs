@@ -65,7 +65,7 @@ pub(super) use td_sibling_target::plan_td_sibling_target_scene;
 pub(super) use vertical_fan_in::route_vertical_fan_in_edges;
 pub(super) use wide_terminal_fan_in::route_wide_terminal_fan_in_edges;
 
-const ROUTE_Z_INDEX: u8 = 5;
+pub(super) const ROUTE_Z_INDEX: u8 = 5;
 
 #[derive(Copy, Clone)]
 struct RouteOwner<'a> {

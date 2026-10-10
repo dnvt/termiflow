@@ -808,6 +808,107 @@ pub(super) fn render_with_feedback_with_contract(
         source_junction_records.push((x, y, format!("junction:{source_id}")));
     }
 
+    // A bidirectional edge drawn by the renderer's fan-in/fan-out lowerers
+    // gets only its target head. When it is the source's only outgoing edge,
+    // the stem right outside the source belongs to it alone, so the reverse
+    // head can sit on that stem exactly as a precomputed route draws it.
+    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+        if edge.kind != EdgeKind::Bidirectional
+            || edge.is_back_edge
+            || edge.from == edge.to
+            || routed_edges.contains(&edge_idx)
+            || graph
+                .edges
+                .iter()
+                .filter(|other| !other.is_back_edge && other.from == edge.from)
+                .count()
+                != 1
+            // Two-way edges merged into one target bus would read as a
+            // connection between their sources once both carry a head.
+            || graph.edges.iter().enumerate().any(|(other_idx, other)| {
+                other_idx != edge_idx
+                    && !other.is_back_edge
+                    && other.to == edge.to
+                    && other.kind == EdgeKind::Bidirectional
+            })
+        {
+            continue;
+        }
+        let Some(from) = graph_index.node_by_name(&edge.from) else {
+            continue;
+        };
+        if !canvas.is_visible(from) {
+            continue;
+        }
+        let right = from.x + from.width;
+        let bottom = from.bottom_y();
+        // (exit cells along the source side, step to the next stem cell, head)
+        let (exits, beyond, head): (Vec<(usize, usize)>, (isize, isize), char) =
+            match graph.direction {
+                Direction::TD | Direction::TB => (
+                    (from.x + 1..right.saturating_sub(1))
+                        .map(|x| (x, bottom))
+                        .collect(),
+                    (0, 1),
+                    chars.arrow_up,
+                ),
+                Direction::BT if from.y > 0 => (
+                    (from.x + 1..right.saturating_sub(1))
+                        .map(|x| (x, from.y - 1))
+                        .collect(),
+                    (0, -1),
+                    chars.arrow_down,
+                ),
+                Direction::LR => (
+                    (from.y + 1..bottom.saturating_sub(1))
+                        .map(|y| (right, y))
+                        .collect(),
+                    (1, 0),
+                    chars.arrow_left,
+                ),
+                Direction::RL if from.x > 0 => (
+                    (from.y + 1..bottom.saturating_sub(1))
+                        .map(|y| (from.x - 1, y))
+                        .collect(),
+                    (-1, 0),
+                    chars.arrow_right,
+                ),
+                _ => continue,
+            };
+        let vertical_flow = beyond.0 == 0;
+        let stems: Vec<(usize, usize)> = exits
+            .into_iter()
+            .filter(|&(x, y)| {
+                let glyph = canvas.get(x, y);
+                if vertical_flow {
+                    canvas::is_vertical(glyph, &chars)
+                } else {
+                    canvas::is_horizontal(glyph, &chars)
+                }
+            })
+            .collect();
+        let [(x, y)] = stems.as_slice() else {
+            continue;
+        };
+        let (next_x, next_y) = (*x as isize + beyond.0, *y as isize + beyond.1);
+        if next_x < 0 || next_y < 0 {
+            continue;
+        }
+        let next = canvas.get(next_x as usize, next_y as usize);
+        if next == ' ' || canvas::is_arrow(next) {
+            continue;
+        }
+        canvas.set_owned_with_role(
+            *x,
+            *y,
+            head,
+            CellOwnerKind::EdgeSegment,
+            &edge_owner_id(edge_idx, edge),
+            CellRole::ArrowTip,
+            super::edge::ROUTE_Z_INDEX,
+        );
+    }
+
     canvas.set_write_stage("border-restore");
     restore_subgraph_borders(
         &mut canvas,
