@@ -4299,7 +4299,6 @@ fn strict_subgraph_fan_in_preserves_boundary_lanes_and_target_ports() {
 const BOUNDARY_CONNECTIVITY_KNOWN_DISCONNECTED: &[&str] = &[
     // Mechanism A: external and internal lanes diverge at a border and no jog
     // joins them (two cuts, or a lane shift on the border row).
-    "subgraph_fanout_bt",
     "inline:subgraph_single_td_long_title",
     // Separate family (out of scope here): an edge label overwrites the
     // subgraph border cell the route must pierce.

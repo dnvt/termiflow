@@ -4525,6 +4525,19 @@ pub(super) fn route_divergent_into_subgraph_bt(
         );
     }
 
+    // Pierce the bottom border on the portal lane so the trunk stays connected
+    // from the outside row through the title row to the branch bus.
+    if entry_x < canvas.width && border_y < canvas.height {
+        set_route_edge_char(
+            canvas,
+            entry_x,
+            border_y,
+            coords.primary_edge_char(style),
+            style,
+            Some(fanout_owner),
+        );
+    }
+
     if entry_y < canvas.height {
         set_route_edge_char(
             canvas,

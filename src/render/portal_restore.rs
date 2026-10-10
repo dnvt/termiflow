@@ -25,8 +25,15 @@ fn routed_crossing_owner<'a>(
         return None;
     }
     let owner_id = meta.owner_id.as_deref()?;
+    // A shared fan-out trunk is owned by `fanout:<source>`; it crosses this
+    // subgraph when any edge out of that source does.
+    let fanout_source = owner_id.strip_prefix("fanout:");
     let crosses = graph.edges.iter().enumerate().any(|(index, edge)| {
-        if provenance::edge_owner_id(index, edge) != owner_id {
+        let owned = match fanout_source {
+            Some(source) => edge.from == source,
+            None => provenance::edge_owner_id(index, edge) == owner_id,
+        };
+        if !owned {
             return false;
         }
         let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
@@ -39,6 +46,22 @@ fn routed_owner_is(canvas: &Canvas, x: usize, y: usize, owner_id: &str) -> bool 
     canvas
         .get_meta(x, y)
         .is_some_and(|meta| meta.owner_id.as_deref() == Some(owner_id))
+}
+
+/// A shared BT fan-out trunk may keep its border pierce only when it climbs to
+/// a cell that branches down (the bus junction, not label text) and no other
+/// vertical line crosses directly beside it, where the two would read as one.
+fn fanout_trunk_is_clear(canvas: &Canvas, chars: &StyleChars, x: usize, border_y: usize) -> bool {
+    let mut y = border_y - 1;
+    while y > 0 && canvas::is_vertical(canvas.get(x, y), chars) {
+        y -= 1;
+    }
+    let reaches_junction = !canvas::is_vertical(canvas.get(x, y), chars)
+        && topology::char_connects_down(canvas.get(x, y))
+        && !canvas::is_arrow(canvas.get(x, y));
+    let beside_vertical =
+        |nx: usize| nx < canvas.width && canvas::is_vertical(canvas.get(nx, border_y + 1), chars);
+    reaches_junction && !beside_vertical(x.wrapping_sub(1)) && !beside_vertical(x + 1)
 }
 
 pub(super) fn restore_subgraph_borders(
@@ -180,6 +203,8 @@ pub(super) fn restore_subgraph_borders(
                             && routed_owner_is(canvas, x, bottom_y + 1, edge_id)
                             && is_verticalish(canvas.get(x, bottom_y - 1))
                             && is_verticalish(canvas.get(x, bottom_y + 1))
+                            && (!edge_id.starts_with("fanout:")
+                                || fanout_trunk_is_clear(canvas, chars, x, bottom_y))
                     },
                 )
             {
