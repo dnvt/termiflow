@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::geom::{Point, Rect};
-use crate::graph::Graph;
+use crate::graph::{Direction, Graph};
 use crate::orientation::{Axis, OrientedCoords};
 
 use super::placement::gap_for_axis;
@@ -59,6 +59,7 @@ pub(super) fn assign_layers(graph: &Graph) -> Vec<Vec<usize>> {
     }
 
     promote_nested_child_root_ranks(graph, &index_map, &adj, &order, &mut rank);
+    promote_subgraph_roots_below_external_sources(graph, &index_map, &adj, &order, &mut rank);
 
     let mut by_rank: HashMap<usize, Vec<usize>> = HashMap::new();
     for (idx, r) in rank.iter().enumerate() {
@@ -123,6 +124,112 @@ fn promote_nested_child_root_ranks(
         return;
     }
 
+    for &from_idx in order {
+        for &to_idx in &adj[from_idx] {
+            let next_rank = rank[from_idx].saturating_add(1);
+            if rank[to_idx] < next_rank {
+                rank[to_idx] = next_rank;
+            }
+        }
+    }
+}
+
+fn promote_subgraph_roots_below_external_sources(
+    graph: &Graph,
+    index_map: &HashMap<&str, usize>,
+    adj: &[Vec<usize>],
+    order: &[usize],
+    rank: &mut [usize],
+) {
+    // An external node that feeds a subgraph must sit on a rank before the
+    // whole subgraph, or the envelope that spans the subgraph ranks wraps
+    // around it and draws a foreign node inside the frame. Lift the subgraph
+    // roots one rank past every external source. Skip a subgraph that also
+    // reaches one of those sources: no rank order can keep that source out.
+    let mut subgraphs: Vec<_> = graph.subgraphs.iter().collect();
+    subgraphs.sort_by(|left, right| left.id.cmp(&right.id));
+
+    for _ in 0..4 {
+        let mut promoted = false;
+        for subgraph in &subgraphs {
+            // BT envelopes infer visual nesting from rank order, so lifting a
+            // parent with child subgraphs can make its siblings read as nested.
+            if subgraph.parent_id.is_some()
+                || (graph.direction == Direction::BT && !subgraph.child_ids.is_empty())
+            {
+                continue;
+            }
+            let inside: Vec<bool> = graph
+                .nodes
+                .iter()
+                .map(|node| graph.is_node_in_subgraph_tree(&node.id, &subgraph.id))
+                .collect();
+            let sources: Vec<usize> = (0..graph.nodes.len())
+                .filter(|&from| !inside[from] && adj[from].iter().any(|&to| inside[to]))
+                .collect();
+            if sources.is_empty() {
+                continue;
+            }
+
+            let mut reached = vec![false; graph.nodes.len()];
+            let mut stack: Vec<usize> = (0..graph.nodes.len()).filter(|&idx| inside[idx]).collect();
+            while let Some(idx) = stack.pop() {
+                for &next in &adj[idx] {
+                    if !reached[next] {
+                        reached[next] = true;
+                        stack.push(next);
+                    }
+                }
+            }
+            if sources.iter().any(|&source| reached[source]) {
+                continue;
+            }
+
+            let minimum_rank = sources
+                .iter()
+                .map(|&source| rank[source].saturating_add(1))
+                .max()
+                .unwrap_or(0);
+            let mut trial = rank.to_vec();
+            let mut lifted = false;
+            for root_idx in nested_child_root_indices(graph, index_map, &subgraph.id) {
+                if trial[root_idx] < minimum_rank {
+                    trial[root_idx] = minimum_rank;
+                    lifted = true;
+                }
+            }
+            if !lifted {
+                continue;
+            }
+            propagate_ranks(adj, order, &mut trial);
+            // A lift that stretches a one-rank edge across another rank sends
+            // that edge past the nodes in between; keep the original ranks.
+            let stretches_an_edge = (0..graph.nodes.len()).any(|from| {
+                adj[from].iter().any(|&to| {
+                    rank[to].saturating_sub(rank[from]) <= 1
+                        && trial[to].saturating_sub(trial[from]) > 1
+                })
+            });
+            // Every entry from a lifted-over source must land on the first
+            // subgraph rank; a longer entry would cross the members above it.
+            let long_entry = sources.iter().any(|&source| {
+                adj[source]
+                    .iter()
+                    .any(|&to| inside[to] && trial[to] != trial[source].saturating_add(1))
+            });
+            if stretches_an_edge || long_entry {
+                continue;
+            }
+            rank.copy_from_slice(&trial);
+            promoted = true;
+        }
+        if !promoted {
+            return;
+        }
+    }
+}
+
+fn propagate_ranks(adj: &[Vec<usize>], order: &[usize], rank: &mut [usize]) {
     for &from_idx in order {
         for &to_idx in &adj[from_idx] {
             let next_rank = rank[from_idx].saturating_add(1);
