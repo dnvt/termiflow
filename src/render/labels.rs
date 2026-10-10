@@ -163,6 +163,9 @@ pub(super) fn draw_edge_label(
     let label_width = display_width(&display_label);
     let owner_id = edge_owner_id(edge_idx, edge);
     let mut cells = Vec::new();
+    // (turn cell, label row, run side step) of a horizontal run that starts
+    // at a fan-out bus turn rather than at the source box.
+    let mut run_turn: Option<(usize, usize, isize)> = None;
 
     match direction {
         Direction::TD | Direction::TB => {
@@ -262,8 +265,21 @@ pub(super) fn draw_edge_label(
         }
         Direction::LR => {
             let edge_y = center_y(to);
-            let stem_start_x = from.x + from.width;
             let arrow_x = to.x.saturating_sub(1);
+            // Label only the final straight run after a fan-out bus turn.
+            let turn = source_fans_out(graph, from)
+                .then(|| {
+                    final_run_turn(
+                        canvas,
+                        graph,
+                        edge_y,
+                        (from.x + from.width..arrow_x).rev(),
+                        base_style,
+                    )
+                })
+                .flatten();
+            run_turn = turn.map(|x| (x, edge_y, 1));
+            let stem_start_x = turn.map_or(from.x + from.width, |turn| turn + 1);
             let span_width = arrow_x.saturating_sub(stem_start_x);
             let outside_row = pick_outside_horizontal_label_row(
                 canvas,
@@ -274,7 +290,9 @@ pub(super) fn draw_edge_label(
                 graph,
             );
             let can_fit_full_inline = label_width + 3 <= span_width;
-            let can_fit_tight_inline = label_width <= span_width;
+            // Tight placement keeps one shaft cell on each side: before the
+            // arrowhead and after the source or bus turn.
+            let can_fit_tight_inline = label_width + 2 <= span_width;
 
             if can_fit_full_inline {
                 let label_start_x = stem_start_x + (span_width - (label_width + 3)) / 2;
@@ -305,7 +323,7 @@ pub(super) fn draw_edge_label(
                     }
                 }
             } else if can_fit_tight_inline {
-                let label_start_x = stem_start_x + (span_width - label_width) / 2;
+                let label_start_x = stem_start_x + 1 + (span_width - label_width - 2) / 2;
                 for x in stem_start_x..label_start_x {
                     set_label_shaft(canvas, x, edge_y, style, base_style);
                 }
@@ -337,6 +355,13 @@ pub(super) fn draw_edge_label(
                     label_width,
                     &[from, to],
                     graph,
+                );
+                label_start_x = keep_label_off_routes(
+                    canvas,
+                    label_start_x,
+                    label_row,
+                    label_width,
+                    base_style,
                 );
 
                 let mut x_pos = label_start_x;
@@ -386,8 +411,13 @@ pub(super) fn draw_edge_label(
         Direction::RL => {
             let edge_y = center_y(to);
             let arrow_x = to.x + to.width; // Arrow is after target box
-            let stem_end_x = from.x; // Edge ends at left side of source box
             let gap_start_x = arrow_x.saturating_add(1);
+            // Label only the final straight run after a fan-out bus turn.
+            let turn = source_fans_out(graph, from)
+                .then(|| final_run_turn(canvas, graph, edge_y, gap_start_x..from.x, base_style))
+                .flatten();
+            run_turn = turn.map(|x| (x, edge_y, -1));
+            let stem_end_x = turn.unwrap_or(from.x);
             let span_width = stem_end_x.saturating_sub(gap_start_x);
             let outside_row = pick_outside_horizontal_label_row(
                 canvas,
@@ -398,7 +428,9 @@ pub(super) fn draw_edge_label(
                 graph,
             );
             let can_fit_full_inline = label_width + 4 <= span_width;
-            let can_fit_tight_inline = label_width <= span_width;
+            // Tight placement keeps one shaft cell on each side: before the
+            // arrowhead and after the source or bus turn.
+            let can_fit_tight_inline = label_width + 2 <= span_width;
 
             if can_fit_full_inline {
                 let label_start_x = gap_start_x + 1 + (span_width - (label_width + 4)) / 2;
@@ -433,7 +465,7 @@ pub(super) fn draw_edge_label(
                     }
                 }
             } else if can_fit_tight_inline {
-                let label_start_x = gap_start_x + (span_width - label_width) / 2;
+                let label_start_x = gap_start_x + 1 + (span_width - label_width - 2) / 2;
                 for x in gap_start_x..label_start_x {
                     if x < canvas.width {
                         set_label_shaft(canvas, x, edge_y, style, base_style);
@@ -467,6 +499,13 @@ pub(super) fn draw_edge_label(
                     label_width,
                     &[from, to],
                     graph,
+                );
+                label_start_x = keep_label_off_routes(
+                    canvas,
+                    label_start_x,
+                    label_row,
+                    label_width,
+                    base_style,
                 );
 
                 let mut x_pos = label_start_x;
@@ -516,6 +555,15 @@ pub(super) fn draw_edge_label(
                     }
                 }
             }
+        }
+    }
+
+    // A label padding blank must not sit against the bus turn: the turn would
+    // lose its arm toward the run and be normalized into a straight shaft.
+    if let Some((turn_x, turn_y, side)) = run_turn {
+        let next_x = turn_x as isize + side;
+        if next_x >= 0 && canvas.get(next_x as usize, turn_y) == ' ' {
+            canvas.set(next_x as usize, turn_y, style.edge_h);
         }
     }
 
@@ -1315,4 +1363,86 @@ fn set_label_shaft(
     } else {
         canvas.set(x, y, base_style.edge_h);
     }
+}
+
+/// The far end of the final straight run that reaches a horizontal arrow.
+///
+/// Scans the label row from the arrow back toward the source (`cells` in
+/// that order) and returns the first cell where the route turns or branches,
+/// so a fan-out branch label lands on its own branch instead of before the
+/// shared bus.
+fn final_run_turn(
+    canvas: &Canvas,
+    graph: &Graph,
+    y: usize,
+    cells: impl Iterator<Item = usize>,
+    style: &StyleChars,
+) -> Option<usize> {
+    // A subgraph side wall crossed by the run is a portal, not a turn.
+    let on_side_wall = |x: usize| {
+        graph.subgraphs.iter().any(|subgraph| {
+            let bounds = &subgraph.bounds;
+            bounds.is_valid()
+                && (x == bounds.x || x + 1 == bounds.x + bounds.width)
+                && y > bounds.y
+                && y + 1 < bounds.y + bounds.height
+        })
+    };
+    for x in cells {
+        let ch = canvas.get(x, y);
+        if ch == ' ' || canvas::is_horizontal(ch, style) || canvas::is_arrow(ch) || on_side_wall(x)
+        {
+            continue;
+        }
+        // Any turn, tee, or four-arm glyph ends the run: on a fan-out bus a
+        // four-arm cell is the branch junction itself.
+        return Some(x);
+    }
+    None
+}
+
+/// Whether `node` has more than one forward outgoing edge (a fan-out bus).
+fn source_fans_out(graph: &Graph, node: &Node) -> bool {
+    graph
+        .edges
+        .iter()
+        .filter(|edge| !edge.is_back_edge && edge.from == node.id)
+        .count()
+        > 1
+}
+
+/// Nudge an outside-row label so neither neighbour cell is a route glyph: a
+/// label glued to a vertical bus makes the topology stabilizer grow a tee arm
+/// toward the text (`├no`). Keeps the original slot when no nearby slot fits.
+fn keep_label_off_routes(
+    canvas: &Canvas,
+    start_x: usize,
+    y: usize,
+    width: usize,
+    style: &StyleChars,
+) -> usize {
+    let is_route = |x: usize| {
+        let ch = canvas.get(x, y);
+        ch != ' '
+            && !is_textual(ch)
+            && (canvas::is_vertical(ch, style) || canvas::is_junction(ch, style))
+    };
+    let fits = |start: usize| {
+        start + width < canvas.width
+            && (start..start + width).all(|x| canvas.get(x, y) == ' ')
+            && (start == 0 || !is_route(start - 1))
+            && !is_route(start + width)
+    };
+    if fits(start_x) || !(start_x..start_x + width).all(|x| canvas.get(x, y) == ' ') {
+        return start_x;
+    }
+    for delta in 1..=2 {
+        if fits(start_x + delta) {
+            return start_x + delta;
+        }
+        if start_x >= delta && fits(start_x - delta) {
+            return start_x - delta;
+        }
+    }
+    start_x
 }

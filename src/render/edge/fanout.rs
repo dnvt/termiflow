@@ -408,6 +408,61 @@ pub fn route_divergent_edges(
         }
     }
 
+    // Labeled horizontal fan-out: each branch label is drawn on its branch run
+    // (bus -> arrow). Move the bus toward the source until the shortest run
+    // fits the widest branch label with a shaft cell on each side, so labels
+    // neither float before the bus nor overwrite its corners.
+    // A target one row off the source row exits through its own adjacent
+    // port; pulling the junction back would merge it into a new bus.
+    let source_row = coords.secondary_coord(stem_start_x, stem_start_y);
+    let has_adjacent_row_target = target_positions.iter().any(|(_, _, n)| {
+        let (ax, ay) = adjusted_edge_entry_point(n, direction, graph);
+        coords.secondary_coord(ax, ay).abs_diff(source_row) == 1
+    });
+    if matches!(direction, Direction::LR | Direction::RL)
+        && target_positions.len() > 1
+        && !has_adjacent_row_target
+    {
+        let widest_label = target_positions
+            .iter()
+            .filter_map(|(_, _, target)| {
+                graph
+                    .edges
+                    .iter()
+                    .find(|edge| !edge.is_back_edge && edge.from == from.id && edge.to == target.id)
+                    .and_then(|edge| edge.label.as_deref())
+            })
+            .map(|label| crate::display_profile::display_width(label).min(20))
+            .max();
+        if let Some(widest_label) = widest_label {
+            let stem_start_primary = coords.primary_coord(stem_start_x, stem_start_y);
+            let junction_primary = coords.primary_coord(junction_x, junction_y);
+            let room = widest_label + 3;
+            let nearest_arrow_primary = target_positions
+                .iter()
+                .map(|(_, _, n)| {
+                    let (ax, ay) = adjusted_edge_entry_point(n, direction, graph);
+                    coords.primary_coord(ax, ay)
+                })
+                .min_by_key(|p| junction_primary.abs_diff(*p));
+            if let Some(arrow_primary) = nearest_arrow_primary {
+                let adjusted_primary = match direction {
+                    Direction::LR => arrow_primary
+                        .saturating_sub(room)
+                        .min(junction_primary)
+                        .max(stem_start_primary + 1),
+                    _ => arrow_primary
+                        .saturating_add(room)
+                        .max(junction_primary)
+                        .min(stem_start_primary.saturating_sub(1)),
+                };
+                if adjusted_primary != junction_primary {
+                    coords.set_primary(&mut junction_x, &mut junction_y, adjusted_primary);
+                }
+            }
+        }
+    }
+
     // A source can contribute to a downstream fan-in while also branching to
     // another target.  Convergence is rendered before this pass, so keep the
     // later LR/RL spine away from an already-owned fan-in junction when the

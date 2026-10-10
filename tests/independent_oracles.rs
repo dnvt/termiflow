@@ -5181,7 +5181,41 @@ fn topology_audit() {
                 rows.push(format!("{stem}\tPHANTOM\t{}\t{phantom}", node.id));
             }
             for missing in declared.difference(&loose) {
-                rows.push(format!("{stem}\tMISSING\t{}\t{missing}", node.id));
+                // Tag the edge so failures can be grouped by routing path.
+                let mut tags = Vec::new();
+                if let Some(edge) = graph
+                    .edges
+                    .iter()
+                    .find(|edge| edge.from == node.id && edge.to == *missing)
+                {
+                    let out_degree = graph.edges.iter().filter(|e| e.from == edge.from).count();
+                    let in_degree = graph.edges.iter().filter(|e| e.to == edge.to).count();
+                    let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+                    if edge.is_back_edge {
+                        tags.push("back");
+                    }
+                    if !exits.is_empty() || !enters.is_empty() {
+                        tags.push("crosses");
+                    }
+                    if out_degree > 1 {
+                        tags.push("fan_out");
+                    }
+                    if in_degree > 1 {
+                        tags.push("fan_in");
+                    }
+                    if edge.label.is_some() {
+                        tags.push("labeled");
+                    }
+                }
+                rows.push(format!(
+                    "{stem}\tMISSING\t{}\t{missing}\t{}",
+                    node.id,
+                    if tags.is_empty() {
+                        "plain".to_string()
+                    } else {
+                        tags.join(",")
+                    }
+                ));
             }
         }
     }
