@@ -995,3 +995,156 @@ fn classdef_lines_warn_without_creating_fake_nodes() {
         .iter()
         .any(|warning| warning.contains("Mermaid classes not supported")));
 }
+
+// === EDGE STATEMENT TOKENIZER (exploration-corpus regressions) ===
+
+fn edge_triples(input: &str) -> Vec<(String, String, Option<String>, EdgeKind)> {
+    let result = parse(input, false).expect("parse");
+    result
+        .graph
+        .edges
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone(), e.label.clone(), e.kind))
+        .collect()
+}
+
+fn node_ids(input: &str) -> Vec<String> {
+    let result = parse(input, false).expect("parse");
+    result.graph.nodes.iter().map(|n| n.id.clone()).collect()
+}
+
+#[test]
+fn text_labels_work_on_every_edge_kind() {
+    let input = "graph LR\nA[S1] == heavy ==> B[T1]\nC[S2] -- link --- D[T2]\nE[S3] -- done --o F[T3]\nG[S4] -- stop --x H[T4]\nI[S5] <-- both --> J[T5]\n";
+    let edges = edge_triples(input);
+    assert_eq!(
+        edges,
+        vec![
+            (
+                "A".into(),
+                "B".into(),
+                Some("heavy".into()),
+                EdgeKind::Thick
+            ),
+            ("C".into(), "D".into(), Some("link".into()), EdgeKind::Open),
+            (
+                "E".into(),
+                "F".into(),
+                Some("done".into()),
+                EdgeKind::CircleEnd
+            ),
+            (
+                "G".into(),
+                "H".into(),
+                Some("stop".into()),
+                EdgeKind::CrossEnd
+            ),
+            (
+                "I".into(),
+                "J".into(),
+                Some("both".into()),
+                EdgeKind::Bidirectional
+            ),
+        ]
+    );
+    let ids = node_ids(input);
+    for phantom in ["heavy", "link", "done", "stop", "both"] {
+        assert!(
+            !ids.contains(&phantom.to_string()),
+            "label became node: {phantom}"
+        );
+    }
+}
+
+#[test]
+fn dotted_text_label_is_an_edge() {
+    let edges = edge_triples("graph LR\nA[Source] -. maybe .-> B[Target]\n");
+    assert_eq!(
+        edges,
+        vec![(
+            "A".into(),
+            "B".into(),
+            Some("maybe".into()),
+            EdgeKind::Dotted
+        )]
+    );
+    let bare = edge_triples("graph LR\nP -. maybe .-> Q\n");
+    assert_eq!(bare.len(), 1);
+}
+
+#[test]
+fn ampersand_groups_work_with_every_edge_kind() {
+    for (op, kind) in [
+        ("==>", EdgeKind::Thick),
+        ("-.->", EdgeKind::Dotted),
+        ("--o", EdgeKind::CircleEnd),
+        ("---", EdgeKind::Open),
+        ("<-->", EdgeKind::Bidirectional),
+        ("--x", EdgeKind::CrossEnd),
+    ] {
+        let edges = edge_triples(&format!(
+            "graph LR\nA[One]\nB[Two]\nC[Three]\nA & B {op} C\n"
+        ));
+        assert_eq!(
+            edges,
+            vec![
+                ("A".into(), "C".into(), None, kind),
+                ("B".into(), "C".into(), None, kind),
+            ],
+            "op {op}"
+        );
+    }
+}
+
+#[test]
+fn ampersand_groups_accept_inline_shapes() {
+    let edges =
+        edge_triples("graph LR\nA[Gate] --> B[Deny] & C(Drop)\nX[One] & Y{Two} --> Z[Merge]\n");
+    assert_eq!(
+        edges,
+        vec![
+            ("A".into(), "B".into(), None, EdgeKind::Arrow),
+            ("A".into(), "C".into(), None, EdgeKind::Arrow),
+            ("X".into(), "Z".into(), None, EdgeKind::Arrow),
+            ("Y".into(), "Z".into(), None, EdgeKind::Arrow),
+        ]
+    );
+    let result = parse("graph LR\nX[One] & Y{Two} --> Z[Merge]\n", false).unwrap();
+    let y = result.graph.nodes.iter().find(|n| n.id == "Y").unwrap();
+    assert_eq!(y.label, "Two");
+    assert_eq!(y.shape, NodeShape::Diamond);
+}
+
+#[test]
+fn chain_keeps_unlabeled_hop_before_labeled_hop() {
+    let edges = edge_triples("graph TD\nA --> B -->|x| C\nD --> E -- t --> F\n");
+    assert_eq!(
+        edges,
+        vec![
+            ("A".into(), "B".into(), None, EdgeKind::Arrow),
+            ("B".into(), "C".into(), Some("x".into()), EdgeKind::Arrow),
+            ("D".into(), "E".into(), None, EdgeKind::Arrow),
+            ("E".into(), "F".into(), Some("t".into()), EdgeKind::Arrow),
+        ]
+    );
+}
+
+#[test]
+fn quoted_labels_drop_their_quotes() {
+    let result = parse(
+        "graph LR\nA[\"Hello world\"] -->|\"go\"| B(\"Two\")\n",
+        false,
+    )
+    .unwrap();
+    let a = result.graph.nodes.iter().find(|n| n.id == "A").unwrap();
+    let b = result.graph.nodes.iter().find(|n| n.id == "B").unwrap();
+    assert_eq!(a.label, "Hello world");
+    assert_eq!(b.label, "Two");
+    assert_eq!(result.graph.edges[0].label.as_deref(), Some("go"));
+}
+
+#[test]
+fn empty_pipe_label_is_an_unlabeled_edge() {
+    let edges = edge_triples("graph TD\nA -->|| B\n");
+    assert_eq!(edges, vec![("A".into(), "B".into(), None, EdgeKind::Arrow)]);
+}

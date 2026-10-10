@@ -285,7 +285,7 @@ fn collect_shape_nodes(
 ) {
     for caps in regex.captures_iter(trimmed) {
         let id = caps[1].to_string();
-        let label = decode_mermaid_label(&caps[2]);
+        let label = decode_mermaid_label(edge_statement::unquote_label(&caps[2]));
         if !explicit_line_nodes.contains(&id) {
             explicit_line_nodes.push(id.clone());
         }
@@ -582,11 +582,27 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             }
         }
 
-        // Note: labeled edges are parsed below and labels are preserved
+        // Whole-line edge statements (chains, & groups, every edge kind and
+        // label form) register their endpoints in source order.
+        let statement =
+            edge_statement::parse_edge_statement(&RE_CLASS_SUFFIX.replace_all(trimmed, ""));
+        if let Some(hops) = &statement {
+            let ids = hops
+                .first()
+                .into_iter()
+                .flat_map(|hop| hop.from.iter())
+                .chain(hops.iter().flat_map(|hop| hop.to.iter()));
+            for id in ids {
+                if known_ids.insert(id.clone()) {
+                    ordered_ids.push(id.clone());
+                }
+                node_first_ref.entry(id.clone()).or_insert(i + 1);
+            }
+        }
 
         // Pre-register all IDs from &-grouped edge lines before the chain loop.
         // The chain loop only finds one ID per side (misses the left ID in "A & B --> C").
-        if trimmed.contains('&') {
+        if statement.is_none() && trimmed.contains('&') {
             let register = |id: &str,
                             known: &mut HashSet<String>,
                             ordered: &mut Vec<String>,
@@ -622,7 +638,12 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             std::borrow::Cow::Borrowed(trimmed)
         };
         let trimmed = trimmed_no_class.as_ref();
-        let mut start_pos = 0;
+        // Statements were registered above; the legacy walk only handles the rest.
+        let mut start_pos = if statement.is_some() {
+            trimmed.len()
+        } else {
+            0
+        };
         while start_pos < trimmed.len() {
             let remaining = &trimmed[start_pos..];
 
@@ -784,6 +805,26 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             let id = caps[1].to_string();
             let target = caps[2].to_string();
             click_targets.insert(id, target);
+        }
+
+        if let Some(hops) =
+            edge_statement::parse_edge_statement(&RE_CLASS_SUFFIX.replace_all(trimmed, ""))
+        {
+            for hop in hops {
+                let label = hop.label.as_deref().map(decode_mermaid_label);
+                for from in &hop.from {
+                    for to in &hop.to {
+                        graph.edges.push(Edge {
+                            from: from.clone(),
+                            to: to.clone(),
+                            label: label.clone(),
+                            is_back_edge: false,
+                            kind: hop.kind,
+                        });
+                    }
+                }
+            }
+            continue;
         }
 
         // Expand &-grouped edges before the chain loop.
@@ -1206,6 +1247,9 @@ fn check_unsupported_syntax(line: &str, line_num: usize) -> Option<String> {
 /// Detect malformed but supported-looking syntax (not matching expected regexes)
 /// Returns warning message if malformed syntax found
 fn check_malformed(line: &str, line_num: usize) -> Option<String> {
+    if edge_statement::parse_edge_statement(&RE_CLASS_SUFFIX.replace_all(line, "")).is_some() {
+        return None;
+    }
     let is_known_edge = RE_EDGE.is_match(line)
         || RE_EDGE_WITH_LABEL.is_match(line)
         || RE_EDGE_TEXT_LABEL.is_match(line)
@@ -1260,6 +1304,8 @@ fn check_malformed(line: &str, line_num: usize) -> Option<String> {
 
     None
 }
+
+mod edge_statement;
 
 #[cfg(test)]
 mod tests;
