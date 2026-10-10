@@ -152,6 +152,10 @@ pub(super) fn draw_edge_label(
     edge: &crate::graph::Edge,
     graph: &Graph,
 ) -> Option<EdgeLabelPlacement> {
+    // Shaft cells redrawn around the label keep the edge kind (thick/dotted).
+    let base_style = style;
+    let kind_style = edge_label_style(style, edge);
+    let style = &kind_style;
     use super::cycle::{center_x, center_y};
 
     let display_label =
@@ -276,7 +280,7 @@ pub(super) fn draw_edge_label(
                 let label_start_x = stem_start_x + (span_width - (label_width + 3)) / 2;
 
                 for x in stem_start_x..label_start_x {
-                    canvas.set(x, edge_y, style.edge_h);
+                    set_label_shaft(canvas, x, edge_y, style, base_style);
                 }
 
                 canvas.set(label_start_x, edge_y, ' ');
@@ -297,13 +301,13 @@ pub(super) fn draw_edge_label(
 
                 for x in x_pos..arrow_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             } else if can_fit_tight_inline {
                 let label_start_x = stem_start_x + (span_width - label_width) / 2;
                 for x in stem_start_x..label_start_x {
-                    canvas.set(x, edge_y, style.edge_h);
+                    set_label_shaft(canvas, x, edge_y, style, base_style);
                 }
 
                 let mut x_pos = label_start_x;
@@ -317,7 +321,7 @@ pub(super) fn draw_edge_label(
 
                 for x in x_pos..arrow_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             } else if let Some(label_row) = outside_row {
@@ -353,7 +357,7 @@ pub(super) fn draw_edge_label(
                     stem_start_x + (span_width.saturating_sub(inline_width + 3)) / 2;
 
                 for x in stem_start_x..label_start_x {
-                    canvas.set(x, edge_y, style.edge_h);
+                    set_label_shaft(canvas, x, edge_y, style, base_style);
                 }
 
                 canvas.set(label_start_x, edge_y, ' ');
@@ -374,7 +378,7 @@ pub(super) fn draw_edge_label(
 
                 for x in x_pos..arrow_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             }
@@ -401,7 +405,7 @@ pub(super) fn draw_edge_label(
 
                 for x in gap_start_x..label_start_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
 
@@ -425,14 +429,14 @@ pub(super) fn draw_edge_label(
 
                 for x in x_pos..stem_end_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             } else if can_fit_tight_inline {
                 let label_start_x = gap_start_x + (span_width - label_width) / 2;
                 for x in gap_start_x..label_start_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
 
@@ -447,7 +451,7 @@ pub(super) fn draw_edge_label(
 
                 for x in x_pos..stem_end_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             } else if let Some(label_row) = outside_row {
@@ -484,7 +488,7 @@ pub(super) fn draw_edge_label(
 
                 for x in gap_start_x..label_start_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
 
@@ -508,7 +512,7 @@ pub(super) fn draw_edge_label(
 
                 for x in x_pos..stem_end_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             }
@@ -531,6 +535,8 @@ pub(super) fn draw_routed_edge_label(
     edge_idx: usize,
     edge: &crate::graph::Edge,
 ) -> Option<EdgeLabelPlacement> {
+    let kind_style = edge_label_style(style, edge);
+    let style = &kind_style;
     if route.segments.is_empty() {
         return None;
     }
@@ -1110,6 +1116,8 @@ pub(super) fn draw_convergent_edge_label(
     edge_idx: usize,
     edge: &crate::graph::Edge,
 ) -> Option<EdgeLabelPlacement> {
+    let kind_style = edge_label_style(style, edge);
+    let style = &kind_style;
     use super::cycle::{center_x, center_y};
 
     // Use slightly shorter limit for convergent labels to avoid crowding at merge points
@@ -1278,5 +1286,33 @@ fn build_label_placement(
         None
     } else {
         Some(EdgeLabelPlacement { owner_id, cells })
+    }
+}
+
+/// Style for shaft cells drawn around an edge label: the edge's own kind
+/// (thick/dotted) for forward edges; back edges keep the cycle styling.
+fn edge_label_style(style: &StyleChars, edge: &crate::graph::Edge) -> StyleChars {
+    if edge.is_back_edge {
+        *style
+    } else {
+        super::edge::style_for_edge_kind(style, edge.kind)
+    }
+}
+
+/// Write one horizontal shaft cell next to a label. Free or shaft cells take
+/// the edge-kind glyph; any other cell (another route's vertical or junction)
+/// gets the base glyph so the canvas merge still composes a crossing.
+fn set_label_shaft(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    kind_style: &StyleChars,
+    base_style: &StyleChars,
+) {
+    let existing = canvas.get(x, y);
+    if existing == ' ' || canvas::is_horizontal(existing, base_style) {
+        canvas.set(x, y, kind_style.edge_h);
+    } else {
+        canvas.set(x, y, base_style.edge_h);
     }
 }

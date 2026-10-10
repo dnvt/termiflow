@@ -129,7 +129,7 @@ fn set_route_edge_char(
     }
 }
 
-fn style_for_edge_kind(style: &StyleChars, kind: EdgeKind) -> StyleChars {
+pub(super) fn style_for_edge_kind(style: &StyleChars, kind: EdgeKind) -> StyleChars {
     let mut branch_style = *style;
     match kind {
         EdgeKind::Thick => {
