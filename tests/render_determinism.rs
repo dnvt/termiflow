@@ -27,3 +27,23 @@ fn td_subgraph_layout_is_deterministic() {
         assert_repeated_renders_match(path, BaseStyle::Unicode);
     }
 }
+
+/// Two nested subgraphs needing equal-size shifts used to be picked by
+/// `HashMap` order, so identical renders of this RL chain differed between
+/// runs (exploration corpus gen_c_064: up to 10 distinct frames).
+#[test]
+fn equal_nested_shift_ties_are_deterministic() {
+    let input = "graph RL\n    subgraph P1 [West]\n        subgraph A [A]\n            a[a]\n        end\n        subgraph B [B]\n            b[b]\n        end\n    end\n    subgraph P2 [East]\n        subgraph C [C]\n            c[c]\n        end\n        subgraph D [D]\n            d[d]\n        end\n    end\n    a --> b --> c --> d\n";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        let expected =
+            render(input, RenderOptions::new().with_style(style)).expect("render tie fixture");
+        for _ in 0..32 {
+            let actual =
+                render(input, RenderOptions::new().with_style(style)).expect("render tie fixture");
+            assert_eq!(
+                actual, expected,
+                "tie-shift render changed between runs ({style:?})"
+            );
+        }
+    }
+}

@@ -2933,7 +2933,13 @@ pub(super) fn resolve_subgraph_envelopes(
 
             let Some((subgraph_id, delta_x)) = required_shift_by_id
                 .iter()
-                .max_by_key(|(_, delta)| delta.abs())
+                .max_by(|(left_id, left_delta), (right_id, right_delta)| {
+                    // Ties must not depend on HashMap order (random per process).
+                    left_delta
+                        .abs()
+                        .cmp(&right_delta.abs())
+                        .then_with(|| right_id.cmp(left_id))
+                })
                 .map(|(id, delta)| (id.clone(), *delta))
             else {
                 break;
@@ -3210,7 +3216,13 @@ pub(super) fn resolve_subgraph_envelopes(
 
             let Some((sg_id, delta_x)) = required_shift_by_id
                 .iter()
-                .max_by_key(|(_, delta)| delta.abs())
+                .max_by(|(left_id, left_delta), (right_id, right_delta)| {
+                    // Ties must not depend on HashMap order (random per process).
+                    left_delta
+                        .abs()
+                        .cmp(&right_delta.abs())
+                        .then_with(|| right_id.cmp(left_id))
+                })
                 .map(|(id, delta)| (id.clone(), *delta))
             else {
                 if widened_any {
