@@ -319,6 +319,18 @@ fn test_subgraph_explicit_node_definition_overrides_prior_outside_reference() {
 }
 
 #[test]
+fn test_subgraph_bare_edge_reference_moves_a_top_level_node_like_mermaid() {
+    // Mermaid's documented subgraph example: a2 and c1 first appear on a
+    // top-level edge, then on an edge inside a block, and render inside it.
+    let input = "flowchart TB\n    c1-->a2\n    subgraph one\n    a1-->a2\n    end\n    subgraph two\n    b1-->b2\n    end\n    subgraph three\n    c1-->c2\n    end";
+    let result = parse(input, false).unwrap();
+
+    assert_eq!(result.graph.get_node_subgraph("a2"), Some("one"));
+    assert_eq!(result.graph.get_node_subgraph("c1"), Some("three"));
+    assert_eq!(result.graph.get_node_subgraph("b1"), Some("two"));
+}
+
+#[test]
 fn test_subgraph_unclosed_warns() {
     let input = "graph TD\nsubgraph X\nA[Node]";
     let result = parse(input, false).unwrap();

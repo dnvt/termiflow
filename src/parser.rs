@@ -584,6 +584,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
 
         // Whole-line edge statements (chains, & groups, every edge kind and
         // label form) register their endpoints in source order.
+        let mut line_edge_ids: Vec<String> = Vec::new();
         let statement =
             edge_statement::parse_edge_statement(&RE_CLASS_SUFFIX.replace_all(trimmed, ""));
         if let Some(hops) = &statement {
@@ -593,6 +594,7 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 .flat_map(|hop| hop.from.iter())
                 .chain(hops.iter().flat_map(|hop| hop.to.iter()));
             for id in ids {
+                line_edge_ids.push(id.clone());
                 if known_ids.insert(id.clone()) {
                     ordered_ids.push(id.clone());
                 }
@@ -745,6 +747,18 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
             for node_id in &ordered_ids[nodes_before..] {
                 if !explicit_line_nodes.contains(node_id) && !node_to_subgraph.contains_key(node_id)
                 {
+                    associate_node_with_subgraph_data(
+                        &mut node_to_subgraph,
+                        &mut subgraph_data,
+                        node_id,
+                        sg_id,
+                    );
+                }
+            }
+            // Mermaid places a node referenced inside a subgraph block in that
+            // subgraph even when an earlier top-level line introduced it.
+            for node_id in &line_edge_ids {
+                if !node_to_subgraph.contains_key(node_id) {
                     associate_node_with_subgraph_data(
                         &mut node_to_subgraph,
                         &mut subgraph_data,
