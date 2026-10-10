@@ -4384,9 +4384,29 @@ struct ConnectivityGrid {
 }
 
 impl ConnectivityGrid {
+    /// Index cells by display column (as the layout does): a wide glyph
+    /// occupies its cell plus a blank continuation cell, and zero-width
+    /// marks attach to the previous cell.
     fn new(frame: &str) -> Self {
+        use unicode_width::UnicodeWidthChar;
         Self {
-            lines: frame.lines().map(|line| line.chars().collect()).collect(),
+            lines: frame
+                .lines()
+                .map(|line| {
+                    let mut cells = Vec::new();
+                    for ch in line.chars() {
+                        match ch.width().unwrap_or(0) {
+                            0 => {}
+                            1 => cells.push(ch),
+                            width => {
+                                cells.push(ch);
+                                cells.extend(std::iter::repeat_n('\u{0}', width - 1));
+                            }
+                        }
+                    }
+                    cells
+                })
+                .collect(),
         }
     }
 
@@ -4908,4 +4928,293 @@ fn laid_out_nodes_never_overlap() {
         "overlapping nodes:\n{}",
         failures.join("\n")
     );
+}
+
+// ---------------------------------------------------------------------------
+// Raw-frame topology audit (exploration tool)
+//
+// From each node's border, flood along connected route glyphs: tees and
+// corners branch, crossings (four-arm glyphs) and subgraph border pierces only
+// continue straight, and arrowheads/end markers also touch the box they point
+// into. Every node whose box the flood touches is "reached". Comparing reached
+// nodes with the declared (undirected) neighbours finds phantom connections
+// (routes through boxes, merged buses) and detached edges. Run with
+// `TERMIFLOW_TOPOLOGY_CORPUS=<dir> TERMIFLOW_TOPOLOGY_OUT=<tsv>
+//  cargo test --test independent_oracles topology_audit -- --ignored`.
+// ---------------------------------------------------------------------------
+
+fn topology_reached_nodes(
+    graph: &termiflow::Graph,
+    grid: &ConnectivityGrid,
+    origin: (isize, isize),
+    source: &str,
+    strict_crossings: bool,
+) -> std::collections::BTreeSet<String> {
+    let (ox, oy) = origin;
+    let rects: Vec<(&str, FrameRect)> = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                node.id.as_str(),
+                FrameRect {
+                    x: node.x as isize - ox,
+                    y: node.y as isize - oy,
+                    width: node.width as isize,
+                    height: node.height as isize,
+                },
+            )
+        })
+        .collect();
+    let subgraph_rects: Vec<FrameRect> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.bounds.width > 0 && subgraph.bounds.height > 0)
+        .map(|subgraph| FrameRect {
+            x: subgraph.bounds.x as isize - ox,
+            y: subgraph.bounds.y as isize - oy,
+            width: subgraph.bounds.width as isize,
+            height: subgraph.bounds.height as isize,
+        })
+        .collect();
+    let node_at = |x: isize, y: isize| {
+        rects
+            .iter()
+            .find(|(_, rect)| rect.contains(x, y))
+            .map(|(id, _)| *id)
+    };
+    let on_border = |x: isize, y: isize| {
+        subgraph_rects.iter().any(|rect| {
+            ((y == rect.y || y == rect.bottom()) && x >= rect.x && x <= rect.right())
+                || ((x == rect.x || x == rect.right()) && y >= rect.y && y <= rect.bottom())
+        })
+    };
+    let Some(source_rect) = rects.iter().find(|(id, _)| *id == source).map(|(_, r)| *r) else {
+        return Default::default();
+    };
+
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited = HashSet::new();
+    let perimeter = (source_rect.x..=source_rect.right())
+        .map(|x| (x, source_rect.y - 1, CONNECTIVITY_DOWN))
+        .chain(
+            (source_rect.x..=source_rect.right())
+                .map(|x| (x, source_rect.bottom() + 1, CONNECTIVITY_UP)),
+        )
+        .chain(
+            (source_rect.y..=source_rect.bottom())
+                .map(|y| (source_rect.x - 1, y, CONNECTIVITY_RIGHT)),
+        )
+        .chain(
+            (source_rect.y..=source_rect.bottom())
+                .map(|y| (source_rect.right() + 1, y, CONNECTIVITY_LEFT)),
+        );
+    let points_toward = |ch: char, toward_box: u8| match ch {
+        '^' | '\u{2191}' | '\u{25b2}' => toward_box == CONNECTIVITY_UP,
+        '>' | '\u{2192}' | '\u{25b6}' => toward_box == CONNECTIVITY_RIGHT,
+        'v' | '\u{2193}' | '\u{25bc}' => toward_box == CONNECTIVITY_DOWN,
+        '<' | '\u{2190}' | '\u{25c0}' => toward_box == CONNECTIVITY_LEFT,
+        'o' | '\u{25cb}' => true,
+        _ => false,
+    };
+    // A bidirectional edge leaves its source through an arrowhead.
+    let has_bidirectional = graph.edges.iter().any(|edge| {
+        edge.kind == termiflow::graph::EdgeKind::Bidirectional
+            && (edge.from == source || edge.to == source)
+    });
+    for (x, y, toward_box) in perimeter {
+        // Outgoing side only: a shaft touching the box, not an arrowhead into it.
+        let ch = grid.get(x, y);
+        let incoming_head = points_toward(ch, toward_box);
+        if node_at(x, y).is_none()
+            && (grid.mask(x, y) & (1 << toward_box) != 0 || incoming_head)
+            && (!incoming_head || has_bidirectional)
+        {
+            queue.push_back((x, y, route_identity_opposite(toward_box)));
+        }
+    }
+
+    let mut reached = std::collections::BTreeSet::new();
+    while let Some((x, y, entered)) = queue.pop_front() {
+        if !visited.insert((x, y, entered)) {
+            continue;
+        }
+        let ch = grid.get(x, y);
+        let mask = grid.mask(x, y);
+        let straight_only = (strict_crossings && mask == 0b1111) || on_border(x, y);
+        let pointing: Option<u8> = match ch {
+            '^' | '\u{2191}' | '\u{25b2}' => Some(CONNECTIVITY_UP),
+            '>' | '\u{2192}' | '\u{25b6}' => Some(CONNECTIVITY_RIGHT),
+            'v' | '\u{2193}' | '\u{25bc}' => Some(CONNECTIVITY_DOWN),
+            '<' | '\u{2190}' | '\u{25c0}' => Some(CONNECTIVITY_LEFT),
+            'o' | '\u{25cb}' => Some(entered),
+            _ => None,
+        };
+        if let Some(step) = pointing {
+            let (dx, dy) = connectivity_step(step);
+            if let Some(node) = node_at(x + dx, y + dy) {
+                if node != source {
+                    reached.insert(node.to_string());
+                }
+            }
+        }
+        let steps: Vec<u8> = if straight_only {
+            vec![entered]
+        } else {
+            (0..4u8).filter(|step| mask & (1 << step) != 0).collect()
+        };
+        for step in steps {
+            let (dx, dy) = connectivity_step(step);
+            let (nx, ny) = (x + dx, y + dy);
+            if node_at(nx, ny).is_some() {
+                // A plain shaft touching a box is a port, not a target.
+                continue;
+            }
+            let back = route_identity_opposite(step);
+            let next_mask = grid.mask(nx, ny);
+            if matches!(grid.get(nx, ny), 'o' | '\u{25cb}') {
+                // Circle end markers have no arms; they point onward.
+                queue.push_back((nx, ny, step));
+                continue;
+            }
+            if next_mask & (1 << back) == 0 && !(on_border(nx, ny) && next_mask != 0) {
+                // An edge label written across the shaft: skip a text run that
+                // is a declared label when the shaft resumes beyond it.
+                if let Some(resume) = topology_label_skip(graph, grid, (nx, ny), step) {
+                    queue.push_back((resume.0, resume.1, step));
+                }
+                continue;
+            }
+            queue.push_back((nx, ny, step));
+        }
+    }
+    reached
+}
+
+/// Resume point after an edge label that interrupts a shaft at `start`.
+fn topology_label_skip(
+    graph: &termiflow::Graph,
+    grid: &ConnectivityGrid,
+    start: (isize, isize),
+    step: u8,
+) -> Option<(isize, isize)> {
+    let back = route_identity_opposite(step);
+    let (dx, dy) = connectivity_step(step);
+    let first = grid.get(start.0, start.1);
+    if first == ' ' {
+        // Labels are padded by one blank on each side of the shaft.
+        let after = grid.get(start.0 + dx, start.1 + dy);
+        if after == ' ' || connectivity_mask(after) != 0 {
+            return None;
+        }
+    }
+    if dy != 0 {
+        // Vertical shaft: the label is a centred text row.
+        // Extend across single inner spaces ("on done"), stopping at a
+        // double space or a route glyph.
+        let is_text = |x: isize| {
+            let ch = grid.get(x, start.1);
+            ch != ' ' && connectivity_mask(ch) == 0
+        };
+        let mut left = start.0;
+        while is_text(left - 1) || (grid.get(left - 1, start.1) == ' ' && is_text(left - 2)) {
+            left -= 1;
+        }
+        let mut right = start.0;
+        while is_text(right + 1) || (grid.get(right + 1, start.1) == ' ' && is_text(right + 2)) {
+            right += 1;
+        }
+        let run: String = (left..=right)
+            .map(|x| grid.get(x, start.1))
+            .filter(|c| *c != '\u{0}')
+            .collect();
+        let resume = (start.0, start.1 + dy);
+        let resumes = grid.mask(resume.0, resume.1) & (1 << back) != 0
+            || matches!(grid.get(resume.0, resume.1), 'o' | '\u{25cb}');
+        return (connectivity_label_matches(graph, &run) && resumes).then_some(resume);
+    }
+    let mut run = String::new();
+    for k in 0..64isize {
+        let (cx, cy) = (start.0 + dx * k, start.1);
+        let ch = grid.get(cx, cy);
+        if k > 0 && (connectivity_mask(ch) & (1 << back) != 0 || matches!(ch, 'o' | '\u{25cb}')) {
+            let mut text: String = run.chars().filter(|c| *c != '\u{0}').collect();
+            if dx < 0 {
+                text = text.chars().rev().collect();
+            }
+            return connectivity_label_matches(graph, &text).then_some((cx, cy));
+        }
+        run.push(ch);
+    }
+    None
+}
+
+#[test]
+#[ignore = "exploration tool: run over a corpus directory"]
+fn topology_audit() {
+    let Ok(dir) = std::env::var("TERMIFLOW_TOPOLOGY_CORPUS") else {
+        return;
+    };
+    let out = std::env::var("TERMIFLOW_TOPOLOGY_OUT").unwrap_or_else(|_| "topology.tsv".into());
+    let mut paths: Vec<_> = fs::read_dir(&dir)
+        .expect("read corpus")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    paths.sort();
+    let mut rows = Vec::new();
+    for path in paths {
+        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+        let input = fs::read_to_string(&path).expect("read input");
+        let Some((graph, frame, _)) =
+            boundary_crossing_connectivity_errors(&input, BaseStyle::Unicode, false)
+        else {
+            continue;
+        };
+        let grid = ConnectivityGrid::new(&frame);
+        let Some(origin) = connectivity_frame_origin(&graph, &grid) else {
+            rows.push(format!("{stem}\tORIGIN\t-\t-"));
+            continue;
+        };
+        for node in &graph.nodes {
+            use termiflow::graph::EdgeKind;
+            let marked = |kind: EdgeKind| !matches!(kind, EdgeKind::Open | EdgeKind::CrossEnd);
+            let declared: std::collections::BTreeSet<String> = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.from != edge.to && marked(edge.kind))
+                .filter_map(|edge| {
+                    if edge.from == node.id {
+                        Some(edge.to.clone())
+                    } else if edge.to == node.id && edge.kind == EdgeKind::Bidirectional {
+                        Some(edge.from.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            // Nodes joined by unmarked kinds cannot be judged by arrowheads.
+            let unmarked: std::collections::BTreeSet<String> = graph
+                .edges
+                .iter()
+                .filter(|edge| !marked(edge.kind))
+                .flat_map(|edge| [edge.from.clone(), edge.to.clone()])
+                .collect();
+            // Missing only if even branching through four-arm glyphs fails;
+            // phantom only if reached while crossings stay straight.
+            let loose = topology_reached_nodes(&graph, &grid, origin, &node.id, false);
+            let reached = topology_reached_nodes(&graph, &grid, origin, &node.id, true);
+            for phantom in reached
+                .difference(&declared)
+                .filter(|id| !unmarked.contains(*id))
+            {
+                rows.push(format!("{stem}\tPHANTOM\t{}\t{phantom}", node.id));
+            }
+            for missing in declared.difference(&loose) {
+                rows.push(format!("{stem}\tMISSING\t{}\t{missing}", node.id));
+            }
+        }
+    }
+    fs::write(&out, rows.join("\n") + "\n").expect("write topology audit");
 }
