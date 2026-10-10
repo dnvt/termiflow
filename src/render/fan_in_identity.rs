@@ -171,8 +171,9 @@ pub(crate) const fn required_primary_gap(count: usize) -> usize {
 /// Return the required target-side port count for an ordinary identity scene.
 ///
 /// The policy is intentionally conservative.  It excludes subgraph portals,
-/// contours, labels, cycles, and unsupported edge kinds until those ownership
-/// contracts have their own scene lowerers.
+/// contours, labels, cycles, and bidirectional edges (whose source-side head
+/// the lowerer does not draw) until those ownership contracts have their own
+/// scene lowerers. Other edge kinds keep their shaft style and end glyph.
 pub(crate) fn target_port_count(graph: &Graph, target_id: &str) -> Option<usize> {
     if let Some(count) = labeled_terminal_fan_in_target_count(graph, target_id) {
         return Some(count);
@@ -190,7 +191,7 @@ pub(crate) fn target_port_count(graph: &Graph, target_id: &str) -> Option<usize>
             .any(|node| !matches!(node.shape, NodeShape::Rectangle | NodeShape::Database))
         || graph.edges.iter().any(|edge| {
             edge.is_back_edge
-                || edge.kind != EdgeKind::Arrow
+                || edge.kind == EdgeKind::Bidirectional
                 || edge.label.is_some()
                 || edge.from == edge.to
         })

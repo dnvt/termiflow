@@ -18,7 +18,7 @@ use super::super::semantic::CellOwnerKind;
 use super::edge_primitives::{
     adjusted_edge_entry_point, edge_entry_candidates, edge_exit_point, hits_foreign_subgraph_border,
 };
-use super::{set_route_char, set_route_edge_char, RouteOwner};
+use super::{set_route_char, set_route_edge_char, style_for_edge_kind, RouteOwner};
 
 const STRATEGY: &str = "diamond-shortcut-scene-reservation";
 
@@ -186,7 +186,7 @@ fn detect_scenes(graph: &Graph) -> Vec<DiamondScene> {
 }
 
 fn eligible_edge(edge: &crate::graph::Edge) -> bool {
-    !edge.is_back_edge && edge.kind == EdgeKind::Arrow && edge.label.is_none()
+    !edge.is_back_edge && edge.kind != EdgeKind::Bidirectional && edge.label.is_none()
 }
 
 fn eligible_node(graph: &Graph, node: &Node) -> bool {
@@ -227,8 +227,25 @@ fn build_plan(
         .map(|index| crate::render::provenance::edge_owner_id(index, &graph.edges[index]));
     plan.set_scene_coverage(covered_edge_ids);
 
-    append_standard_path(&mut plan, source, middle, graph.direction, graph, style)?;
-    append_standard_path(&mut plan, middle, target, graph.direction, graph, style)?;
+    let kind_of = |index: usize| graph.edges[index].kind;
+    append_standard_path(
+        &mut plan,
+        source,
+        middle,
+        graph.direction,
+        graph,
+        style,
+        kind_of(scene.first_index),
+    )?;
+    append_standard_path(
+        &mut plan,
+        middle,
+        target,
+        graph.direction,
+        graph,
+        style,
+        kind_of(scene.second_index),
+    )?;
 
     let shortcut_entry = choose_shortcut_entry(target, graph.direction, lane, graph);
     append_shortcut_path(
@@ -238,6 +255,7 @@ fn build_plan(
         lane,
         graph.direction,
         style,
+        kind_of(scene.direct_index),
     )?;
 
     validate_plan_cells(&plan, graph, canvas)?;
@@ -326,6 +344,7 @@ fn choose_entry_for_secondary(
         .unwrap_or_else(|| adjusted_edge_entry_point(target, direction, graph))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_standard_path(
     plan: &mut FallbackRoutePlan,
     source: &Node,
@@ -333,7 +352,11 @@ fn append_standard_path(
     direction: Direction,
     graph: &Graph,
     style: &StyleChars,
+    kind: EdgeKind,
 ) -> Result<(), String> {
+    let base_style = style;
+    let line_style = style_for_edge_kind(base_style, kind);
+    let style = &line_style;
     let coords = OrientedCoords::new(direction);
     let start = edge_exit_point(source, direction);
     let start_secondary = coords.secondary_coord(start.0, start.1);
@@ -343,7 +366,7 @@ fn append_standard_path(
     let end_secondary = coords.secondary_coord(end.0, end.1);
     if start_secondary == end_secondary {
         push_primary(plan, start, end, &coords, style);
-        plan.push_paint(end.0, end.1, coords.arrow_end(style));
+        plan.push_paint(end.0, end.1, diamond_tip(kind, base_style, style, &coords));
         return Ok(());
     }
 
@@ -366,7 +389,7 @@ fn append_standard_path(
     );
     let final_start = coords.advance(bend.0, bend.1, 1);
     push_primary(plan, final_start, end, &coords, style);
-    plan.push_paint(end.0, end.1, coords.arrow_end(style));
+    plan.push_paint(end.0, end.1, diamond_tip(kind, base_style, style, &coords));
     Ok(())
 }
 
@@ -377,7 +400,11 @@ fn append_shortcut_path(
     lane: usize,
     direction: Direction,
     style: &StyleChars,
+    kind: EdgeKind,
 ) -> Result<(), String> {
+    let base_style = style;
+    let line_style = style_for_edge_kind(base_style, kind);
+    let style = &line_style;
     let coords = OrientedCoords::new(direction);
     let start = edge_exit_point(source, direction);
     ensure_flow(&coords, start, end)?;
@@ -428,8 +455,23 @@ fn append_shortcut_path(
     );
     let final_start = coords.advance(target_lane.0, target_lane.1, 1);
     push_primary(plan, final_start, end, &coords, style);
-    plan.push_paint(end.0, end.1, coords.arrow_end(style));
+    plan.push_paint(end.0, end.1, diamond_tip(kind, base_style, style, &coords));
     Ok(())
+}
+
+/// The glyph that ends a diamond-scene path at its target.
+fn diamond_tip(
+    kind: EdgeKind,
+    style: &StyleChars,
+    line_style: &StyleChars,
+    coords: &OrientedCoords,
+) -> char {
+    match kind {
+        EdgeKind::CircleEnd => style.circle_end,
+        EdgeKind::CrossEnd => style.cross_end,
+        EdgeKind::Open => coords.primary_edge_char(line_style),
+        _ => coords.arrow_end(style),
+    }
 }
 
 fn ensure_flow(
