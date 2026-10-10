@@ -749,6 +749,57 @@ pub(super) fn render_with_feedback_with_contract(
         }
     }
 
+    // Back edges leave their source through the cross-axis side (bottom in
+    // LR/RL, right wall in TD/BT) and start outside the contour, so the box
+    // redraw leaves a plain border where the route departs. Mark that exit
+    // with the same junction a forward exit gets, but only when the border
+    // cell is still plain and the route really continues right outside it.
+    let mut back_exits: Vec<(&str, usize, usize, char)> = Vec::new();
+    for edge in graph
+        .edges
+        .iter()
+        .filter(|edge| edge.is_back_edge && edge.from != edge.to)
+    {
+        let Some(from) = graph_index.node_by_name(&edge.from) else {
+            continue;
+        };
+        if !canvas.is_visible(from) || !from.shape.has_flat_vertical_entry() {
+            continue;
+        }
+        let exit = match graph.direction {
+            Direction::LR | Direction::RL => {
+                let x = from.x + from.width / 2;
+                let border_y = from.bottom_y().saturating_sub(1);
+                (canvas::is_horizontal(canvas.get(x, border_y), &chars)
+                    && canvas::is_vertical(canvas.get(x, from.bottom_y()), &chars))
+                .then_some((x, border_y, chars.junction_down))
+            }
+            Direction::TD | Direction::TB | Direction::BT => {
+                let border_x = from.x + from.width.saturating_sub(1);
+                let y = cycle::center_y(from);
+                (canvas::is_vertical(canvas.get(border_x, y), &chars)
+                    && canvas::is_horizontal(canvas.get(from.x + from.width, y), &chars))
+                .then_some((border_x, y, chars.junction_right))
+            }
+        };
+        if let Some((x, y, junction)) = exit {
+            back_exits.push((edge.from.as_str(), x, y, junction));
+        }
+    }
+    back_exits.sort_unstable();
+    back_exits.dedup();
+    for (source_id, x, y, junction) in back_exits {
+        let mut back_exit_scene = Scene::new();
+        back_exit_scene.push(SceneIntent::edge_inferred(x, y, junction));
+        back_exit_scene.resolve_with_recorder(
+            &mut canvas,
+            &chars,
+            &mut scene_recorder,
+            "source-junction",
+        );
+        source_junction_records.push((x, y, format!("junction:{source_id}")));
+    }
+
     canvas.set_write_stage("border-restore");
     restore_subgraph_borders(
         &mut canvas,
