@@ -3510,7 +3510,7 @@ pub(super) fn route_cross_subgraph_bt(
     let border_y = src_sg.bounds.y;
     let max_inside_y = border_y + src_sg.bounds.height.saturating_sub(2);
     let inside_y = border_y.saturating_add(1).min(max_inside_y);
-    let portal_x = preferred_portal_x(
+    let mut portal_x = preferred_portal_x(
         &src_sg.bounds,
         src_sg.title.as_deref(),
         stem_start_x,
@@ -3518,6 +3518,25 @@ pub(super) fn route_cross_subgraph_bt(
         Direction::BT,
         false,
     );
+    // A lane change must not ride the top border row: later portal passes
+    // read each end of such a bridge as its own pierce and the route detaches.
+    // Prefer piercing at the arrow column and changing lanes on the first
+    // interior row (BT titles live on the bottom row, so the top interior row
+    // is title-free) when that row is clear between the two lanes.
+    if portal_x != arrow_x && inside_y > border_y && inside_y < canvas.height {
+        let left_wall = src_sg.bounds.x;
+        let right_wall = src_sg.bounds.x + src_sg.bounds.width.saturating_sub(1);
+        let (lo, hi) = (stem_start_x.min(arrow_x), stem_start_x.max(arrow_x));
+        let arrow_column_is_interior = arrow_x > left_wall && arrow_x < right_wall;
+        let inside_row_is_clear = (lo..=hi)
+            .filter(|&x| x != stem_start_x)
+            .all(|x| x < canvas.width && canvas.get(x, inside_y) == ' ');
+        let border_cell_is_free =
+            arrow_x < canvas.width && !is_textual(canvas.get(arrow_x, border_y));
+        if arrow_column_is_interior && inside_row_is_clear && border_cell_is_free {
+            portal_x = arrow_x;
+        }
+    }
 
     // Walk up from the source exit to the row just inside the subgraph top border.
     draw_line_primary(
@@ -3566,13 +3585,10 @@ pub(super) fn route_cross_subgraph_bt(
         set_route_edge_char(canvas, portal_x, inside_y, end_corner, style, owner);
     }
 
-    // Continue up across the title row and border. Prefer bridging back toward the
-    // target column on the actual border row so the title row only ever carries
-    // a clean vertical portal pierce.
+    // Continue up across the border. Any remaining lane change happens on the
+    // outside row when one exists above the border, never on the border row.
     let border_row_y = border_y;
     let outside_y = border_y.saturating_sub(1);
-    let bridge_on_border_row = portal_x != arrow_x;
-
     if inside_y > border_row_y {
         draw_line_primary(
             portal_x,
@@ -3587,58 +3603,19 @@ pub(super) fn route_cross_subgraph_bt(
         );
     }
 
-    if !bridge_on_border_row {
-        draw_line_primary(
-            portal_x,
-            border_row_y,
-            portal_x,
-            outside_y,
-            &coords,
-            canvas,
-            style,
-            Some(graph),
-            owner,
-        );
-    }
+    draw_line_primary(
+        portal_x,
+        border_row_y,
+        portal_x,
+        outside_y,
+        &coords,
+        canvas,
+        style,
+        Some(graph),
+        owner,
+    );
 
-    if bridge_on_border_row {
-        let start_corner = if arrow_x > portal_x {
-            style.corner_dl
-        } else {
-            style.corner_dr
-        };
-        set_route_edge_char(canvas, portal_x, border_row_y, start_corner, style, owner);
-
-        let (hx0, hx1) = if arrow_x > portal_x {
-            (portal_x + 1, arrow_x.saturating_sub(1))
-        } else {
-            (arrow_x + 1, portal_x.saturating_sub(1))
-        };
-        for x in hx0..=hx1 {
-            set_route_edge_char(canvas, x, border_row_y, style.edge_h, style, owner);
-        }
-
-        let end_corner = if arrow_x > portal_x {
-            style.corner_ur
-        } else {
-            style.corner_ul
-        };
-        set_route_edge_char(canvas, arrow_x, border_row_y, end_corner, style, owner);
-
-        if arrow_y < border_row_y {
-            draw_line_primary(
-                arrow_x,
-                border_row_y.saturating_sub(1),
-                arrow_x,
-                arrow_y,
-                &coords,
-                canvas,
-                style,
-                Some(graph),
-                owner,
-            );
-        }
-    } else if portal_x != arrow_x && border_y > 0 {
+    if portal_x != arrow_x && border_y > 0 && outside_y > arrow_y {
         // In BT mode, vertical line comes from below (larger y), turns horizontal
         // corner_dl (┌) if turning right, corner_dr (┐) if turning left
         let start_corner = if arrow_x > portal_x {
@@ -3678,7 +3655,7 @@ pub(super) fn route_cross_subgraph_bt(
             Some(graph),
             owner,
         );
-    } else if !bridge_on_border_row {
+    } else {
         draw_line_primary(
             portal_x,
             outside_y,
@@ -3714,7 +3691,6 @@ pub(super) fn route_cross_subgraph_bt(
     if portal_x < canvas.width
         && border_y < canvas.height
         && !is_textual(canvas.get(portal_x, border_y))
-        && !bridge_on_border_row
     {
         set_route_char(canvas, portal_x, border_y, style.edge_v, owner);
     }

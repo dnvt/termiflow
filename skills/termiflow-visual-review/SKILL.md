@@ -93,8 +93,8 @@ see.
    binary identity, expected-error count, route-clarity coverage, and argv/
    effective-policy provenance. For renderer-wide work, enumerate every
    non-symlink `tests/fixtures/inputs/*.md` file across every style/mode
-   combination in both lanes: the current inventory is 242 inputs, 968 rows,
-   956 renderable frames, and 12 expected-error rows per lane. A missing
+   combination in both lanes: the current inventory is 243 inputs, 972 rows,
+   960 renderable frames, and 12 expected-error rows per lane. A missing
    user-supplied path is a missing fixture, never an invented test.
 2. Run the conservative Rust prescreen through
    `scripts/review_visual_packet.sh ... --prescreen-clean`. Treat its count and
@@ -293,7 +293,7 @@ immediately legible (for example, aligned parallel rails); record a watch when
 long cross-group rails, paired receiver hooks, or external-sink fan-in require
 global tracing. Every result remains an independent exact-hash decision: a
 clean homolog does not cover a different style, mode, policy lane, or
-regenerated frame. The current self-improving loop must continue draining all 956
+regenerated frame. The current self-improving loop must continue draining all 960
 renderable rows in both the canonical and no-override packets, with the 12
 expected-error rows governed separately, before a cycle or golden can be
 called complete.

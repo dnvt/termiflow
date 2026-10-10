@@ -1227,11 +1227,11 @@ fn align_td_terminal_entry_receiver_lanes(
 
 /// Align a strict terminal external target with the exit portal of a flat,
 /// titled vertical subgraph. A one-cell source/target parity mismatch makes
-/// the generic route emit two adjacent boundary shafts; when the edge is
-/// labeled, the label can hide that defect until spacing exposes it. Move
-/// only the terminal target, and only when the target has one direct labeled
-/// exit, the live portal lane is already source-aligned, and the candidate is
-/// clear of every hard obstacle.
+/// the generic route emit two adjacent boundary shafts (labeled or not; a
+/// label can merely hide the defect until spacing exposes it). Move only the
+/// terminal target, and only when the target has one direct exit, the live
+/// portal lane is already source-aligned, and the candidate is clear of every
+/// hard obstacle.
 fn align_vertical_external_exit_centers(
     graph: &Graph,
     placement: &mut Placement,
@@ -1267,7 +1267,6 @@ fn align_vertical_external_exit_centers(
             .filter(|edge| {
                 !edge.is_back_edge
                     && edge.kind == EdgeKind::Arrow
-                    && edge.label.is_some()
                     && graph.get_node_subgraph(&edge.from) == Some(subgraph.id.as_str())
                     && graph.get_node_subgraph(&edge.to).is_none()
                     && graph.edge_boundary_crossings(&edge.from, &edge.to).0
