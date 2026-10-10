@@ -51,3 +51,53 @@ fn bt_external_fanout_trunk_reaches_the_bus_inside_a_titled_subgraph() {
         }
     }
 }
+
+const TD_EXTERNAL_FANOUT_WITH_SHALLOW_EXIT: &str = "graph TD
+    GW[API Gateway]
+    subgraph Services [Core Services]
+        Auth[Auth Service]
+        Orders[Order Service]
+        Catalog[Catalog Service]
+    end
+    GW --> Auth
+    GW --> Orders
+    GW --> Catalog
+    Orders --> DB[(Orders DB)]
+";
+
+#[test]
+fn td_external_fanout_keeps_its_bus_row_when_an_exit_target_sits_close_below() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let frame = termiflow::render_with_feedback(
+                TD_EXTERNAL_FANOUT_WITH_SHALLOW_EXIT,
+                RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimized),
+            )
+            .expect("render")
+            .output;
+            let rows: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+            let arrow_row = rows
+                .iter()
+                .position(|row| row.iter().filter(|g| matches!(g, '↓' | 'v')).count() == 3)
+                .unwrap_or_else(|| panic!("one row carries the three entry arrows:\n{frame}"));
+            let arrows: Vec<usize> = (0..rows[arrow_row].len())
+                .filter(|&x| matches!(rows[arrow_row][x], '↓' | 'v'))
+                .collect();
+            let between_arrows_is_quiet =
+                (arrows[0]..=arrows[2]).all(|x| matches!(rows[arrow_row][x], '↓' | 'v' | ' '));
+            let bus_feeds_every_arrow = arrows.iter().all(|&x| {
+                matches!(
+                    rows[arrow_row - 1].get(x),
+                    Some('┌' | '┐' | '┬' | '┼' | '│' | '+' | '|')
+                )
+            });
+            assert!(
+                between_arrows_is_quiet && bus_feeds_every_arrow,
+                "the fan-out bus must sit on its own row above the entry arrows \
+                 ({style:?} optimized={optimized}):\n{frame}"
+            );
+        }
+    }
+}

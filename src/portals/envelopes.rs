@@ -1069,6 +1069,7 @@ fn build_envelope(
 
     let title_on_bottom = has_title && matches!(graph.direction, Direction::BT);
     let title_on_top = has_title && !title_on_bottom;
+    let is_fanout_entry = incoming_cross_count > 1 && incoming_outside_sources.len() == 1;
 
     let mut top_hard_pad = if title_on_top {
         // Titles now live on the first interior row. Reserve the title row plus
@@ -1077,7 +1078,6 @@ fn build_envelope(
         // Special-case: when a single external source fans out into multiple targets
         // inside this titled subgraph, we need extra internal rows to draw a trunk,
         // split bar, drops, and arrowheads without colliding with the title row.
-        let is_fanout_entry = incoming_cross_count > 1 && incoming_outside_sources.len() == 1;
         if is_fanout_entry {
             6
         } else if incoming_cross_count > 0
@@ -1245,6 +1245,13 @@ fn build_envelope(
         && !bt_sibling_direct_entry
     {
         bottom_pad = top_pad.saturating_add(1);
+    }
+    if title_on_top && is_fanout_entry && matches!(graph.direction, Direction::TD | Direction::TB) {
+        // A titled TD fan-out entry needs the border, the title, the bus and
+        // the arrow rows above its targets. A shallow bottom (an exit target
+        // close below) must not let the balance spend the bus row, or the bus
+        // collapses onto the arrow row.
+        top_pad = top_pad.max(4);
     }
     if matches!(graph.direction, Direction::TD | Direction::TB)
         && super::td_terminal_entry_scene_subgraph(graph)
