@@ -4,7 +4,9 @@
 //! - `route_cycle_edge`: Routes cycle edges through the gutter (right for TD/BT, bottom for LR/RL)
 //! - `center_x`, `center_y`: Calculate visual center coordinates of nodes
 
-use crate::graph::Node;
+use std::collections::HashMap;
+
+use crate::graph::{Direction, Graph, Node};
 use crate::spacing::SpacingConfig;
 use crate::style::StyleChars;
 
@@ -29,6 +31,21 @@ pub fn route_cycle_edge(
     spacing: &SpacingConfig,
     direction: crate::graph::Direction,
     owner_id: Option<&str>,
+) {
+    route_cycle_edge_on_lane(from, to, canvas, style, spacing, direction, owner_id, None);
+}
+
+/// Route a cycle edge, using a planned LR/RL gutter lane when one is given.
+#[allow(clippy::too_many_arguments)]
+pub fn route_cycle_edge_on_lane(
+    from: &Node,
+    to: &Node,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    spacing: &SpacingConfig,
+    direction: crate::graph::Direction,
+    owner_id: Option<&str>,
+    lane: Option<HorizontalCycleLane>,
 ) {
     use crate::graph::Direction;
 
@@ -209,15 +226,18 @@ pub fn route_cycle_edge(
 
             // Calculate a gutter position below the nodes
             let nodes_bottom = from.bottom_y().max(to.bottom_y());
-            let gutter_y = nodes_bottom + spacing.row_spacing.max(2); // Add spacing below nodes
+            let gutter_y = lane.map_or(
+                nodes_bottom + spacing.row_spacing.max(2), // Add spacing below nodes
+                |lane| lane.gutter_y,
+            );
 
             if gutter_y >= canvas.height {
                 // Not enough space for gutter, skip
                 return;
             }
 
-            let from_x = from.x + from.width / 2;
-            let to_x = to.x + to.width / 2;
+            let from_x = lane.map_or(from.x + from.width / 2, |lane| lane.from_x);
+            let to_x = lane.map_or(to.x + to.width / 2, |lane| lane.to_x);
 
             // Vertical line from source box bottom down to gutter
             for y in from.bottom_y()..=gutter_y {
@@ -281,6 +301,180 @@ fn set_cycle_edge_char(
     } else {
         canvas.set_edge_char(x, y, ch, style);
     }
+}
+
+/// A planned LR/RL back-edge route: exit and entry columns plus gutter row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HorizontalCycleLane {
+    pub from_x: usize,
+    pub to_x: usize,
+    pub gutter_y: usize,
+}
+
+/// A back-edge endpoint at a node: (sort key, edge index, is the exit).
+type CycleEndpoint = ((bool, isize, usize), usize, bool);
+
+/// Plan LR/RL back-edge lanes so that no two back edges share a column at a
+/// node or a gutter row over overlapping spans, and no gutter run lies on or
+/// beside a subgraph's top or bottom border. A back edge without such a
+/// conflict keeps the default geometry (box centers, first gutter row).
+pub fn plan_horizontal_cycle_lanes(
+    graph: &Graph,
+    spacing: &SpacingConfig,
+) -> HashMap<usize, HorizontalCycleLane> {
+    let mut lanes = HashMap::new();
+    if !matches!(graph.direction, Direction::LR | Direction::RL) {
+        return lanes;
+    }
+    let node = |id: &str| graph.nodes.iter().find(|node| node.id == id);
+    let center = |node: &Node| node.x + node.width / 2;
+    let back_edges: Vec<(usize, &Node, &Node)> = graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| edge.is_back_edge && edge.from != edge.to)
+        .filter_map(|(idx, edge)| Some((idx, node(&edge.from)?, node(&edge.to)?)))
+        .collect();
+    if back_edges.is_empty() {
+        return lanes;
+    }
+
+    let borders: Vec<(usize, usize, usize)> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.bounds.width > 0 && subgraph.bounds.height > 0)
+        .flat_map(|subgraph| {
+            let bounds = &subgraph.bounds;
+            let right = bounds.x + bounds.width - 1;
+            [
+                (bounds.y, bounds.x, right),
+                (bounds.y + bounds.height - 1, bounds.x, right),
+            ]
+        })
+        .collect();
+
+    // Rows first, on box centers: shorter spans take the upper rows so the
+    // loops nest. Spans that only touch at a shared node do not conflict;
+    // their endpoints are split into separate columns below.
+    let mut order: Vec<(usize, usize, usize)> = back_edges
+        .iter()
+        .map(|&(idx, from, to)| {
+            let (left, right) = (center(from).min(center(to)), center(from).max(center(to)));
+            (right - left, left, idx)
+        })
+        .collect();
+    order.sort_unstable();
+    let mut rows: HashMap<usize, usize> = HashMap::new();
+    let mut placed: Vec<(usize, usize, usize)> = Vec::new();
+    for (_, left, idx) in order {
+        let Some(&(_, from, to)) = back_edges.iter().find(|(edge_idx, _, _)| *edge_idx == idx)
+        else {
+            continue;
+        };
+        let right = center(from).max(center(to));
+        let mut gutter_y = from.bottom_y().max(to.bottom_y()) + spacing.row_spacing.max(2);
+        for _ in 0..64 {
+            if let Some(&(border_y, _, _)) = borders.iter().find(|(border_y, b_left, b_right)| {
+                border_y.abs_diff(gutter_y) <= 1 && *b_left <= right + 1 && left <= b_right + 1
+            }) {
+                gutter_y = border_y + 2;
+                continue;
+            }
+            if placed
+                .iter()
+                .any(|&(row, p_left, p_right)| row == gutter_y && p_left < right && left < p_right)
+            {
+                gutter_y += 2;
+                continue;
+            }
+            break;
+        }
+        placed.push((gutter_y, left, right));
+        rows.insert(idx, gutter_y);
+    }
+
+    // Columns second. At a node, routes heading left sit on its left side and
+    // routes heading right on its right side; within a side the lower (outer)
+    // loop takes the outer column so it never crosses an inner loop's run.
+    let mut endpoints: HashMap<&str, Vec<CycleEndpoint>> = HashMap::new();
+    for &(idx, from, to) in &back_edges {
+        let row = rows.get(&idx).copied().unwrap_or(0);
+        for (owner, other, is_exit) in [(from, to, true), (to, from, false)] {
+            let heads_right = center(other) > center(owner);
+            let depth = (row * 4096 + center(owner).abs_diff(center(other))) as isize;
+            let outer_first = if heads_right { -depth } else { depth };
+            endpoints.entry(owner.id.as_str()).or_default().push((
+                (heads_right, outer_first, idx),
+                idx,
+                is_exit,
+            ));
+        }
+    }
+    let mut columns: HashMap<(usize, bool), usize> = HashMap::new();
+    let mut unsplittable = false;
+    for (node_id, mut ends) in endpoints {
+        let Some(owner) = node(node_id) else {
+            continue;
+        };
+        ends.sort_unstable();
+        let count = ends.len();
+        let usable = owner.width.saturating_sub(4);
+        let step = if count < 2 {
+            0
+        } else if (count - 1) * 2 <= usable {
+            2
+        } else {
+            0
+        };
+        // Separate rows over one shared column cross each other; a node that
+        // cannot split its endpoints keeps every back edge on the default lane.
+        unsplittable |= count > 1 && step == 0;
+        let start = center(owner).saturating_sub((count - 1) * step / 2);
+        for (position, (_, idx, is_exit)) in ends.into_iter().enumerate() {
+            columns.insert((idx, is_exit), start + position * step);
+        }
+    }
+
+    for &(idx, from, to) in &back_edges {
+        let Some(&gutter_y) = rows.get(&idx) else {
+            continue;
+        };
+        lanes.insert(
+            idx,
+            HorizontalCycleLane {
+                from_x: columns.get(&(idx, true)).copied().unwrap_or(center(from)),
+                to_x: columns.get(&(idx, false)).copied().unwrap_or(center(to)),
+                gutter_y,
+            },
+        );
+    }
+
+    // A back edge whose planned route would cross an unrelated box belongs to
+    // a layout the gutter cannot fix; extra lanes would only add clutter, so
+    // keep the default geometry for every back edge.
+    let crosses_a_box = back_edges.iter().any(|&(idx, from, to)| {
+        let Some(lane) = lanes.get(&idx) else {
+            return false;
+        };
+        let (left, right) = (lane.from_x.min(lane.to_x), lane.from_x.max(lane.to_x));
+        graph
+            .nodes
+            .iter()
+            .filter(|other| other.id != from.id && other.id != to.id)
+            .any(|other| {
+                let (x0, x1) = (other.x, other.x + other.width);
+                let (y0, y1) = (other.y, other.bottom_y());
+                let leg =
+                    |x: usize, top: usize| (x0..x1).contains(&x) && top < y1 && y0 <= lane.gutter_y;
+                leg(lane.from_x, from.bottom_y())
+                    || leg(lane.to_x, to.bottom_y())
+                    || ((y0..y1).contains(&lane.gutter_y) && x0 <= right && left < x1)
+            })
+    });
+    if crosses_a_box || unsplittable {
+        lanes.clear();
+    }
+    lanes
 }
 
 // ============================================================================

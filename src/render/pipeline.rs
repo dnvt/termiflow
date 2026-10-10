@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::canvas::{self, Canvas};
 use super::critic::{self, analyze, emit_debug_report};
-use super::cycle::{self, route_cycle_edge};
+use super::cycle::{self, route_cycle_edge_on_lane};
 use super::edge::{
     database_terminal_target_id, plan_boundary_fan_in_scene, plan_bt_multi_entry_scene,
     plan_bt_parallel_scene, plan_bt_parallel_sibling_scene, plan_bt_sibling_scene,
@@ -118,6 +118,10 @@ pub(super) fn render_with_feedback_with_contract(
     height = height
         .max(max_bottom.saturating_add(1).min(max_canvas_height))
         .max(1);
+    let cycle_lanes = cycle::plan_horizontal_cycle_lanes(graph, &config.spacing);
+    if let Some(lowest_lane) = cycle_lanes.values().map(|lane| lane.gutter_y).max() {
+        height = height.max(lowest_lane.saturating_add(2).min(max_canvas_height));
+    }
 
     let portals_enabled = !context.compatibility.disable_portals;
     let node_rects = node_rects_from_graph(graph);
@@ -279,7 +283,7 @@ pub(super) fn render_with_feedback_with_contract(
 
     // Group forward edges by source node for expanded routing
     let mut edges_by_source: HashMap<&str, Vec<&Node>> = HashMap::new();
-    let mut cycle_edges: Vec<(String, &Node, &Node)> = Vec::new();
+    let mut cycle_edges: Vec<(usize, String, &Node, &Node)> = Vec::new();
     let mut sources_with_edges: HashSet<&str> = HashSet::new();
 
     // First pass: group edges by source (skip edges that already have routed paths)
@@ -292,7 +296,7 @@ pub(super) fn render_with_feedback_with_contract(
         };
 
         if e.is_back_edge {
-            cycle_edges.push((edge_owner_id(edge_idx, e), from, to));
+            cycle_edges.push((edge_idx, edge_owner_id(edge_idx, e), from, to));
             continue;
         }
 
@@ -472,8 +476,8 @@ pub(super) fn render_with_feedback_with_contract(
     }
 
     // Draw back-edges (cycle edges) that were not pre-routed.
-    for (owner_id, from, to) in cycle_edges {
-        route_cycle_edge(
+    for (edge_idx, owner_id, from, to) in cycle_edges {
+        route_cycle_edge_on_lane(
             from,
             to,
             &mut canvas,
@@ -481,6 +485,7 @@ pub(super) fn render_with_feedback_with_contract(
             &config.spacing,
             graph.direction,
             Some(owner_id.as_str()),
+            cycle_lanes.get(&edge_idx).copied(),
         );
     }
 
@@ -755,10 +760,11 @@ pub(super) fn render_with_feedback_with_contract(
     // with the same junction a forward exit gets, but only when the border
     // cell is still plain and the route really continues right outside it.
     let mut back_exits: Vec<(&str, usize, usize, char)> = Vec::new();
-    for edge in graph
+    for (edge_idx, edge) in graph
         .edges
         .iter()
-        .filter(|edge| edge.is_back_edge && edge.from != edge.to)
+        .enumerate()
+        .filter(|(_, edge)| edge.is_back_edge && edge.from != edge.to)
     {
         let Some(from) = graph_index.node_by_name(&edge.from) else {
             continue;
@@ -768,7 +774,9 @@ pub(super) fn render_with_feedback_with_contract(
         }
         let exit = match graph.direction {
             Direction::LR | Direction::RL => {
-                let x = from.x + from.width / 2;
+                let x = cycle_lanes
+                    .get(&edge_idx)
+                    .map_or(from.x + from.width / 2, |lane| lane.from_x);
                 let border_y = from.bottom_y().saturating_sub(1);
                 (canvas::is_horizontal(canvas.get(x, border_y), &chars)
                     && canvas::is_vertical(canvas.get(x, from.bottom_y()), &chars))

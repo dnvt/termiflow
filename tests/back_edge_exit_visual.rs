@@ -43,3 +43,51 @@ fn horizontal_back_edge_leaves_its_source_through_a_bottom_junction() {
         }
     }
 }
+
+fn unicode_frames(input: &str) -> Vec<String> {
+    [false, true]
+        .into_iter()
+        .map(|optimized| {
+            termiflow::render_with_feedback(
+                input,
+                RenderOptions::new()
+                    .with_style(BaseStyle::Unicode)
+                    .with_optimize_render(optimized),
+            )
+            .expect("render")
+            .output
+        })
+        .collect()
+}
+
+#[test]
+fn adjacent_horizontal_back_edges_keep_separate_gutter_loops() {
+    for direction in ["LR", "RL"] {
+        let input = format!("graph {direction}\nA --> B --> C --> D\nB --> A\nC --> B\nD --> C\n");
+        for frame in unicode_frames(&input) {
+            assert!(
+                !frame.contains('┴') && !frame.contains('┼'),
+                "each back edge needs its own loop; a junction in the gutter merges \
+                 them into a false fan-out ({direction}):\n{frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn horizontal_back_edge_gutter_does_not_run_along_a_subgraph_border() {
+    let input = "graph LR
+    In[Input] --> P1
+    subgraph Pipe [Pipe]
+        P1[Parse] --> P2[Check]
+    end
+    P2 --> Out[Output] --> Log[(Log)]
+    Out --> P1
+";
+    for frame in unicode_frames(input) {
+        assert!(
+            !frame.contains('┴'),
+            "the Output -> Parse back edge must not merge into the Pipe border:\n{frame}"
+        );
+    }
+}
