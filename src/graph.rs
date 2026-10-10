@@ -525,6 +525,20 @@ impl NodeShape {
     pub(crate) fn incoming_edge_clearance(self, direction: Direction) -> usize {
         usize::from(self == NodeShape::Asymmetric && direction == Direction::LR)
     }
+
+    /// Whether the top and bottom borders are flat runs, so a vertical edge may
+    /// land anywhere inside them rather than only at the centre.
+    pub(crate) fn has_flat_vertical_entry(self) -> bool {
+        matches!(
+            self,
+            NodeShape::Rectangle
+                | NodeShape::Rounded
+                | NodeShape::Stadium
+                | NodeShape::Subroutine
+                | NodeShape::Database
+                | NodeShape::Asymmetric
+        )
+    }
 }
 
 impl Graph {

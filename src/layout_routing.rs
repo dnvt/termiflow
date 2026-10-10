@@ -1115,6 +1115,30 @@ pub(super) fn edge_exit_point(rect: Rect, direction: Direction) -> Point {
     }
 }
 
+/// Keep a single-entry vertical route straight when its source lane already lies
+/// inside the target's flat entry edge: move `end` to the lane instead of
+/// jogging one to three cells sideways just above the arrowhead.
+pub(super) fn straight_entry_end(
+    start: Point,
+    end: Point,
+    rect: Rect,
+    direction: Direction,
+    shape: NodeShape,
+) -> Point {
+    const MAX_OFFSET: usize = 3;
+    if matches!(direction, Direction::TD | Direction::TB | Direction::BT)
+        && shape.has_flat_vertical_entry()
+        && start.x != end.x
+        && start.x.abs_diff(end.x) <= MAX_OFFSET
+        && start.x >= rect.x + 2
+        && start.x + 3 <= rect.x + rect.width
+    {
+        Point::new(start.x, end.y)
+    } else {
+        end
+    }
+}
+
 pub(super) fn edge_entry_point_for_shape(
     rect: Rect,
     direction: Direction,
@@ -1139,5 +1163,35 @@ pub(super) fn edge_entry_point_for_shape(
             rect.x + rect.width + shape_clearance,
             rect.y + rect.height / 2,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::straight_entry_end;
+    use crate::geom::{Point, Rect};
+    use crate::graph::{Direction, NodeShape};
+
+    #[test]
+    fn straight_entry_end_moves_only_small_offsets_inside_flat_edges() {
+        let straight = |rect: Rect, start_x, direction, shape| {
+            let end = Point::new(rect.x + rect.width / 2, 19);
+            straight_entry_end(Point::new(start_x, 5), end, rect, direction, shape).x
+        };
+        let wide = Rect::new(10, 20, 15, 3);
+        let narrow = Rect::new(10, 20, 7, 3);
+
+        assert_eq!(straight(wide, 15, Direction::TD, NodeShape::Rectangle), 15);
+        assert_eq!(straight(wide, 20, Direction::BT, NodeShape::Database), 20);
+        // Beyond the offset limit, next to a corner, or on a pointed shape the
+        // centred entry stays.
+        assert_eq!(straight(wide, 21, Direction::TD, NodeShape::Rectangle), 17);
+        assert_eq!(straight(wide, 13, Direction::TD, NodeShape::Rectangle), 17);
+        assert_eq!(
+            straight(narrow, 15, Direction::TD, NodeShape::Rectangle),
+            13
+        );
+        assert_eq!(straight(wide, 15, Direction::TD, NodeShape::Diamond), 17);
+        assert_eq!(straight(wide, 15, Direction::LR, NodeShape::Rectangle), 17);
     }
 }

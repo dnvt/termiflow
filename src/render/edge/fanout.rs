@@ -7,7 +7,7 @@ use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
 use super::super::edge_policy::{
-    td_single_incoming_route_x, td_single_outgoing_route_x, title_safe_td_entry_x,
+    straight_entry_x, td_single_incoming_route_x, td_single_outgoing_route_x, title_safe_td_entry_x,
 };
 use super::super::fallback_route::FallbackRoutePlan;
 use super::super::semantic::{CellOwnerKind, CellRole};
@@ -531,6 +531,16 @@ pub fn route_divergent_edges(
         };
 
         let (mut arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+        // Nested boundary chains pick their own portal lanes, so only routes that
+        // cross at most one subgraph border can promise a straight shaft here.
+        let (exits, enters) = graph.edge_boundary_crossings(&from.id, &target.id);
+        if let Some(lane_x) = (exits.len() + enters.len() <= 1)
+            .then(|| straight_entry_x(from, target, stem_start_x, arrow_x, arrow_y, graph))
+            .flatten()
+        {
+            arrow_x = lane_x;
+            target_x = lane_x;
+        }
 
         if matches!(direction, Direction::TD | Direction::TB) {
             let from_sg = graph.get_node_subgraph(&from.id);
@@ -543,7 +553,7 @@ pub fn route_divergent_edges(
                     target_x = transaction_x;
                 }
             }
-            let cross_arrow_x = if from_sg != to_sg {
+            let mut cross_arrow_x = if from_sg != to_sg {
                 td_complex_title_portal_entry_x(from, target, stem_start_x, arrow_y, graph)
                     .or_else(|| td_single_incoming_route_x(from, target, arrow_x, arrow_y, graph))
                     .unwrap_or_else(|| {
@@ -564,7 +574,7 @@ pub fn route_divergent_edges(
                     target,
                     stem_start_x,
                     stem_start_y,
-                    cross_arrow_x,
+                    &mut cross_arrow_x,
                     arrow_y,
                     canvas,
                     style,

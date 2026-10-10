@@ -6,7 +6,9 @@ use crate::orientation::OrientedCoords;
 use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
-use super::super::edge_policy::{td_single_incoming_route_x, title_safe_td_entry_x};
+use super::super::edge_policy::{
+    straight_entry_x, td_single_incoming_route_x, title_safe_td_entry_x,
+};
 use super::super::fallback_route::{
     FallbackAxis, FallbackRoutePlan, FallbackSegment, PortalEntryDecision,
 };
@@ -801,13 +803,14 @@ fn route_td_sibling_corridor(
     to: &Node,
     stem_start_x: usize,
     stem_start_y: usize,
-    arrow_x: usize,
+    final_arrow_x: &mut usize,
     arrow_y: usize,
     canvas: &mut Canvas,
     style: &StyleChars,
     graph: &Graph,
     owner: Option<RouteOwner<'_>>,
 ) -> bool {
+    let arrow_x = *final_arrow_x;
     let Some((source, target)) = direct_td_sibling_pair(graph, from, to) else {
         return false;
     };
@@ -871,6 +874,14 @@ fn route_td_sibling_corridor(
     };
     let target_lane = td_sibling_portal_x(graph, &from.id, &to.id, arrow_x, graph.direction)
         .unwrap_or(preferred_target_lane);
+    // A target lane inside the receiving node's flat entry edge lands straight.
+    let arrow_x = if target_lane != arrow_x
+        && straight_entry_x(from, to, target_lane, arrow_x, arrow_y, graph).is_some()
+    {
+        target_lane
+    } else {
+        arrow_x
+    };
     // A jogged target lane needs one clean row above the arrow so its
     // horizontal leg cannot touch the receiving node's top corner. The
     // aligned tight case may share the arrow row because it has no jog at all.
@@ -950,6 +961,7 @@ fn route_td_sibling_corridor(
         return false;
     }
 
+    *final_arrow_x = arrow_x;
     lower_td_fallback_plan(plan, canvas, style, owner);
     true
 }
@@ -1507,13 +1519,14 @@ pub(super) fn route_cross_subgraph_td(
     to: &Node,
     stem_start_x: usize,
     stem_start_y: usize,
-    arrow_x: usize,
+    final_arrow_x: &mut usize,
     arrow_y: usize,
     canvas: &mut Canvas,
     style: &StyleChars,
     graph: &Graph,
     owner: Option<RouteOwner<'_>>,
 ) -> bool {
+    let arrow_x = *final_arrow_x;
     let debug_timing = crate::runtime::current().diagnostics.timing;
     let from_sg = graph.get_node_subgraph(&from.id);
     let to_sg = graph.get_node_subgraph(&to.id);
@@ -1603,7 +1616,7 @@ pub(super) fn route_cross_subgraph_td(
         to,
         stem_start_x,
         stem_start_y,
-        arrow_x,
+        final_arrow_x,
         arrow_y,
         canvas,
         style,
@@ -1781,6 +1794,17 @@ pub(super) fn route_cross_subgraph_td(
             );
         }
 
+        // When the portal lane already lies inside the target's flat entry edge,
+        // land the arrow on that lane instead of jogging back to the centre.
+        let arrow_x = if transaction_x.is_none()
+            && current_x != arrow_x
+            && straight_entry_x(from, to, current_x, arrow_x, arrow_y, graph).is_some()
+        {
+            *final_arrow_x = current_x;
+            current_x
+        } else {
+            arrow_x
+        };
         let mut bridge_y = td_title_safe_entry_y(sg).max(current_y).min(arrow_y);
         if transaction_x.is_some() {
             bridge_y = arrow_y;
