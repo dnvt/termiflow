@@ -4114,6 +4114,15 @@ pub(super) fn resolve_subgraph_envelopes(
         adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
     }
 
+    // Earlier passes move nodes independently (envelope eviction, recentring,
+    // corridor reservation) and can stack two boxes on the same cells, which
+    // hides one node entirely. Separate any remaining collision last.
+    if resolve_node_collisions(input.graph, placement, &subgraph_envelopes) {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
     subgraph_envelopes
 }
 
@@ -4480,6 +4489,102 @@ fn enforce_horizontal_foreign_node_clearance(
                 .unwrap_or(0),
         );
     }
+}
+
+/// Move nodes that overlap an earlier node along the cross (non-rank) axis
+/// until they sit on free cells with a one-cell gutter, never entering a
+/// subgraph envelope that does not own them. Nodes with more edges are
+/// placed first and keep their place, so the lighter node (usually a terminal)
+/// yields and routing around hubs is undisturbed; ties fall back to (rank
+/// axis, cross axis, id), so the result is deterministic. Returns whether any node moved.
+fn resolve_node_collisions(
+    graph: &Graph,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    let horizontal_flow = matches!(graph.direction, Direction::LR | Direction::RL);
+    let rank_axis = |rect: &Rect| if horizontal_flow { rect.x } else { rect.y };
+    let cross_axis = |rect: &Rect| if horizontal_flow { rect.y } else { rect.x };
+    let padded = |rect: Rect| {
+        Rect::new(
+            rect.x.saturating_sub(1),
+            rect.y.saturating_sub(1),
+            rect.width + 2,
+            rect.height + 2,
+        )
+    };
+
+    let mut order: Vec<(String, Rect)> = placement
+        .node_rects
+        .iter()
+        .map(|(id, rect)| (id.clone(), *rect))
+        .collect();
+    let degree = |id: &str| {
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.from == id || edge.to == id)
+            .count()
+    };
+    order.sort_by(|(left_id, left), (right_id, right)| {
+        (
+            std::cmp::Reverse(degree(left_id)),
+            rank_axis(left),
+            cross_axis(left),
+            left_id,
+        )
+            .cmp(&(
+                std::cmp::Reverse(degree(right_id)),
+                rank_axis(right),
+                cross_axis(right),
+                right_id,
+            ))
+    });
+
+    let mut placed: Vec<Rect> = Vec::with_capacity(order.len());
+    let mut moved = false;
+    for (id, rect) in order {
+        if !placed.iter().any(|other| rects_overlap(rect, *other)) {
+            placed.push(rect);
+            continue;
+        }
+        let foreign_envelopes: Vec<Rect> = envelopes
+            .iter()
+            .filter(|(subgraph_id, _)| !graph.is_node_in_subgraph_tree(&id, subgraph_id))
+            .map(|(_, envelope)| envelope.outer)
+            .collect();
+        let mut candidate = rect;
+        let limit = cross_axis(&rect) + placement.node_rects.len() * 64 + 64;
+        while cross_axis(&candidate) < limit {
+            if horizontal_flow {
+                candidate.y += 1;
+            } else {
+                candidate.x += 1;
+            }
+            let clear_of_nodes = !placed
+                .iter()
+                .any(|other| rects_overlap(padded(candidate), *other));
+            let clear_of_groups = !foreign_envelopes
+                .iter()
+                .any(|outer| rects_overlap(candidate, *outer));
+            if clear_of_nodes && clear_of_groups {
+                break;
+            }
+        }
+        let (delta_x, delta_y) = (candidate.x - rect.x, candidate.y - rect.y);
+        if let Some(stored) = placement.node_rects.get_mut(&id) {
+            *stored = candidate;
+        }
+        if let Some(point) = placement.positions.get_mut(&id) {
+            point.x += delta_x;
+            point.y += delta_y;
+        }
+        placement.canvas.width = placement.canvas.width.max(candidate.right());
+        placement.canvas.height = placement.canvas.height.max(candidate.bottom());
+        placed.push(candidate);
+        moved = true;
+    }
+    moved
 }
 
 #[cfg(test)]

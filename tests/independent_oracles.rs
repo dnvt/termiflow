@@ -4869,3 +4869,43 @@ fn boundary_crossing_connectivity_oracle_detects_a_removed_pierce() {
         );
     }
 }
+
+/// Node boxes must never overlap: an overlapped node is invisible, so the
+/// diagram silently loses it (exploration corpus: 24 of 1002 diagrams).
+#[test]
+fn laid_out_nodes_never_overlap() {
+    let cases = [
+        ("weave_lr", "graph LR\n    subgraph S [Weave]\n        a[a]\n        c[c]\n        e[e]\n    end\n    a --> b[b]\n    b --> c\n    c --> d[d]\n    d --> e\n    e --> f[f]\n"),
+        ("nested_cycle_bt", "graph BT\n    Start[Start] --> I\n    subgraph O [Outer]\n        subgraph In [Inner]\n            I[Work]\n        end\n        J[Gate]\n    end\n    I --> K[Feedback]\n    K --> J\n    J --> I\n"),
+        ("long_title_rl", "graph RL\n    E1[Edge] --> n\n    subgraph O [Out]\n        subgraph In [Extremely Long Inner Container Heading Text]\n            n[n]\n        end\n    end\n    n --> E2[Exit]\n"),
+        ("help_center_lr", "flowchart LR\n    subgraph Ticketing [Help Center]\n        Article[(Help Articles)]\n        Search[Article Search]\n        Search --> Article\n    end\n    Visitor((Visitor)) --> Search\n    Search --> Found{Answer found?}\n    Found --> Deflect[Deflected]\n    Found --> Contact[Contact Form]\n    Contact --> Ticket[Create Ticket]\n    Ticket --> Gap[Content Gap Report]\n    Gap --> Article\n"),
+    ];
+    let mut failures = Vec::new();
+    for (name, input) in cases {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            let mut graph = parse(input, false).expect("parse overlap case").graph;
+            let mut config = Config::default();
+            config.composite_style = CompositeStyle::from_base(style);
+            config.spacing = config.spacing.for_direction(graph.direction);
+            measure::measure_graph(&mut graph, &config);
+            let (graph, _) =
+                layout_and_render_with_feedback(graph, config).expect("layout overlap case");
+            for (index, a) in graph.nodes.iter().enumerate() {
+                for b in &graph.nodes[index + 1..] {
+                    let overlap = a.x < b.x + b.width
+                        && b.x < a.x + a.width
+                        && a.y < b.y + b.height
+                        && b.y < a.y + a.height;
+                    if overlap {
+                        failures.push(format!("{name}/{style:?}: {} overlaps {}", a.id, b.id));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "overlapping nodes:\n{}",
+        failures.join("\n")
+    );
+}
