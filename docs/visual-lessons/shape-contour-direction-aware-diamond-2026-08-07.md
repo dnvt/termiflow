@@ -57,3 +57,14 @@ from the review decision.
 - Golden check: H19 intent-bound golden report (private run artifact).
 - Durable review: `thinking/reviews/2026-08-07-h19-shape-contour-complete-corpus-review.md`
 - Durable decision: `decisions/DEC-2026-08-07-h19-shape-contour-direction-aware-diamond.md`
+
+## Amendment 2026-10-10: arrows touch the diamond
+
+The original H19 contract also kept a one-cell clearance between an incoming
+arrowhead and a Decision contour. A 1002-diagram exploration-corpus review
+read that blank cell as a detached arrow in about 60 diagrams, and the
+raw-frame topology audit counted 223 unreached diamond targets. Decisions now
+use the generic one-cell receiver entry like every other shape: the arrowhead
+sits directly against the contour (`───→<  Valid?  >`, `↑` under `╲───╱`).
+The contour ownership rule above is unchanged; the clearance oracle is now a
+touch oracle (`diamond_entry_touch_oracle_covers_direction_style_and_mode_matrix`).

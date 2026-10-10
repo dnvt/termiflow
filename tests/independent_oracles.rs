@@ -42,7 +42,7 @@ fn raw_char_at(frame: &str, x: usize, y: usize) -> Option<char> {
     frame.lines().nth(y)?.chars().nth(x)
 }
 
-fn diamond_entry_clearance_errors(input: &str, style: BaseStyle, optimized: bool) -> Vec<String> {
+fn diamond_entry_touch_errors(input: &str, style: BaseStyle, optimized: bool) -> Vec<String> {
     let mut graph = parse(input, false)
         .expect("parse diamond-entry fixture")
         .graph;
@@ -57,26 +57,17 @@ fn diamond_entry_clearance_errors(input: &str, style: BaseStyle, optimized: bool
         .get_node("Check")
         .expect("diamond-entry fixture target node");
 
-    let (entry, gap) = match graph.direction {
-        termiflow::graph::Direction::TD | termiflow::graph::Direction::TB => (
-            (target.center_x(), target.y.saturating_sub(2)),
-            (target.center_x(), target.y.saturating_sub(1)),
-        ),
-        termiflow::graph::Direction::BT => (
-            (target.center_x(), target.bottom_y().saturating_add(1)),
-            (target.center_x(), target.bottom_y()),
-        ),
-        termiflow::graph::Direction::LR => (
-            (target.x.saturating_sub(2), target.center_y()),
-            (target.x.saturating_sub(1), target.center_y()),
-        ),
-        termiflow::graph::Direction::RL => (
-            (
-                target.x.saturating_add(target.width).saturating_add(1),
-                target.center_y(),
-            ),
-            (target.x.saturating_add(target.width), target.center_y()),
-        ),
+    // The arrow tip sits on the cell directly adjacent to the diamond contour.
+    let entry = match graph.direction {
+        termiflow::graph::Direction::TD | termiflow::graph::Direction::TB => {
+            (target.center_x(), target.y.saturating_sub(1))
+        }
+        // `bottom_y` is already the row just below the box.
+        termiflow::graph::Direction::BT => (target.center_x(), target.bottom_y()),
+        termiflow::graph::Direction::LR => (target.x.saturating_sub(1), target.center_y()),
+        termiflow::graph::Direction::RL => {
+            (target.x.saturating_add(target.width), target.center_y())
+        }
     };
 
     let trace = GeometryTrace::from_graph(&graph);
@@ -116,20 +107,6 @@ fn diamond_entry_clearance_errors(input: &str, style: BaseStyle, optimized: bool
             entry.0, entry.1, entry_meta.role
         ));
     }
-    let Some(gap_meta) = outcome.semantic_frame.get(gap.0, gap.1) else {
-        errors.push(format!(
-            "semantic frame has no gap cell at ({}, {})",
-            gap.0, gap.1
-        ));
-        return errors;
-    };
-    if gap_meta.ch != ' ' || gap_meta.role != termiflow::render::semantic::CellRole::Empty {
-        errors.push(format!(
-            "semantic gap cell at ({}, {}) is {:?}/{:?}, not empty",
-            gap.0, gap.1, gap_meta.ch, gap_meta.role
-        ));
-    }
-
     let min_x = graph
         .nodes
         .iter()
@@ -151,14 +128,6 @@ fn diamond_entry_clearance_errors(input: &str, style: BaseStyle, optimized: bool
     ) != Some(entry_meta.ch)
     {
         errors.push("cropped raw frame disagrees with semantic entry glyph".to_string());
-    }
-    if raw_char_at(
-        &outcome.output,
-        gap.0.saturating_sub(min_x),
-        gap.1.saturating_sub(min_y),
-    ) != Some(' ')
-    {
-        errors.push("cropped raw frame lost the one-cell diamond entry gap".to_string());
     }
 
     errors
@@ -2607,7 +2576,7 @@ fn bt_sibling_chain_scene_clearance_oracle_covers_full_focused_matrix() {
 }
 
 #[test]
-fn diamond_entry_clearance_oracle_covers_direction_style_and_mode_matrix() {
+fn diamond_entry_touch_oracle_covers_direction_style_and_mode_matrix() {
     for direction in ["td", "bt", "lr", "rl"] {
         let input = fs::read_to_string(format!(
             "tests/fixtures/inputs/subgraph_shapes_{direction}.md"
@@ -2616,10 +2585,10 @@ fn diamond_entry_clearance_oracle_covers_direction_style_and_mode_matrix() {
 
         for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
             for optimized in [false, true] {
-                let errors = diamond_entry_clearance_errors(&input, style, optimized);
+                let errors = diamond_entry_touch_errors(&input, style, optimized);
                 assert!(
                     errors.is_empty(),
-                    "diamond entry-clearance oracle failed for {direction} {style:?} optimized={optimized}: {errors:?}"
+                    "diamond entry-touch oracle failed for {direction} {style:?} optimized={optimized}: {errors:?}"
                 );
             }
         }

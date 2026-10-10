@@ -274,14 +274,14 @@ mod tests {
     }
 
     #[test]
-    fn diamond_entry_point_has_one_cell_visual_clearance_in_all_directions() {
+    fn diamond_entry_point_touches_the_contour_in_all_directions() {
         let mut n = make_node("diamond", 10, 5, 6, 3);
         n.shape = NodeShape::Diamond;
 
-        assert_eq!(edge_entry_point(&n, Direction::TD), (13, 3));
-        assert_eq!(edge_entry_point(&n, Direction::BT), (13, 9));
-        assert_eq!(edge_entry_point(&n, Direction::LR), (8, 6));
-        assert_eq!(edge_entry_point(&n, Direction::RL), (17, 6));
+        assert_eq!(edge_entry_point(&n, Direction::TD), (13, 4));
+        assert_eq!(edge_entry_point(&n, Direction::BT), (13, 8));
+        assert_eq!(edge_entry_point(&n, Direction::LR), (9, 6));
+        assert_eq!(edge_entry_point(&n, Direction::RL), (16, 6));
     }
 
     #[test]

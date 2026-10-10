@@ -515,18 +515,15 @@ pub enum Direction {
 impl NodeShape {
     /// Extra outward space required before an incoming arrow reaches a shape.
     ///
-    /// Most contours can accept the generic one-cell target entry. Diamonds
-    /// need one more cell on every side because their visible contour tapers
-    /// toward the center. Mermaid's asymmetric Flag has a left-facing point,
+    /// Most contours, including diamonds, accept the generic one-cell target
+    /// entry so the arrowhead touches the contour (a blank cell before a
+    /// diamond read as a detached arrow in the 2026-10 corpus review). Mermaid's asymmetric Flag has a left-facing point,
     /// so only a left-to-right approach needs the same visual separation.
     /// Database/cylinder contours intentionally use the generic one-cell
     /// entry: an extra shape-specific bridge places a terminal arrowhead before
     /// its final shaft and makes the arrow look detached from the receiver.
     pub(crate) fn incoming_edge_clearance(self, direction: Direction) -> usize {
-        usize::from(
-            self == NodeShape::Diamond
-                || (self == NodeShape::Asymmetric && direction == Direction::LR),
-        )
+        usize::from(self == NodeShape::Asymmetric && direction == Direction::LR)
     }
 }
 
@@ -1900,7 +1897,7 @@ mod tests {
             NodeShape::Asymmetric.incoming_edge_clearance(Direction::BT),
             0
         );
-        assert_eq!(NodeShape::Diamond.incoming_edge_clearance(Direction::RL), 1);
+        assert_eq!(NodeShape::Diamond.incoming_edge_clearance(Direction::RL), 0);
         for direction in [
             Direction::TD,
             Direction::TB,
