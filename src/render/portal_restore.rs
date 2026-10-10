@@ -9,7 +9,37 @@ use super::portal_projection::{
     should_restore_horizontal_border, should_restore_vertical_border, stamp_portal_opening,
     subgraph_title_y, title_span, PortalAxis,
 };
-use super::{canvas, topology, Canvas};
+use super::{canvas, provenance, semantic, topology, Canvas};
+
+/// The edge owner id of a routed edge segment at `(x, y)` when that edge
+/// crosses `subgraph_id`'s boundary.
+fn routed_crossing_owner<'a>(
+    canvas: &'a Canvas,
+    graph: &Graph,
+    subgraph_id: &str,
+    x: usize,
+    y: usize,
+) -> Option<&'a str> {
+    let meta = canvas.get_meta(x, y)?;
+    if meta.owner_kind != semantic::CellOwnerKind::EdgeSegment {
+        return None;
+    }
+    let owner_id = meta.owner_id.as_deref()?;
+    let crosses = graph.edges.iter().enumerate().any(|(index, edge)| {
+        if provenance::edge_owner_id(index, edge) != owner_id {
+            return false;
+        }
+        let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+        exits.contains(&subgraph_id) || enters.contains(&subgraph_id)
+    });
+    crosses.then_some(owner_id)
+}
+
+fn routed_owner_is(canvas: &Canvas, x: usize, y: usize, owner_id: &str) -> bool {
+    canvas
+        .get_meta(x, y)
+        .is_some_and(|meta| meta.owner_id.as_deref() == Some(owner_id))
+}
 
 pub(super) fn restore_subgraph_borders(
     canvas: &mut Canvas,
@@ -134,6 +164,26 @@ pub(super) fn restore_subgraph_borders(
                     || (bottom_y + 1 < canvas.height
                         && is_verticalish(canvas.get(x, bottom_y + 1))));
             if fallback_bottom_claim || bottom_slot_is_used {
+                continue;
+            }
+            // A BT entry without a reserved bottom slot is still a real
+            // crossing when the routed edge that crosses this subgraph owns
+            // the border cell and continues straight through it. Keep it as a
+            // clean pierce; the BT title-row restore below would otherwise
+            // erase it and leave the route detached at the container wall.
+            if matches!(direction, Direction::BT)
+                && bottom_y > 0
+                && bottom_y + 1 < canvas.height
+                && routed_crossing_owner(canvas, graph, &subgraph.id, x, bottom_y).is_some_and(
+                    |edge_id| {
+                        routed_owner_is(canvas, x, bottom_y - 1, edge_id)
+                            && routed_owner_is(canvas, x, bottom_y + 1, edge_id)
+                            && is_verticalish(canvas.get(x, bottom_y - 1))
+                            && is_verticalish(canvas.get(x, bottom_y + 1))
+                    },
+                )
+            {
+                canvas.set(x, bottom_y, chars.edge_v);
                 continue;
             }
             let bottom_existing = canvas.get(x, bottom_y);
