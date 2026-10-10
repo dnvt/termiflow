@@ -648,6 +648,30 @@ pub fn process(command: &[String], cwd: &Path, timeout: Duration) -> ProcessResu
             stderr: b"failed to start process\n".to_vec(),
         };
     };
+    // Drain both pipes while polling: a frame larger than the OS pipe buffer
+    // would otherwise block the child on write, and the wait loop would
+    // report a healthy render as a timeout.
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout_reader = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>),
+    );
+    let stderr_reader = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>),
+    );
     let mut timed_out = false;
     loop {
         match child.try_wait() {
@@ -661,11 +685,12 @@ pub fn process(command: &[String], cwd: &Path, timeout: Duration) -> ProcessResu
             Err(_) => break,
         }
     }
-    let output = child.wait_with_output().unwrap_or_else(|_| Output {
-        status: exit_status(-127),
-        stdout: Vec::new(),
-        stderr: b"failed to collect process output\n".to_vec(),
-    });
+    let status = child.wait().unwrap_or_else(|_| exit_status(-127));
+    let output = Output {
+        status,
+        stdout: stdout_reader.join().unwrap_or_default(),
+        stderr: stderr_reader.join().unwrap_or_default(),
+    };
     let status = if timed_out {
         -124
     } else {
@@ -815,5 +840,20 @@ mod tests {
             validate_identity_ref(Some(&tampered), &identity, &"a".repeat(64), "row identity")
                 .is_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_drains_output_larger_than_the_pipe_buffer() {
+        // A child writing more than the pipe buffer must not be reported as a
+        // timeout because nobody read its stdout while it was running.
+        let command = vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "head -c 262144 /dev/zero".to_owned(),
+        ];
+        let result = process(&command, Path::new("."), Duration::from_secs(10));
+        assert_eq!(result.status, 0);
+        assert_eq!(result.stdout.len(), 262_144);
     }
 }
