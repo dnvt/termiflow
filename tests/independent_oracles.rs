@@ -4716,9 +4716,15 @@ fn boundary_crossing_connectivity_errors_for_frame(
                             break;
                         }
                         let ch = grid.get(cx, cy);
+                        // A leftward scan reads the label back to front.
+                        let text: String = if dx < 0 {
+                            run.chars().rev().collect()
+                        } else {
+                            run.clone()
+                        };
                         if k > 1
                             && connectivity_mask(ch) & (1 << back) != 0
-                            && connectivity_label_matches(graph, &run)
+                            && connectivity_label_matches(graph, &text)
                         {
                             nx = cx;
                             ny = cy;
