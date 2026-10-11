@@ -727,7 +727,7 @@ fn align_td_external_fanout_centers(
         let Some(source_rect) = placement.node_rects.get(&source_id).copied() else {
             continue;
         };
-        let Some(&portal_lane) = envelope.portals.top.iter().next() else {
+        let Some(portal_lane) = sole_lane(&envelope.portals.top) else {
             continue;
         };
         let Some(candidate) = centered_rect_at_x(source_rect, portal_lane) else {
@@ -818,7 +818,7 @@ fn align_td_external_entry_centers(
         let Some(envelope) = envelopes.get(&subgraph.id) else {
             continue;
         };
-        let Some(&portal_lane) = envelope.portals.top.iter().next() else {
+        let Some(portal_lane) = sole_lane(&envelope.portals.top) else {
             continue;
         };
         if envelope.portals.top.len() != 1 {
@@ -1225,6 +1225,17 @@ fn align_td_terminal_entry_receiver_lanes(
     changed
 }
 
+/// The only portal lane on one side of a frame. Portal slots are a hash set,
+/// so with several lanes "the first" would differ from run to run; callers
+/// that need a single lane skip the frame instead.
+fn sole_lane(lanes: &HashSet<usize>) -> Option<usize> {
+    let mut iter = lanes.iter();
+    match (iter.next(), iter.next()) {
+        (Some(&lane), None) => Some(lane),
+        _ => None,
+    }
+}
+
 /// Align a strict terminal external target with the exit portal of a flat,
 /// titled vertical subgraph. A one-cell source/target parity mismatch makes
 /// the generic route emit two adjacent boundary shafts (labeled or not; a
@@ -1253,8 +1264,8 @@ fn align_vertical_external_exit_centers(
             continue;
         };
         let exit_lane = match graph.direction {
-            Direction::TD | Direction::TB => envelope.portals.bottom.iter().next().copied(),
-            Direction::BT => envelope.portals.top.iter().next().copied(),
+            Direction::TD | Direction::TB => sole_lane(&envelope.portals.bottom),
+            Direction::BT => sole_lane(&envelope.portals.top),
             Direction::LR | Direction::RL => None,
         };
         let Some(exit_lane) = exit_lane else {
