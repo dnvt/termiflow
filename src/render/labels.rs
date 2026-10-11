@@ -287,13 +287,15 @@ pub(super) fn draw_edge_label(
                 &[from, to],
                 graph,
             );
-            let can_fit_full_inline = label_width + 3 <= span_width;
+            // Full placement pads the label with a blank on each side and keeps a
+            // shaft cell before the first blank, as the RL placement does.
+            let can_fit_full_inline = label_width + 4 <= span_width;
             // Tight placement keeps one shaft cell on each side: before the
             // arrowhead and after the source or bus turn.
             let can_fit_tight_inline = label_width + 2 <= span_width;
 
             if can_fit_full_inline {
-                let label_start_x = stem_start_x + (span_width - (label_width + 3)) / 2;
+                let label_start_x = stem_start_x + 1 + (span_width - (label_width + 4)) / 2;
 
                 for x in stem_start_x..label_start_x {
                     set_label_shaft(canvas, x, edge_y, style, base_style);

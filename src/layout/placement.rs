@@ -456,24 +456,46 @@ impl LayoutSpacingPolicy {
             // short of an eight-cell label.  The four-cell allowance matches the
             // LR/RL inline label margins and keeps the policy bounded by the
             // public label-width contract.
+            //
+            // A label drawn inline on the run into a single-entry target also
+            // needs a shaft cell between the source side and its leading blank
+            // when the run ends in a marker; boxes narrower than the layer
+            // column already have that cell.
             if has_labels {
-                let widest_label = layer
+                let column_width = layer
+                    .iter()
+                    .map(|&idx| graph.nodes[idx].width)
+                    .max()
+                    .unwrap_or(0);
+                let single_entry = |id: &str| {
+                    graph
+                        .edges
+                        .iter()
+                        .filter(|edge| !edge.is_back_edge && edge.to == id)
+                        .count()
+                        == 1
+                };
+                let reserved = layer
                     .iter()
                     .flat_map(|&idx| {
-                        let source_id = &graph.nodes[idx].id;
+                        let source = &graph.nodes[idx];
+                        let flush = source.width == column_width;
                         graph
                             .edges
                             .iter()
-                            .filter(move |edge| {
-                                !edge.is_back_edge && edge.from.as_str() == source_id.as_str()
+                            .filter(move |edge| !edge.is_back_edge && edge.from == source.id)
+                            .filter_map(move |edge| {
+                                let width =
+                                    crate::display_profile::display_width(edge.label.as_deref()?)
+                                        .min(crate::spacing::MAX_LABEL_WIDTH);
+                                let marked = edge.kind != crate::graph::EdgeKind::Open;
+                                let lead = usize::from(flush && marked && single_entry(&edge.to));
+                                Some(width + 4 + lead)
                             })
-                            .filter_map(|edge| edge.label.as_deref())
-                            .map(crate::display_profile::display_width)
                     })
                     .max()
-                    .unwrap_or(0)
-                    .min(crate::spacing::MAX_LABEL_WIDTH);
-                spacing = spacing.max(widest_label.saturating_add(4));
+                    .unwrap_or(0);
+                spacing = spacing.max(reserved);
             }
 
             // The strict horizontal subgraph fan-in route owns one wall-clear
