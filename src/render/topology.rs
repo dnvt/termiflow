@@ -155,8 +155,26 @@ fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     char_connects_left(right.ch)
 }
 
+/// Whether the ASCII frame corner at `(x, y)` should not count as an arm of the
+/// asking cell, when that cell is a plain straight edge (`plain_run`: `-` with
+/// the corner above or below it, `|` with the corner beside it). An ASCII
+/// corner is a `+`, which joins every direction; read as a route glyph it
+/// would turn an edge merely passing the corner into a junction. Turns and
+/// junctions keep the arm, so routes that already bend at a corner are left
+/// as they are.
+fn is_ascii_frame_corner(canvas: &Canvas, x: usize, y: usize, plain_run: bool) -> bool {
+    plain_run
+        && canvas.get(x, y) == '+'
+        && canvas
+            .get_meta(x, y)
+            .is_some_and(|meta| meta.owner_kind == CellOwnerKind::SubgraphBorder)
+}
+
 fn canvas_connects_up(canvas: &Canvas, x: usize, y: usize) -> bool {
     if y == 0 {
+        return false;
+    }
+    if is_ascii_frame_corner(canvas, x, y - 1, canvas.get(x, y) == '-') {
         return false;
     }
 
@@ -178,6 +196,9 @@ fn canvas_connects_down(canvas: &Canvas, x: usize, y: usize) -> bool {
     if y + 1 >= canvas.height {
         return false;
     }
+    if is_ascii_frame_corner(canvas, x, y + 1, canvas.get(x, y) == '-') {
+        return false;
+    }
 
     match canvas.get_meta(x, y + 1).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
@@ -197,6 +218,9 @@ fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
     if x == 0 {
         return false;
     }
+    if is_ascii_frame_corner(canvas, x - 1, y, canvas.get(x, y) == '|') {
+        return false;
+    }
 
     match canvas.get_meta(x - 1, y).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
@@ -214,6 +238,9 @@ fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
 
 fn canvas_connects_right(canvas: &Canvas, x: usize, y: usize) -> bool {
     if x + 1 >= canvas.width {
+        return false;
+    }
+    if is_ascii_frame_corner(canvas, x + 1, y, canvas.get(x, y) == '|') {
         return false;
     }
 

@@ -912,11 +912,27 @@ pub(super) fn finalize_dedicated_portal_markers(
             || (x + 1 < canvas.width && is_route_neighbor(x + 1, y, canvas))
     };
 
-    let horizontal_border_is_used = |x: usize, y: usize, canvas: &Canvas| {
-        let up = y
+    // A route uses a top or bottom border cell when it reaches it vertically,
+    // or when route cells sit on both sides of it (a turn not drawn yet). A
+    // horizontal run passing along the next row with nothing beyond the
+    // border does not cross.
+    let reaches_vertically = |x: usize, y: usize, canvas: &Canvas| {
+        let route_above = y
             .checked_sub(1)
-            .is_some_and(|yy| is_route_neighbor(x, yy, canvas));
-        let down = y + 1 < canvas.height && is_route_neighbor(x, y + 1, canvas);
+            .is_some_and(|above| is_route_neighbor(x, above, canvas));
+        let route_below = y + 1 < canvas.height && is_route_neighbor(x, y + 1, canvas);
+        let up = route_above
+            && (topology::char_connects_down(canvas.get(x, y - 1))
+                || canvas::is_arrow(canvas.get(x, y - 1)));
+        let down = route_below
+            && (topology::char_connects_up(canvas.get(x, y + 1))
+                || canvas::is_arrow(canvas.get(x, y + 1)));
+        let through = route_above && route_below;
+        (up || through, down || through)
+    };
+
+    let horizontal_border_is_used = |x: usize, y: usize, canvas: &Canvas| {
+        let (up, down) = reaches_vertically(x, y, canvas);
         let left = x
             .checked_sub(1)
             .is_some_and(|xx| is_route_neighbor(xx, y, canvas));
@@ -967,9 +983,20 @@ pub(super) fn finalize_dedicated_portal_markers(
             let Some(meta) = canvas.get_meta(x, y) else {
                 continue;
             };
-            if meta.owner_kind == semantic::CellOwnerKind::PortalOpening
-                && slot_has_route_neighbor(x, y, canvas)
-            {
+            let on_horizontal_border = graph.subgraphs.iter().any(|subgraph| {
+                let bounds = &subgraph.bounds;
+                bounds.is_valid()
+                    && (y == bounds.y || y + 1 == bounds.y + bounds.height)
+                    && x > bounds.x
+                    && x + 1 < bounds.x + bounds.width
+            });
+            let used = if on_horizontal_border {
+                let (up, down) = reaches_vertically(x, y, canvas);
+                up || down
+            } else {
+                slot_has_route_neighbor(x, y, canvas)
+            };
+            if meta.owner_kind == semantic::CellOwnerKind::PortalOpening && used {
                 push_unique_marker(
                     &mut markers,
                     x,
@@ -995,20 +1022,20 @@ pub(super) fn finalize_dedicated_portal_markers(
         };
 
         if let Some(portals) = slots.get(&subgraph.id) {
+            let crossed = |x: usize, y: usize| {
+                let (up, down) = reaches_vertically(x, y, canvas);
+                up || down
+            };
             for &x in &portals.top {
                 let px = clamp_horizontal(bounds, x);
-                if !is_title_protected_cell(px, bounds.y)
-                    && slot_has_route_neighbor(px, bounds.y, canvas)
-                {
+                if !is_title_protected_cell(px, bounds.y) && crossed(px, bounds.y) {
                     push_unique_marker(&mut markers, px, bounds.y, &subgraph.id);
                 }
             }
             let bottom_y = bounds.y + bounds.height.saturating_sub(1);
             for &x in &portals.bottom {
                 let px = clamp_horizontal(bounds, x);
-                if !is_title_protected_cell(px, bottom_y)
-                    && slot_has_route_neighbor(px, bottom_y, canvas)
-                {
+                if !is_title_protected_cell(px, bottom_y) && crossed(px, bottom_y) {
                     push_unique_marker(&mut markers, px, bottom_y, &subgraph.id);
                 }
             }

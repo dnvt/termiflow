@@ -282,7 +282,7 @@ pub(super) fn draw_line_primary(
             let (start, end) = if y1 < y2 { (y1, y2) } else { (y2, y1) };
             for y in start..=end {
                 if let Some(g) = graph {
-                    if is_subgraph_title_cell(g, x1, y) {
+                    if is_subgraph_title_text_cell(g, x1, y) {
                         continue;
                     }
                 }
@@ -327,7 +327,7 @@ pub(super) fn draw_line_secondary(
                 if y != y1 && y != y2 {
                     // Skip corners
                     if let Some(g) = graph {
-                        if is_subgraph_title_cell(g, x1, y) {
+                        if is_subgraph_title_text_cell(g, x1, y) {
                             continue;
                         }
                     }
@@ -336,6 +336,25 @@ pub(super) fn draw_line_secondary(
             }
         }
     }
+}
+
+/// A visible title character (not the padding space around it). A vertical
+/// line may pass through the padding beside a title; skipping that cell would
+/// leave a gap in the line.
+fn is_subgraph_title_text_cell(graph: &Graph, x: usize, y: usize) -> bool {
+    graph.subgraphs.iter().any(|sg| {
+        let (Some(title), true) = (sg.title.as_deref(), sg.bounds.is_valid()) else {
+            return false;
+        };
+        y == subgraph_title_y(&sg.bounds, graph.direction)
+            && crate::graph::subgraph_title_text_span(
+                sg.bounds.x,
+                sg.bounds.width,
+                title,
+                graph.direction,
+            )
+            .is_some_and(|(start, end)| x >= start && x <= end)
+    })
 }
 
 pub(crate) fn is_subgraph_title_cell(graph: &Graph, x: usize, y: usize) -> bool {

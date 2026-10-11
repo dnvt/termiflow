@@ -1439,6 +1439,28 @@ pub fn route_convergent_edges(
             let min_merge = max_exit.saturating_add(2);
             let limit = arrow_primary.saturating_sub(1);
             merge_primary = min_merge.min(limit);
+            // A target inside a frame none of the sources share is entered
+            // through one portal; merge outside that frame, on the row above
+            // its top border, instead of on the border or title band.
+            let entered_top = graph
+                .node_subgraph_chain(&to.id)
+                .into_iter()
+                .filter(|sg_id| {
+                    !visible_sources
+                        .iter()
+                        .any(|source| graph.is_node_in_subgraph_tree(&source.id, sg_id))
+                })
+                .filter_map(|sg_id| graph.get_subgraph(sg_id))
+                .filter(|sg| sg.bounds.is_valid())
+                .map(|sg| sg.bounds.y)
+                .min();
+            if let Some(top) = entered_top {
+                // With no blank row between a source and the frame, merge on
+                // the source exit row itself rather than on the border.
+                if merge_primary >= top && top > max_exit {
+                    merge_primary = top - 1;
+                }
+            }
         }
         Direction::BT => {
             // Merge one row above the source exits.  Using the source-exit row

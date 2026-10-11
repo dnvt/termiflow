@@ -351,6 +351,40 @@ pub(super) fn draw_subgraph_title(
     if title_y >= canvas.height {
         return;
     }
+    let holds_route = |canvas: &Canvas, x: usize| {
+        canvas.get_meta(x, title_y).is_some_and(|meta| {
+            meta.z_index > 0
+                && matches!(
+                    meta.owner_kind,
+                    crate::render::semantic::CellOwnerKind::EdgeSegment
+                        | crate::render::semantic::CellOwnerKind::ArrowHead
+                        | crate::render::semantic::CellOwnerKind::Junction
+                        | crate::render::semantic::CellOwnerKind::CycleEdge
+                        | crate::render::semantic::CellOwnerKind::PortalOpening
+                )
+        })
+    };
+    // A line crossing the title row in the wrapper cell after the title
+    // would touch the last letter; move the title one cell left, into the
+    // free cell before it, so a blank stays between text and line.
+    let trailing_x = start_x + title_fmt.chars().count().saturating_sub(1);
+    let shift_left = title_gutter.leading_extra_padding == 0
+        && title_gutter.trailing_extra_padding == 0
+        && holds_route(canvas, trailing_x)
+        && start_x > rect.x + 1
+        && !holds_route(canvas, start_x - 1)
+        && canvas.get(start_x - 1, title_y) == ' ';
+    if shift_left {
+        // The cell the title leaves behind is its old first wrapper space.
+        let start_x = start_x - 1;
+        for (i, c) in title_fmt.chars().enumerate() {
+            let x = start_x + i;
+            if x < canvas.width && !holds_route(canvas, x) {
+                canvas.set(x, title_y, c);
+            }
+        }
+        return;
+    }
     let visible_title_span = crate::graph::subgraph_title_text_span_with_padding_sides(
         rect.x,
         rect.width,

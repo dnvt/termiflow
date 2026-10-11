@@ -1498,6 +1498,34 @@ fn fanout_entry_point(
     {
         return (trunk_x, entry.1);
     }
+    // A branch dropping down a frame's side wall would run along the wall
+    // and through its corner; enter one column over instead.
+    let before_arrow = match direction {
+        Direction::TD | Direction::TB => entry.1.checked_sub(1),
+        Direction::BT => Some(entry.1 + 1),
+        Direction::LR | Direction::RL => None,
+    };
+    if let Some(y) = before_arrow {
+        let on_side_wall = |x: usize| {
+            graph.subgraphs.iter().any(|sg| {
+                let b = &sg.bounds;
+                b.is_valid()
+                    && (x == b.x || x + 1 == b.x + b.width)
+                    && y >= b.y
+                    && y < b.y + b.height
+            })
+        };
+        if on_side_wall(entry.0) {
+            let inside_target = |x: usize| x > target.x && x + 1 < target.x + target.width;
+            if let Some(x) = [entry.0.checked_sub(1), Some(entry.0 + 1)]
+                .into_iter()
+                .flatten()
+                .find(|&x| inside_target(x) && !on_side_wall(x))
+            {
+                return (x, entry.1);
+            }
+        }
+    }
     entry
 }
 
