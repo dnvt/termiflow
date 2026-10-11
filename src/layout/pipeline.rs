@@ -149,6 +149,16 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
             let envelopes =
                 compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
             let mut shifts: HashMap<String, usize> = HashMap::new();
+            // BT top-level frames that send edges both ways interleave in rank,
+            // so they go side by side instead of one below the other.
+            let mut side_shifts: HashMap<String, usize> = HashMap::new();
+            let sends = |from: &str, to: &str| {
+                input.graph.edges.iter().any(|edge| {
+                    !edge.is_back_edge
+                        && input.graph.is_node_in_subgraph_tree(&edge.from, from)
+                        && input.graph.is_node_in_subgraph_tree(&edge.to, to)
+                })
+            };
 
             // Compute minimum rank for each subgraph to determine "earlier" vs "later"
             let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
@@ -205,6 +215,29 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                         (sg_ids[i].as_str(), env2, env1)
                     };
 
+                    let top_level = |id: &str| {
+                        input
+                            .graph
+                            .get_subgraph(id)
+                            .is_some_and(|subgraph| subgraph.parent_id.is_none())
+                    };
+                    if input.graph.direction == Direction::BT
+                        && top_level(sg_ids[i])
+                        && top_level(sg_ids[j])
+                        && sends(sg_ids[i], sg_ids[j])
+                        && sends(sg_ids[j], sg_ids[i])
+                    {
+                        let required_left = early_env.outer.right().saturating_add(1);
+                        if late_env.outer.x < required_left {
+                            let delta = required_left - late_env.outer.x;
+                            side_shifts
+                                .entry(late_id.to_string())
+                                .and_modify(|d| *d = (*d).max(delta))
+                                .or_insert(delta);
+                        }
+                        continue;
+                    }
+
                     let required_top = early_env.outer.bottom().saturating_add(1);
                     if late_env.outer.y < required_top {
                         let delta = required_top - late_env.outer.y;
@@ -214,6 +247,25 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                             .or_insert(delta);
                     }
                 }
+            }
+
+            if let Some((sg_id, delta)) = side_shifts
+                .iter()
+                .max_by(|(left_id, left_delta), (right_id, right_delta)| {
+                    left_delta
+                        .cmp(right_delta)
+                        .then_with(|| right_id.cmp(left_id))
+                })
+                .map(|(id, d)| (id.clone(), *d))
+            {
+                shift_nodes_in_subgraph_tree_x_signed(
+                    input.graph,
+                    &mut placement.positions,
+                    &mut placement.node_rects,
+                    &sg_id,
+                    delta as isize,
+                );
+                continue;
             }
 
             let Some((sg_id, delta)) = shifts

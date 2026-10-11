@@ -189,7 +189,7 @@ fn bt_sibling_source_between_frame_members_stays_compact() {
         .expect("render")
         .output;
         assert!(
-            frame.lines().count() < 400,
+            frame.lines().count() < 60,
             "BT frame grew to {} rows (optimized={optimized})",
             frame.lines().count()
         );

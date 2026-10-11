@@ -3919,6 +3919,16 @@ pub(super) fn resolve_subgraph_envelopes(
                 if is_nested {
                     continue;
                 }
+                // Frames placed side by side (they send edges both ways) are not
+                // stacked.
+                let both_ways = input.graph.edges.iter().any(|back| {
+                    !back.is_back_edge
+                        && input.graph.is_node_in_subgraph_tree(&back.from, to_sg)
+                        && input.graph.is_node_in_subgraph_tree(&back.to, from_sg)
+                });
+                if both_ways && !rects_overlap_horizontally(from_env.outer, to_env.outer) {
+                    continue;
+                }
                 let required_from_top = to_env.outer.bottom().saturating_add(1);
                 if from_env.outer.y >= required_from_top {
                     continue;
