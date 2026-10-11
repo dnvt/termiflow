@@ -5111,12 +5111,21 @@ fn topology_label_skip(
     for k in 0..64isize {
         let (cx, cy) = (start.0 + dx * k, start.1);
         let ch = grid.get(cx, cy);
-        if k > 0 && (connectivity_mask(ch) & (1 << back) != 0 || matches!(ch, 'o' | '\u{25cb}')) {
+        // A label may itself hold glyph-like ASCII characters (`o`, `x`, `+`),
+        // so the shaft resumes at the first such cell that closes a declared
+        // label; a non-ASCII glyph always ends the run.
+        let ends = connectivity_mask(ch) & (1 << back) != 0 || matches!(ch, 'o' | '\u{25cb}');
+        if k > 0 && ends {
             let mut text: String = run.chars().filter(|c| *c != '\u{0}').collect();
             if dx < 0 {
                 text = text.chars().rev().collect();
             }
-            return connectivity_label_matches(graph, &text).then_some((cx, cy));
+            if connectivity_label_matches(graph, &text) {
+                return Some((cx, cy));
+            }
+            if !ch.is_ascii() {
+                return None;
+            }
         }
         run.push(ch);
     }
@@ -5136,6 +5145,26 @@ fn topology_trace_reads_through_a_label_word_gap_on_a_vertical_shaft() {
         reached.contains("B"),
         "A -> B must trace through the label:\n{frame}"
     );
+}
+
+#[test]
+fn topology_trace_reads_through_a_label_holding_glyph_letters() {
+    for direction in ["LR", "RL"] {
+        let input = format!(
+            "graph {direction}\n    A[Source] -->|tax + fox| B[Target]\n    A -->|ok| C[Other]\n"
+        );
+        let (graph, frame, _) =
+            boundary_crossing_connectivity_errors(&input, BaseStyle::Unicode, false)
+                .expect("render");
+        assert!(frame.contains(" ok "), "{frame}");
+        let grid = ConnectivityGrid::new(&frame);
+        let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+        let reached = topology_reached_nodes(&graph, &grid, origin, "A", false);
+        assert!(
+            reached.contains("B") && reached.contains("C"),
+            "an `o` inside a label is text, not an end marker ({direction}):\n{frame}"
+        );
+    }
 }
 
 #[test]
