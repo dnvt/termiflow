@@ -2969,6 +2969,31 @@ fn shift_nodes_outside_trees_from_rank_td(
     }
 }
 
+/// BT twin of `shift_nodes_outside_trees_from_rank_td`: move every node at or
+/// below `max_rank` down by `delta_y`, except members of the `kept` frames.
+fn shift_nodes_outside_trees_up_to_rank_bt(
+    graph: &Graph,
+    positions: &mut HashMap<String, crate::geom::Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    ranks: &HashMap<String, usize>,
+    max_rank: usize,
+    delta_y: usize,
+    kept: &[String],
+) {
+    for (id, point) in positions.iter_mut() {
+        let Some(rank) = ranks.get(id) else {
+            continue;
+        };
+        if *rank > max_rank || kept.iter().any(|sg| graph.is_node_in_subgraph_tree(id, sg)) {
+            continue;
+        }
+        point.y += delta_y;
+        if let Some(rect) = node_rects.get_mut(id) {
+            rect.y += delta_y;
+        }
+    }
+}
+
 /// Resolve stage-3 subgraph envelopes and placement constraints.
 pub(super) fn resolve_subgraph_envelopes(
     input: &LayoutInput<'_>,
@@ -3725,6 +3750,9 @@ pub(super) fn resolve_subgraph_envelopes(
             }
 
             let mut required_shift_by_rank: HashMap<usize, usize> = HashMap::new();
+            // Rank -> (delta, frames whose members stay) for sources that share
+            // a rank with the lowest members of the frame they feed.
+            let mut outside_source_shift: HashMap<usize, (usize, Vec<String>)> = HashMap::new();
 
             let mut subgraph_max_rank: HashMap<&str, usize> = HashMap::new();
             for sg in &input.graph.subgraphs {
@@ -3802,6 +3830,43 @@ pub(super) fn resolve_subgraph_envelopes(
                         continue;
                     };
                     let delta = required_source_y - from_rect.y;
+                    // When the frame's lowest members share the source's rank,
+                    // a whole-rank shift moves them (and the border) along with
+                    // the source, so the gap reopens every pass. Move only the
+                    // nodes outside the frame instead.
+                    let tree_min_rank = input
+                        .graph
+                        .nodes
+                        .iter()
+                        .filter(|node| input.graph.is_node_in_subgraph_tree(&node.id, sg_id))
+                        .filter_map(|node| placement.ranks.get(&node.id).copied())
+                        .min();
+                    // A source fanning into the frame keeps the old shift: its bus
+                    // legs cannot yet cross nested frame borders from below.
+                    let fans_in = input
+                        .graph
+                        .edges
+                        .iter()
+                        .filter(|other| {
+                            !other.is_back_edge
+                                && other.from == edge.from
+                                && input.graph.is_node_in_subgraph_tree(&other.to, sg_id)
+                        })
+                        .count()
+                        > 1;
+                    // Only a top-level source moves alone; a source inside another
+                    // frame would split that frame.
+                    let top_level = input.graph.get_node_subgraph(&edge.from).is_none();
+                    if tree_min_rank == Some(rank) && !fans_in && top_level {
+                        let entry = outside_source_shift
+                            .entry(rank)
+                            .or_insert_with(|| (0, Vec::new()));
+                        entry.0 = entry.0.max(delta);
+                        if !entry.1.contains(sg_id) {
+                            entry.1.push(sg_id.clone());
+                        }
+                        continue;
+                    }
                     required_shift_by_rank
                         .entry(rank)
                         .and_modify(|d| *d = (*d).max(delta))
@@ -3846,6 +3911,36 @@ pub(super) fn resolve_subgraph_envelopes(
                     .entry(shift_rank)
                     .and_modify(|d| *d = (*d).max(delta))
                     .or_insert(delta);
+            }
+
+            if required_shift_by_rank.is_empty() {
+                if let Some((&rank, (delta_y, kept))) =
+                    outside_source_shift.iter().max_by_key(|(rank, _)| **rank)
+                {
+                    shift_nodes_outside_trees_up_to_rank_bt(
+                        input.graph,
+                        &mut placement.positions,
+                        &mut placement.node_rects,
+                        &placement.ranks,
+                        rank,
+                        *delta_y,
+                        kept,
+                    );
+                    let max_bottom = placement
+                        .node_rects
+                        .values()
+                        .map(|r| r.bottom())
+                        .max()
+                        .unwrap_or(placement.canvas.bottom());
+                    placement.canvas.height = placement.canvas.height.max(max_bottom);
+                    subgraph_envelopes = compute_envelopes(
+                        input.graph,
+                        &placement.node_rects,
+                        config.subgraph_gutter,
+                    );
+                    adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+                    continue;
+                }
             }
 
             let Some((&max_rank, &delta_y)) = required_shift_by_rank.iter().max_by_key(|(r, _)| *r)

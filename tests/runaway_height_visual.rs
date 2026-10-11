@@ -127,3 +127,26 @@ I --> X[Exit]
         "a box corner must not touch a passing line:\n{frame}"
     );
 }
+
+/// BT: a top-level source on the same rank as a frame's lowest member is
+/// moved below the frame on its own, instead of dragging the frame (and its
+/// border) along on every pass.
+#[test]
+fn bt_source_sharing_a_rank_with_frame_members_stays_compact() {
+    let input = "graph BT\n    Ext[Ext] --> t\n    subgraph P [P]\n        pn[pn] --> t\n        subgraph C [C]\n            t[target] --> u[next]\n        end\n    end\n    u --> Ext2[Ext2]\n";
+    for optimized in [false, true] {
+        let frame = termiflow::render_with_feedback(
+            input,
+            RenderOptions::new()
+                .with_style(BaseStyle::Unicode)
+                .with_optimize_render(optimized),
+        )
+        .expect("render")
+        .output;
+        assert!(
+            frame.lines().count() < 60,
+            "BT frame grew to {} rows (optimized={optimized}):\n{frame}",
+            frame.lines().count()
+        );
+    }
+}
