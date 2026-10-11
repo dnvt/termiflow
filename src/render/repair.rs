@@ -554,7 +554,15 @@ fn extend_arrow_shaft(canvas: &mut Canvas, x: usize, y: usize, chars: &StyleChar
         _ => return false,
     };
 
-    if px < canvas.width && py < canvas.height && canvas.get(px, py) == ' ' {
+    // A label drawn across a vertical shaft leaves its own spaces; one that
+    // lands on the shaft column is a word gap, not a missing segment.
+    let label_at = |x: Option<usize>| {
+        x.and_then(|x| canvas.get_meta(x, py))
+            .is_some_and(|meta| meta.owner_kind == CellOwnerKind::EdgeLabel)
+    };
+    let inside_label =
+        shaft == chars.edge_v && label_at(px.checked_sub(1)) && label_at(Some(px + 1));
+    if px < canvas.width && py < canvas.height && canvas.get(px, py) == ' ' && !inside_label {
         canvas.set(px, py, shaft);
         return true;
     }
