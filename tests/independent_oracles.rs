@@ -5069,7 +5069,13 @@ fn topology_label_skip(
     let back = route_identity_opposite(step);
     let (dx, dy) = connectivity_step(step);
     let first = grid.get(start.0, start.1);
-    if first == ' ' {
+    let text_at = |x: isize, y: isize| {
+        let ch = grid.get(x, y);
+        ch != ' ' && connectivity_mask(ch) == 0
+    };
+    // A label across a vertical shaft can put its word gap on the shaft.
+    let word_gap = dy != 0 && text_at(start.0 - 1, start.1) && text_at(start.0 + 1, start.1);
+    if first == ' ' && !word_gap {
         // Labels are padded by one blank on each side of the shaft.
         let after = grid.get(start.0 + dx, start.1 + dy);
         if after == ' ' || connectivity_mask(after) != 0 {
@@ -5115,6 +5121,21 @@ fn topology_label_skip(
         run.push(ch);
     }
     None
+}
+
+#[test]
+fn topology_trace_reads_through_a_label_word_gap_on_a_vertical_shaft() {
+    let input = "graph TD\n    A[Source] -->|ab cd| B[Target]\n";
+    let (graph, frame, _) =
+        boundary_crossing_connectivity_errors(input, BaseStyle::Unicode, false).expect("render");
+    assert!(frame.contains("ab cd"), "{frame}");
+    let grid = ConnectivityGrid::new(&frame);
+    let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+    let reached = topology_reached_nodes(&graph, &grid, origin, "A", false);
+    assert!(
+        reached.contains("B"),
+        "A -> B must trace through the label:\n{frame}"
+    );
 }
 
 #[test]
