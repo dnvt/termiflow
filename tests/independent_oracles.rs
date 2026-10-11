@@ -4492,13 +4492,33 @@ fn connectivity_label_matches(graph: &termiflow::Graph, run: &str) -> bool {
         return false;
     }
     let stem = run.trim_end_matches('…').trim_end_matches("...").trim_end();
-    graph
-        .edges
-        .iter()
-        .filter_map(|edge| edge.label.as_deref())
-        .any(|label| {
-            label == run || (stem.len() < run.len() && !stem.is_empty() && label.starts_with(stem))
-        })
+    // Parallel edges of one kind share a line whose label joins their
+    // distinct labels in source order.
+    let mut labels: Vec<String> = Vec::new();
+    let mut groups: Vec<(&str, &str, termiflow::graph::EdgeKind, Vec<&str>)> = Vec::new();
+    for edge in &graph.edges {
+        let Some(label) = edge.label.as_deref() else {
+            continue;
+        };
+        labels.push(label.to_owned());
+        match groups
+            .iter_mut()
+            .find(|(from, to, kind, _)| *from == edge.from && *to == edge.to && *kind == edge.kind)
+        {
+            Some((_, _, _, parts)) if !parts.contains(&label) => parts.push(label),
+            Some(_) => {}
+            None => groups.push((&edge.from, &edge.to, edge.kind, vec![label])),
+        }
+    }
+    labels.extend(
+        groups
+            .iter()
+            .filter(|(_, _, _, parts)| parts.len() > 1)
+            .map(|(_, _, _, parts)| parts.join(", ")),
+    );
+    labels.iter().any(|label| {
+        label == run || (stem.len() < run.len() && !stem.is_empty() && label.starts_with(stem))
+    })
 }
 
 fn boundary_crossing_connectivity_errors_for_frame(
