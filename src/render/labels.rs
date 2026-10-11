@@ -217,8 +217,7 @@ pub(super) fn draw_edge_label(
                     && label_y < canvas.height
                     && !is_textual(canvas.get(x_pos, label_y))
                 {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+                    set_label_char(canvas, &mut cells, x_pos, label_y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -257,8 +256,7 @@ pub(super) fn draw_edge_label(
                     && label_y < canvas.height
                     && !is_textual(canvas.get(x_pos, label_y))
                 {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+                    set_label_char(canvas, &mut cells, x_pos, label_y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -306,8 +304,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x + 1;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -331,8 +328,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -367,8 +363,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && label_row < canvas.height {
-                        canvas.set(x_pos, label_row, c);
-                        record_label_cell(&mut cells, x_pos, label_row);
+                        set_label_char(canvas, &mut cells, x_pos, label_row, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -390,8 +385,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x + 1;
                 for c in inline_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -448,8 +442,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x + 1;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -475,8 +468,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -511,8 +503,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && label_row < canvas.height {
-                        canvas.set(x_pos, label_row, c);
-                        record_label_cell(&mut cells, x_pos, label_row);
+                        set_label_char(canvas, &mut cells, x_pos, label_row, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -538,8 +529,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x + 1;
                 for c in inline_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -757,8 +747,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x + 1;
             for c in display_label.chars() {
                 if routed_label_cell_is_writable(canvas, x_pos, y, style) {
-                    canvas.set(x_pos, y, c);
-                    record_label_cell(&mut cells, x_pos, y);
+                    set_label_char(canvas, &mut cells, x_pos, y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -779,8 +768,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x;
             for c in display_label.chars() {
                 if routed_label_cell_is_writable(canvas, x_pos, y, style) {
-                    canvas.set(x_pos, y, c);
-                    record_label_cell(&mut cells, x_pos, y);
+                    set_label_char(canvas, &mut cells, x_pos, y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -796,8 +784,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x;
             for c in display_label.chars() {
                 if routed_label_cell_is_writable(canvas, x_pos, y, style) {
-                    canvas.set(x_pos, y, c);
-                    record_label_cell(&mut cells, x_pos, y);
+                    set_label_char(canvas, &mut cells, x_pos, y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -821,8 +808,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x;
             for c in display_label.chars() {
                 if label_row < canvas.height && x_pos < canvas.width {
-                    canvas.set(x_pos, label_row, c);
-                    record_label_cell(&mut cells, x_pos, label_row);
+                    set_label_char(canvas, &mut cells, x_pos, label_row, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -856,8 +842,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x + 1;
             for c in inline_label.chars() {
                 if routed_label_cell_is_writable(canvas, x_pos, y, style) {
-                    canvas.set(x_pos, y, c);
-                    record_label_cell(&mut cells, x_pos, y);
+                    set_label_char(canvas, &mut cells, x_pos, y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -905,8 +890,7 @@ pub(super) fn draw_routed_edge_label(
         let mut x_pos = start_x;
         for c in display_label.chars() {
             if mid_y < canvas.height && x_pos < canvas.width {
-                canvas.set(x_pos, mid_y, c);
-                record_label_cell(&mut cells, x_pos, mid_y);
+                set_label_char(canvas, &mut cells, x_pos, mid_y, c);
             }
             x_pos += display_char_width(c);
         }
@@ -1192,8 +1176,7 @@ pub(super) fn draw_convergent_edge_label(
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+                    set_label_char(canvas, &mut cells, x_pos, label_y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -1208,8 +1191,7 @@ pub(super) fn draw_convergent_edge_label(
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+                    set_label_char(canvas, &mut cells, x_pos, label_y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -1237,8 +1219,7 @@ pub(super) fn draw_convergent_edge_label(
                 let mut x_pos = label_start;
                 for c in display_label.chars() {
                     if routed_label_cell_is_writable(canvas, x_pos, label_y, style) {
-                        canvas.set(x_pos, label_y, c);
-                        record_label_cell(&mut cells, x_pos, label_y);
+                        set_label_char(canvas, &mut cells, x_pos, label_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -1264,8 +1245,7 @@ pub(super) fn draw_convergent_edge_label(
                 let mut x_pos = label_start;
                 for c in display_label.chars() {
                     if routed_label_cell_is_writable(canvas, x_pos, label_y, style) {
-                        canvas.set(x_pos, label_y, c);
-                        record_label_cell(&mut cells, x_pos, label_y);
+                        set_label_char(canvas, &mut cells, x_pos, label_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -1320,6 +1300,26 @@ fn convergent_horizontal_label_start(
         }
     }
     gap_start.min(canvas_width.saturating_sub(label_width))
+}
+
+/// Write and record one label glyph. The extra cells of a wide glyph become
+/// recorded continuations, so a line drawn earlier cannot show through
+/// between glyphs and routes read past them as label text.
+fn set_label_char(
+    canvas: &mut Canvas,
+    cells: &mut Vec<(usize, usize)>,
+    x: usize,
+    y: usize,
+    c: char,
+) {
+    canvas.set(x, y, c);
+    record_label_cell(cells, x, y);
+    for offset in 1..display_char_width(c) {
+        if x + offset < canvas.width {
+            canvas.set(x + offset, y, '\0');
+            record_label_cell(cells, x + offset, y);
+        }
+    }
 }
 
 fn record_label_cell(cells: &mut Vec<(usize, usize)>, x: usize, y: usize) {
