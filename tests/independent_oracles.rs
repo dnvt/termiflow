@@ -4300,10 +4300,6 @@ const BOUNDARY_CONNECTIVITY_KNOWN_DISCONNECTED: &[&str] = &[
     // Mechanism A: external and internal lanes diverge at a border and no jog
     // joins them (two cuts, or a lane shift on the border row).
     "inline:subgraph_single_td_long_title",
-    // Separate family (out of scope here): an edge label overwrites the
-    // subgraph border cell the route must pierce.
-    "subgraph_labels_lr",
-    "subgraph_labels_rl",
 ];
 
 /// Regression inputs that are not (yet) golden fixtures. The TD long-title

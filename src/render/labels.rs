@@ -278,7 +278,9 @@ pub(super) fn draw_edge_label(
                 .flatten();
             run_turn = turn.map(|x| (x, edge_y, 1));
             let stem_start_x = turn.map_or(from.x + from.width, |turn| turn + 1);
-            let span_width = arrow_x.saturating_sub(stem_start_x);
+            let (stem_start_x, run_end_x) =
+                wall_free_run(graph, edge_y, stem_start_x, arrow_x, label_width);
+            let span_width = run_end_x.saturating_sub(stem_start_x);
             let outside_row = pick_outside_horizontal_label_row(
                 canvas,
                 edge_y,
@@ -316,7 +318,7 @@ pub(super) fn draw_edge_label(
                 }
                 x_pos += 1;
 
-                for x in x_pos..arrow_x {
+                for x in x_pos..run_end_x {
                     if x < canvas.width {
                         set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
@@ -335,7 +337,7 @@ pub(super) fn draw_edge_label(
                     x_pos += display_char_width(c);
                 }
 
-                for x in x_pos..arrow_x {
+                for x in x_pos..run_end_x {
                     if x < canvas.width {
                         set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
@@ -397,7 +399,7 @@ pub(super) fn draw_edge_label(
                 }
                 x_pos += 1;
 
-                for x in x_pos..arrow_x {
+                for x in x_pos..run_end_x {
                     if x < canvas.width {
                         set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
@@ -414,6 +416,8 @@ pub(super) fn draw_edge_label(
                 .flatten();
             run_turn = turn.map(|x| (x, edge_y, -1));
             let stem_end_x = turn.unwrap_or(from.x);
+            let (gap_start_x, stem_end_x) =
+                wall_free_run(graph, edge_y, gap_start_x, stem_end_x, label_width);
             let span_width = stem_end_x.saturating_sub(gap_start_x);
             let outside_row = pick_outside_horizontal_label_row(
                 canvas,
@@ -652,8 +656,8 @@ pub(super) fn draw_routed_edge_label(
         } else {
             (seg.to.x, seg.from.x)
         };
-        let gap_start_x = min_x;
-        let gap_end_x = max_x.saturating_add(1);
+        let (gap_start_x, gap_end_x) =
+            wall_free_run(graph, y, min_x, max_x.saturating_add(1), label_width);
         let gap_width = gap_end_x.saturating_sub(gap_start_x);
         let mid_x = gap_start_x + gap_width / 2;
         let centered_start_x = mid_x.saturating_sub(label_width / 2);
@@ -736,6 +740,11 @@ pub(super) fn draw_routed_edge_label(
         } else {
             None
         };
+
+        // Beyond a frame wall the segment keeps the edge's own glyph too.
+        for x in (min_x..gap_start_x).chain(gap_end_x..max_x.saturating_add(1)) {
+            set_routed_label_shaft(canvas, x, y, style.edge_h, style);
+        }
 
         if let Some(start_x) = full_inline_start {
             for x in gap_start_x..start_x {
@@ -1650,4 +1659,55 @@ fn run_on_frame_border(graph: &Graph, (left, right, row): (usize, usize, usize))
             && left < bounds.x + bounds.width
             && right >= bounds.x
     })
+}
+
+/// The stretch of a horizontal label run `[start, end)` on row `y` to write a
+/// label in. When a label centred on the run would cover a subgraph side wall,
+/// the longest stretch between walls that holds the padded label, so the
+/// label never overwrites a wall; otherwise the whole run.
+fn wall_free_run(
+    graph: &Graph,
+    y: usize,
+    start: usize,
+    end: usize,
+    label_width: usize,
+) -> (usize, usize) {
+    let mut walls: Vec<usize> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| {
+            let bounds = &subgraph.bounds;
+            bounds.is_valid() && y > bounds.y && y + 1 < bounds.y + bounds.height
+        })
+        .flat_map(|subgraph| {
+            let bounds = &subgraph.bounds;
+            [bounds.x, bounds.x + bounds.width - 1]
+        })
+        .filter(|&x| x >= start && x < end)
+        .collect();
+    if walls.is_empty() {
+        return (start, end);
+    }
+    // Only narrow when a label centred on the whole run would cover a wall.
+    let centred = start + end.saturating_sub(start).saturating_sub(label_width) / 2;
+    if !walls
+        .iter()
+        .any(|&wall| wall + 1 >= centred && wall <= centred + label_width)
+    {
+        return (start, end);
+    }
+    walls.sort_unstable();
+    walls.dedup();
+    let mut stretches = Vec::new();
+    let mut from = start;
+    for wall in walls {
+        stretches.push((from, wall));
+        from = wall + 1;
+    }
+    stretches.push((from, end));
+    stretches
+        .into_iter()
+        .filter(|&(left, right)| right.saturating_sub(left) >= label_width + 4)
+        .max_by_key(|&(left, right)| (right - left, std::cmp::Reverse(left)))
+        .unwrap_or((start, end))
 }

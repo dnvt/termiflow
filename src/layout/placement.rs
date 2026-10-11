@@ -475,6 +475,15 @@ impl LayoutSpacingPolicy {
                         .count()
                         == 1
                 };
+                let wall_room = self.gutter + 1;
+                // Only an edge into the next layer draws its label in this gap.
+                let next_layer_ids: HashSet<&str> = layers
+                    .get(layer_idx + 1)
+                    .into_iter()
+                    .flatten()
+                    .map(|&idx| graph.nodes[idx].id.as_str())
+                    .collect();
+                let next_layer_ids = &next_layer_ids;
                 let reserved = layer
                     .iter()
                     .flat_map(|&idx| {
@@ -490,7 +499,22 @@ impl LayoutSpacingPolicy {
                                         .min(crate::spacing::MAX_LABEL_WIDTH);
                                 let marked = edge.kind != crate::graph::EdgeKind::Open;
                                 let lead = usize::from(flush && marked && single_entry(&edge.to));
-                                Some(width + 4 + lead)
+                                // Each frame wall crossed takes its gutter and the wall
+                                // itself out of the gap, and the label then sits in the
+                                // stretch beyond the walls with its own shaft cells.
+                                let (exits, entries) =
+                                    graph.edge_boundary_crossings(&edge.from, &edge.to);
+                                let adjacent = next_layer_ids.contains(edge.to.as_str());
+                                // Between sibling frames the frames' own separation
+                                // already widens the gap.
+                                let one_sided = exits.is_empty() != entries.is_empty();
+                                let crossed = if adjacent && one_sided {
+                                    exits.len() + entries.len()
+                                } else {
+                                    0
+                                };
+                                let walls = crossed * wall_room + if crossed > 0 { 2 } else { 0 };
+                                Some(width + 4 + lead + walls)
                             })
                     })
                     .max()
