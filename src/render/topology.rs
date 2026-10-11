@@ -179,11 +179,40 @@ fn is_ascii_frame_corner(canvas: &Canvas, x: usize, y: usize, plain_run: bool) -
         }
 }
 
+/// Whether the ASCII `+` at `(x, y)` already turns or passes through with two
+/// of its other sides, so the plain run on `side` (the asking cell, relative
+/// to the `+`) is not one of its arms: a `-` cannot take a vertical arm, nor
+/// a `|` a horizontal one.
+fn ascii_corner_is_complete(canvas: &Canvas, x: usize, y: usize, side: (isize, isize)) -> bool {
+    if canvas.get(x, y) != '+' {
+        return false;
+    }
+    let arms = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+        .into_iter()
+        .filter(|&step| step != side)
+        .filter(|&(dx, dy)| {
+            let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy)) else {
+                return false;
+            };
+            let ch = canvas.get(nx, ny);
+            match (dx, dy) {
+                (0, -1) => char_connects_down(ch),
+                (0, 1) => char_connects_up(ch),
+                (-1, 0) => char_connects_right(ch),
+                _ => char_connects_left(ch),
+            }
+        })
+        .count();
+    arms >= 2
+}
+
 fn canvas_connects_up(canvas: &Canvas, x: usize, y: usize) -> bool {
     if y == 0 {
         return false;
     }
-    if is_ascii_frame_corner(canvas, x, y - 1, canvas.get(x, y) == '-') {
+    if is_ascii_frame_corner(canvas, x, y - 1, canvas.get(x, y) == '-')
+        || (canvas.get(x, y) == '-' && ascii_corner_is_complete(canvas, x, y - 1, (0, 1)))
+    {
         return false;
     }
 
@@ -205,7 +234,9 @@ fn canvas_connects_down(canvas: &Canvas, x: usize, y: usize) -> bool {
     if y + 1 >= canvas.height {
         return false;
     }
-    if is_ascii_frame_corner(canvas, x, y + 1, canvas.get(x, y) == '-') {
+    if is_ascii_frame_corner(canvas, x, y + 1, canvas.get(x, y) == '-')
+        || (canvas.get(x, y) == '-' && ascii_corner_is_complete(canvas, x, y + 1, (0, -1)))
+    {
         return false;
     }
 
@@ -227,7 +258,9 @@ fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
     if x == 0 {
         return false;
     }
-    if is_ascii_frame_corner(canvas, x - 1, y, canvas.get(x, y) == '|') {
+    if is_ascii_frame_corner(canvas, x - 1, y, canvas.get(x, y) == '|')
+        || (canvas.get(x, y) == '|' && ascii_corner_is_complete(canvas, x - 1, y, (1, 0)))
+    {
         return false;
     }
 
@@ -249,7 +282,9 @@ fn canvas_connects_right(canvas: &Canvas, x: usize, y: usize) -> bool {
     if x + 1 >= canvas.width {
         return false;
     }
-    if is_ascii_frame_corner(canvas, x + 1, y, canvas.get(x, y) == '|') {
+    if is_ascii_frame_corner(canvas, x + 1, y, canvas.get(x, y) == '|')
+        || (canvas.get(x, y) == '|' && ascii_corner_is_complete(canvas, x + 1, y, (-1, 0)))
+    {
         return false;
     }
 

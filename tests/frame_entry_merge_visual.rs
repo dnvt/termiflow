@@ -194,3 +194,31 @@ fn an_ascii_box_corner_under_an_edge_run_is_not_a_junction() {
         "the corners of Source and External under the runs stay plain:\n{frame}"
     );
 }
+
+#[test]
+fn an_ascii_edge_corner_above_an_edge_run_is_not_a_junction() {
+    let input = "%% termiflow: spacing=compact\ngraph TD\nA --> B\nA --> A\nB --> B\nB --> A\n";
+    let frame =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Ascii))
+            .expect("render")
+            .output;
+    let unicode =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Unicode))
+            .expect("render")
+            .output;
+    let row = |text: &str| {
+        text.lines()
+            .find(|line| line.contains("  B  "))
+            .map(str::to_owned)
+            .unwrap_or_else(|| panic!("B is missing:\n{text}"))
+    };
+    let pluses = row(&frame).matches('+').count();
+    let joints = row(&unicode)
+        .chars()
+        .filter(|ch| "┼┬┴├┤┌┐└┘".contains(*ch))
+        .count();
+    assert_eq!(
+        pluses, joints,
+        "ASCII joints on B's row match the Unicode ones:\n{frame}\n{unicode}"
+    );
+}
