@@ -34,6 +34,13 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         &config,
         input.prior_positions.as_ref(),
     );
+    super::centre_polish::polish_vertical_centres(
+        input.graph,
+        &config,
+        &mut placement.positions,
+        &mut placement.node_rects,
+        input.prior_positions.as_ref(),
+    );
     if debug_timing {
         eprintln!(
             "termiflow: placement {:?} (canvas {}x{})",
