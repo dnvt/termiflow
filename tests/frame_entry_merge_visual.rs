@@ -172,3 +172,25 @@ fn an_ascii_frame_corner_does_not_turn_a_passing_edge_into_a_junction() {
         "an edge passing over the frame corner must not become a junction:\n{frame}"
     );
 }
+
+#[test]
+fn an_ascii_box_corner_under_an_edge_run_is_not_a_junction() {
+    let input = "graph BT\nA[Source] --> B\nsubgraph SG [Group]\n    B[Target]\n    C[Other]\nend\nD[External] --> C\n";
+    let frame =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Ascii))
+            .expect("render")
+            .output;
+    let source_top = frame
+        .lines()
+        .position(|line| line.contains("+-----+----+"))
+        .unwrap_or_else(|| panic!("Source top border is missing:\n{frame}"));
+    let run = frame
+        .lines()
+        .nth(source_top - 1)
+        .expect("edge run above Source");
+    assert_eq!(
+        run.trim(),
+        "+--------+       +--------+",
+        "the corners of Source and External under the runs stay plain:\n{frame}"
+    );
+}

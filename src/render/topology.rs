@@ -155,19 +155,28 @@ fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     char_connects_left(right.ch)
 }
 
-/// Whether the ASCII frame corner at `(x, y)` should not count as an arm of the
-/// asking cell, when that cell is a plain straight edge (`plain_run`: `-` with
+/// Whether the ASCII frame or box corner at `(x, y)` should not count as an arm
+/// of the asking cell, when that cell is a plain straight edge (`plain_run`: `-` with
 /// the corner above or below it, `|` with the corner beside it). An ASCII
 /// corner is a `+`, which joins every direction; read as a route glyph it
 /// would turn an edge merely passing the corner into a junction. Turns and
 /// junctions keep the arm, so routes that already bend at a corner are left
 /// as they are.
 fn is_ascii_frame_corner(canvas: &Canvas, x: usize, y: usize, plain_run: bool) -> bool {
+    let owner = |x: usize| canvas.get_meta(x, y).map(|meta| meta.owner_kind);
     plain_run
         && canvas.get(x, y) == '+'
-        && canvas
-            .get_meta(x, y)
-            .is_some_and(|meta| meta.owner_kind == CellOwnerKind::SubgraphBorder)
+        && match owner(x) {
+            Some(CellOwnerKind::SubgraphBorder) => true,
+            // A box corner has its border on one side only; a `+` with border
+            // on both sides is a tee where an edge leaves the box.
+            Some(CellOwnerKind::NodeBorder) => {
+                let left = x > 0 && owner(x - 1) == Some(CellOwnerKind::NodeBorder);
+                let right = owner(x + 1) == Some(CellOwnerKind::NodeBorder);
+                left != right
+            }
+            _ => false,
+        }
 }
 
 fn canvas_connects_up(canvas: &Canvas, x: usize, y: usize) -> bool {
