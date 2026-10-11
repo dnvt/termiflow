@@ -150,3 +150,25 @@ fn bt_source_sharing_a_rank_with_frame_members_stays_compact() {
         );
     }
 }
+
+/// TD: two frames that send edges to each other (their ranks interleave)
+/// stay compact instead of growing until the shift pass limit.
+#[test]
+fn interleaved_frames_stay_compact() {
+    let input = "graph TD\n    subgraph Web [Web Tier]\n        Next[Next.js]\n    end\n    subgraph Api [API Tier]\n        Rails[Rails API]\n        Sidekiq[Sidekiq]\n    end\n    subgraph Stores [Data Stores]\n        PG[(Postgres)]\n        Redis[(Redis)]\n        S3[(S3)]\n    end\n    Next --> Rails\n    Rails --> PG\n    Rails --> Redis\n    Redis --> Sidekiq\n    Sidekiq --> PG\n    Sidekiq --> S3\n";
+    for optimized in [false, true] {
+        let frame = termiflow::render_with_feedback(
+            input,
+            RenderOptions::new()
+                .with_style(BaseStyle::Unicode)
+                .with_optimize_render(optimized),
+        )
+        .expect("render")
+        .output;
+        assert!(
+            frame.lines().count() < 120,
+            "interleaved frames grew to {} rows (optimized={optimized})",
+            frame.lines().count()
+        );
+    }
+}

@@ -3546,6 +3546,20 @@ pub(super) fn resolve_subgraph_envelopes(
                 let Some(&shift_rank) = subgraph_min_rank.get(to_sg) else {
                     continue;
                 };
+                // Interleaved frames (edges both ways): the shift moves every
+                // rank from `shift_rank` on, so when the source frame has
+                // members there it moves too and the gap reopens on every pass.
+                let interleaved = input.graph.edges.iter().any(|back| {
+                    !back.is_back_edge
+                        && input.graph.is_node_in_subgraph_tree(&back.from, to_sg)
+                        && input.graph.is_node_in_subgraph_tree(&back.to, from_sg)
+                });
+                let source_moves_too = interleaved
+                    && subgraph_tree_rank_range(input.graph, &placement.ranks, from_sg)
+                        .is_some_and(|(_, from_max_rank)| from_max_rank >= shift_rank);
+                if source_moves_too {
+                    continue;
+                }
                 let delta = required_to_top - to_env.outer.y;
                 required_shift_by_rank
                     .entry(shift_rank)
