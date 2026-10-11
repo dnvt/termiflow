@@ -5040,6 +5040,18 @@ fn topology_reached_nodes(
             }
             let back = route_identity_opposite(step);
             let next_mask = grid.mask(nx, ny);
+            // A letter that doubles as a glyph (`o`, `x`) followed by more text
+            // starts a label written flush against the shaft.
+            let after = grid.get(nx + dx, ny + dy);
+            let in_word = grid.get(nx, ny).is_ascii_alphabetic()
+                && after != ' '
+                && (connectivity_mask(after) == 0 || after.is_ascii_alphabetic());
+            if in_word {
+                if let Some(resume) = topology_label_skip(graph, grid, (nx, ny), step) {
+                    queue.push_back((resume.0, resume.1, step));
+                    continue;
+                }
+            }
             if matches!(grid.get(nx, ny), 'o' | '\u{25cb}') {
                 // Circle end markers have no arms; they point onward.
                 queue.push_back((nx, ny, step));
