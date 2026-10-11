@@ -4318,10 +4318,18 @@ pub(super) fn resolve_subgraph_envelopes(
     // visible gutter before portal ownership is projected.
     if matches!(input.graph.direction, Direction::LR | Direction::RL) {
         reserve_horizontal_external_target_corridors(input.graph, placement, &subgraph_envelopes);
-        enforce_horizontal_foreign_node_clearance(input.graph, placement, config);
+        enforce_horizontal_foreign_node_clearance(input.graph, placement, config, false);
         subgraph_envelopes =
             compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
         adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    } else {
+        // In TD/BT a top-level node in a frame's rows can sit inside the
+        // frame's columns; the same sideways clearance applies.
+        if enforce_horizontal_foreign_node_clearance(input.graph, placement, config, true) {
+            subgraph_envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
     }
 
     // Earlier passes move nodes independently (envelope eviction, recentring,
@@ -4622,7 +4630,9 @@ fn enforce_horizontal_foreign_node_clearance(
     graph: &Graph,
     placement: &mut Placement,
     config: &CoarseLayoutConfig,
-) {
+    keep_gap: bool,
+) -> bool {
+    let mut moved = false;
     for _ in 0..8 {
         let envelopes = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
         let mut subgraph_shifts: HashMap<String, usize> = HashMap::new();
@@ -4635,12 +4645,40 @@ fn enforce_horizontal_foreign_node_clearance(
             if subgraph.parent_id.is_some() {
                 continue;
             }
+            // With `keep_gap`, a box flush against a side wall also moves.
+            let reach = |outer: Rect| {
+                if keep_gap {
+                    Rect::new(
+                        outer.x.saturating_sub(1),
+                        outer.y,
+                        outer.width + 2,
+                        outer.height,
+                    )
+                } else {
+                    outer
+                }
+            };
 
             for (node_id, node_rect) in &placement.node_rects {
                 if graph.get_node_subgraph(node_id).is_some()
                     || graph.is_node_in_subgraph_tree(node_id, subgraph_id)
-                    || !rects_overlap_horizontally(*node_rect, envelope.outer)
+                    || !rects_overlap_horizontally(*node_rect, reach(envelope.outer))
                     || !rects_overlap_vertically(*node_rect, envelope.outer)
+                {
+                    continue;
+                }
+                // In TD/BT a node linked into the frame stays put: moved beside
+                // the frame, its edges would cross the side wall sideways.
+                // A node on a back edge keeps its place too: its cycle route
+                // is planned around where the layout put it.
+                if keep_gap
+                    && graph.edges.iter().any(|edge| {
+                        (edge.from == *node_id
+                            && graph.is_node_in_subgraph_tree(&edge.to, subgraph_id))
+                            || (edge.to == *node_id
+                                && graph.is_node_in_subgraph_tree(&edge.from, subgraph_id))
+                            || (edge.is_back_edge && (edge.from == *node_id || edge.to == *node_id))
+                    })
                 {
                     continue;
                 }
@@ -4657,7 +4695,17 @@ fn enforce_horizontal_foreign_node_clearance(
                 } else {
                     let required_left = envelope.outer.right().saturating_add(2);
                     let delta = required_left.saturating_sub(node_rect.x);
-                    if delta > 0 {
+                    // In TD/BT an edge leaves its box vertically from the centre
+                    // column; skip the move when that column would run through
+                    // another box on the way to one of the node's neighbours.
+                    let blocked = keep_gap
+                        && vertical_edge_column_blocked(
+                            graph,
+                            &placement.node_rects,
+                            node_id,
+                            node_rect.x + delta + node_rect.width / 2,
+                        );
+                    if delta > 0 && !blocked {
                         external_shifts
                             .entry(node_id.clone())
                             .and_modify(|existing| *existing = (*existing).max(delta))
@@ -4670,6 +4718,7 @@ fn enforce_horizontal_foreign_node_clearance(
         if subgraph_shifts.is_empty() && external_shifts.is_empty() {
             break;
         }
+        moved = true;
 
         for (subgraph_id, delta) in subgraph_shifts {
             shift_nodes_in_subgraph_tree_x_signed(
@@ -4699,6 +4748,7 @@ fn enforce_horizontal_foreign_node_clearance(
                 .unwrap_or(0),
         );
     }
+    moved
 }
 
 /// Move nodes that overlap an earlier node along the cross (non-rank) axis
@@ -4795,6 +4845,47 @@ fn resolve_node_collisions(
         moved = true;
     }
     moved
+}
+
+/// Whether column `x`, between `node_id` and any node it shares an edge
+/// with, passes through a third box.
+fn vertical_edge_column_blocked(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    node_id: &str,
+    x: usize,
+) -> bool {
+    let Some(node) = node_rects.get(node_id) else {
+        return false;
+    };
+    graph
+        .edges
+        .iter()
+        .filter_map(|edge| {
+            if edge.from == node_id {
+                Some(edge.to.as_str())
+            } else if edge.to == node_id {
+                Some(edge.from.as_str())
+            } else {
+                None
+            }
+        })
+        .filter_map(|other| node_rects.get(other).map(|rect| (other, *rect)))
+        .any(|(other, rect)| {
+            let (top, bottom) = if rect.y < node.y {
+                (rect.bottom(), node.y)
+            } else {
+                (node.bottom(), rect.y)
+            };
+            node_rects.iter().any(|(id, between)| {
+                id != node_id
+                    && id != other
+                    && between.x <= x
+                    && x < between.right()
+                    && between.y < bottom
+                    && top < between.bottom()
+            })
+        })
 }
 
 #[cfg(test)]
