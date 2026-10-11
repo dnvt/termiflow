@@ -12,7 +12,8 @@ use super::super::portal_projection::{is_textual, stamp_portal_opening, PortalAx
 use super::super::semantic::CellOwnerKind;
 use super::edge_primitives::{
     adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, edge_entry_candidates,
-    edge_exit_point, get_node_center, hits_foreign_subgraph_border, is_subgraph_title_cell,
+    edge_exit_point, fan_in_source_uses_left_port, get_node_center, hits_foreign_subgraph_border,
+    is_subgraph_title_cell,
 };
 use super::subgraph::{preferred_portal_x, smallest_visual_container};
 use super::{edge_route_owner_id, set_route_char, set_route_edge_char, RouteOwner, ROUTE_Z_INDEX};
@@ -956,6 +957,38 @@ fn route_convergent_from_subgraph_lr(
     true
 }
 
+/// Leave each even-width source that takes its port on the left centre
+/// column (see [`fan_in_source_uses_left_port`]) there, so its line runs straight
+/// into a trunk on that column (`┼`) instead of landing beside it (`┬┴`),
+/// and its exit stays on the column its own entry uses.
+fn align_sources_to_trunk<'a>(
+    source_positions: &[(usize, usize, &'a Node)],
+    trunk_x: usize,
+    direction: Direction,
+    graph: Option<&Graph>,
+) -> Vec<(usize, usize, &'a Node)> {
+    let vertical = matches!(direction, Direction::TD | Direction::TB | Direction::BT);
+    source_positions
+        .iter()
+        .map(|&(x, y, source)| {
+            let left_port = vertical
+                && x == source.center_x()
+                && trunk_x != x
+                && graph.is_some_and(|graph| {
+                    fan_in_source_uses_left_port(source, graph)
+                        // A root moves only onto its trunk; a fanned-out box
+                        // follows the branch its entry takes.
+                        && (trunk_x + 1 == x
+                            || graph
+                                .edges
+                                .iter()
+                                .any(|e| !e.is_back_edge && e.to == source.id))
+                });
+            (if left_port { x - 1 } else { x }, y, source)
+        })
+        .collect()
+}
+
 // Helper: Draw lines from sources to merge point (on primary axis)
 #[allow(clippy::too_many_arguments)]
 fn draw_source_lines_to_merge(
@@ -969,6 +1002,8 @@ fn draw_source_lines_to_merge(
     graph: Option<&Graph>,
     target_id: Option<&str>,
 ) -> (usize, usize) {
+    let aligned = align_sources_to_trunk(source_positions, merge_x, direction, graph);
+    let source_positions = aligned.as_slice();
     // Pre-compute span bounds BEFORE drawing so corner characters are correct
     let mut span_start = usize::MAX;
     let mut span_end = 0;

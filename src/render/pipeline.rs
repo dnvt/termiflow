@@ -716,6 +716,28 @@ pub(super) fn render_with_feedback_with_contract(
             }
         }
 
+        // An even-width box has two centre columns, and a fan-in may leave it
+        // on the left one to run straight into its merge trunk. Mark the stem
+        // that actually leaves the box.
+        if matches!(graph.direction, Direction::TD | Direction::TB)
+            && from.width.is_multiple_of(2)
+            && junction_x == from.center_x()
+            && junction_x > from.x + 1
+        {
+            let below_y = junction_y.saturating_add(1);
+            let leaves = |x: usize| {
+                below_y < canvas.height && {
+                    let c = canvas.get(x, below_y);
+                    canvas::is_vertical(c, &chars)
+                        || canvas::is_junction(c, &chars)
+                        || canvas::is_arrow(c)
+                }
+            };
+            if !leaves(junction_x) && leaves(junction_x - 1) {
+                junction_x -= 1;
+            }
+        }
+
         if graph.direction == Direction::BT {
             let above_y = from.y.saturating_sub(1);
             if above_y < canvas.height && from.x + 2 <= from.x + from.width.saturating_sub(1) {

@@ -13,7 +13,7 @@ use super::super::fallback_route::FallbackRoutePlan;
 use super::super::semantic::{CellOwnerKind, CellRole};
 use super::edge_primitives::{
     adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, edge_exit_point,
-    get_node_center,
+    fan_out_target_uses_left_port, get_node_center, hits_foreign_subgraph_border,
 };
 use super::subgraph::{
     route_cross_subgraph_bt, route_cross_subgraph_td, route_divergent_into_subgraph_bt,
@@ -271,6 +271,12 @@ pub fn route_divergent_edges(
 
     // Calculate source center based on orientation
     let (src_x, src_y) = get_node_center(from);
+    // Decided before any branch is drawn, from the exits already on the canvas.
+    let left_ports: Vec<&str> = visible_targets
+        .iter()
+        .filter(|target| fan_out_target_uses_left_port(from, target, canvas, style, graph))
+        .map(|target| target.id.as_str())
+        .collect();
 
     // Calculate stem start position (edge of source box on primary axis)
     let (stem_start_x, stem_start_y) = edge_exit_point(from, direction);
@@ -504,6 +510,7 @@ pub fn route_divergent_edges(
     {
         if let Some((candidate_x, candidate_y)) = mixed_vertical_fanout_clearance(
             &target_positions,
+            &left_ports,
             junction_x,
             junction_y,
             stem_start_x,
@@ -1055,7 +1062,8 @@ pub fn route_divergent_edges(
     let target_secondaries: Vec<usize> = target_positions
         .iter()
         .map(|(_, _, target)| {
-            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let (arrow_x, arrow_y) =
+                fanout_entry_point(target, src_x, &left_ports, direction, graph);
             coords.secondary_coord(arrow_x, arrow_y)
         })
         .collect();
@@ -1175,7 +1183,7 @@ pub fn route_divergent_edges(
             .map(|e| e.kind)
             .unwrap_or(EdgeKind::Arrow);
         let branch_style = style_for_edge_kind(style, edge_kind);
-        let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+        let (arrow_x, arrow_y) = fanout_entry_point(target, src_x, &left_ports, direction, graph);
         let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
 
         // Draw vertical drop from junction+1 to arrow
@@ -1369,7 +1377,8 @@ pub fn route_divergent_edges(
                 .map(|e| e.kind)
                 .unwrap_or(EdgeKind::Arrow);
             let branch_style = style_for_edge_kind(style, edge_kind);
-            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let (arrow_x, arrow_y) =
+                fanout_entry_point(target, src_x, &left_ports, direction, graph);
             let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
             let (drop_x, drop_y) = coords.with_secondary(junction_x, junction_y, target_secondary);
             let (drop_start_x, drop_start_y) = coords.advance(drop_x, drop_y, 1);
@@ -1449,7 +1458,8 @@ pub fn route_divergent_edges(
                 .map(|edge| edge.kind)
                 .unwrap_or(EdgeKind::Arrow);
             let branch_style = style_for_edge_kind(style, edge_kind);
-            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let (arrow_x, arrow_y) =
+                fanout_entry_point(target, src_x, &left_ports, direction, graph);
             let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
             let drop = coords.with_secondary(junction_x, junction_y, target_secondary);
             let drop_start = coords.advance(drop.0, drop.1, 1);
@@ -1466,6 +1476,29 @@ pub fn route_divergent_edges(
 
         canvas.record_fallback_route_evidence(plan);
     }
+}
+
+/// Where a vertical fan-out branch enters its target.
+///
+/// A target in `left_ports` (see [`fan_out_target_uses_left_port`]) takes a
+/// trunk coming down its left centre column straight into its branch (`┼`)
+/// instead of landing beside it (`┴┬`).
+fn fanout_entry_point(
+    target: &Node,
+    trunk_x: usize,
+    left_ports: &[&str],
+    direction: Direction,
+    graph: &Graph,
+) -> (usize, usize) {
+    let entry = adjusted_edge_entry_point(target, direction, graph);
+    if entry.0 == target.center_x()
+        && trunk_x + 1 == entry.0
+        && left_ports.contains(&target.id.as_str())
+        && !hits_foreign_subgraph_border(target, trunk_x, entry.1, graph)
+    {
+        return (trunk_x, entry.1);
+    }
+    entry
 }
 
 fn push_axis_aligned_plan_segment(
@@ -1487,6 +1520,7 @@ fn push_axis_aligned_plan_segment(
 #[allow(clippy::too_many_arguments)]
 fn mixed_vertical_fanout_clearance(
     target_positions: &[(usize, usize, &Node)],
+    left_ports: &[&str],
     junction_x: usize,
     junction_y: usize,
     stem_start_x: usize,
@@ -1516,7 +1550,8 @@ fn mixed_vertical_fanout_clearance(
     let target_secondaries: Vec<usize> = target_positions
         .iter()
         .map(|(_, _, target)| {
-            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let (arrow_x, arrow_y) =
+                fanout_entry_point(target, stem_start_x, left_ports, direction, graph);
             coords.secondary_coord(arrow_x, arrow_y)
         })
         .collect();
