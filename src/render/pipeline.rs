@@ -18,7 +18,8 @@ use super::edge::{
     route_wide_terminal_fan_in_edges,
 };
 use super::labels::{
-    draw_convergent_edge_label, draw_edge_label, draw_routed_edge_label, pad_string,
+    draw_convergent_edge_label, draw_cycle_edge_label, draw_edge_label, draw_routed_edge_label,
+    format_edge_label_with_limit, pad_string,
 };
 use super::outcome::RenderOutcome;
 use super::portal_projection::{
@@ -118,6 +119,33 @@ pub(super) fn render_with_feedback_with_contract(
     height = height
         .max(max_bottom.saturating_add(1).min(max_canvas_height))
         .max(1);
+    // A labelled back edge writes its label on its cycle route: in TD/BT on
+    // the leg from the source out to the right gutter, which must hold
+    // `─ label ─`; in LR/RL on or just below the bottom gutter run.
+    let labelled_back_edges = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.is_back_edge && edge.from != edge.to && edge.label.is_some());
+    for edge in labelled_back_edges {
+        let label = format_edge_label_with_limit(
+            edge.label.as_deref().unwrap_or_default(),
+            config.max_edge_label_width,
+        );
+        if is_horizontal {
+            height = (height + 1).min(max_canvas_height);
+        } else if let Some(from) = graph.nodes.iter().find(|node| node.id == edge.from) {
+            // The leg crosses the walls of the frames around the source; the
+            // label goes on its last stretch, past the outermost wall.
+            let leg_start = graph
+                .subgraphs
+                .iter()
+                .filter(|subgraph| graph.is_node_in_subgraph_tree(&from.id, &subgraph.id))
+                .map(|subgraph| subgraph.bounds.x + subgraph.bounds.width)
+                .fold(from.x + from.width, usize::max);
+            let needed = leg_start + display_width(&label) + 4 + 2;
+            width = width.max(needed.min(max_canvas_width));
+        }
+    }
     let cycle_lanes = cycle::plan_horizontal_cycle_lanes(graph, &config.spacing);
     if let Some(lowest_lane) = cycle_lanes.values().map(|lane| lane.gutter_y).max() {
         height = height.max(lowest_lane.saturating_add(2).min(max_canvas_height));
@@ -535,7 +563,20 @@ pub(super) fn render_with_feedback_with_contract(
     // Draw edge labels (route-aware for precomputed paths, heuristic for fallback paths)
     canvas.set_write_stage("edge-label");
     let mut edge_label_placements = Vec::new();
-    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+    // Back-edge labels go last so they never displace a forward edge's label.
+    let label_order = graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| !edge.is_back_edge)
+        .chain(
+            graph
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(_, edge)| edge.is_back_edge),
+        );
+    for (edge_idx, edge) in label_order {
         let Some(label) = edge.label.as_deref() else {
             continue;
         };
@@ -563,6 +604,23 @@ pub(super) fn render_with_feedback_with_contract(
                 edge_label_placements.push(placement);
             }
             continue;
+        }
+
+        if edge.is_back_edge {
+            if let Some(placement) = draw_cycle_edge_label(
+                &mut canvas,
+                from,
+                graph,
+                label,
+                graph.direction,
+                &chars,
+                config,
+                edge_idx,
+                edge,
+            ) {
+                edge_label_placements.push(placement);
+                continue;
+            }
         }
 
         // Fall back to heuristic placement for edges without precomputed routes

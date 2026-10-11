@@ -1448,3 +1448,206 @@ fn keep_label_off_routes(
     }
     start_x
 }
+
+/// Draw a back edge's label on the longest straight horizontal run of its
+/// drawn cycle route (in TD/BT the leg out to the right gutter, in LR/RL the
+/// bottom gutter run), padded `─ label ─`. A run too short for that keeps the
+/// label on a free row just below it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_cycle_edge_label(
+    canvas: &mut Canvas,
+    from: &Node,
+    graph: &Graph,
+    label: &str,
+    direction: Direction,
+    style: &StyleChars,
+    config: &Config,
+    edge_idx: usize,
+    edge: &crate::graph::Edge,
+) -> Option<EdgeLabelPlacement> {
+    let owner_id = edge_owner_id(edge_idx, edge);
+    let display_label =
+        format_edge_label_with_limit(label, config.max_edge_label_width.min(canvas.width));
+    let label_width = display_width(&display_label);
+    // Boxes are drawn after routes and labels, so a cell under a box is lost.
+    let under_box = |x: usize, y: usize| {
+        graph.nodes.iter().any(|node| {
+            x >= node.x && x < node.x + node.width && y >= node.y && y < node.y + node.height
+        })
+    };
+    let is_run_cell = |canvas: &Canvas, x: usize, y: usize| {
+        let ch = canvas.get(x, y);
+        (ch == style.back_h || canvas::is_horizontal(ch, style))
+            && !under_box(x, y)
+            && canvas
+                .get_meta(x, y)
+                .is_some_and(|meta| meta.owner_id.as_deref() == Some(owner_id.as_str()))
+    };
+
+    // Longest runs of plain horizontal cells owned by this edge (in TD/BT a tie
+    // goes to the source leg): one the route has to itself, and any run.
+    let source_row = super::cycle::center_y(from);
+    let prefers_source = !matches!(direction, Direction::LR | Direction::RL);
+    let rank = |(left, right, row): (usize, usize, usize)| {
+        (right - left, prefers_source && row == source_row)
+    };
+    let mut best_own: Option<(usize, usize, usize)> = None;
+    let mut best_any: Option<(usize, usize, usize)> = None;
+    for y in 0..canvas.height {
+        let mut x = 0;
+        while x < canvas.width {
+            if !is_run_cell(canvas, x, y) {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < canvas.width && is_run_cell(canvas, x, y) {
+                x += 1;
+            }
+            let run = (start, x - 1, y);
+            if !run_on_frame_border(graph, run)
+                && best_any.is_none_or(|current| rank(run) > rank(current))
+            {
+                best_any = Some(run);
+            }
+            if cycle_label_run_is_own(canvas, graph, run)
+                && best_own.is_none_or(|current| rank(run) > rank(current))
+            {
+                best_own = Some(run);
+            }
+        }
+    }
+    let fits = |(left, right, _): (usize, usize, usize)| right - left + 1 >= label_width + 4;
+    let mut cells = Vec::new();
+
+    // Inline on the route's own run; else on a free row beside it; else, as a
+    // last resort, inline on a run it shares with another line.
+    if let Some(run) = best_own.filter(|&run| fits(run)) {
+        write_inline_cycle_label(canvas, &mut cells, run, &display_label, label_width);
+    } else if let Some((left, right, row)) = best_own {
+        let centre = (left + right) / 2;
+        let start = centre
+            .saturating_sub(label_width / 2)
+            .min(canvas.width.saturating_sub(label_width));
+        // A blank on each side keeps the label clear of nearby lines.
+        let free = |canvas: &Canvas, y: usize| {
+            (start.saturating_sub(1)..start + label_width + 1).all(|x| canvas.get(x, y) == ' ')
+        };
+        if let Some(label_row) = [row + 1, row.saturating_sub(1)]
+            .into_iter()
+            .find(|&y| y != row && y < canvas.height && free(canvas, y))
+        {
+            let mut x_pos = start;
+            for c in display_label.chars() {
+                set_label_char(canvas, &mut cells, x_pos, label_row, c);
+                x_pos += display_char_width(c);
+            }
+        }
+    }
+    if cells.is_empty() {
+        if let Some(run) = best_any.filter(|&run| fits(run)) {
+            write_inline_cycle_label(canvas, &mut cells, run, &display_label, label_width);
+        }
+    }
+
+    build_label_placement(owner_id, cells)
+}
+
+/// Write `─ label ─` centred on a horizontal run that holds it with a shaft
+/// cell and a blank on each side.
+fn write_inline_cycle_label(
+    canvas: &mut Canvas,
+    cells: &mut Vec<(usize, usize)>,
+    (left, right, row): (usize, usize, usize),
+    display_label: &str,
+    label_width: usize,
+) {
+    let run_width = right - left + 1;
+    let blank = left + 1 + (run_width - (label_width + 4)) / 2;
+    canvas.set(blank, row, ' ');
+    let mut x_pos = blank + 1;
+    for c in display_label.chars() {
+        set_label_char(canvas, cells, x_pos, row, c);
+        x_pos += display_char_width(c);
+    }
+    canvas.set(x_pos, row, ' ');
+}
+
+/// Whether a horizontal run of a cycle route belongs to that route alone: it
+/// does not lie on a subgraph border row, and neither end meets a junction
+/// (a tee) where it would merge with another edge's line. Box sides and
+/// arrowheads at an end are the route's own endpoints; a crossing, a frame
+/// wall or a spine shared by back edges is not another edge.
+fn cycle_label_run_is_own(
+    canvas: &Canvas,
+    graph: &Graph,
+    (left, right, row): (usize, usize, usize),
+) -> bool {
+    use super::topology::{
+        char_connects_down, char_connects_left, char_connects_right, char_connects_up,
+    };
+
+    if run_on_frame_border(graph, (left, right, row)) {
+        return false;
+    }
+    let arms = |x: usize, y: usize| {
+        let mut count = 0;
+        if y > 0 && char_connects_down(canvas.get(x, y - 1)) {
+            count += 1;
+        }
+        if char_connects_up(canvas.get(x, y + 1)) {
+            count += 1;
+        }
+        if x > 0 && char_connects_right(canvas.get(x - 1, y)) {
+            count += 1;
+        }
+        if char_connects_left(canvas.get(x + 1, y)) {
+            count += 1;
+        }
+        count
+    };
+    let on_side_wall = |x: usize| {
+        graph.subgraphs.iter().any(|subgraph| {
+            let bounds = &subgraph.bounds;
+            bounds.is_valid()
+                && (x == bounds.x || x + 1 == bounds.x + bounds.width)
+                && row > bounds.y
+                && row + 1 < bounds.y + bounds.height
+        })
+    };
+    let merges = |x: usize| {
+        if on_side_wall(x) {
+            return false;
+        }
+        let ch = canvas.get(x, row);
+        let endpoint = canvas::is_arrow(ch)
+            || canvas.get_meta(x, row).is_some_and(|meta| {
+                matches!(
+                    meta.owner_kind,
+                    CellOwnerKind::NodeBorder | CellOwnerKind::ArrowHead
+                )
+            });
+        // A tee joins another line; a crossing lets the run pass, and a tee on a
+        // column drawn by back edges is their shared spine.
+        let cycle_cell = |y: usize| {
+            canvas
+                .get_meta(x, y)
+                .is_some_and(|meta| meta.owner_kind == CellOwnerKind::CycleEdge)
+        };
+        let spine = (row > 0 && cycle_cell(row - 1)) || cycle_cell(row + 1);
+        !endpoint && !spine && arms(x, row) == 3
+    };
+    !(left > 0 && merges(left - 1)) && !merges(right + 1)
+}
+
+/// Whether a horizontal run lies on a subgraph's top or bottom border row,
+/// where the border is redrawn over anything written into it.
+fn run_on_frame_border(graph: &Graph, (left, right, row): (usize, usize, usize)) -> bool {
+    graph.subgraphs.iter().any(|subgraph| {
+        let bounds = &subgraph.bounds;
+        bounds.is_valid()
+            && (row == bounds.y || row + 1 == bounds.y + bounds.height)
+            && left < bounds.x + bounds.width
+            && right >= bounds.x
+    })
+}
