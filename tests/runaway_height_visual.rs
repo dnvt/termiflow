@@ -172,3 +172,26 @@ fn interleaved_frames_stay_compact() {
         );
     }
 }
+
+/// BT: a source inside a sibling frame whose rank falls between the members
+/// of the frame it feeds stays put instead of dragging those members (and
+/// the frame) down on every pass.
+#[test]
+fn bt_sibling_source_between_frame_members_stays_compact() {
+    let input = "graph BT\n    subgraph L1 [L1]\n        top[top]\n        subgraph L2 [L2]\n            subgraph L3 [L3]\n                deep[deep]\n            end\n        end\n    end\n    subgraph Sib [Sibling]\n        s[s]\n    end\n    deep --> top\n    deep --> s\n    s --> top\n";
+    for optimized in [false, true] {
+        let frame = termiflow::render_with_feedback(
+            input,
+            RenderOptions::new()
+                .with_style(BaseStyle::Unicode)
+                .with_optimize_render(optimized),
+        )
+        .expect("render")
+        .output;
+        assert!(
+            frame.lines().count() < 400,
+            "BT frame grew to {} rows (optimized={optimized})",
+            frame.lines().count()
+        );
+    }
+}

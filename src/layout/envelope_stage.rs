@@ -3881,6 +3881,12 @@ pub(super) fn resolve_subgraph_envelopes(
                         }
                         continue;
                     }
+                    // Members at or below the source's rank would move with it,
+                    // so a whole-rank shift can never open the gap. (A fanning
+                    // source keeps the shift: its bus legs need the room.)
+                    if !fans_in && tree_min_rank.is_some_and(|min_rank| min_rank <= rank) {
+                        continue;
+                    }
                     required_shift_by_rank
                         .entry(rank)
                         .and_modify(|d| *d = (*d).max(delta))
@@ -3920,6 +3926,20 @@ pub(super) fn resolve_subgraph_envelopes(
                 let Some(&shift_rank) = subgraph_max_rank.get(from_sg) else {
                     continue;
                 };
+                // BT twin of the TD interleave guard: the shift moves every
+                // rank up to `shift_rank`, so when the frames send edges both
+                // ways and the target frame has members there it moves too.
+                let interleaved = input.graph.edges.iter().any(|back| {
+                    !back.is_back_edge
+                        && input.graph.is_node_in_subgraph_tree(&back.from, to_sg)
+                        && input.graph.is_node_in_subgraph_tree(&back.to, from_sg)
+                });
+                let target_moves_too = interleaved
+                    && subgraph_tree_rank_range(input.graph, &placement.ranks, to_sg)
+                        .is_some_and(|(to_min_rank, _)| to_min_rank <= shift_rank);
+                if target_moves_too {
+                    continue;
+                }
                 let delta = required_from_top - from_env.outer.y;
                 required_shift_by_rank
                     .entry(shift_rank)
