@@ -1063,7 +1063,7 @@ pub fn route_divergent_edges(
         .iter()
         .map(|(_, _, target)| {
             let (arrow_x, arrow_y) =
-                fanout_entry_point(target, src_x, &left_ports, direction, graph);
+                fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
             coords.secondary_coord(arrow_x, arrow_y)
         })
         .collect();
@@ -1183,7 +1183,8 @@ pub fn route_divergent_edges(
             .map(|e| e.kind)
             .unwrap_or(EdgeKind::Arrow);
         let branch_style = style_for_edge_kind(style, edge_kind);
-        let (arrow_x, arrow_y) = fanout_entry_point(target, src_x, &left_ports, direction, graph);
+        let (arrow_x, arrow_y) =
+            fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
         let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
 
         // Draw vertical drop from junction+1 to arrow
@@ -1378,7 +1379,7 @@ pub fn route_divergent_edges(
                 .unwrap_or(EdgeKind::Arrow);
             let branch_style = style_for_edge_kind(style, edge_kind);
             let (arrow_x, arrow_y) =
-                fanout_entry_point(target, src_x, &left_ports, direction, graph);
+                fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
             let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
             let (drop_x, drop_y) = coords.with_secondary(junction_x, junction_y, target_secondary);
             let (drop_start_x, drop_start_y) = coords.advance(drop_x, drop_y, 1);
@@ -1459,7 +1460,7 @@ pub fn route_divergent_edges(
                 .unwrap_or(EdgeKind::Arrow);
             let branch_style = style_for_edge_kind(style, edge_kind);
             let (arrow_x, arrow_y) =
-                fanout_entry_point(target, src_x, &left_ports, direction, graph);
+                fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
             let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
             let drop = coords.with_secondary(junction_x, junction_y, target_secondary);
             let drop_start = coords.advance(drop.0, drop.1, 1);
@@ -1487,6 +1488,7 @@ fn fanout_entry_point(
     target: &Node,
     trunk_x: usize,
     left_ports: &[&str],
+    bus_y: usize,
     direction: Direction,
     graph: &Graph,
 ) -> (usize, usize) {
@@ -1498,29 +1500,61 @@ fn fanout_entry_point(
     {
         return (trunk_x, entry.1);
     }
-    // A branch dropping down a frame's side wall would run along the wall
-    // and through its corner; enter one column over instead.
-    let before_arrow = match direction {
-        Direction::TD | Direction::TB => entry.1.checked_sub(1),
-        Direction::BT => Some(entry.1 + 1),
+    // A branch dropping down a frame's side wall, through another box or
+    // right beside it would read as part of that wall or box; enter the target
+    // a few columns over instead, keeping a blank column clear. The drop runs
+    // from the bus row (which can itself lie on a frame border) to the arrow.
+    let drop_rows = match direction {
+        Direction::TD | Direction::TB => Some((bus_y, entry.1)),
+        Direction::BT => Some((entry.1 + 1, bus_y + 1)),
         Direction::LR | Direction::RL => None,
     };
-    if let Some(y) = before_arrow {
+    if let Some((top, bottom)) = drop_rows {
         let on_side_wall = |x: usize| {
             graph.subgraphs.iter().any(|sg| {
                 let b = &sg.bounds;
                 b.is_valid()
                     && (x == b.x || x + 1 == b.x + b.width)
-                    && y >= b.y
-                    && y < b.y + b.height
+                    && b.y < bottom
+                    && top < b.y + b.height
             })
         };
-        if on_side_wall(entry.0) {
+        // A self-loop's return leg runs two columns right of its box, so a
+        // self-looping box claims those columns too.
+        let hugs_box = |x: usize| {
+            graph.nodes.iter().any(|node| {
+                let loop_cols = if graph
+                    .edges
+                    .iter()
+                    .any(|e| e.from == node.id && e.to == node.id)
+                {
+                    2
+                } else {
+                    0
+                };
+                node.id != target.id
+                    && node.y < bottom
+                    && top < node.y + node.height
+                    && x + 1 >= node.x
+                    && x <= node.x + node.width + loop_cols
+            })
+        };
+        let blocked = |x: usize| on_side_wall(x) || hugs_box(x);
+        if blocked(entry.0) {
             let inside_target = |x: usize| x > target.x && x + 1 < target.x + target.width;
-            if let Some(x) = [entry.0.checked_sub(1), Some(entry.0 + 1)]
-                .into_iter()
-                .flatten()
-                .find(|&x| inside_target(x) && !on_side_wall(x))
+            if let Some(x) = [
+                entry.0.checked_sub(2),
+                Some(entry.0 + 2),
+                entry.0.checked_sub(1),
+                Some(entry.0 + 1),
+                entry.0.checked_sub(3),
+                Some(entry.0 + 3),
+                entry.0.checked_sub(4),
+                Some(entry.0 + 4),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|&x| inside_target(x) && !blocked(x))
             {
                 return (x, entry.1);
             }
@@ -1578,8 +1612,14 @@ fn mixed_vertical_fanout_clearance(
     let target_secondaries: Vec<usize> = target_positions
         .iter()
         .map(|(_, _, target)| {
-            let (arrow_x, arrow_y) =
-                fanout_entry_point(target, stem_start_x, left_ports, direction, graph);
+            let (arrow_x, arrow_y) = fanout_entry_point(
+                target,
+                stem_start_x,
+                left_ports,
+                junction_y,
+                direction,
+                graph,
+            );
             coords.secondary_coord(arrow_x, arrow_y)
         })
         .collect();

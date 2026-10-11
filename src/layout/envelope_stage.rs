@@ -2876,6 +2876,99 @@ fn reserve_bt_sibling_corridors(
     }
 }
 
+/// Whether shifting every node from `rank` down would also move a member of
+/// `subgraph_id`, so the subgraph border follows the shifted target and the
+/// clearance below that border can never be met.
+fn border_follows_rank_shift(
+    graph: &Graph,
+    ranks: &HashMap<String, usize>,
+    rank: usize,
+    subgraph_id: &str,
+) -> bool {
+    ranks.iter().any(|(id, member_rank)| {
+        *member_rank >= rank && graph.is_node_in_subgraph_tree(id, subgraph_id)
+    })
+}
+
+/// A top-level subgraph with no nested subgraphs. Moving nodes out from under
+/// a nested frame reroutes edges through the frames around or inside it, so
+/// only these frames do it.
+fn is_leaf_subgraph(graph: &Graph, subgraph_id: &str) -> bool {
+    graph
+        .get_subgraph(subgraph_id)
+        .is_some_and(|sg| sg.child_ids.is_empty() && sg.parent_id.is_none())
+}
+
+/// Whether `node` has an edge back into `subgraph_id`: it sits between members
+/// of that subgraph in the flow, so it cannot be moved below the frame
+/// without its edges running back up into it.
+fn feeds_back_into(graph: &Graph, node: &str, subgraph_id: &str) -> bool {
+    graph.edges.iter().any(|e| {
+        !e.is_back_edge && e.from == node && graph.is_node_in_subgraph_tree(&e.to, subgraph_id)
+    })
+}
+
+fn record_outside_shift(
+    shifts: &mut HashMap<usize, (usize, Vec<String>)>,
+    rank: usize,
+    delta: usize,
+    subgraph_id: &str,
+) {
+    let (existing, kept) = shifts.entry(rank).or_insert((0, Vec::new()));
+    *existing = (*existing).max(delta);
+    if !kept.iter().any(|id| id == subgraph_id) {
+        kept.push(subgraph_id.to_owned());
+        kept.sort();
+    }
+}
+
+/// The next vertical shift: the lowest rank any whole-rank rule needs, or,
+/// once those are met, the lowest rank whose external targets must move
+/// below a subgraph while its members stay. Returns the subgraph trees to
+/// keep in place (empty for a whole-rank shift).
+fn next_rank_shift(
+    whole: &HashMap<usize, usize>,
+    outside: &HashMap<usize, (usize, Vec<String>)>,
+) -> Option<(usize, usize, Vec<String>)> {
+    if let Some((&rank, &delta)) = whole.iter().min_by_key(|(rank, _)| *rank) {
+        return Some((rank, delta, Vec::new()));
+    }
+    outside
+        .iter()
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(&rank, (delta, kept))| (rank, *delta, kept.clone()))
+}
+
+/// Shift every node from `min_rank` down, except members of the `kept`
+/// subgraph trees.
+#[allow(clippy::too_many_arguments)]
+fn shift_nodes_outside_trees_from_rank_td(
+    graph: &Graph,
+    positions: &mut HashMap<String, crate::geom::Point>,
+    node_rects: &mut HashMap<String, Rect>,
+    ranks: &HashMap<String, usize>,
+    min_rank: usize,
+    delta_y: usize,
+    kept: &[String],
+) {
+    if kept.is_empty() {
+        shift_nodes_from_rank_td(positions, node_rects, ranks, min_rank, delta_y);
+        return;
+    }
+    for (id, point) in positions.iter_mut() {
+        let Some(rank) = ranks.get(id) else {
+            continue;
+        };
+        if *rank < min_rank || kept.iter().any(|sg| graph.is_node_in_subgraph_tree(id, sg)) {
+            continue;
+        }
+        point.y += delta_y;
+        if let Some(rect) = node_rects.get_mut(id) {
+            rect.y += delta_y;
+        }
+    }
+}
+
 /// Resolve stage-3 subgraph envelopes and placement constraints.
 pub(super) fn resolve_subgraph_envelopes(
     input: &LayoutInput<'_>,
@@ -3270,8 +3363,13 @@ pub(super) fn resolve_subgraph_envelopes(
     if matches!(input.graph.direction, Direction::TD | Direction::TB)
         && !subgraph_envelopes.is_empty()
     {
+        let mut last_shift = None;
         for _ in 0..8 {
             let mut required_shift_by_rank: HashMap<usize, usize> = HashMap::new();
+            // Shifts that must leave the members of these subgraph trees in place.
+            let mut outside_shift_by_rank: HashMap<usize, (usize, Vec<String>)> = HashMap::new();
+            // Ranks a nested frame's exit rule asked to shift as a whole.
+            let mut nested_exit_ranks: Vec<usize> = Vec::new();
 
             let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
             for sg in &input.graph.subgraphs {
@@ -3458,7 +3556,10 @@ pub(super) fn resolve_subgraph_envelopes(
                     let required_target_y = env
                         .outer
                         .bottom()
-                        .saturating_add(if extra_nested_exit_row { 2 } else { 1 });
+                        .saturating_add(if extra_nested_exit_row { 2 } else { 1 })
+                        // A labelled edge needs its own row between the border and
+                        // the target arrow; on the border the label would overwrite it.
+                        .saturating_add(usize::from(edge.label.is_some()));
                     if to_rect.y >= required_target_y {
                         continue;
                     }
@@ -3466,6 +3567,23 @@ pub(super) fn resolve_subgraph_envelopes(
                         continue;
                     };
                     let delta = required_target_y - to_rect.y;
+                    if border_follows_rank_shift(input.graph, &placement.ranks, *rank, subgraph_id)
+                    {
+                        if is_leaf_subgraph(input.graph, subgraph_id) {
+                            if !feeds_back_into(input.graph, &edge.to, subgraph_id) {
+                                record_outside_shift(
+                                    &mut outside_shift_by_rank,
+                                    *rank,
+                                    delta,
+                                    subgraph_id,
+                                );
+                            }
+                            continue;
+                        }
+                        // Nested frames keep the whole-rank shift; the repeat guard
+                        // below stops it once it no longer makes progress.
+                        nested_exit_ranks.push(*rank);
+                    }
                     required_shift_by_rank
                         .entry(*rank)
                         .and_modify(|d| *d = (*d).max(delta))
@@ -3473,17 +3591,27 @@ pub(super) fn resolve_subgraph_envelopes(
                 }
             }
 
-            let Some((&min_rank, &delta_y)) = required_shift_by_rank.iter().min_by_key(|(r, _)| *r)
+            let Some((min_rank, delta_y, kept)) =
+                next_rank_shift(&required_shift_by_rank, &outside_shift_by_rank)
             else {
                 break;
             };
+            // A nested frame's exit shift asked for again means the last one
+            // made no progress: a member moved with the target and the border
+            // followed. Repeating it would only add blank rows.
+            let repeated = last_shift.replace((min_rank, delta_y)) == Some((min_rank, delta_y));
+            if kept.is_empty() && repeated && nested_exit_ranks.contains(&min_rank) {
+                break;
+            }
 
-            shift_nodes_from_rank_td(
+            shift_nodes_outside_trees_from_rank_td(
+                input.graph,
                 &mut placement.positions,
                 &mut placement.node_rects,
                 &placement.ranks,
                 min_rank,
                 delta_y,
+                &kept,
             );
 
             let max_bottom = placement
@@ -3861,9 +3989,52 @@ pub(super) fn resolve_subgraph_envelopes(
     if matches!(input.graph.direction, Direction::TD | Direction::TB)
         && !subgraph_envelopes.is_empty()
     {
+        let mut last_shift = None;
         for _ in 0..8 {
             let mut required_shift_by_rank: HashMap<usize, usize> = HashMap::new();
+            // Shifts that must leave the members of these subgraph trees in place.
+            let mut outside_shift_by_rank: HashMap<usize, (usize, Vec<String>)> = HashMap::new();
+            // Ranks a nested frame's exit rule asked to shift as a whole.
+            let mut nested_exit_ranks: Vec<usize> = Vec::new();
             for (subgraph_id, env) in &subgraph_envelopes {
+                // The envelope passes above can pull a frame back up against
+                // the outside sources entering it; keep the approach rows
+                // the earlier clearance rule reserved (two when several
+                // sources merge into it). Nested frames keep their own padding
+                // rules.
+                if is_leaf_subgraph(input.graph, subgraph_id) {
+                    let entering: Vec<&str> = input
+                        .graph
+                        .edges
+                        .iter()
+                        .filter(|e| !e.is_back_edge)
+                        .filter(|e| !input.graph.is_node_in_subgraph_tree(&e.from, subgraph_id))
+                        .filter(|e| input.graph.is_node_in_subgraph_tree(&e.to, subgraph_id))
+                        .map(|e| e.from.as_str())
+                        .collect();
+                    let mut sources = entering.clone();
+                    sources.sort_unstable();
+                    sources.dedup();
+                    let clearance = if entering.len() > 1 { 2 } else { 1 };
+                    let required_top = sources
+                        .iter()
+                        .filter_map(|id| placement.node_rects.get(*id))
+                        .filter(|rect| rect.y < env.outer.y)
+                        .map(|rect| rect.bottom() + clearance)
+                        .max();
+                    if let (Some(required_top), Some((min_rank, _))) = (
+                        required_top,
+                        subgraph_tree_rank_range(input.graph, &placement.ranks, subgraph_id),
+                    ) {
+                        if env.outer.y < required_top {
+                            let delta = required_top - env.outer.y;
+                            required_shift_by_rank
+                                .entry(min_rank)
+                                .and_modify(|d| *d = (*d).max(delta))
+                                .or_insert(delta);
+                        }
+                    }
+                }
                 for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
                     if !input
                         .graph
@@ -3886,7 +4057,10 @@ pub(super) fn resolve_subgraph_envelopes(
                     let required_target_y = env
                         .outer
                         .bottom()
-                        .saturating_add(if extra_nested_exit_row { 2 } else { 1 });
+                        .saturating_add(if extra_nested_exit_row { 2 } else { 1 })
+                        // A labelled edge needs its own row between the border and
+                        // the target arrow; on the border the label would overwrite it.
+                        .saturating_add(usize::from(edge.label.is_some()));
                     if to_rect.y >= required_target_y {
                         continue;
                     }
@@ -3894,6 +4068,22 @@ pub(super) fn resolve_subgraph_envelopes(
                         continue;
                     };
                     let delta = required_target_y - to_rect.y;
+                    if border_follows_rank_shift(input.graph, &placement.ranks, rank, subgraph_id) {
+                        if is_leaf_subgraph(input.graph, subgraph_id) {
+                            if !feeds_back_into(input.graph, &edge.to, subgraph_id) {
+                                record_outside_shift(
+                                    &mut outside_shift_by_rank,
+                                    rank,
+                                    delta,
+                                    subgraph_id,
+                                );
+                            }
+                            continue;
+                        }
+                        // Nested frames keep the whole-rank shift; the repeat guard
+                        // below stops it once it no longer makes progress.
+                        nested_exit_ranks.push(rank);
+                    }
                     required_shift_by_rank
                         .entry(rank)
                         .and_modify(|existing| *existing = (*existing).max(delta))
@@ -3901,18 +4091,27 @@ pub(super) fn resolve_subgraph_envelopes(
                 }
             }
 
-            let Some((&min_rank, &delta_y)) =
-                required_shift_by_rank.iter().min_by_key(|(rank, _)| *rank)
+            let Some((min_rank, delta_y, kept)) =
+                next_rank_shift(&required_shift_by_rank, &outside_shift_by_rank)
             else {
                 break;
             };
+            // A nested frame's exit shift asked for again means the last one
+            // made no progress: a member moved with the target and the border
+            // followed. Repeating it would only add blank rows.
+            let repeated = last_shift.replace((min_rank, delta_y)) == Some((min_rank, delta_y));
+            if kept.is_empty() && repeated && nested_exit_ranks.contains(&min_rank) {
+                break;
+            }
 
-            shift_nodes_from_rank_td(
+            shift_nodes_outside_trees_from_rank_td(
+                input.graph,
                 &mut placement.positions,
                 &mut placement.node_rects,
                 &placement.ranks,
                 min_rank,
                 delta_y,
+                &kept,
             );
 
             let max_bottom = placement
