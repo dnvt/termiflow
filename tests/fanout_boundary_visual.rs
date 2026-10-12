@@ -101,3 +101,39 @@ fn td_external_fanout_keeps_its_bus_row_when_an_exit_target_sits_close_below() {
         }
     }
 }
+
+/// An LR fan-out whose source row lies above every target (the subgraph
+/// holding the source pushes its exit past them) still joins its bus: the
+/// source's stub turns down into it instead of ending in mid-air.
+#[test]
+fn a_fan_out_from_beyond_its_targets_joins_its_bus() {
+    let input = "flowchart LR
+    subgraph Device [Edge Device]
+        Camera[Camera]
+        Detect[On-device Detector]
+        Camera --> Detect
+    end
+    subgraph Cloud
+        Upload[Upload Clips]
+        Verify[Cloud Verifier]
+        Upload --> Verify
+    end
+    Detect --> Upload
+    Verify --> Alert>Push Alert]
+    Verify --> Archive[(Clip Archive)]
+";
+    for (style, turn) in [(BaseStyle::Unicode, '┐'), (BaseStyle::Ascii, '+')] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let source_row = frame
+            .lines()
+            .find(|line| line.contains("Cloud Verifier"))
+            .expect("source row");
+        assert_eq!(
+            source_row.trim_end().chars().last(),
+            Some(turn),
+            "Verify's fan-out stub does not reach its bus ({style:?}):\n{frame}"
+        );
+    }
+}

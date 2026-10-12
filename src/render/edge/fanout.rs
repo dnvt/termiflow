@@ -1078,13 +1078,36 @@ pub fn route_divergent_edges(
         .max()
         .unwrap_or(src_secondary);
 
-    let span_start = first_secondary;
-    let span_end = last_secondary;
+    // A source beyond every target (a subgraph can push its exit past them)
+    // still reaches the span: it extends to the source, which turns into it
+    // on a corner.  Only across blank cells, so it never runs along another
+    // route sharing that line.
+    let extension = if src_secondary < first_secondary {
+        Some(src_secondary..first_secondary)
+    } else if src_secondary > last_secondary {
+        Some(last_secondary + 1..src_secondary + 1)
+    } else {
+        None
+    };
+    let source_beyond_targets = extension.is_some_and(|mut extension| {
+        extension.all(|pos| {
+            let (x, y) = coords.with_secondary(junction_x, junction_y, pos);
+            canvas.get(x, y) == ' '
+        })
+    });
+    let (span_start, span_end) = if source_beyond_targets {
+        (
+            first_secondary.min(src_secondary),
+            last_secondary.max(src_secondary),
+        )
+    } else {
+        (first_secondary, last_secondary)
+    };
 
     // If the source column sits on the edge of the span, nudge the junction inward
     // so the bar keeps corners at both ends.
     let mut junction_secondary = src_secondary;
-    if span_end > span_start {
+    if span_end > span_start && !source_beyond_targets {
         if junction_secondary == span_start {
             junction_secondary = span_start + 1;
         } else if junction_secondary == span_end {
@@ -1110,7 +1133,7 @@ pub fn route_divergent_edges(
         // Check if this position is a target drop point (not the source junction)
         let is_target_drop = pos != junction_secondary && target_secondaries.contains(&pos);
 
-        let c = if pos == junction_secondary {
+        let c = if pos == junction_secondary && !source_beyond_targets {
             // Junction at source position - stem meets vertical span
             match direction {
                 Direction::TD | Direction::TB => style.junction_up, // ┴
