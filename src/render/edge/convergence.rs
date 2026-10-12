@@ -1615,12 +1615,16 @@ pub fn route_convergent_edges(
         if span_width <= 1 {
             for pos in final_span_start..=final_span_end {
                 let (x, y) = coords.with_secondary(merge_x, merge_y, pos);
-                canvas.set(x, y, ' ');
+                if !canvas.fallback_route_claims_cell(x, y) {
+                    canvas.set(x, y, ' ');
+                }
             }
             merge_y_draw = merge_y_draw.saturating_sub(1);
             for pos in final_span_start..=final_span_end {
                 let (x, y) = coords.with_secondary(merge_x, merge_y_draw, pos);
-                canvas.set(x, y, ' ');
+                if !canvas.fallback_route_claims_cell(x, y) {
+                    canvas.set(x, y, ' ');
+                }
             }
             set_route_edge_char(
                 canvas,

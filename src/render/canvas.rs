@@ -731,6 +731,19 @@ impl Canvas {
         self.fallback_route_plans.push(plan);
     }
 
+    /// The corner cells of every reserved fallback route with `strategy`.
+    pub(crate) fn fallback_route_corner_points(&self, strategy: &str) -> Vec<(usize, usize)> {
+        self.fallback_route_plans
+            .iter()
+            .filter(|plan| plan.strategy == strategy)
+            .flat_map(|plan| {
+                plan.corners
+                    .iter()
+                    .map(|corner| (corner.point.x, corner.point.y))
+            })
+            .collect()
+    }
+
     /// Record a route for final audit evidence without reserving its cells
     /// against later route lowering.  Some generic routes are painted before
     /// a legitimate crossing/branch is lowered; making their diagnostic plan

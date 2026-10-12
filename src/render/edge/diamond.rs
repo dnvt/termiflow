@@ -15,12 +15,14 @@ use crate::style::{StyleChars, BOX_HEIGHT};
 use super::super::canvas::Canvas;
 use super::super::fallback_route::{FallbackAxis, FallbackRoutePlan};
 use super::super::semantic::CellOwnerKind;
+use super::super::topology::{canonical_routing_glyph, canvas_connections};
 use super::edge_primitives::{
     adjusted_edge_entry_point, edge_entry_candidates, edge_exit_point, hits_foreign_subgraph_border,
 };
 use super::{set_route_char, set_route_edge_char, style_for_edge_kind, RouteOwner};
 
 const STRATEGY: &str = "diamond-shortcut-scene-reservation";
+const DETOUR_STRATEGY: &str = "blocked-edge-outside-detour";
 
 #[derive(Debug, Clone)]
 struct DiamondScene {
@@ -88,6 +90,229 @@ pub(crate) fn plan_diamond_scenes(
     }
 
     (planned, rejected)
+}
+
+/// Reserve an outside detour for each plain edge whose straight path would
+/// run through another node's box, where the generic fan-in and fan-out
+/// passes would draw it hidden under that box.
+///
+/// Edges in `claimed` already have an owner. An edge whose detour cannot be
+/// planned is left to the generic passes, as before.
+pub(crate) fn plan_blocked_edge_detours(
+    graph: &Graph,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    claimed: &HashSet<usize>,
+) -> HashSet<usize> {
+    let coords = OrientedCoords::new(graph.direction);
+    let mut planned = HashSet::new();
+    for (index, edge) in graph.edges.iter().enumerate() {
+        if claimed.contains(&index) || !edge_path_is_blocked(graph, canvas, index) {
+            continue;
+        }
+        let (Some(source), Some(target)) = (graph.get_node(&edge.from), graph.get_node(&edge.to))
+        else {
+            continue;
+        };
+        // Cycle routes leave and enter on the sides of nodes on a back edge,
+        // where an outside lane alongside them would be cut.
+        if span_has_back_edge_node(graph, source, target, &coords) {
+            continue;
+        }
+        let owner_id = format!("scene:{DETOUR_STRATEGY}:{}->{}", edge.from, edge.to);
+        for lane in shortcut_lane_candidates(graph, canvas, &coords) {
+            let mut plan = FallbackRoutePlan::new(&owner_id, DETOUR_STRATEGY);
+            plan.set_scene_coverage([crate::render::provenance::edge_owner_id(index, edge)]);
+            // A detour that could only arrive on the target's own stem would
+            // share it with another edge, and one crossing a gap where a generic
+            // bus gathers into the target would merge with that bus, so either
+            // enters from the lane side instead.
+            let entry = choose_shortcut_entry(target, graph.direction, lane, graph);
+            let built = if entry == adjusted_edge_entry_point(target, graph.direction, graph)
+                || target_gap_has_generic_bus(graph, claimed, index)
+            {
+                append_side_entry_detour(&mut plan, source, target, lane, &coords, style, edge.kind)
+            } else {
+                append_shortcut_path(
+                    &mut plan,
+                    source,
+                    entry,
+                    lane,
+                    graph.direction,
+                    style,
+                    edge.kind,
+                )
+            }
+            .and_then(|()| validate_plan_cells(&plan, graph, canvas))
+            .and_then(|()| corners_clear_of_boxes(&plan, graph, source, target));
+            if built.is_err() || plan.validation_error(canvas.width, canvas.height).is_some() {
+                continue;
+            }
+            let owner = RouteOwner {
+                kind: CellOwnerKind::EdgeSegment,
+                id: owner_id.as_str(),
+            };
+            canvas.set_write_stage("edge-route-plan");
+            if lower_plan(plan, canvas, style, owner) {
+                planned.insert(index);
+            }
+            break;
+        }
+    }
+    planned
+}
+
+/// A detour corner right beside a box other than its own endpoints would
+/// read as a port on that box, notably in ASCII where every corner is `+`.
+fn corners_clear_of_boxes(
+    plan: &FallbackRoutePlan,
+    graph: &Graph,
+    source: &Node,
+    target: &Node,
+) -> Result<(), String> {
+    for corner in &plan.corners {
+        let (x, y) = (corner.point.x, corner.point.y);
+        let touches = graph.nodes.iter().any(|node| {
+            node.id != source.id
+                && node.id != target.id
+                && [(0, -1), (0, 1), (-1, 0), (1, 0)]
+                    .iter()
+                    .any(|&(dx, dy): &(isize, isize)| {
+                        x.checked_add_signed(dx)
+                            .zip(y.checked_add_signed(dy))
+                            .is_some_and(|(nx, ny)| node_contains(node, nx, ny))
+                    })
+        });
+        if touches {
+            return Err(format!("detour corner at ({x},{y}) touches a box"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a node on a back edge lies along the flow from `source` to
+/// `target`, endpoints included.
+fn span_has_back_edge_node(
+    graph: &Graph,
+    source: &Node,
+    target: &Node,
+    coords: &OrientedCoords,
+) -> bool {
+    let (source_primary, _) = node_spans(source, coords);
+    let (target_primary, _) = node_spans(target, coords);
+    let low = source_primary.0.min(target_primary.0);
+    let high = source_primary.1.max(target_primary.1);
+    graph.nodes.iter().any(|node| {
+        let (primary, _) = node_spans(node, coords);
+        primary.1 >= low
+            && primary.0 <= high
+            && graph
+                .edges
+                .iter()
+                .any(|edge| edge.is_back_edge && (edge.from == node.id || edge.to == node.id))
+    })
+}
+
+/// Whether the generic passes will gather other edges into the target of the
+/// edge at `index` with a bus in the gap before it: the target has two such
+/// edges, or one comes from a source that also fans out elsewhere.
+fn target_gap_has_generic_bus(graph: &Graph, claimed: &HashSet<usize>, index: usize) -> bool {
+    let generic = |other: usize, edge: &crate::graph::Edge| {
+        other != index && !claimed.contains(&other) && !edge.is_back_edge
+    };
+    let target = &graph.edges[index].to;
+    let feeders: Vec<&str> = graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(other, edge)| generic(*other, edge) && &edge.to == target)
+        .map(|(_, edge)| edge.from.as_str())
+        .collect();
+    feeders.len() >= 2
+        || feeders.iter().any(|feeder| {
+            graph
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(other, edge)| generic(*other, edge) && edge.from == *feeder)
+                .count()
+                >= 2
+        })
+}
+
+/// Turn a detour corner into a tee where a route drawn after it continues
+/// through the same cell, such as the source's other stem.
+pub(crate) fn settle_blocked_edge_detour_joins(canvas: &mut Canvas, style: &StyleChars) {
+    for (x, y) in canvas.fallback_route_corner_points(DETOUR_STRATEGY) {
+        let connections = canvas_connections(canvas, x, y);
+        if connections.arm_count() < 3 {
+            continue;
+        }
+        if let Some(glyph) = canonical_routing_glyph(connections, style, CellOwnerKind::EdgeSegment)
+        {
+            canvas.set(x, y, glyph);
+        }
+    }
+}
+
+/// Whether the plain edge at `index` would be drawn straight through another
+/// node: the line it leaves on runs straight into the target's side, and some
+/// node other than its endpoints lies between them along the flow and covers
+/// that line.
+pub(crate) fn edge_path_is_blocked(graph: &Graph, canvas: &Canvas, index: usize) -> bool {
+    let Some(edge) = graph.edges.get(index) else {
+        return false;
+    };
+    if !eligible_edge(edge) || edge.from == edge.to {
+        return false;
+    }
+    let (Some(source), Some(target)) = (graph.get_node(&edge.from), graph.get_node(&edge.to))
+    else {
+        return false;
+    };
+    if !eligible_node(graph, source)
+        || !eligible_node(graph, target)
+        || !canvas.is_visible(source)
+        || !canvas.is_visible(target)
+    {
+        return false;
+    }
+    let coords = OrientedCoords::new(graph.direction);
+    let start = edge_exit_point(source, graph.direction);
+    let end = adjusted_edge_entry_point(target, graph.direction, graph);
+    if ensure_flow(&coords, start, end).is_err() {
+        return false;
+    }
+    let (low, high) = {
+        let a = coords.primary_coord(start.0, start.1);
+        let b = coords.primary_coord(end.0, end.1);
+        (a.min(b), a.max(b))
+    };
+    let line = coords.secondary_coord(start.0, start.1);
+    let (_, target_secondary) = node_spans(target, &coords);
+    if line <= target_secondary.0 || line >= target_secondary.1 {
+        return false;
+    }
+    graph.nodes.iter().any(|node| {
+        if node.id == source.id || node.id == target.id || !canvas.is_visible(node) {
+            return false;
+        }
+        let (primary, secondary) = node_spans(node, &coords);
+        primary.0 > low && primary.1 < high && line >= secondary.0 && line <= secondary.1
+    })
+}
+
+/// A node's (primary, secondary) inclusive spans.
+fn node_spans(node: &Node, coords: &OrientedCoords) -> ((usize, usize), (usize, usize)) {
+    let x = (node.x, node.x + node.width.saturating_sub(1));
+    let y = (
+        node.y,
+        node.y + node.height.max(BOX_HEIGHT).saturating_sub(1),
+    );
+    match coords.primary {
+        crate::orientation::Axis::Horizontal => (x, y),
+        crate::orientation::Axis::Vertical => (y, x),
+    }
 }
 
 fn detect_scenes(graph: &Graph) -> Vec<DiamondScene> {
@@ -266,6 +491,13 @@ fn build_plan(
 }
 
 fn choose_shortcut_lane(graph: &Graph, canvas: &Canvas, coords: &OrientedCoords) -> Option<usize> {
+    shortcut_lane_candidates(graph, canvas, coords)
+        .into_iter()
+        .next()
+}
+
+/// Lanes outside every node, far side first.
+fn shortcut_lane_candidates(graph: &Graph, canvas: &Canvas, coords: &OrientedCoords) -> Vec<usize> {
     let limit = match coords.secondary {
         crate::orientation::Axis::Horizontal => canvas.width,
         crate::orientation::Axis::Vertical => canvas.height,
@@ -284,8 +516,12 @@ fn choose_shortcut_lane(graph: &Graph, canvas: &Canvas, coords: &OrientedCoords)
         };
         intervals.push((start, end));
     }
-    let minimum = intervals.iter().map(|(start, _)| *start).min()?;
-    let maximum = intervals.iter().map(|(_, end)| *end).max()?;
+    let (Some(minimum), Some(maximum)) = (
+        intervals.iter().map(|(start, _)| *start).min(),
+        intervals.iter().map(|(_, end)| *end).max(),
+    ) else {
+        return Vec::new();
+    };
 
     // Prefer the far side of the scene.  The opposite candidate remains a
     // useful fallback for a diagram whose far edge is clipped by the canvas.
@@ -295,12 +531,15 @@ fn choose_shortcut_lane(graph: &Graph, canvas: &Canvas, coords: &OrientedCoords)
         minimum.saturating_sub(1),
         minimum.saturating_sub(2),
     ];
-    candidates.into_iter().find(|candidate| {
-        *candidate < limit
-            && intervals
-                .iter()
-                .all(|(start, end)| *candidate < *start || *candidate > *end)
-    })
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            *candidate < limit
+                && intervals
+                    .iter()
+                    .all(|(start, end)| *candidate < *start || *candidate > *end)
+        })
+        .collect()
 }
 
 fn choose_shortcut_entry(
@@ -390,6 +629,87 @@ fn append_standard_path(
     let final_start = coords.advance(bend.0, bend.1, 1);
     push_primary(plan, final_start, end, &coords, style);
     plan.push_paint(end.0, end.1, diamond_tip(kind, base_style, style, &coords));
+    Ok(())
+}
+
+/// An outside detour that leaves `source` on its flow side, runs along `lane`
+/// and enters `target` on the side facing the lane with its own end glyph.
+fn append_side_entry_detour(
+    plan: &mut FallbackRoutePlan,
+    source: &Node,
+    target: &Node,
+    lane: usize,
+    coords: &OrientedCoords,
+    style: &StyleChars,
+    kind: EdgeKind,
+) -> Result<(), String> {
+    let base_style = style;
+    let line_style = style_for_edge_kind(base_style, kind);
+    let style = &line_style;
+    let point = |primary: usize, secondary: usize| match coords.primary {
+        crate::orientation::Axis::Horizontal => (primary, secondary),
+        crate::orientation::Axis::Vertical => (secondary, primary),
+    };
+    let (target_primary, target_secondary) = node_spans(target, coords);
+    let entry_primary = (target_primary.0 + target_primary.1) / 2;
+    let secondary_line = match coords.secondary {
+        crate::orientation::Axis::Horizontal => style.edge_h,
+        crate::orientation::Axis::Vertical => style.edge_v,
+    };
+    let tip = |arrow: char| match kind {
+        EdgeKind::CircleEnd => base_style.circle_end,
+        EdgeKind::CrossEnd => base_style.cross_end,
+        EdgeKind::Open => secondary_line,
+        _ => arrow,
+    };
+    let (end_secondary, tip) = if lane > target_secondary.1 + 1 {
+        let arrow = match coords.secondary {
+            crate::orientation::Axis::Horizontal => base_style.arrow_left,
+            crate::orientation::Axis::Vertical => base_style.arrow_up,
+        };
+        (target_secondary.1 + 1, tip(arrow))
+    } else if lane + 2 < target_secondary.0 {
+        let arrow = match coords.secondary {
+            crate::orientation::Axis::Horizontal => base_style.arrow_right,
+            crate::orientation::Axis::Vertical => base_style.arrow_down,
+        };
+        (target_secondary.0 - 1, tip(arrow))
+    } else {
+        return Err("side entry has no room outside the target".to_owned());
+    };
+    let end = point(entry_primary, end_secondary);
+    let start = edge_exit_point(source, coords.direction);
+    let start_turn = coords.advance(start.0, start.1, 1);
+    if !flow_before(
+        coords.direction,
+        coords.primary_coord(start_turn.0, start_turn.1),
+        entry_primary,
+    ) {
+        return Err("side entry has no room for an outside detour".to_owned());
+    }
+    let start_lane = coords.with_secondary(start_turn.0, start_turn.1, lane);
+    let end_lane = point(entry_primary, lane);
+
+    push_primary(plan, start, start_turn, coords, style);
+    plan.push_corner(
+        start_turn.0,
+        start_turn.1,
+        corner_glyph(start_turn, start, start_lane, style),
+    );
+    push_secondary(plan, start_turn, start_lane, coords, style);
+    plan.push_corner(
+        start_lane.0,
+        start_lane.1,
+        corner_glyph(start_lane, start_turn, end_lane, style),
+    );
+    push_primary(plan, start_lane, end_lane, coords, style);
+    plan.push_corner(
+        end_lane.0,
+        end_lane.1,
+        corner_glyph(end_lane, start_lane, end, style),
+    );
+    push_secondary(plan, end_lane, end, coords, style);
+    plan.push_paint(end.0, end.1, tip);
     Ok(())
 }
 

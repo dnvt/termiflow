@@ -47,7 +47,10 @@ pub(super) use database_fan_in::{
 };
 pub(super) use dedicated_fan_in::route_dedicated_fan_in_edges;
 pub(super) use dense_crossing::plan_dense_crossing_scenes;
-pub(super) use diamond::plan_diamond_scenes;
+pub(super) use diamond::{
+    edge_path_is_blocked, plan_blocked_edge_detours, plan_diamond_scenes,
+    settle_blocked_edge_detour_joins,
+};
 pub use edge_primitives::edge_exit_point;
 pub(super) use edge_primitives::{edge_entry_candidates, is_subgraph_title_cell};
 #[cfg(test)]

@@ -7,15 +7,16 @@ use super::canvas::{self, Canvas};
 use super::critic::{self, analyze, emit_debug_report};
 use super::cycle::{self, route_cycle_edge_on_lane};
 use super::edge::{
-    database_terminal_target_id, plan_boundary_fan_in_scene, plan_bt_multi_entry_scene,
-    plan_bt_parallel_scene, plan_bt_parallel_sibling_scene, plan_bt_sibling_scene,
-    plan_bt_sibling_target_scene, plan_dense_crossing_scenes, plan_diamond_scenes,
-    plan_lr_rl_sibling_chain_scene, plan_lr_rl_sibling_target_scene,
-    plan_sibling_subgraph_fan_in_scene, plan_td_sibling_target_scene,
-    repair_database_source_border, route_convergent_edges, route_database_intermediate_scene,
-    route_dedicated_fan_in_edges, route_divergent_edges, route_fan_in_identity_edges,
-    route_vertical_branch_rejoin_identity_edges, route_vertical_fan_in_edges,
-    route_wide_terminal_fan_in_edges,
+    database_terminal_target_id, edge_path_is_blocked, plan_blocked_edge_detours,
+    plan_boundary_fan_in_scene, plan_bt_multi_entry_scene, plan_bt_parallel_scene,
+    plan_bt_parallel_sibling_scene, plan_bt_sibling_scene, plan_bt_sibling_target_scene,
+    plan_dense_crossing_scenes, plan_diamond_scenes, plan_lr_rl_sibling_chain_scene,
+    plan_lr_rl_sibling_target_scene, plan_sibling_subgraph_fan_in_scene,
+    plan_td_sibling_target_scene, repair_database_source_border, route_convergent_edges,
+    route_database_intermediate_scene, route_dedicated_fan_in_edges, route_divergent_edges,
+    route_fan_in_identity_edges, route_vertical_branch_rejoin_identity_edges,
+    route_vertical_fan_in_edges, route_wide_terminal_fan_in_edges,
+    settle_blocked_edge_detour_joins,
 };
 use super::labels::{
     draw_convergent_edge_label, draw_cycle_edge_label, draw_edge_label, draw_routed_edge_label,
@@ -277,26 +278,6 @@ pub(super) fn render_with_feedback_with_contract(
         render_stabilization_protected = true;
         planned_scene_edges.extend(0..graph.edges.len());
     }
-    let (diamond_edges, rejected_diamond_edges) = if database_scene_claimed {
-        (HashSet::new(), HashSet::new())
-    } else {
-        plan_diamond_scenes(graph, &mut canvas, &chars)
-    };
-    planned_scene_edges.extend(diamond_edges);
-    let dense_scene_edges = plan_dense_crossing_scenes(graph, &mut canvas, &chars);
-    planned_scene_edges.extend(dense_scene_edges.iter().copied());
-    // A topology match that could not be safely lowered is deliberately
-    // fail-closed.  The edge remains in the evidence as untraced rather than
-    // silently re-entering the generic convergence/divergence passes.
-    planned_scene_edges.extend(rejected_diamond_edges);
-
-    // Get visible nodes
-    let visible_nodes: Vec<&Node> = graph
-        .nodes
-        .iter()
-        .filter(|n| canvas.is_visible(n))
-        .collect();
-
     // Precomputed routes from the layout/routing stages (may be partial).
     let mut routed_edges: HashSet<usize> = HashSet::new();
     for edge_id in layout_snapshot.route_ids() {
@@ -307,6 +288,35 @@ pub(super) fn render_with_feedback_with_contract(
             routed_edges.insert(edge_id.index());
         }
     }
+    let (diamond_edges, rejected_diamond_edges) = if database_scene_claimed {
+        (HashSet::new(), HashSet::new())
+    } else {
+        plan_diamond_scenes(graph, &mut canvas, &chars)
+    };
+    planned_scene_edges.extend(diamond_edges);
+    let dense_scene_edges = plan_dense_crossing_scenes(graph, &mut canvas, &chars);
+    planned_scene_edges.extend(dense_scene_edges.iter().copied());
+    // A plain edge whose straight path would run through another box gets
+    // an outside detour before the generic passes can hide it there.
+    let detour_claimed: HashSet<usize> =
+        planned_scene_edges.union(&routed_edges).copied().collect();
+    let detour_edges = plan_blocked_edge_detours(graph, &mut canvas, &chars, &detour_claimed);
+    planned_scene_edges.extend(detour_edges.iter().copied());
+    // A topology match that could not be safely lowered stays fail-closed
+    // while its straight path is blocked: the edge remains in the evidence as
+    // untraced rather than re-entering the generic passes that would hide it.
+    // One with a clear path, or now detoured, is drawn rather than dropped.
+    planned_scene_edges.extend(rejected_diamond_edges.into_iter().filter(|&edge_idx| {
+        !detour_edges.contains(&edge_idx) && edge_path_is_blocked(graph, &canvas, edge_idx)
+    }));
+
+    // Get visible nodes
+    let visible_nodes: Vec<&Node> = graph
+        .nodes
+        .iter()
+        .filter(|n| canvas.is_visible(n))
+        .collect();
+
     let has_precomputed_routes = !routed_edges.is_empty();
 
     // Group forward edges by source node for expanded routing
@@ -532,6 +542,8 @@ pub(super) fn render_with_feedback_with_contract(
             cycle_lanes.get(&edge_idx).copied(),
         );
     }
+
+    settle_blocked_edge_detour_joins(&mut canvas, &chars);
 
     canvas.set_write_stage("edge-crossing-finalize");
     canvas.finalize_explicit_crossings(&chars);
