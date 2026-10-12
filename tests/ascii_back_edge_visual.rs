@@ -44,3 +44,33 @@ fn an_ascii_box_tee_keeps_its_edge_turn() {
         );
     }
 }
+
+/// A dotted or thick back edge keeps its own style along the cycle route.
+#[test]
+fn a_back_edge_keeps_its_edge_kind() {
+    let render = |style: BaseStyle, input: &str| {
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output
+    };
+    for direction in ["TD", "LR"] {
+        let dotted = format!("graph {direction}\nA --> B\nB -.-> A\n");
+        let thick = format!("graph {direction}\nA --> B\nB ==> A\n");
+        assert!(
+            render(BaseStyle::Unicode, &dotted).contains('╌'),
+            "{direction} dotted"
+        );
+        assert!(
+            render(BaseStyle::Unicode, &thick).contains('━'),
+            "{direction} thick"
+        );
+        assert!(
+            render(BaseStyle::Ascii, &dotted).contains('.'),
+            "{direction} ascii dotted"
+        );
+        assert!(
+            render(BaseStyle::Ascii, &thick).contains('='),
+            "{direction} ascii thick"
+        );
+    }
+}

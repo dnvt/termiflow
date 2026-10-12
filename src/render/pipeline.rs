@@ -504,12 +504,28 @@ pub(super) fn render_with_feedback_with_contract(
     }
 
     // Draw back-edges (cycle edges) that were not pre-routed.
+    // Plain ones go first, so a cell a styled back edge shares with them
+    // stays plain.
+    cycle_edges.sort_by_key(|(edge_idx, ..)| {
+        matches!(
+            graph.edges[*edge_idx].kind,
+            EdgeKind::Thick | EdgeKind::Dotted
+        )
+    });
     for (edge_idx, owner_id, from, to) in cycle_edges {
+        // A thick or dotted back edge keeps its kind along the cycle route.
+        let kind = graph.edges[edge_idx].kind;
+        let mut cycle_chars = chars;
+        if matches!(kind, EdgeKind::Thick | EdgeKind::Dotted) {
+            let kind_chars = super::edge::style_for_edge_kind(&chars, kind);
+            cycle_chars.back_h = kind_chars.edge_h;
+            cycle_chars.back_v = kind_chars.edge_v;
+        }
         route_cycle_edge_on_lane(
             from,
             to,
             &mut canvas,
-            &chars,
+            &cycle_chars,
             &config.spacing,
             graph.direction,
             Some(owner_id.as_str()),

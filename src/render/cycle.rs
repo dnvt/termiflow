@@ -288,6 +288,18 @@ fn set_cycle_edge_char(
     style: &StyleChars,
     owner_id: Option<&str>,
 ) {
+    // A thick or dotted back edge keeps its kind only on cells it has to
+    // itself; a cell another edge already uses stays plain, so a shared
+    // line never takes one edge's style.
+    let ch = if canvas.get(x, y) == ' ' {
+        ch
+    } else if ch == style.back_h && style.back_h != style.edge_h {
+        style.edge_h
+    } else if ch == style.back_v && style.back_v != style.edge_v {
+        style.edge_v
+    } else {
+        ch
+    };
     if let Some(owner_id) = owner_id {
         canvas.set_edge_char_owned(
             x,
