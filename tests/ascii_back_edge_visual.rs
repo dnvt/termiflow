@@ -1,0 +1,27 @@
+use termiflow::{BaseStyle, RenderOptions};
+
+fn ascii(input: &str) -> String {
+    termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Ascii))
+        .expect("render")
+        .output
+}
+
+/// A solid back edge is drawn solid in ASCII, as in Unicode: its vertical
+/// legs use `|`, not the dotted `:`.
+#[test]
+fn an_ascii_solid_back_edge_is_drawn_solid() {
+    for direction in ["TD", "BT", "LR", "RL"] {
+        let frame = ascii(&format!("graph {direction}\nA --> B\nB --> A\n"));
+        assert!(
+            !frame.contains(':'),
+            "solid back edge drawn dotted ({direction}):\n{frame}"
+        );
+    }
+}
+
+/// A dotted forward edge keeps its dotted ASCII glyph.
+#[test]
+fn an_ascii_dotted_edge_stays_dotted() {
+    let frame = ascii("graph TD\nA -.-> B\n");
+    assert!(frame.contains(':'), "{frame}");
+}
