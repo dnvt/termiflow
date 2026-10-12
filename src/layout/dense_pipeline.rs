@@ -176,13 +176,8 @@ pub(super) fn reserve_bridge_routes(
         ) else {
             return false;
         };
-        let target_shape = graph
-            .get_node(&edge.to)
-            .map(|node| node.shape)
-            .unwrap_or_default();
         let start = layout_routing::edge_exit_point(*source, graph.direction);
-        let mut end =
-            layout_routing::edge_entry_point_for_shape(*target, graph.direction, target_shape);
+        let mut end = layout_routing::edge_entry_point(*target, graph.direction);
         let coords = OrientedCoords::new(graph.direction);
         let desired_secondary = coords.secondary_coord(start.x, start.y);
         let target_secondary = target_port_secondary(target, &coords, desired_secondary);

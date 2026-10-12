@@ -179,8 +179,7 @@ pub(super) fn route_stage(
             .get_node(&edge.to)
             .map(|node| node.shape)
             .unwrap_or_default();
-        let end =
-            layout_routing::edge_entry_point_for_shape(to_rect, graph.direction, target_shape);
+        let end = layout_routing::edge_entry_point(to_rect, graph.direction);
         let end =
             layout_routing::straight_entry_end(start, end, to_rect, graph.direction, target_shape);
 

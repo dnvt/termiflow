@@ -68,3 +68,13 @@ use the generic one-cell receiver entry like every other shape: the arrowhead
 sits directly against the contour (`───→<  Valid?  >`, `↑` under `╲───╱`).
 The contour ownership rule above is unchanged; the clearance oracle is now a
 touch oracle (`diamond_entry_touch_oracle_covers_direction_style_and_mode_matrix`).
+
+## Amendment 2026-10-12: arrows touch the flag
+
+The Flag (`>text]`) kept the old one-cell clearance in LR, so its incoming
+arrowhead stopped a blank cell short of the left point (`──→ <  Flag`), and a
+labelled edge could lose its head entirely. The exploration-corpus topology
+audit counted 6 unreached flag targets. The flag now uses the same receiver
+entry as every other shape (`───→<  Flag`), and no shape keeps a
+clearance: `incoming_edge_clearance` is gone. The oracle is
+`an_lr_arrow_touches_the_flag_point`.

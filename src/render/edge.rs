@@ -309,11 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn asymmetric_lr_entry_point_separates_left_point_from_arrow() {
+    fn asymmetric_lr_entry_point_touches_left_point() {
         let mut n = make_node("flag", 10, 5, 6, 3);
         n.shape = NodeShape::Asymmetric;
 
-        assert_eq!(edge_entry_point(&n, Direction::LR), (8, 6));
+        assert_eq!(edge_entry_point(&n, Direction::LR), (9, 6));
         assert_eq!(edge_entry_point(&n, Direction::RL), (16, 6));
         assert_eq!(edge_entry_point(&n, Direction::TD), (13, 4));
         assert_eq!(edge_entry_point(&n, Direction::BT), (13, 8));

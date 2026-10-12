@@ -2831,7 +2831,7 @@ fn shape_all_flag_contours_preserve_point_and_shoulders_across_matrix() {
 }
 
 #[test]
-fn shape_all_lr_flag_attachment_keeps_arrow_and_point_visibly_separate() {
+fn shape_all_lr_flag_attachment_touches_the_point() {
     let input = fs::read_to_string("tests/fixtures/inputs/shape_all_lr.md")
         .expect("read all-shapes LR Flag fixture");
 
@@ -2852,8 +2852,8 @@ fn shape_all_lr_flag_attachment_keeps_arrow_and_point_visibly_separate() {
             let chars = style.chars();
             let y = flag.center_y();
             let point_x = flag.x;
-            let arrow_x = point_x.saturating_sub(2);
-            let separator_x = point_x.saturating_sub(1);
+            // The arrowhead sits against the point, like every other contour.
+            let arrow_x = point_x.saturating_sub(1);
             let cell = |x: usize, y: usize| {
                 outcome
                     .semantic_frame
@@ -2866,12 +2866,6 @@ fn shape_all_lr_flag_attachment_keeps_arrow_and_point_visibly_separate() {
                 cell(arrow_x, y),
                 chars.arrow_right,
                 "LR Flag lost its incoming arrowhead for {style:?} optimized={optimized}:\n{}",
-                outcome.output
-            );
-            assert_ne!(
-                cell(separator_x, y),
-                chars.arrow_right,
-                "LR Flag arrowhead still touches the point for {style:?} optimized={optimized}:\n{}",
                 outcome.output
             );
             assert_eq!(
