@@ -36,3 +36,15 @@ fn a_rejected_diamond_keeps_its_clear_edges() {
     let under_a = frame.lines().nth(2).unwrap_or_default();
     assert!(under_a.contains('┬'), "A has no edge out:\n{frame}");
 }
+
+/// A skip-rank edge whose straight path runs along the border column of the
+/// boxes in its way detours around them instead of hiding under the border.
+#[test]
+fn a_skip_rank_edge_along_a_border_column_detours() {
+    for direction in ["TD", "BT"] {
+        let frame = unicode(&format!(
+            "graph {direction}\nA-->B\nB-->C\nC-->D\nA-->D\nA-->E\n"
+        ));
+        assert_eq!(arrowheads(&frame), 5, "A->D hidden ({direction}):\n{frame}");
+    }
+}

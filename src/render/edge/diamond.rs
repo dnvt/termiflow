@@ -290,7 +290,7 @@ pub(crate) fn edge_path_is_blocked(graph: &Graph, canvas: &Canvas, index: usize)
     };
     let line = coords.secondary_coord(start.0, start.1);
     let (_, target_secondary) = node_spans(target, &coords);
-    if line <= target_secondary.0 || line >= target_secondary.1 {
+    if line < target_secondary.0 || line > target_secondary.1 {
         return false;
     }
     graph.nodes.iter().any(|node| {
