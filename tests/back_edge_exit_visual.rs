@@ -91,3 +91,24 @@ fn horizontal_back_edge_gutter_does_not_run_along_a_subgraph_border() {
         );
     }
 }
+
+/// A TD back edge whose source has a sibling box on its right does not run
+/// along the source's row through that box to the gutter: it jogs below
+/// the rank and runs to the gutter there.
+#[test]
+fn td_back_edge_detours_below_a_sibling_on_its_row() {
+    let input = "graph TD\n  In --> Dec\n  Dec --> Ok\n  Dec --> Bad\n  Bad --> In\n";
+    for (style, exit) in [(BaseStyle::Unicode, "├─┐"), (BaseStyle::Ascii, "+-+")] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let row = frame
+            .lines()
+            .find(|line| line.contains("Bad") && line.contains("Ok"))
+            .expect("rank row");
+        assert!(
+            row.contains(exit) && !row.contains("Ok  │─") && !row.contains("Ok  |-"),
+            "back edge from Bad runs through Ok ({style:?}):\n{frame}"
+        );
+    }
+}

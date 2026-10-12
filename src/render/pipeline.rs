@@ -151,6 +151,10 @@ pub(super) fn render_with_feedback_with_contract(
     if let Some(lowest_lane) = cycle_lanes.values().map(|lane| lane.gutter_y).max() {
         height = height.max(lowest_lane.saturating_add(2).min(max_canvas_height));
     }
+    let cycle_source_detours = cycle::plan_vertical_cycle_source_detours(graph);
+    if let Some(lowest_detour) = cycle_source_detours.values().max() {
+        height = height.max(lowest_detour.saturating_add(2).min(max_canvas_height));
+    }
 
     let portals_enabled = !context.compatibility.disable_portals;
     let node_rects = node_rects_from_graph(graph);
@@ -540,6 +544,7 @@ pub(super) fn render_with_feedback_with_contract(
             graph.direction,
             Some(owner_id.as_str()),
             cycle_lanes.get(&edge_idx).copied(),
+            cycle_source_detours.get(&edge_idx).copied(),
         );
     }
 
