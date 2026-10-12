@@ -119,18 +119,54 @@ pub(crate) fn plan_blocked_edge_detours(
         if span_has_back_edge_node(graph, source, target, &coords) {
             continue;
         }
-        let owner_id = format!("scene:{DETOUR_STRATEGY}:{}->{}", edge.from, edge.to);
-        for lane in shortcut_lane_candidates(graph, canvas, &coords) {
+        if lower_blocked_edge_detour(graph, canvas, style, claimed, index) {
+            planned.insert(index);
+            continue;
+        }
+        // An LR/RL canvas sized tightly around the boxes has no outside lane
+        // left; grow it by the lane only when the detour then fits.
+        let mut grown = canvas.clone();
+        ensure_detour_lane_capacity(&mut grown, graph, &coords);
+        if (grown.width, grown.height) != (canvas.width, canvas.height)
+            && lower_blocked_edge_detour(graph, &mut grown, style, claimed, index)
+        {
+            *canvas = grown;
+            planned.insert(index);
+        }
+    }
+    planned
+}
+
+/// Lower the blocked edge at `index` along the first outside lane that
+/// takes it, returning whether one did.
+fn lower_blocked_edge_detour(
+    graph: &Graph,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    claimed: &HashSet<usize>,
+    index: usize,
+) -> bool {
+    let coords = OrientedCoords::new(graph.direction);
+    let edge = &graph.edges[index];
+    let (Some(source), Some(target)) = (graph.get_node(&edge.from), graph.get_node(&edge.to))
+    else {
+        return false;
+    };
+    let owner_id = format!("scene:{DETOUR_STRATEGY}:{}->{}", edge.from, edge.to);
+    for lane in shortcut_lane_candidates(graph, canvas, &coords) {
+        // A detour that could only arrive on the target's own stem would
+        // share it with another edge, and one crossing a gap where a generic
+        // bus gathers into the target would merge with that bus, so either
+        // enters from the lane side instead.  A port another route already
+        // holds also leaves the side entry.
+        let entry = choose_shortcut_entry(target, graph.direction, lane, graph);
+        let side_only = entry == adjusted_edge_entry_point(target, graph.direction, graph)
+            || target_gap_has_generic_bus(graph, claimed, index);
+        let entries: &[bool] = if side_only { &[true] } else { &[false, true] };
+        for &side_entry in entries {
             let mut plan = FallbackRoutePlan::new(&owner_id, DETOUR_STRATEGY);
             plan.set_scene_coverage([crate::render::provenance::edge_owner_id(index, edge)]);
-            // A detour that could only arrive on the target's own stem would
-            // share it with another edge, and one crossing a gap where a generic
-            // bus gathers into the target would merge with that bus, so either
-            // enters from the lane side instead.
-            let entry = choose_shortcut_entry(target, graph.direction, lane, graph);
-            let built = if entry == adjusted_edge_entry_point(target, graph.direction, graph)
-                || target_gap_has_generic_bus(graph, claimed, index)
-            {
+            let built = if side_entry {
                 append_side_entry_detour(&mut plan, source, target, lane, &coords, style, edge.kind)
             } else {
                 append_shortcut_path(
@@ -153,13 +189,25 @@ pub(crate) fn plan_blocked_edge_detours(
                 id: owner_id.as_str(),
             };
             canvas.set_write_stage("edge-route-plan");
-            if lower_plan(plan, canvas, style, owner) {
-                planned.insert(index);
-            }
-            break;
+            return lower_plan(plan, canvas, style, owner);
         }
     }
-    planned
+    false
+}
+
+/// Grow an LR/RL canvas so both outside lanes below the boxes fit.  Width is
+/// left alone: it is bounded by the configured maximum canvas width.
+fn ensure_detour_lane_capacity(canvas: &mut Canvas, graph: &Graph, coords: &OrientedCoords) {
+    if coords.secondary != crate::orientation::Axis::Vertical {
+        return;
+    }
+    let far_side = graph
+        .nodes
+        .iter()
+        .map(|node| node_spans(node, coords).1 .1)
+        .max()
+        .unwrap_or(0);
+    canvas.ensure_height(far_side.saturating_add(3));
 }
 
 /// A detour corner right beside a box other than its own endpoints would

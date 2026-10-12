@@ -48,3 +48,15 @@ fn a_skip_rank_edge_along_a_border_column_detours() {
         assert_eq!(arrowheads(&frame), 5, "A->D hidden ({direction}):\n{frame}");
     }
 }
+
+/// When the port its lane would reach is already held by another route
+/// into the target, a skip-rank detour enters the target from the side.
+#[test]
+fn a_skip_rank_detour_enters_from_the_side_when_its_port_is_taken() {
+    for direction in ["TD", "BT", "LR", "RL"] {
+        let frame = unicode(&format!(
+            "graph {direction}\nA-->B\nB-->C\nC-->D\nA-->D\nB-->D\n"
+        ));
+        assert_eq!(arrowheads(&frame), 5, "A->D hidden ({direction}):\n{frame}");
+    }
+}
