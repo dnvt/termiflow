@@ -112,3 +112,36 @@ fn td_back_edge_detours_below_a_sibling_on_its_row() {
         );
     }
 }
+
+/// TD back edges whose loops overlap take separate gutter columns, so each
+/// one's run from its source ends in a corner instead of joining another
+/// loop's column and merging with it.
+#[test]
+fn overlapping_td_back_edges_keep_separate_gutter_columns() {
+    let input = "graph TD\nA --> B --> C --> D --> E --> F\nF --> A\nE --> B\nD --> C\nF --> C\n";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let rows: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+        for source in ["D", "E"] {
+            let label = format!("  {source}  ");
+            let y = rows
+                .iter()
+                .position(|row| row.iter().collect::<String>().contains(&label))
+                .expect("source row");
+            // Follow the run from the source's right side to where it turns.
+            let text: String = rows[y].iter().collect();
+            let label_col = text[..text.find(&label).expect("label")].chars().count();
+            let start = label_col + label.chars().count() + 2;
+            let end = (start..rows[y].len())
+                .find(|&x| !matches!(rows[y][x], '─' | '-'))
+                .expect("run end");
+            let below = rows.get(y + 1).and_then(|row| row.get(end)).copied();
+            assert!(
+                matches!(below, None | Some(' ')),
+                "{source}'s back edge joins another loop's gutter column ({style:?}):\n{frame}"
+            );
+        }
+    }
+}

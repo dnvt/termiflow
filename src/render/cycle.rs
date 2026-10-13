@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::graph::{Direction, Graph, Node};
+use crate::graph::{Direction, EdgeKind, Graph, Node};
 use crate::spacing::SpacingConfig;
 use crate::style::StyleChars;
 
@@ -33,12 +33,13 @@ pub fn route_cycle_edge(
     owner_id: Option<&str>,
 ) {
     route_cycle_edge_on_lane(
-        from, to, canvas, style, spacing, direction, owner_id, None, None,
+        from, to, canvas, style, spacing, direction, owner_id, None, None, 0,
     );
 }
 
 /// Route a cycle edge, using a planned LR/RL gutter lane when one is given,
-/// or a planned TD source detour row.
+/// or a planned TD source detour row, and in TD/BT the gutter column
+/// `gutter_inset` column pairs in from the outermost one.
 #[allow(clippy::too_many_arguments)]
 pub fn route_cycle_edge_on_lane(
     from: &Node,
@@ -50,6 +51,7 @@ pub fn route_cycle_edge_on_lane(
     owner_id: Option<&str>,
     lane: Option<HorizontalCycleLane>,
     source_detour: Option<usize>,
+    gutter_inset: usize,
 ) {
     use crate::graph::Direction;
 
@@ -61,11 +63,11 @@ pub fn route_cycle_edge_on_lane(
         Direction::TD | Direction::TB | Direction::BT => {
             // Vertical layout: use right gutter
             let cycle_gutter = spacing.cycle_gutter;
-            if canvas.width <= cycle_gutter {
+            if canvas.width <= cycle_gutter + 2 * gutter_inset {
                 return;
             }
 
-            let gutter_x = canvas.width - 2;
+            let gutter_x = canvas.width - 2 - 2 * gutter_inset;
             let from_y = from.center_y();
             let to_y = to.center_y();
 
@@ -418,6 +420,89 @@ pub fn plan_vertical_cycle_source_detours(graph: &Graph) -> HashMap<usize, usize
         detours.insert(idx, detour);
     }
     detours
+}
+
+/// A loop in a TD/BT gutter column: its top and bottom rows, whether it is a
+/// self-loop, and its edge kind.
+type GutterLoop = (usize, usize, (bool, EdgeKind));
+
+/// Plan the right-gutter column of each TD/TB/BT back edge, as an inset in
+/// column pairs from the outermost one, so loops whose rows meet never share
+/// a column and merge.  Shorter loops take the inner columns so they nest;
+/// loops whose rows lie apart share one.  `source_detours` gives the row a
+/// back edge leaves its source on when it detours.
+pub fn plan_vertical_cycle_gutters(
+    graph: &Graph,
+    spacing: &SpacingConfig,
+    source_detours: &HashMap<usize, usize>,
+) -> HashMap<usize, usize> {
+    let mut insets = HashMap::new();
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) {
+        return insets;
+    }
+    let node = |id: &str| graph.nodes.iter().find(|node| node.id == id);
+    let loop_offset = spacing.row_spacing.max(2);
+    let mut spans: Vec<(usize, usize, usize, usize)> = graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| edge.is_back_edge)
+        .filter_map(|(idx, edge)| {
+            let from = node(&edge.from)?;
+            let to = node(&edge.to)?;
+            let (top, bottom) = if from.id == to.id {
+                match graph.direction {
+                    Direction::BT => (from.y.checked_sub(loop_offset)?, from.center_y()),
+                    _ => (from.center_y(), from.bottom_y() + loop_offset),
+                }
+            } else {
+                let from_y = source_detours.get(&idx).copied().unwrap_or(from.center_y());
+                let to_y = to.center_y();
+                (from_y.min(to_y), from_y.max(to_y))
+            };
+            Some((bottom - top, top, bottom, idx))
+        })
+        .collect();
+    if spans.len() < 2 {
+        return insets;
+    }
+    spans.sort_unstable();
+
+    // Inner columns first: each loop takes the innermost column whose loops
+    // all lie at least one blank row away from it.  Loops on the same pair of
+    // rows already share both runs, so a second column would only draw a
+    // ladder; in one style they keep one column and read as a fan-in.
+    let kind = |idx: usize| {
+        let edge = &graph.edges[idx];
+        (edge.from == edge.to, edge.kind)
+    };
+    let mut columns: Vec<Vec<GutterLoop>> = Vec::new();
+    let mut placed = Vec::new();
+    for (_, top, bottom, idx) in spans {
+        let loop_rows = (top, bottom, kind(idx));
+        let column = columns
+            .iter()
+            .position(|rows| rows.contains(&loop_rows))
+            .or_else(|| {
+                columns
+                    .iter()
+                    .position(|rows| rows.iter().all(|&(t, b, _)| bottom + 1 < t || b + 1 < top))
+            })
+            .unwrap_or_else(|| {
+                columns.push(Vec::new());
+                columns.len() - 1
+            });
+        columns[column].push(loop_rows);
+        placed.push((idx, column));
+    }
+    let outermost = columns.len() - 1;
+    for (idx, column) in placed {
+        insets.insert(idx, outermost - column);
+    }
+    insets
 }
 
 /// A back-edge endpoint at a node: (sort key, edge index, is the exit).

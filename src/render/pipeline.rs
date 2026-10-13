@@ -155,6 +155,18 @@ pub(super) fn render_with_feedback_with_contract(
     if let Some(lowest_detour) = cycle_source_detours.values().max() {
         height = height.max(lowest_detour.saturating_add(2).min(max_canvas_height));
     }
+    // Back edges whose loops meet each take their own gutter column, two
+    // apart; without the width for them they share the outermost one.
+    let mut cycle_gutter_insets =
+        cycle::plan_vertical_cycle_gutters(graph, &config.spacing, &cycle_source_detours);
+    if let Some(widest) = cycle_gutter_insets.values().max() {
+        let needed = width + 2 * widest;
+        if needed <= max_canvas_width {
+            width = needed;
+        } else {
+            cycle_gutter_insets.clear();
+        }
+    }
 
     let portals_enabled = !context.compatibility.disable_portals;
     let node_rects = node_rects_from_graph(graph);
@@ -545,6 +557,7 @@ pub(super) fn render_with_feedback_with_contract(
             Some(owner_id.as_str()),
             cycle_lanes.get(&edge_idx).copied(),
             cycle_source_detours.get(&edge_idx).copied(),
+            cycle_gutter_insets.get(&edge_idx).copied().unwrap_or(0),
         );
     }
 
