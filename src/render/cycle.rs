@@ -44,6 +44,7 @@ pub fn route_cycle_edge(
         None,
         None,
         None,
+        None,
         0,
     );
 }
@@ -64,6 +65,7 @@ pub fn route_cycle_edge_on_lane(
     lane: Option<HorizontalCycleLane>,
     source_detour: Option<usize>,
     target_detour: Option<usize>,
+    bottom_exit: Option<CycleBottomExit>,
     gutter_inset: usize,
 ) {
     use crate::graph::Direction;
@@ -163,8 +165,29 @@ pub fn route_cycle_edge_on_lane(
                         c == ' ' || super::canvas::is_vertical(c, style)
                     })
             };
-            let source_y = match source_detour.filter(|y| detour_clear(*y)) {
-                Some(detour_y) => {
+            // A source that also takes a back edge in leaves through its bottom
+            // border instead, when that drop and its row are clear.
+            let bottom_exit = bottom_exit.filter(|exit| {
+                exit.row < canvas.height
+                    && exit.x < gutter_x
+                    && (from.bottom_y()..=exit.row).all(|y| canvas.get(exit.x, y) == ' ')
+                    && (exit.x + 1..=gutter_x).all(|x| {
+                        let c = canvas.get(x, exit.row);
+                        c == ' ' || super::canvas::is_vertical(c, style)
+                    })
+            });
+            let source_y = match (bottom_exit, source_detour.filter(|y| detour_clear(*y))) {
+                (Some(exit), _) => {
+                    for y in from.bottom_y()..exit.row {
+                        set_cycle_edge_char(canvas, exit.x, y, style.back_v, style, owner_id);
+                    }
+                    set_cycle_char(canvas, exit.x, exit.row, style.corner_ul, owner_id);
+                    for x in exit.x + 1..gutter_x {
+                        set_cycle_edge_char(canvas, x, exit.row, style.back_h, style, owner_id);
+                    }
+                    exit.row
+                }
+                (None, Some(detour_y)) => {
                     let stub_x = from.x + from.width;
                     let jog_x = stub_x + 1;
                     let (jog_turn, detour_turn) = if detour_y > from_y {
@@ -183,7 +206,7 @@ pub fn route_cycle_edge_on_lane(
                     }
                     detour_y
                 }
-                None => {
+                (None, None) => {
                     for x in (from.x + from.width)..gutter_x {
                         set_cycle_edge_char(canvas, x, from_y, style.back_h, style, owner_id);
                     }
@@ -257,13 +280,18 @@ pub fn route_cycle_edge_on_lane(
             set_cycle_end(canvas, to.x + to.width, to_y, end, kind, owner_id);
             // A bidirectional back edge also points back into its source.
             if kind == EdgeKind::Bidirectional {
-                set_cycle_char(
-                    canvas,
-                    from.x + from.width,
-                    from.center_y(),
-                    style.arrow_left,
-                    owner_id,
-                );
+                match bottom_exit {
+                    Some(exit) => {
+                        set_cycle_char(canvas, exit.x, from.bottom_y(), style.arrow_up, owner_id);
+                    }
+                    None => set_cycle_char(
+                        canvas,
+                        from.x + from.width,
+                        from.center_y(),
+                        style.arrow_left,
+                        owner_id,
+                    ),
+                }
             }
         }
         Direction::LR | Direction::RL => {
@@ -622,6 +650,103 @@ pub fn plan_vertical_cycle_target_detours(graph: &Graph) -> HashMap<usize, usize
         }
     }
     detours
+}
+
+/// A TD/TB back edge that leaves its source through the bottom border: the
+/// border column it drops from and the row it runs to the gutter along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CycleBottomExit {
+    pub x: usize,
+    pub row: usize,
+}
+
+/// Plan a bottom-border exit for each TD/TB back edge whose source also
+/// takes a back edge in (or loops on itself). Both would otherwise use the
+/// source's one side cell, where an arrow in hides the exit. The exit drops
+/// from the border right of the forward stem to a row below the rank, one
+/// blank row clear of the boxes, and runs along it to the gutter. Below a
+/// source that loops on itself, the row runs under that loop rather than
+/// alongside its bottom.
+pub fn plan_vertical_cycle_bottom_exits(
+    graph: &Graph,
+    spacing: &SpacingConfig,
+) -> HashMap<usize, CycleBottomExit> {
+    let mut exits = HashMap::new();
+    if !matches!(graph.direction, Direction::TD | Direction::TB) {
+        return exits;
+    }
+    let node = |id: &str| graph.nodes.iter().find(|node| node.id == id);
+    let last_row = |node: &Node| node.y + node.height.max(3) - 1;
+    for (idx, edge) in graph.edges.iter().enumerate() {
+        if !edge.is_back_edge || edge.from == edge.to {
+            continue;
+        }
+        let Some(from) = node(&edge.from) else {
+            continue;
+        };
+        let takes_one_in = graph
+            .edges
+            .iter()
+            .any(|other| other.is_back_edge && other.to == from.id);
+        if !takes_one_in || !from.shape.has_flat_vertical_entry() {
+            continue;
+        }
+        // On the centre of a box with no forward exit; otherwise right of the
+        // forward stem, a blank border cell clear of each side (an ASCII `+`
+        // beside the corner `+` reads as a doubled corner), or failing that
+        // just inside the corner.
+        let leaves_forward = graph
+            .edges
+            .iter()
+            .any(|other| !other.is_back_edge && other.from == from.id);
+        let x = if !leaves_forward {
+            from.center_x()
+        } else {
+            let clear = from.x + from.width.saturating_sub(3);
+            let tight = from.x + from.width.saturating_sub(2);
+            if clear >= from.center_x() + 2 {
+                clear
+            } else if tight >= from.center_x() + 2 {
+                tight
+            } else {
+                continue;
+            }
+        };
+        let loops_on_itself = graph
+            .edges
+            .iter()
+            .any(|other| other.from == from.id && other.to == from.id);
+        // Under the self-loop when the source loops on itself (a row above the
+        // loop's bottom would cross both its legs), else just below the rank.
+        let under_loop = loops_on_itself.then(|| from.bottom_y() + spacing.row_spacing.max(2) + 2);
+        let clear_row = |start: usize| {
+            let mut row = start;
+            for _ in 0..64 {
+                let Some(next) = graph.nodes.iter().find(|n| {
+                    n.x + n.width > x && n.y.saturating_sub(1) <= row && row <= last_row(n) + 1
+                }) else {
+                    break;
+                };
+                row = last_row(next) + 2;
+            }
+            let drop_blocked = graph.nodes.iter().any(|n| {
+                n.id != from.id
+                    && n.x <= x + 1
+                    && x <= n.x + n.width
+                    && n.y <= row
+                    && from.bottom_y() <= last_row(n)
+            });
+            (!drop_blocked).then_some(row)
+        };
+        let Some(row) = (match under_loop {
+            Some(row) => clear_row(row),
+            None => clear_row(last_row(from) + 2),
+        }) else {
+            continue;
+        };
+        exits.insert(idx, CycleBottomExit { x, row });
+    }
+    exits
 }
 
 /// A loop in a TD/BT gutter column: its top and bottom rows, whether it is a

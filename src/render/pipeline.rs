@@ -122,6 +122,7 @@ pub(super) fn render_with_feedback_with_contract(
         .max(1);
     let cycle_source_detours = cycle::plan_vertical_cycle_source_detours(graph);
     let cycle_target_detours = cycle::plan_vertical_cycle_target_detours(graph);
+    let cycle_bottom_exits = cycle::plan_vertical_cycle_bottom_exits(graph, &config.spacing);
     // A labelled back edge writes its label on its cycle route: in TD/BT on
     // the leg from the source out to the right gutter, which must hold
     // `─ label ─`; in LR/RL on or just below the bottom gutter run.
@@ -163,6 +164,9 @@ pub(super) fn render_with_feedback_with_contract(
     if let Some(lowest_detour) = cycle_source_detours.values().max() {
         height = height.max(lowest_detour.saturating_add(2).min(max_canvas_height));
     }
+    if let Some(lowest_exit) = cycle_bottom_exits.values().map(|exit| exit.row).max() {
+        height = height.max(lowest_exit.saturating_add(2).min(max_canvas_height));
+    }
     // A TD/TB self-loop closes on a row below its box; on the bottom rank
     // that row lies past the layout, and the loop would not be drawn. Rows
     // are reserved only for a loop with its node's side cell to itself: its
@@ -173,7 +177,12 @@ pub(super) fn render_with_feedback_with_contract(
         graph
             .edges
             .iter()
-            .filter(|edge| edge.is_back_edge && (edge.from == node_id || edge.to == node_id))
+            .enumerate()
+            .filter(|(idx, edge)| {
+                edge.is_back_edge
+                    && (edge.to == node_id
+                        || (edge.from == node_id && !cycle_bottom_exits.contains_key(idx)))
+            })
             .count()
             > 1
     };
@@ -192,10 +201,17 @@ pub(super) fn render_with_feedback_with_contract(
     }
     // Back edges whose loops meet each take their own gutter column, two
     // apart; without the width for them they share the outermost one.
+    // A loop leaves its source on its bottom-exit row when it has one.
+    let mut cycle_source_rows = cycle_source_detours.clone();
+    cycle_source_rows.extend(
+        cycle_bottom_exits
+            .iter()
+            .map(|(&idx, exit)| (idx, exit.row)),
+    );
     let mut cycle_gutter_insets = cycle::plan_vertical_cycle_gutters(
         graph,
         &config.spacing,
-        &cycle_source_detours,
+        &cycle_source_rows,
         &cycle_target_detours,
     );
     if let Some(widest) = cycle_gutter_insets.values().max() {
@@ -593,7 +609,10 @@ pub(super) fn render_with_feedback_with_contract(
             (node.id.clone(), x)
         };
         (
-            side(from, lane.map(|lane| lane.from_x)),
+            match cycle_bottom_exits.get(&edge_idx) {
+                Some(exit) => (from.id.clone(), exit.x),
+                None => side(from, lane.map(|lane| lane.from_x)),
+            },
             side(to, lane.map(|lane| lane.to_x)),
         )
     };
@@ -644,6 +663,7 @@ pub(super) fn render_with_feedback_with_contract(
             cycle_lanes.get(&edge_idx).copied(),
             cycle_source_detours.get(&edge_idx).copied(),
             cycle_target_detours.get(&edge_idx).copied(),
+            cycle_bottom_exits.get(&edge_idx).copied(),
             cycle_gutter_insets.get(&edge_idx).copied().unwrap_or(0),
         );
     }
@@ -990,6 +1010,13 @@ pub(super) fn render_with_feedback_with_contract(
                 let x = cycle_lanes
                     .get(&edge_idx)
                     .map_or(from.x + from.width / 2, |lane| lane.from_x);
+                let border_y = from.bottom_y().saturating_sub(1);
+                (canvas::is_horizontal(canvas.get(x, border_y), &chars)
+                    && canvas::is_vertical(canvas.get(x, from.bottom_y()), &chars))
+                .then_some((x, border_y, chars.junction_down))
+            }
+            Direction::TD | Direction::TB if cycle_bottom_exits.contains_key(&edge_idx) => {
+                let x = cycle_bottom_exits[&edge_idx].x;
                 let border_y = from.bottom_y().saturating_sub(1);
                 (canvas::is_horizontal(canvas.get(x, border_y), &chars)
                     && canvas::is_vertical(canvas.get(x, from.bottom_y()), &chars))

@@ -285,7 +285,7 @@ fn back_edges_on_a_shared_cell_keep_a_plain_arrow() {
 
 /// A TD self-loop on the bottom rank is drawn: the canvas keeps the row its
 /// loop closes on. A self-loop whose node's side cell another back edge
-/// leaves from is not forced in, so that exit keeps its tee.
+/// leaves from is not forced in, so that exit keeps a junction.
 #[test]
 fn bottom_rank_td_self_loops_are_drawn_unless_their_cell_is_shared() {
     let render = |input: &str| {
@@ -314,10 +314,17 @@ fn bottom_rank_td_self_loops_are_drawn_unless_their_cell_is_shared() {
             "the bottom-rank self-loop is drawn and closes below its box:\n{frame}"
         );
     }
+    // B both loops on itself and leaves for A: the exit keeps a junction of
+    // its own, on the side or, when it has one, on the bottom border.
     let frame = render("graph TD\nA --> B\nA --> A\nB --> B\nB --> A\n");
+    let lines: Vec<&str> = frame.lines().collect();
+    let b_row = lines
+        .iter()
+        .position(|line| line.contains("  B  "))
+        .expect("B row");
     assert!(
-        frame.contains("│  B  ├"),
-        "B's back edge to A keeps its exit tee:\n{frame}"
+        lines[b_row].contains("│  B  ├") || lines[b_row + 1].contains('┬'),
+        "B's back edge to A keeps an exit junction of its own:\n{frame}"
     );
 }
 
@@ -341,6 +348,38 @@ fn td_back_edge_enters_below_a_sibling_on_its_target_row() {
         assert!(
             row.contains(entry) && !row.contains(through),
             "the back edge must enter Left without running through Right ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// A TD back edge whose source also takes a back edge in (here its own
+/// self-loop) leaves through the source's bottom border, so its exit and
+/// the arrow in do not share the source's one side cell: the exit keeps a
+/// junction of its own and the self-loop is drawn.
+#[test]
+fn a_td_back_edge_leaves_through_the_bottom_when_its_side_cell_takes_one_in() {
+    let input = "graph TD\nA --> B\nA --> A\nB --> B\nB --> A\n";
+    for (style, exit) in [(BaseStyle::Unicode, '┬'), (BaseStyle::Ascii, '+')] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let lines: Vec<&str> = frame.lines().collect();
+        let b_row = lines
+            .iter()
+            .position(|line| line.contains("  B  "))
+            .expect("B row");
+        let border: String = lines[b_row + 1].trim().chars().skip(1).collect();
+        let border = border.trim_end_matches(['┘', '+']);
+        assert!(
+            border.contains(exit),
+            "B's back edge leaves through its bottom border ({style:?}):\n{frame}"
+        );
+        assert!(
+            lines
+                .iter()
+                .skip(b_row + 2)
+                .any(|line| line.contains(['┘', '+'])),
+            "B's self-loop is drawn below it ({style:?}):\n{frame}"
         );
     }
 }
