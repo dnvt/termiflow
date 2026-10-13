@@ -43,12 +43,13 @@ pub fn route_cycle_edge(
         EdgeKind::Arrow,
         None,
         None,
+        None,
         0,
     );
 }
 
 /// Route a cycle edge, using a planned LR/RL gutter lane when one is given,
-/// or a planned TD source detour row, and in TD/BT the gutter column
+/// planned TD source and target detour rows, and in TD/BT the gutter column
 /// `gutter_inset` column pairs in from the outermost one.
 #[allow(clippy::too_many_arguments)]
 pub fn route_cycle_edge_on_lane(
@@ -62,6 +63,7 @@ pub fn route_cycle_edge_on_lane(
     kind: EdgeKind,
     lane: Option<HorizontalCycleLane>,
     source_detour: Option<usize>,
+    target_detour: Option<usize>,
     gutter_inset: usize,
 ) {
     use crate::graph::Direction;
@@ -190,32 +192,63 @@ pub fn route_cycle_edge_on_lane(
             };
             let from_y = source_y;
 
+            // The run from the gutter into the target follows the target's row,
+            // unless a box on that row sends it along its planned detour row
+            // below the target's rank, with a jog up into the target's side.
+            // Taken only over blank cells and lines it crosses, like the source
+            // detour.
+            let jog_x = to.x + to.width + 1;
+            let target_detour = target_detour.filter(|&detour_y| {
+                detour_y < canvas.height
+                    && detour_y > to_y
+                    && (to_y..=detour_y).all(|y| canvas.get(jog_x, y) == ' ')
+                    && (jog_x + 1..=gutter_x).all(|x| {
+                        let c = canvas.get(x, detour_y);
+                        c == ' ' || super::canvas::is_vertical(c, style)
+                    })
+            });
+            let entry_y = target_detour.unwrap_or(to_y);
+
             // Vertical line in gutter
-            let (top, bottom) = if from_y < to_y {
-                (from_y, to_y)
+            let (top, bottom) = if from_y < entry_y {
+                (from_y, entry_y)
             } else {
-                (to_y, from_y)
+                (entry_y, from_y)
             };
             for y in top..=bottom {
                 set_cycle_edge_char(canvas, gutter_x, y, style.back_v, style, owner_id);
             }
 
             // Horizontal line from gutter to target
-            for x in (to.x + to.width)..gutter_x {
-                set_cycle_edge_char(canvas, x, to_y, style.back_h, style, owner_id);
+            match target_detour {
+                Some(detour_y) => {
+                    set_cycle_char(canvas, jog_x, to_y, style.corner_dr, owner_id);
+                    set_cycle_char(canvas, jog_x, detour_y, style.corner_ul, owner_id);
+                    for y in to_y + 1..detour_y {
+                        set_cycle_edge_char(canvas, jog_x, y, style.back_v, style, owner_id);
+                    }
+                    for x in jog_x + 1..gutter_x {
+                        set_cycle_edge_char(canvas, x, detour_y, style.back_h, style, owner_id);
+                    }
+                }
+                None => {
+                    for x in (to.x + to.width)..gutter_x {
+                        set_cycle_edge_char(canvas, x, to_y, style.back_h, style, owner_id);
+                    }
+                }
             }
 
             // Corners at source-to-gutter and gutter-to-target junctions
             // Path: horizontal right from source → vertical in gutter → horizontal left to target
-            if from_y < to_y {
+            if from_y < entry_y {
                 // Downward: right-then-down at source, down-then-left at target
                 set_cycle_char(canvas, gutter_x, from_y, style.corner_dr, owner_id); // ┐
-                set_cycle_char(canvas, gutter_x, to_y, style.corner_ur, owner_id);
+                set_cycle_char(canvas, gutter_x, entry_y, style.corner_ur, owner_id);
             // ┘
             } else {
                 // Upward: right-then-up at source, up-then-left at target
                 set_cycle_char(canvas, gutter_x, from_y, style.corner_ur, owner_id); // ┘
-                set_cycle_char(canvas, gutter_x, to_y, style.corner_dr, owner_id);
+                set_cycle_char(canvas, gutter_x, entry_y, style.corner_dr, owner_id);
                 // ┐
             }
 
@@ -500,6 +533,97 @@ pub fn plan_vertical_cycle_source_detours(graph: &Graph) -> HashMap<usize, usize
     detours
 }
 
+/// Plan, for each TD/TB back edge whose run from the right gutter into its
+/// target would cross a box on the target's row, the row it enters along
+/// instead: below the target's rank, with one blank row between it and the
+/// boxes, and a jog up into the target's side.
+pub fn plan_vertical_cycle_target_detours(graph: &Graph) -> HashMap<usize, usize> {
+    let mut detours = HashMap::new();
+    if !matches!(graph.direction, Direction::TD | Direction::TB) {
+        return detours;
+    }
+    let node = |id: &str| graph.nodes.iter().find(|node| node.id == id);
+    let last_row = |node: &Node| node.y + node.height.max(3) - 1;
+    for (idx, edge) in graph.edges.iter().enumerate() {
+        if !edge.is_back_edge || edge.from == edge.to {
+            continue;
+        }
+        let (Some(from), Some(to)) = (node(&edge.from), node(&edge.to)) else {
+            continue;
+        };
+        let run_start = to.x + to.width;
+        let jog_x = run_start + 1;
+        let row = to.center_y();
+        let blockers: Vec<&Node> = graph
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.id != to.id && n.x + n.width > run_start && n.y <= row && row <= last_row(n)
+            })
+            .collect();
+        // The jog needs a blank column between it and the first box.
+        if blockers.is_empty() || blockers.iter().any(|n| n.x <= jog_x + 1) {
+            continue;
+        }
+        let detour = blockers
+            .iter()
+            .map(|n| last_row(n))
+            .fold(last_row(to), usize::max)
+            + 2;
+        // The detour row must lie above the source's row, clear of every
+        // box it runs past, and the jog column clear of boxes up to it.
+        let row_blocked = graph.nodes.iter().any(|n| {
+            n.x + n.width > jog_x && n.y.saturating_sub(1) <= detour && detour <= last_row(n) + 1
+        });
+        let jog_blocked = graph.nodes.iter().any(|n| {
+            n.id != to.id
+                && n.x <= jog_x + 1
+                && jog_x <= n.x + n.width
+                && n.y <= detour
+                && row <= last_row(n)
+        });
+        if detour >= from.center_y() || row_blocked || jog_blocked {
+            continue;
+        }
+        detours.insert(idx, detour);
+    }
+
+    // A jog meets its target beside the target's side cell; another back
+    // edge still running along that row, into its own target or out of its
+    // source, would pass that cell and turn the jog's corner into a tee.
+    // Dropping a detour puts its edge back on the row, so repeat until none
+    // changes.
+    let row_runs = |detours: &HashMap<usize, usize>, row: usize, past_x: usize, skip: usize| {
+        graph.edges.iter().enumerate().any(|(idx, edge)| {
+            idx != skip
+                && edge.is_back_edge
+                && edge.from != edge.to
+                && [(&edge.to, !detours.contains_key(&idx)), (&edge.from, true)]
+                    .into_iter()
+                    .filter(|(_, on_row)| *on_row)
+                    .filter_map(|(id, _)| node(id))
+                    .any(|n| n.center_y() == row && n.x + n.width <= past_x)
+        })
+    };
+    loop {
+        let crossed: Vec<usize> = detours
+            .keys()
+            .copied()
+            .filter(|&idx| {
+                node(&graph.edges[idx].to)
+                    .is_some_and(|to| row_runs(&detours, to.center_y(), to.x + to.width + 1, idx))
+            })
+            .collect();
+        if crossed.is_empty() {
+            break;
+        }
+        for idx in crossed {
+            detours.remove(&idx);
+        }
+    }
+    detours
+}
+
 /// A loop in a TD/BT gutter column: its top and bottom rows, whether it is a
 /// self-loop, and its edge kind.
 type GutterLoop = (usize, usize, (bool, EdgeKind));
@@ -507,12 +631,14 @@ type GutterLoop = (usize, usize, (bool, EdgeKind));
 /// Plan the right-gutter column of each TD/TB/BT back edge, as an inset in
 /// column pairs from the outermost one, so loops whose rows meet never share
 /// a column and merge.  Shorter loops take the inner columns so they nest;
-/// loops whose rows lie apart share one.  `source_detours` gives the row a
-/// back edge leaves its source on when it detours.
+/// loops whose rows lie apart share one.  `source_detours` and
+/// `target_detours` give the rows a back edge leaves its source and enters
+/// its target on when it detours.
 pub fn plan_vertical_cycle_gutters(
     graph: &Graph,
     spacing: &SpacingConfig,
     source_detours: &HashMap<usize, usize>,
+    target_detours: &HashMap<usize, usize>,
 ) -> HashMap<usize, usize> {
     let mut insets = HashMap::new();
     if !matches!(
@@ -538,7 +664,7 @@ pub fn plan_vertical_cycle_gutters(
                 }
             } else {
                 let from_y = source_detours.get(&idx).copied().unwrap_or(from.center_y());
-                let to_y = to.center_y();
+                let to_y = target_detours.get(&idx).copied().unwrap_or(to.center_y());
                 (from_y.min(to_y), from_y.max(to_y))
             };
             Some((bottom - top, top, bottom, idx))

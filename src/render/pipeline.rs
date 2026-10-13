@@ -121,6 +121,7 @@ pub(super) fn render_with_feedback_with_contract(
         .max(max_bottom.saturating_add(1).min(max_canvas_height))
         .max(1);
     let cycle_source_detours = cycle::plan_vertical_cycle_source_detours(graph);
+    let cycle_target_detours = cycle::plan_vertical_cycle_target_detours(graph);
     // A labelled back edge writes its label on its cycle route: in TD/BT on
     // the leg from the source out to the right gutter, which must hold
     // `─ label ─`; in LR/RL on or just below the bottom gutter run.
@@ -191,8 +192,12 @@ pub(super) fn render_with_feedback_with_contract(
     }
     // Back edges whose loops meet each take their own gutter column, two
     // apart; without the width for them they share the outermost one.
-    let mut cycle_gutter_insets =
-        cycle::plan_vertical_cycle_gutters(graph, &config.spacing, &cycle_source_detours);
+    let mut cycle_gutter_insets = cycle::plan_vertical_cycle_gutters(
+        graph,
+        &config.spacing,
+        &cycle_source_detours,
+        &cycle_target_detours,
+    );
     if let Some(widest) = cycle_gutter_insets.values().max() {
         let needed = width + 2 * widest;
         if needed <= max_canvas_width {
@@ -638,6 +643,7 @@ pub(super) fn render_with_feedback_with_contract(
             end_kind,
             cycle_lanes.get(&edge_idx).copied(),
             cycle_source_detours.get(&edge_idx).copied(),
+            cycle_target_detours.get(&edge_idx).copied(),
             cycle_gutter_insets.get(&edge_idx).copied().unwrap_or(0),
         );
     }

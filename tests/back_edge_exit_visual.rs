@@ -320,3 +320,27 @@ fn bottom_rank_td_self_loops_are_drawn_unless_their_cell_is_shared() {
         "B's back edge to A keeps its exit tee:\n{frame}"
     );
 }
+
+/// A TD back edge whose run from the gutter into its target would cross a
+/// sibling box on the target's row enters along a row below the target's
+/// rank instead, with a jog up into the target's side.
+#[test]
+fn td_back_edge_enters_below_a_sibling_on_its_target_row() {
+    let input = "graph TD\n  T[Top] --> L[Left]\n  T --> R[Right]\n  L --> S[Source]\n  S --> L\n";
+    for (style, entry, through) in [
+        (BaseStyle::Unicode, "←┐", "─│  Right"),
+        (BaseStyle::Ascii, "<+", "-|  Right"),
+    ] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let row = frame
+            .lines()
+            .find(|line| line.contains("Left"))
+            .expect("target row");
+        assert!(
+            row.contains(entry) && !row.contains(through),
+            "the back edge must enter Left without running through Right ({style:?}):\n{frame}"
+        );
+    }
+}
