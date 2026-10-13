@@ -139,9 +139,59 @@ fn overlapping_td_back_edges_keep_separate_gutter_columns() {
                 .expect("run end");
             let below = rows.get(y + 1).and_then(|row| row.get(end)).copied();
             assert!(
+                end > start && matches!(rows[y][end], '┘' | '+'),
+                "{source}'s back edge must run out and turn up in the gutter ({style:?}):\n{frame}"
+            );
+            assert!(
                 matches!(below, None | Some(' ')),
                 "{source}'s back edge joins another loop's gutter column ({style:?}):\n{frame}"
             );
         }
     }
+}
+
+/// A TD back edge never detours when its jog would run down through a box on
+/// a later rank: that box would read as the edge's source.
+#[test]
+fn td_back_edge_does_not_detour_through_a_box_below() {
+    let input = "graph TD\n  In --> Dec\n  Dec --> Ok\n  Dec --> Bad\n  Bad --> In\n  Bad --> N1[Next node with a long name]\n";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let lines: Vec<&str> = frame.lines().collect();
+        let label_row = lines
+            .iter()
+            .position(|line| line.contains("Next node"))
+            .expect("N1 row");
+        let bottom = lines[label_row + 1].trim();
+        let inner: String = bottom
+            .chars()
+            .skip(1)
+            .take(bottom.chars().count() - 2)
+            .collect();
+        assert!(
+            !inner.contains(['┬', '┴', '┼', '+']),
+            "no edge may leave N1's bottom border ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// A labelled TD back edge that detours below a sibling keeps its label on
+/// its detour run.
+#[test]
+fn a_detoured_td_back_edge_keeps_its_label_on_its_run() {
+    let input =
+        "graph TD\n  In --> Dec\n  Dec --> Ok\n  Dec --> Bad\n  Bad -->|retry label 1234| In\n";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    let label_row = frame
+        .lines()
+        .find(|line| line.contains("retry label 1234"))
+        .expect("label row");
+    assert!(
+        label_row.contains("└─ retry label 1234 ─┘"),
+        "the label sits on the detour run:\n{frame}"
+    );
 }

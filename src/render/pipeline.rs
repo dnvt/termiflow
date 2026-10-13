@@ -120,14 +120,16 @@ pub(super) fn render_with_feedback_with_contract(
     height = height
         .max(max_bottom.saturating_add(1).min(max_canvas_height))
         .max(1);
+    let cycle_source_detours = cycle::plan_vertical_cycle_source_detours(graph);
     // A labelled back edge writes its label on its cycle route: in TD/BT on
     // the leg from the source out to the right gutter, which must hold
     // `─ label ─`; in LR/RL on or just below the bottom gutter run.
     let labelled_back_edges = graph
         .edges
         .iter()
-        .filter(|edge| edge.is_back_edge && edge.from != edge.to && edge.label.is_some());
-    for edge in labelled_back_edges {
+        .enumerate()
+        .filter(|(_, edge)| edge.is_back_edge && edge.from != edge.to && edge.label.is_some());
+    for (edge_idx, edge) in labelled_back_edges {
         let label = format_edge_label_with_limit(
             edge.label.as_deref().unwrap_or_default(),
             config.max_edge_label_width,
@@ -143,6 +145,12 @@ pub(super) fn render_with_feedback_with_contract(
                 .filter(|subgraph| graph.is_node_in_subgraph_tree(&from.id, &subgraph.id))
                 .map(|subgraph| subgraph.bounds.x + subgraph.bounds.width)
                 .fold(from.x + from.width, usize::max);
+            // A detoured leg runs along its detour row, past its stub and jog.
+            let leg_start = if cycle_source_detours.contains_key(&edge_idx) {
+                leg_start.max(from.x + from.width + 2)
+            } else {
+                leg_start
+            };
             let needed = leg_start + display_width(&label) + 4 + 2;
             width = width.max(needed.min(max_canvas_width));
         }
@@ -151,7 +159,6 @@ pub(super) fn render_with_feedback_with_contract(
     if let Some(lowest_lane) = cycle_lanes.values().map(|lane| lane.gutter_y).max() {
         height = height.max(lowest_lane.saturating_add(2).min(max_canvas_height));
     }
-    let cycle_source_detours = cycle::plan_vertical_cycle_source_detours(graph);
     if let Some(lowest_detour) = cycle_source_detours.values().max() {
         height = height.max(lowest_detour.saturating_add(2).min(max_canvas_height));
     }

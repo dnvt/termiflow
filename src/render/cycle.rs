@@ -417,6 +417,18 @@ pub fn plan_vertical_cycle_source_detours(graph: &Graph) -> HashMap<usize, usize
             };
             detour = last_row(next) + 2;
         }
+        // The jog runs down from the source row to the detour row; a box on
+        // a later rank that spans its column would read as the edge's source.
+        let jog_blocked = graph.nodes.iter().any(|n| {
+            n.id != from.id
+                && n.x <= jog_x + 1
+                && jog_x <= n.x + n.width
+                && n.y <= detour
+                && row <= last_row(n)
+        });
+        if jog_blocked {
+            continue;
+        }
         detours.insert(idx, detour);
     }
     detours
@@ -455,7 +467,7 @@ pub fn plan_vertical_cycle_gutters(
             let to = node(&edge.to)?;
             let (top, bottom) = if from.id == to.id {
                 match graph.direction {
-                    Direction::BT => (from.y.checked_sub(loop_offset)?, from.center_y()),
+                    Direction::BT => (from.y.saturating_sub(loop_offset), from.center_y()),
                     _ => (from.center_y(), from.bottom_y() + loop_offset),
                 }
             } else {
