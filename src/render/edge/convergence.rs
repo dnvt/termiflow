@@ -1585,6 +1585,23 @@ pub fn route_convergent_edges(
             let max_merge = min_exit.saturating_sub(1);
             let limit = arrow_primary.saturating_add(1);
             merge_primary = max_merge.max(limit);
+            // Sources leaving frames the target is not in each exit through a
+            // portal of their own; merge outside those frames, on the row above
+            // the highest top border, instead of inside them, where the merge
+            // bar runs under the borders and leaves the portals as stubs.
+            let left_top = visible_sources
+                .iter()
+                .flat_map(|source| graph.node_subgraph_chain(&source.id))
+                .filter(|sg_id| !graph.is_node_in_subgraph_tree(&to.id, sg_id))
+                .filter_map(|sg_id| graph.get_subgraph(sg_id))
+                .filter(|sg| sg.bounds.is_valid())
+                .map(|sg| sg.bounds.y)
+                .min();
+            if let Some(above) = left_top.and_then(|top| top.checked_sub(1)) {
+                if above >= limit && above < merge_primary {
+                    merge_primary = above;
+                }
+            }
         }
     }
 

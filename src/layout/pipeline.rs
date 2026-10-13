@@ -221,11 +221,55 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                             .get_subgraph(id)
                             .is_some_and(|subgraph| subgraph.parent_id.is_none())
                     };
+                    // BT frames with members on a shared rank and no edge between
+                    // them cannot stack without one wrapping the other's members.
+                    let spans =
+                        |id: &str| subgraph_tree_rank_range(input.graph, &placement.ranks, id);
+                    let share_a_rank = match (spans(sg_ids[i]), spans(sg_ids[j])) {
+                        (Some((min1, max1)), Some((min2, max2))) => min1 <= max2 && min2 <= max1,
+                        _ => false,
+                    };
+                    // A back edge into a frame side by side with another runs along
+                    // the shared row, and BT has no detour row for it.
+                    let cycles_through = |id: &str| {
+                        input.graph.edges.iter().any(|edge| {
+                            edge.is_back_edge
+                                && (input.graph.is_node_in_subgraph_tree(&edge.from, id)
+                                    || input.graph.is_node_in_subgraph_tree(&edge.to, id))
+                        })
+                    };
+                    // An outside node ranked inside a frame's span and joined to it
+                    // weaves through it (gen_a_108: SW -> Online -> Queue -> IDB);
+                    // side by side, that node lands on the frame's border.
+                    let woven = |id: &str| {
+                        let Some((low, high)) = spans(id) else {
+                            return false;
+                        };
+                        input.graph.edges.iter().any(|edge| {
+                            [(&edge.from, &edge.to), (&edge.to, &edge.from)].iter().any(
+                                |(outside, inside)| {
+                                    !input.graph.is_node_in_subgraph_tree(outside, id)
+                                        && input.graph.is_node_in_subgraph_tree(inside, id)
+                                        && placement
+                                            .ranks
+                                            .get(outside.as_str())
+                                            .is_some_and(|&rank| low < rank && rank < high)
+                                },
+                            )
+                        })
+                    };
+                    let share_a_rank = share_a_rank
+                        && !cycles_through(sg_ids[i])
+                        && !cycles_through(sg_ids[j])
+                        && !woven(sg_ids[i])
+                        && !woven(sg_ids[j]);
                     if input.graph.direction == Direction::BT
                         && top_level(sg_ids[i])
                         && top_level(sg_ids[j])
-                        && sends(sg_ids[i], sg_ids[j])
-                        && sends(sg_ids[j], sg_ids[i])
+                        && ((share_a_rank
+                            && !sends(sg_ids[i], sg_ids[j])
+                            && !sends(sg_ids[j], sg_ids[i]))
+                            || sends(sg_ids[i], sg_ids[j]) && sends(sg_ids[j], sg_ids[i]))
                     {
                         let required_left = early_env.outer.right().saturating_add(1);
                         if late_env.outer.x < required_left {
@@ -265,6 +309,37 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                     &sg_id,
                     delta as isize,
                 );
+                // Outside nodes whose every edge joins the moved frame go with
+                // it; left behind, their straight edges into it gain jogs.
+                for node in &input.graph.nodes {
+                    if input.graph.get_node_subgraph(&node.id).is_some() {
+                        continue;
+                    }
+                    let mut edges = input
+                        .graph
+                        .edges
+                        .iter()
+                        .filter(|edge| edge.from == node.id || edge.to == node.id)
+                        .peekable();
+                    let satellite = edges.peek().is_some()
+                        && edges.all(|edge| {
+                            let other = if edge.from == node.id {
+                                &edge.to
+                            } else {
+                                &edge.from
+                            };
+                            input.graph.is_node_in_subgraph_tree(other, &sg_id)
+                        });
+                    if !satellite {
+                        continue;
+                    }
+                    if let Some(point) = placement.positions.get_mut(&node.id) {
+                        point.x += delta;
+                    }
+                    if let Some(rect) = placement.node_rects.get_mut(&node.id) {
+                        rect.x += delta;
+                    }
+                }
                 continue;
             }
 

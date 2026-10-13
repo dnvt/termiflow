@@ -162,3 +162,42 @@ fn a_jog_under_a_box_leaves_its_ascii_border_alone() {
         "only Entry's exit marks its border:\n{frame}"
     );
 }
+
+/// A BT fan-in from sources in sibling frames merged on the row above the
+/// sources, inside their frames: the merge bar ran under the frame tops and
+/// the portal each source leaves by poked through its border into nothing.
+/// It now merges above the frames, each source leaving by its own portal.
+#[test]
+fn a_bt_fan_in_from_sibling_frames_merges_above_them() {
+    let input = "graph BT
+    subgraph A [Logs]
+        a[app]
+    end
+    subgraph B [Metrics]
+        b[prom]
+    end
+    subgraph C [Traces]
+        c[otel]
+    end
+    subgraph Sink [Observability]
+        s[(Warehouse)]
+    end
+    a --> s
+    b --> s
+    c --> s
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style);
+        let rows: Vec<&str> = frame.lines().collect();
+        let label = rows
+            .iter()
+            .position(|row| row.contains("app"))
+            .expect("app");
+        let tops = rows[label - 4];
+        assert_eq!(
+            tops.matches(['│', '|']).count(),
+            3,
+            "each source crosses its frame's top once ({style:?}):\n{frame}"
+        );
+    }
+}

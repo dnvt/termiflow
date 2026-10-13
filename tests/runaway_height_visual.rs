@@ -543,3 +543,47 @@ fn an_outside_source_stays_above_a_frame_whose_nested_frame_comes_first() {
         );
     }
 }
+
+/// Two BT frames whose members share a rank, with no edge between them, were
+/// stacked over each other: one hung off the other's border and a long empty
+/// shaft opened under them. They now sit side by side.
+#[test]
+fn bt_frames_sharing_a_rank_sit_side_by_side() {
+    let input = "graph BT
+    subgraph Shop [Storefront]
+        Catalog[Catalog]
+        Cart[Cart]
+        Checkout[Checkout]
+    end
+    subgraph Fulfill [Fulfillment]
+        WMS[Warehouse System]
+        Carrier[Carrier API]
+    end
+    subgraph Fin [Finance]
+        Invoice[Invoicing]
+        Tax[Tax Engine]
+    end
+    Catalog --> Cart --> Checkout
+    Checkout --> Tax
+    Checkout --> WMS
+    WMS --> Carrier
+    Checkout --> Invoice
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        let column = |label: &str| {
+            frame
+                .lines()
+                .find_map(|row| row.find(label).map(|at| row[..at].chars().count()))
+                .expect(label)
+        };
+        let (warehouse, invoicing) = (column("Warehouse System"), column("Invoicing"));
+        let fulfillment_right = warehouse + "Warehouse System".len();
+        assert!(
+            (invoicing > fulfillment_right || warehouse > invoicing + "Invoicing".len())
+                && longest_shaft_run(&frame) < 15,
+            "Finance and Fulfillment side by side, longest shaft {} ({style:?}):\n{frame}",
+            longest_shaft_run(&frame)
+        );
+    }
+}
