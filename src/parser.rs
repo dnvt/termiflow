@@ -756,9 +756,12 @@ pub fn parse(input: &str, strict: bool) -> Result<ParseResult> {
                 }
             }
             // Mermaid places a node referenced inside a subgraph block in that
-            // subgraph even when an earlier top-level line introduced it.
+            // subgraph even when an earlier top-level line introduced it.  An
+            // inner block closes first and claims the node, so a node an
+            // enclosing block referenced first moves into the inner one.
             for node_id in &line_edge_ids {
-                if !node_to_subgraph.contains_key(node_id) {
+                let owner = node_to_subgraph.get(node_id);
+                if owner.is_none_or(|owner| owner != sg_id && subgraph_stack.contains(owner)) {
                     associate_node_with_subgraph_data(
                         &mut node_to_subgraph,
                         &mut subgraph_data,

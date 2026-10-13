@@ -331,6 +331,19 @@ fn test_subgraph_bare_edge_reference_moves_a_top_level_node_like_mermaid() {
 }
 
 #[test]
+fn test_subgraph_inner_block_claims_a_node_its_enclosing_block_referenced_first() {
+    // Mermaid adds an inner block when it closes, before its enclosing one,
+    // and drops the inner block's nodes from the enclosing one.
+    let input = "flowchart TD\n    X[Ex] --> Y[Why]\n    subgraph outer [Outer]\n    X --> W[Dub]\n    subgraph inner [Inner]\n    X --> Z[Zed]\n    end\n    end";
+    let result = parse(input, false).unwrap();
+
+    assert_eq!(result.graph.get_node_subgraph("X"), Some("inner"));
+    assert_eq!(result.graph.get_node_subgraph("W"), Some("outer"));
+    assert_eq!(result.graph.get_node_subgraph("Z"), Some("inner"));
+    assert_eq!(result.graph.get_node_subgraph("Y"), None);
+}
+
+#[test]
 fn test_subgraph_unclosed_warns() {
     let input = "graph TD\nsubgraph X\nA[Node]";
     let result = parse(input, false).unwrap();
