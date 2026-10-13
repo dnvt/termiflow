@@ -408,3 +408,28 @@ fn back_edges_into_a_crowded_row_each_enter_by_their_own_jog() {
         );
     }
 }
+
+/// An open back edge has no head; its line used to end flat against the
+/// target's border. It now tees into the border, as its source end does.
+#[test]
+fn an_open_back_edge_tees_into_its_target() {
+    for (direction, start_border) in [("TD", "Start  ├"), ("LR", "└────┬────┘")]
+    {
+        let input =
+            format!("graph {direction}\n  A[Start] --> B[Middle]\n  B --> C[Finish]\n  C --- A\n");
+        for optimized in [false, true] {
+            let frame = termiflow::render_with_feedback(
+                &input,
+                RenderOptions::new()
+                    .with_style(BaseStyle::Unicode)
+                    .with_optimize_render(optimized),
+            )
+            .expect("render")
+            .output;
+            assert!(
+                frame.lines().any(|row| row.contains(start_border)),
+                "the open back edge tees into Start ({direction} optimized={optimized}):\n{frame}"
+            );
+        }
+    }
+}

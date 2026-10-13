@@ -1149,6 +1149,33 @@ pub(super) fn render_with_feedback_with_contract(
         );
     }
 
+    // An open back edge has no head; its line ended flat against the target's
+    // border. Tee it into the border, as its source end already is.
+    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+        if !edge.is_back_edge || edge.kind != EdgeKind::Open || edge.from == edge.to {
+            continue;
+        }
+        let Some(to) = graph_index.node_by_name(&edge.to) else {
+            continue;
+        };
+        if !matches!(to.shape, NodeShape::Rectangle | NodeShape::Rounded) {
+            continue;
+        }
+        for (x, y, tee) in
+            open_back_edge_end_tees(&canvas, to, &edge_owner_id(edge_idx, edge), &chars)
+        {
+            let mut tee_scene = Scene::new();
+            tee_scene.push(SceneIntent::edge_inferred(x, y, tee));
+            tee_scene.resolve_with_recorder(
+                &mut canvas,
+                &chars,
+                &mut scene_recorder,
+                "source-junction",
+            );
+            source_junction_records.push((x, y, format!("junction:{}", to.id)));
+        }
+    }
+
     canvas.set_write_stage("border-restore");
     restore_subgraph_borders(
         &mut canvas,
@@ -1455,6 +1482,60 @@ pub(super) fn render_with_feedback_with_contract(
         layout_repairs_applied: 0,
         portal_trace,
     })
+}
+
+/// The tees for `node`'s border wherever the line of the edge owned by
+/// `owner_id` touches it from outside: a line along the border's normal
+/// (horizontal beside a side, vertical above or below) ends there.
+fn open_back_edge_end_tees(
+    canvas: &Canvas,
+    node: &Node,
+    owner_id: &str,
+    chars: &crate::style::StyleChars,
+) -> Vec<(usize, usize, char)> {
+    let (left, top) = (node.x, node.y);
+    let right = node.x + node.width.saturating_sub(1);
+    let bottom = node.y + node.height.max(BOX_HEIGHT).saturating_sub(1);
+    let owned_line = |canvas: &Canvas, x: usize, y: usize, horizontal: bool| {
+        let cell = canvas.get(x, y);
+        let line = if horizontal {
+            canvas::is_horizontal(cell, chars)
+        } else {
+            canvas::is_vertical(cell, chars)
+        };
+        line && canvas
+            .get_meta(x, y)
+            .and_then(|meta| meta.owner_id.as_deref())
+            == Some(owner_id)
+    };
+    let mut tees = Vec::new();
+    for y in top + 1..bottom {
+        if owned_line(canvas, right + 1, y, true)
+            && canvas::is_vertical(canvas.get(right, y), chars)
+        {
+            tees.push((right, y, chars.junction_right));
+        }
+        if left > 0
+            && owned_line(canvas, left - 1, y, true)
+            && canvas::is_vertical(canvas.get(left, y), chars)
+        {
+            tees.push((left, y, chars.junction_left));
+        }
+    }
+    for x in left + 1..right {
+        if owned_line(canvas, x, bottom + 1, false)
+            && canvas::is_horizontal(canvas.get(x, bottom), chars)
+        {
+            tees.push((x, bottom, chars.junction_down));
+        }
+        if top > 0
+            && owned_line(canvas, x, top - 1, false)
+            && canvas::is_horizontal(canvas.get(x, top), chars)
+        {
+            tees.push((x, top, chars.junction_up));
+        }
+    }
+    tees
 }
 
 fn canvas_has_explicit_route_cell(canvas: &Canvas, x: usize, y: usize) -> bool {
