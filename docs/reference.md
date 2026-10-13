@@ -75,9 +75,10 @@ Mermaid docs workflows, not a full Mermaid implementation. Accepted headers:
 Supported patterns:
 
 - Nodes (multiple shapes): `A[Label]`, `B{Decision}`, `C((Circle))`, `D(((Event)))`, `E[(Database)]`, `F[[Subroutine]]`, `G([Stadium])`, `H{{Hex}}`, …
-- Grouped edges: `A & B --> C`, `A --> B & C`
+- Grouped edges: `A & B --> C`, `A --> B & C`, with any edge kind and with inline shapes (`A[One] & B{Two} ==> C`)
+- Chains: `A --> B -->|label| C -- text --> D`
 - Edges: `A --> B`, `A ---> B`, `A --- B`, `A ==> B`, `A -.-> B`, `A <--> B`, `A --o B`, `A --x B`
-- Edge labels: `A -->|label| B` and `A -- label --> B`
+- Edge labels: pipe form on every kind (`A ==>|label| B`) and text form on every kind (`A -- label --> B`, `A == label ==> B`, `A -. label .-> B`, `A <-- label --> B`, `A -- label --- B`, `A -- label --o B`, `A -- label --x B`); quoted labels (`A["text"]`, `-->|"text"|`) drop their quotes; an empty pipe label is an unlabeled edge
 - Subgraphs: `subgraph ... end` with preserved parent/child hierarchy, ancestor-aware portal routing, and clean nested containment across `TD`, `LR`, `BT`, and `RL`
 - Per-diagram directives: `%% termiflow: style=...`, `%% termiflow: max_label=...`
 - Multiline: `%% termiflow: wrap=true`, `%% termiflow: max_lines=3`

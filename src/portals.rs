@@ -468,7 +468,10 @@ pub(crate) fn bt_target_portal_x_avoiding_single_cell_turn_with_source_center(
         title_margin,
         PortalColumnPreference::Directional,
     );
-    let initial_is_quiet = initial.abs_diff(source_x) >= 3 && initial.abs_diff(arrow_x) >= 3;
+    // A lane shared by the source stem and the arrow has no turn at all.
+    let straight_through = initial == source_x && initial == arrow_x;
+    let initial_is_quiet =
+        straight_through || (initial.abs_diff(source_x) >= 3 && initial.abs_diff(arrow_x) >= 3);
     if initial_is_quiet {
         return initial;
     }

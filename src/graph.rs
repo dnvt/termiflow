@@ -513,19 +513,17 @@ pub enum Direction {
 }
 
 impl NodeShape {
-    /// Extra outward space required before an incoming arrow reaches a shape.
-    ///
-    /// Most contours can accept the generic one-cell target entry. Diamonds
-    /// need one more cell on every side because their visible contour tapers
-    /// toward the center. Mermaid's asymmetric Flag has a left-facing point,
-    /// so only a left-to-right approach needs the same visual separation.
-    /// Database/cylinder contours intentionally use the generic one-cell
-    /// entry: an extra shape-specific bridge places a terminal arrowhead before
-    /// its final shaft and makes the arrow look detached from the receiver.
-    pub(crate) fn incoming_edge_clearance(self, direction: Direction) -> usize {
-        usize::from(
-            self == NodeShape::Diamond
-                || (self == NodeShape::Asymmetric && direction == Direction::LR),
+    /// Whether the top and bottom borders are flat runs, so a vertical edge may
+    /// land anywhere inside them rather than only at the centre.
+    pub(crate) fn has_flat_vertical_entry(self) -> bool {
+        matches!(
+            self,
+            NodeShape::Rectangle
+                | NodeShape::Rounded
+                | NodeShape::Stadium
+                | NodeShape::Subroutine
+                | NodeShape::Database
+                | NodeShape::Asymmetric
         )
     }
 }
@@ -1880,44 +1878,6 @@ mod tests {
     #[test]
     fn direction_default_is_td() {
         assert_eq!(Direction::default(), Direction::TD);
-    }
-
-    #[test]
-    fn incoming_edge_clearance_is_direction_aware_for_flag() {
-        assert_eq!(
-            NodeShape::Asymmetric.incoming_edge_clearance(Direction::LR),
-            1
-        );
-        assert_eq!(
-            NodeShape::Asymmetric.incoming_edge_clearance(Direction::RL),
-            0
-        );
-        assert_eq!(
-            NodeShape::Asymmetric.incoming_edge_clearance(Direction::TD),
-            0
-        );
-        assert_eq!(
-            NodeShape::Asymmetric.incoming_edge_clearance(Direction::BT),
-            0
-        );
-        assert_eq!(NodeShape::Diamond.incoming_edge_clearance(Direction::RL), 1);
-        for direction in [
-            Direction::TD,
-            Direction::TB,
-            Direction::BT,
-            Direction::LR,
-            Direction::RL,
-        ] {
-            assert_eq!(
-                NodeShape::Database.incoming_edge_clearance(direction),
-                0,
-                "database entry must use the generic terminal clearance for {direction:?}"
-            );
-        }
-        assert_eq!(
-            NodeShape::Rectangle.incoming_edge_clearance(Direction::LR),
-            0
-        );
     }
 
     #[test]

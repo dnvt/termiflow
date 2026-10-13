@@ -152,6 +152,10 @@ pub(super) fn draw_edge_label(
     edge: &crate::graph::Edge,
     graph: &Graph,
 ) -> Option<EdgeLabelPlacement> {
+    // Shaft cells redrawn around the label keep the edge kind (thick/dotted).
+    let base_style = style;
+    let kind_style = edge_label_style(style, edge);
+    let style = &kind_style;
     use super::cycle::{center_x, center_y};
 
     let display_label =
@@ -159,6 +163,9 @@ pub(super) fn draw_edge_label(
     let label_width = display_width(&display_label);
     let owner_id = edge_owner_id(edge_idx, edge);
     let mut cells = Vec::new();
+    // (turn cell, label row, run side step) of a horizontal run that starts
+    // at a fan-out bus turn rather than at the source box.
+    let mut run_turn: Option<(usize, usize, isize)> = None;
 
     match direction {
         Direction::TD | Direction::TB => {
@@ -210,8 +217,7 @@ pub(super) fn draw_edge_label(
                     && label_y < canvas.height
                     && !is_textual(canvas.get(x_pos, label_y))
                 {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+                    set_label_char(canvas, &mut cells, x_pos, label_y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -250,17 +256,31 @@ pub(super) fn draw_edge_label(
                     && label_y < canvas.height
                     && !is_textual(canvas.get(x_pos, label_y))
                 {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+                    set_label_char(canvas, &mut cells, x_pos, label_y, c);
                 }
                 x_pos += display_char_width(c);
             }
         }
         Direction::LR => {
             let edge_y = center_y(to);
-            let stem_start_x = from.x + from.width;
             let arrow_x = to.x.saturating_sub(1);
-            let span_width = arrow_x.saturating_sub(stem_start_x);
+            // Label only the final straight run after a fan-out bus turn.
+            let turn = source_fans_out(graph, from)
+                .then(|| {
+                    final_run_turn(
+                        canvas,
+                        graph,
+                        edge_y,
+                        (from.x + from.width..arrow_x).rev(),
+                        base_style,
+                    )
+                })
+                .flatten();
+            run_turn = turn.map(|x| (x, edge_y, 1));
+            let stem_start_x = turn.map_or(from.x + from.width, |turn| turn + 1);
+            let (stem_start_x, run_end_x) =
+                wall_free_run(graph, edge_y, stem_start_x, arrow_x, label_width);
+            let span_width = run_end_x.saturating_sub(stem_start_x);
             let outside_row = pick_outside_horizontal_label_row(
                 canvas,
                 edge_y,
@@ -269,14 +289,18 @@ pub(super) fn draw_edge_label(
                 &[from, to],
                 graph,
             );
-            let can_fit_full_inline = label_width + 3 <= span_width;
-            let can_fit_tight_inline = label_width <= span_width;
+            // Full placement pads the label with a blank on each side and keeps a
+            // shaft cell before the first blank, as the RL placement does.
+            let can_fit_full_inline = label_width + 4 <= span_width;
+            // Tight placement keeps one shaft cell on each side: before the
+            // arrowhead and after the source or bus turn.
+            let can_fit_tight_inline = label_width + 2 <= span_width;
 
             if can_fit_full_inline {
-                let label_start_x = stem_start_x + (span_width - (label_width + 3)) / 2;
+                let label_start_x = stem_start_x + 1 + (span_width - (label_width + 4)) / 2;
 
                 for x in stem_start_x..label_start_x {
-                    canvas.set(x, edge_y, style.edge_h);
+                    set_label_shaft(canvas, x, edge_y, style, base_style);
                 }
 
                 canvas.set(label_start_x, edge_y, ' ');
@@ -284,8 +308,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x + 1;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -295,29 +318,28 @@ pub(super) fn draw_edge_label(
                 }
                 x_pos += 1;
 
-                for x in x_pos..arrow_x {
+                for x in x_pos..run_end_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             } else if can_fit_tight_inline {
-                let label_start_x = stem_start_x + (span_width - label_width) / 2;
+                let label_start_x = stem_start_x + 1 + (span_width - label_width - 2) / 2;
                 for x in stem_start_x..label_start_x {
-                    canvas.set(x, edge_y, style.edge_h);
+                    set_label_shaft(canvas, x, edge_y, style, base_style);
                 }
 
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
 
-                for x in x_pos..arrow_x {
+                for x in x_pos..run_end_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             } else if let Some(label_row) = outside_row {
@@ -334,12 +356,18 @@ pub(super) fn draw_edge_label(
                     &[from, to],
                     graph,
                 );
+                label_start_x = keep_label_off_routes(
+                    canvas,
+                    label_start_x,
+                    label_row,
+                    label_width,
+                    base_style,
+                );
 
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && label_row < canvas.height {
-                        canvas.set(x_pos, label_row, c);
-                        record_label_cell(&mut cells, x_pos, label_row);
+                        set_label_char(canvas, &mut cells, x_pos, label_row, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -353,7 +381,7 @@ pub(super) fn draw_edge_label(
                     stem_start_x + (span_width.saturating_sub(inline_width + 3)) / 2;
 
                 for x in stem_start_x..label_start_x {
-                    canvas.set(x, edge_y, style.edge_h);
+                    set_label_shaft(canvas, x, edge_y, style, base_style);
                 }
 
                 canvas.set(label_start_x, edge_y, ' ');
@@ -361,8 +389,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x + 1;
                 for c in inline_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -372,9 +399,9 @@ pub(super) fn draw_edge_label(
                 }
                 x_pos += 1;
 
-                for x in x_pos..arrow_x {
+                for x in x_pos..run_end_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             }
@@ -382,8 +409,15 @@ pub(super) fn draw_edge_label(
         Direction::RL => {
             let edge_y = center_y(to);
             let arrow_x = to.x + to.width; // Arrow is after target box
-            let stem_end_x = from.x; // Edge ends at left side of source box
             let gap_start_x = arrow_x.saturating_add(1);
+            // Label only the final straight run after a fan-out bus turn.
+            let turn = source_fans_out(graph, from)
+                .then(|| final_run_turn(canvas, graph, edge_y, gap_start_x..from.x, base_style))
+                .flatten();
+            run_turn = turn.map(|x| (x, edge_y, -1));
+            let stem_end_x = turn.unwrap_or(from.x);
+            let (gap_start_x, stem_end_x) =
+                wall_free_run(graph, edge_y, gap_start_x, stem_end_x, label_width);
             let span_width = stem_end_x.saturating_sub(gap_start_x);
             let outside_row = pick_outside_horizontal_label_row(
                 canvas,
@@ -394,14 +428,16 @@ pub(super) fn draw_edge_label(
                 graph,
             );
             let can_fit_full_inline = label_width + 4 <= span_width;
-            let can_fit_tight_inline = label_width <= span_width;
+            // Tight placement keeps one shaft cell on each side: before the
+            // arrowhead and after the source or bus turn.
+            let can_fit_tight_inline = label_width + 2 <= span_width;
 
             if can_fit_full_inline {
                 let label_start_x = gap_start_x + 1 + (span_width - (label_width + 4)) / 2;
 
                 for x in gap_start_x..label_start_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
 
@@ -412,8 +448,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x + 1;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -425,29 +460,28 @@ pub(super) fn draw_edge_label(
 
                 for x in x_pos..stem_end_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             } else if can_fit_tight_inline {
-                let label_start_x = gap_start_x + (span_width - label_width) / 2;
+                let label_start_x = gap_start_x + 1 + (span_width - label_width - 2) / 2;
                 for x in gap_start_x..label_start_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
 
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
 
                 for x in x_pos..stem_end_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             } else if let Some(label_row) = outside_row {
@@ -464,12 +498,18 @@ pub(super) fn draw_edge_label(
                     &[from, to],
                     graph,
                 );
+                label_start_x = keep_label_off_routes(
+                    canvas,
+                    label_start_x,
+                    label_row,
+                    label_width,
+                    base_style,
+                );
 
                 let mut x_pos = label_start_x;
                 for c in display_label.chars() {
                     if x_pos < canvas.width && label_row < canvas.height {
-                        canvas.set(x_pos, label_row, c);
-                        record_label_cell(&mut cells, x_pos, label_row);
+                        set_label_char(canvas, &mut cells, x_pos, label_row, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -484,7 +524,7 @@ pub(super) fn draw_edge_label(
 
                 for x in gap_start_x..label_start_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
 
@@ -495,8 +535,7 @@ pub(super) fn draw_edge_label(
                 let mut x_pos = label_start_x + 1;
                 for c in inline_label.chars() {
                     if x_pos < canvas.width && !is_textual(canvas.get(x_pos, edge_y)) {
-                        canvas.set(x_pos, edge_y, c);
-                        record_label_cell(&mut cells, x_pos, edge_y);
+                        set_label_char(canvas, &mut cells, x_pos, edge_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -508,10 +547,19 @@ pub(super) fn draw_edge_label(
 
                 for x in x_pos..stem_end_x {
                     if x < canvas.width {
-                        canvas.set(x, edge_y, style.edge_h);
+                        set_label_shaft(canvas, x, edge_y, style, base_style);
                     }
                 }
             }
+        }
+    }
+
+    // A label padding blank must not sit against the bus turn: the turn would
+    // lose its arm toward the run and be normalized into a straight shaft.
+    if let Some((turn_x, turn_y, side)) = run_turn {
+        let next_x = turn_x as isize + side;
+        if next_x >= 0 && canvas.get(next_x as usize, turn_y) == ' ' {
+            canvas.set(next_x as usize, turn_y, style.edge_h);
         }
     }
 
@@ -531,6 +579,8 @@ pub(super) fn draw_routed_edge_label(
     edge_idx: usize,
     edge: &crate::graph::Edge,
 ) -> Option<EdgeLabelPlacement> {
+    let kind_style = edge_label_style(style, edge);
+    let style = &kind_style;
     if route.segments.is_empty() {
         return None;
     }
@@ -606,8 +656,8 @@ pub(super) fn draw_routed_edge_label(
         } else {
             (seg.to.x, seg.from.x)
         };
-        let gap_start_x = min_x;
-        let gap_end_x = max_x.saturating_add(1);
+        let (gap_start_x, gap_end_x) =
+            wall_free_run(graph, y, min_x, max_x.saturating_add(1), label_width);
         let gap_width = gap_end_x.saturating_sub(gap_start_x);
         let mid_x = gap_start_x + gap_width / 2;
         let centered_start_x = mid_x.saturating_sub(label_width / 2);
@@ -691,6 +741,11 @@ pub(super) fn draw_routed_edge_label(
             None
         };
 
+        // Beyond a frame wall the segment keeps the edge's own glyph too.
+        for x in (min_x..gap_start_x).chain(gap_end_x..max_x.saturating_add(1)) {
+            set_routed_label_shaft(canvas, x, y, style.edge_h, style);
+        }
+
         if let Some(start_x) = full_inline_start {
             for x in gap_start_x..start_x {
                 set_routed_label_shaft(canvas, x, y, style.edge_h, style);
@@ -703,8 +758,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x + 1;
             for c in display_label.chars() {
                 if routed_label_cell_is_writable(canvas, x_pos, y, style) {
-                    canvas.set(x_pos, y, c);
-                    record_label_cell(&mut cells, x_pos, y);
+                    set_label_char(canvas, &mut cells, x_pos, y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -725,8 +779,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x;
             for c in display_label.chars() {
                 if routed_label_cell_is_writable(canvas, x_pos, y, style) {
-                    canvas.set(x_pos, y, c);
-                    record_label_cell(&mut cells, x_pos, y);
+                    set_label_char(canvas, &mut cells, x_pos, y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -742,8 +795,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x;
             for c in display_label.chars() {
                 if routed_label_cell_is_writable(canvas, x_pos, y, style) {
-                    canvas.set(x_pos, y, c);
-                    record_label_cell(&mut cells, x_pos, y);
+                    set_label_char(canvas, &mut cells, x_pos, y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -767,8 +819,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x;
             for c in display_label.chars() {
                 if label_row < canvas.height && x_pos < canvas.width {
-                    canvas.set(x_pos, label_row, c);
-                    record_label_cell(&mut cells, x_pos, label_row);
+                    set_label_char(canvas, &mut cells, x_pos, label_row, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -802,8 +853,7 @@ pub(super) fn draw_routed_edge_label(
             let mut x_pos = start_x + 1;
             for c in inline_label.chars() {
                 if routed_label_cell_is_writable(canvas, x_pos, y, style) {
-                    canvas.set(x_pos, y, c);
-                    record_label_cell(&mut cells, x_pos, y);
+                    set_label_char(canvas, &mut cells, x_pos, y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -851,8 +901,7 @@ pub(super) fn draw_routed_edge_label(
         let mut x_pos = start_x;
         for c in display_label.chars() {
             if mid_y < canvas.height && x_pos < canvas.width {
-                canvas.set(x_pos, mid_y, c);
-                record_label_cell(&mut cells, x_pos, mid_y);
+                set_label_char(canvas, &mut cells, x_pos, mid_y, c);
             }
             x_pos += display_char_width(c);
         }
@@ -1110,6 +1159,8 @@ pub(super) fn draw_convergent_edge_label(
     edge_idx: usize,
     edge: &crate::graph::Edge,
 ) -> Option<EdgeLabelPlacement> {
+    let kind_style = edge_label_style(style, edge);
+    let style = &kind_style;
     use super::cycle::{center_x, center_y};
 
     // Use slightly shorter limit for convergent labels to avoid crowding at merge points
@@ -1136,24 +1187,58 @@ pub(super) fn draw_convergent_edge_label(
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+                    set_label_char(canvas, &mut cells, x_pos, label_y, c);
                 }
                 x_pos += display_char_width(c);
             }
         }
         Direction::BT => {
             let src_x = center_x(from);
+            let target_x = center_x(to);
             let stem_start_y = from.y.saturating_sub(1);
-            let label_y = stem_start_y.saturating_sub(1);
+            let mut label_y = stem_start_y.saturating_sub(1);
 
-            let label_start_x =
-                convergent_vertical_label_start(src_x, center_x(to), label_width, canvas.width);
+            let mut label_start_x =
+                convergent_vertical_label_start(src_x, target_x, label_width, canvas.width);
+            // The label belongs where the source's stem turns toward the target.
+            // When that turn lies higher up than the row just above the source
+            // (the merge bus sits near the target), put the label on a plain
+            // stretch of that run instead of in empty space beside the stem.
+            let mut turn_y = stem_start_y;
+            while turn_y > 0 && canvas::is_vertical(canvas.get(src_x, turn_y), style) {
+                turn_y -= 1;
+            }
+            // A real turn: a corner or tee leading sideways, below the target
+            // (not its arrowhead or border, where a straight stem ends).
+            let turn_cell = canvas.get(src_x, turn_y);
+            let turns = turn_y > to.bottom_y()
+                && !canvas::is_arrow(turn_cell)
+                && (super::topology::char_connects_left(turn_cell)
+                    || super::topology::char_connects_right(turn_cell));
+            if turns && turn_y + 1 < label_y {
+                let (run_start, run_end) = if src_x <= target_x {
+                    (src_x + 1, target_x)
+                } else {
+                    (target_x + 1, src_x)
+                };
+                let preferred = run_start + run_end.saturating_sub(run_start + label_width) / 2;
+                if let Some(start) = nearest_routed_label_slot(
+                    canvas,
+                    run_start,
+                    run_end,
+                    preferred,
+                    label_width,
+                    turn_y,
+                    style,
+                ) {
+                    label_y = turn_y;
+                    label_start_x = start;
+                }
+            }
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {
-                    canvas.set(x_pos, label_y, c);
-                    record_label_cell(&mut cells, x_pos, label_y);
+                    set_label_char(canvas, &mut cells, x_pos, label_y, c);
                 }
                 x_pos += display_char_width(c);
             }
@@ -1181,8 +1266,7 @@ pub(super) fn draw_convergent_edge_label(
                 let mut x_pos = label_start;
                 for c in display_label.chars() {
                     if routed_label_cell_is_writable(canvas, x_pos, label_y, style) {
-                        canvas.set(x_pos, label_y, c);
-                        record_label_cell(&mut cells, x_pos, label_y);
+                        set_label_char(canvas, &mut cells, x_pos, label_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -1208,8 +1292,7 @@ pub(super) fn draw_convergent_edge_label(
                 let mut x_pos = label_start;
                 for c in display_label.chars() {
                     if routed_label_cell_is_writable(canvas, x_pos, label_y, style) {
-                        canvas.set(x_pos, label_y, c);
-                        record_label_cell(&mut cells, x_pos, label_y);
+                        set_label_char(canvas, &mut cells, x_pos, label_y, c);
                     }
                     x_pos += display_char_width(c);
                 }
@@ -1266,6 +1349,26 @@ fn convergent_horizontal_label_start(
     gap_start.min(canvas_width.saturating_sub(label_width))
 }
 
+/// Write and record one label glyph. The extra cells of a wide glyph become
+/// recorded continuations, so a line drawn earlier cannot show through
+/// between glyphs and routes read past them as label text.
+fn set_label_char(
+    canvas: &mut Canvas,
+    cells: &mut Vec<(usize, usize)>,
+    x: usize,
+    y: usize,
+    c: char,
+) {
+    canvas.set(x, y, c);
+    record_label_cell(cells, x, y);
+    for offset in 1..display_char_width(c) {
+        if x + offset < canvas.width {
+            canvas.set(x + offset, y, '\0');
+            record_label_cell(cells, x + offset, y);
+        }
+    }
+}
+
 fn record_label_cell(cells: &mut Vec<(usize, usize)>, x: usize, y: usize) {
     cells.push((x, y));
 }
@@ -1279,4 +1382,368 @@ fn build_label_placement(
     } else {
         Some(EdgeLabelPlacement { owner_id, cells })
     }
+}
+
+/// Style for shaft cells drawn around an edge label: the edge's own kind
+/// (thick/dotted) for forward edges; back edges keep the cycle styling.
+fn edge_label_style(style: &StyleChars, edge: &crate::graph::Edge) -> StyleChars {
+    if edge.is_back_edge {
+        *style
+    } else {
+        super::edge::style_for_edge_kind(style, edge.kind)
+    }
+}
+
+/// Write one horizontal shaft cell next to a label. Free or shaft cells take
+/// the edge-kind glyph; any other cell (another route's vertical or junction)
+/// gets the base glyph so the canvas merge still composes a crossing.
+fn set_label_shaft(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    kind_style: &StyleChars,
+    base_style: &StyleChars,
+) {
+    let existing = canvas.get(x, y);
+    if existing == ' ' || canvas::is_horizontal(existing, base_style) {
+        canvas.set(x, y, kind_style.edge_h);
+    } else {
+        canvas.set(x, y, base_style.edge_h);
+    }
+}
+
+/// The far end of the final straight run that reaches a horizontal arrow.
+///
+/// Scans the label row from the arrow back toward the source (`cells` in
+/// that order) and returns the first cell where the route turns or branches,
+/// so a fan-out branch label lands on its own branch instead of before the
+/// shared bus.
+fn final_run_turn(
+    canvas: &Canvas,
+    graph: &Graph,
+    y: usize,
+    cells: impl Iterator<Item = usize>,
+    style: &StyleChars,
+) -> Option<usize> {
+    // A subgraph side wall crossed by the run is a portal, not a turn.
+    let on_side_wall = |x: usize| {
+        graph.subgraphs.iter().any(|subgraph| {
+            let bounds = &subgraph.bounds;
+            bounds.is_valid()
+                && (x == bounds.x || x + 1 == bounds.x + bounds.width)
+                && y > bounds.y
+                && y + 1 < bounds.y + bounds.height
+        })
+    };
+    for x in cells {
+        let ch = canvas.get(x, y);
+        if ch == ' ' || canvas::is_horizontal(ch, style) || canvas::is_arrow(ch) || on_side_wall(x)
+        {
+            continue;
+        }
+        // Any turn, tee, or four-arm glyph ends the run: on a fan-out bus a
+        // four-arm cell is the branch junction itself.
+        return Some(x);
+    }
+    None
+}
+
+/// Whether `node` has more than one forward outgoing edge (a fan-out bus).
+fn source_fans_out(graph: &Graph, node: &Node) -> bool {
+    graph
+        .edges
+        .iter()
+        .filter(|edge| !edge.is_back_edge && edge.from == node.id)
+        .count()
+        > 1
+}
+
+/// Nudge an outside-row label so neither neighbour cell is a route glyph: a
+/// label glued to a vertical bus makes the topology stabilizer grow a tee arm
+/// toward the text (`├no`). Keeps the original slot when no nearby slot fits.
+fn keep_label_off_routes(
+    canvas: &Canvas,
+    start_x: usize,
+    y: usize,
+    width: usize,
+    style: &StyleChars,
+) -> usize {
+    let is_route = |x: usize| {
+        let ch = canvas.get(x, y);
+        ch != ' '
+            && !is_textual(ch)
+            && (canvas::is_vertical(ch, style) || canvas::is_junction(ch, style))
+    };
+    let fits = |start: usize| {
+        start + width < canvas.width
+            && (start..start + width).all(|x| canvas.get(x, y) == ' ')
+            && (start == 0 || !is_route(start - 1))
+            && !is_route(start + width)
+    };
+    if fits(start_x) || !(start_x..start_x + width).all(|x| canvas.get(x, y) == ' ') {
+        return start_x;
+    }
+    for delta in 1..=2 {
+        if fits(start_x + delta) {
+            return start_x + delta;
+        }
+        if start_x >= delta && fits(start_x - delta) {
+            return start_x - delta;
+        }
+    }
+    start_x
+}
+
+/// Draw a back edge's label on the longest straight horizontal run of its
+/// drawn cycle route (in TD/BT the leg out to the right gutter, in LR/RL the
+/// bottom gutter run), padded `─ label ─`. A run too short for that keeps the
+/// label on a free row just below it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_cycle_edge_label(
+    canvas: &mut Canvas,
+    from: &Node,
+    graph: &Graph,
+    label: &str,
+    direction: Direction,
+    style: &StyleChars,
+    config: &Config,
+    edge_idx: usize,
+    edge: &crate::graph::Edge,
+) -> Option<EdgeLabelPlacement> {
+    let owner_id = edge_owner_id(edge_idx, edge);
+    let display_label =
+        format_edge_label_with_limit(label, config.max_edge_label_width.min(canvas.width));
+    let label_width = display_width(&display_label);
+    // Boxes are drawn after routes and labels, so a cell under a box is lost.
+    let under_box = |x: usize, y: usize| {
+        graph.nodes.iter().any(|node| {
+            x >= node.x && x < node.x + node.width && y >= node.y && y < node.y + node.height
+        })
+    };
+    let is_run_cell = |canvas: &Canvas, x: usize, y: usize| {
+        let ch = canvas.get(x, y);
+        (ch == style.back_h || canvas::is_horizontal(ch, style))
+            && !under_box(x, y)
+            && canvas
+                .get_meta(x, y)
+                .is_some_and(|meta| meta.owner_id.as_deref() == Some(owner_id.as_str()))
+    };
+
+    // Longest runs of plain horizontal cells owned by this edge (in TD/BT a tie
+    // goes to the source leg): one the route has to itself, and any run.
+    let source_row = super::cycle::center_y(from);
+    let prefers_source = !matches!(direction, Direction::LR | Direction::RL);
+    let rank = |(left, right, row): (usize, usize, usize)| {
+        (right - left, prefers_source && row == source_row)
+    };
+    let mut best_own: Option<(usize, usize, usize)> = None;
+    let mut best_any: Option<(usize, usize, usize)> = None;
+    for y in 0..canvas.height {
+        let mut x = 0;
+        while x < canvas.width {
+            if !is_run_cell(canvas, x, y) {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < canvas.width && is_run_cell(canvas, x, y) {
+                x += 1;
+            }
+            let run = (start, x - 1, y);
+            if !run_on_frame_border(graph, run)
+                && best_any.is_none_or(|current| rank(run) > rank(current))
+            {
+                best_any = Some(run);
+            }
+            if cycle_label_run_is_own(canvas, graph, run)
+                && best_own.is_none_or(|current| rank(run) > rank(current))
+            {
+                best_own = Some(run);
+            }
+        }
+    }
+    let fits = |(left, right, _): (usize, usize, usize)| right - left + 1 >= label_width + 4;
+    let mut cells = Vec::new();
+
+    // Inline on the route's own run; else on a free row beside it; else, as a
+    // last resort, inline on a run it shares with another line.
+    if let Some(run) = best_own.filter(|&run| fits(run)) {
+        write_inline_cycle_label(canvas, &mut cells, run, &display_label, label_width);
+    } else if let Some((left, right, row)) = best_own {
+        let centre = (left + right) / 2;
+        let start = centre
+            .saturating_sub(label_width / 2)
+            .min(canvas.width.saturating_sub(label_width));
+        // A blank on each side keeps the label clear of nearby lines.
+        let free = |canvas: &Canvas, y: usize| {
+            (start.saturating_sub(1)..start + label_width + 1).all(|x| canvas.get(x, y) == ' ')
+        };
+        if let Some(label_row) = [row + 1, row.saturating_sub(1)]
+            .into_iter()
+            .find(|&y| y != row && y < canvas.height && free(canvas, y))
+        {
+            let mut x_pos = start;
+            for c in display_label.chars() {
+                set_label_char(canvas, &mut cells, x_pos, label_row, c);
+                x_pos += display_char_width(c);
+            }
+        }
+    }
+    if cells.is_empty() {
+        if let Some(run) = best_any.filter(|&run| fits(run)) {
+            write_inline_cycle_label(canvas, &mut cells, run, &display_label, label_width);
+        }
+    }
+
+    build_label_placement(owner_id, cells)
+}
+
+/// Write `─ label ─` centred on a horizontal run that holds it with a shaft
+/// cell and a blank on each side.
+fn write_inline_cycle_label(
+    canvas: &mut Canvas,
+    cells: &mut Vec<(usize, usize)>,
+    (left, right, row): (usize, usize, usize),
+    display_label: &str,
+    label_width: usize,
+) {
+    let run_width = right - left + 1;
+    let blank = left + 1 + (run_width - (label_width + 4)) / 2;
+    canvas.set(blank, row, ' ');
+    let mut x_pos = blank + 1;
+    for c in display_label.chars() {
+        set_label_char(canvas, cells, x_pos, row, c);
+        x_pos += display_char_width(c);
+    }
+    canvas.set(x_pos, row, ' ');
+}
+
+/// Whether a horizontal run of a cycle route belongs to that route alone: it
+/// does not lie on a subgraph border row, and neither end meets a junction
+/// (a tee) where it would merge with another edge's line. Box sides and
+/// arrowheads at an end are the route's own endpoints; a crossing, a frame
+/// wall or a spine shared by back edges is not another edge.
+fn cycle_label_run_is_own(
+    canvas: &Canvas,
+    graph: &Graph,
+    (left, right, row): (usize, usize, usize),
+) -> bool {
+    use super::topology::{
+        char_connects_down, char_connects_left, char_connects_right, char_connects_up,
+    };
+
+    if run_on_frame_border(graph, (left, right, row)) {
+        return false;
+    }
+    let arms = |x: usize, y: usize| {
+        let mut count = 0;
+        if y > 0 && char_connects_down(canvas.get(x, y - 1)) {
+            count += 1;
+        }
+        if char_connects_up(canvas.get(x, y + 1)) {
+            count += 1;
+        }
+        if x > 0 && char_connects_right(canvas.get(x - 1, y)) {
+            count += 1;
+        }
+        if char_connects_left(canvas.get(x + 1, y)) {
+            count += 1;
+        }
+        count
+    };
+    let on_side_wall = |x: usize| {
+        graph.subgraphs.iter().any(|subgraph| {
+            let bounds = &subgraph.bounds;
+            bounds.is_valid()
+                && (x == bounds.x || x + 1 == bounds.x + bounds.width)
+                && row > bounds.y
+                && row + 1 < bounds.y + bounds.height
+        })
+    };
+    let merges = |x: usize| {
+        if on_side_wall(x) {
+            return false;
+        }
+        let ch = canvas.get(x, row);
+        let endpoint = canvas::is_arrow(ch)
+            || canvas.get_meta(x, row).is_some_and(|meta| {
+                matches!(
+                    meta.owner_kind,
+                    CellOwnerKind::NodeBorder | CellOwnerKind::ArrowHead
+                )
+            });
+        // A tee joins another line; a crossing lets the run pass, and a tee on a
+        // column drawn by back edges is their shared spine.
+        let cycle_cell = |y: usize| {
+            canvas
+                .get_meta(x, y)
+                .is_some_and(|meta| meta.owner_kind == CellOwnerKind::CycleEdge)
+        };
+        let spine = (row > 0 && cycle_cell(row - 1)) || cycle_cell(row + 1);
+        !endpoint && !spine && arms(x, row) == 3
+    };
+    !(left > 0 && merges(left - 1)) && !merges(right + 1)
+}
+
+/// Whether a horizontal run lies on a subgraph's top or bottom border row,
+/// where the border is redrawn over anything written into it.
+fn run_on_frame_border(graph: &Graph, (left, right, row): (usize, usize, usize)) -> bool {
+    graph.subgraphs.iter().any(|subgraph| {
+        let bounds = &subgraph.bounds;
+        bounds.is_valid()
+            && (row == bounds.y || row + 1 == bounds.y + bounds.height)
+            && left < bounds.x + bounds.width
+            && right >= bounds.x
+    })
+}
+
+/// The stretch of a horizontal label run `[start, end)` on row `y` to write a
+/// label in. When a label centred on the run would cover a subgraph side wall,
+/// the longest stretch between walls that holds the padded label, so the
+/// label never overwrites a wall; otherwise the whole run.
+fn wall_free_run(
+    graph: &Graph,
+    y: usize,
+    start: usize,
+    end: usize,
+    label_width: usize,
+) -> (usize, usize) {
+    let mut walls: Vec<usize> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| {
+            let bounds = &subgraph.bounds;
+            bounds.is_valid() && y > bounds.y && y + 1 < bounds.y + bounds.height
+        })
+        .flat_map(|subgraph| {
+            let bounds = &subgraph.bounds;
+            [bounds.x, bounds.x + bounds.width - 1]
+        })
+        .filter(|&x| x >= start && x < end)
+        .collect();
+    if walls.is_empty() {
+        return (start, end);
+    }
+    // Only narrow when a label centred on the whole run would cover a wall.
+    let centred = start + end.saturating_sub(start).saturating_sub(label_width) / 2;
+    if !walls
+        .iter()
+        .any(|&wall| wall + 1 >= centred && wall <= centred + label_width)
+    {
+        return (start, end);
+    }
+    walls.sort_unstable();
+    walls.dedup();
+    let mut stretches = Vec::new();
+    let mut from = start;
+    for wall in walls {
+        stretches.push((from, wall));
+        from = wall + 1;
+    }
+    stretches.push((from, end));
+    stretches
+        .into_iter()
+        .filter(|&(left, right)| right.saturating_sub(left) >= label_width + 4)
+        .max_by_key(|&(left, right)| (right - left, std::cmp::Reverse(left)))
+        .unwrap_or((start, end))
 }

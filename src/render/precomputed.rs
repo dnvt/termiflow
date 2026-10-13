@@ -242,24 +242,9 @@ pub(super) fn draw_routes(
             continue;
         }
 
-        // Apply edge-kind-specific shaft characters.
-        let mut route_chars = *chars;
-        match edge.kind {
-            EdgeKind::Arrow
-            | EdgeKind::Open
-            | EdgeKind::Bidirectional
-            | EdgeKind::CircleEnd
-            | EdgeKind::CrossEnd => {} // use default edge chars
-            EdgeKind::Thick => {
-                // Heavy/bold shaft chars
-                route_chars.edge_h = '━';
-                route_chars.edge_v = '┃';
-            }
-            EdgeKind::Dotted => {
-                route_chars.edge_h = chars.dotted_h;
-                route_chars.edge_v = chars.dotted_v;
-            }
-        }
+        // Apply edge-kind-specific shaft characters (ASCII-aware: thick `=`,
+        // dotted `.` in ASCII styles; heavy and dashed glyphs otherwise).
+        let mut route_chars = super::edge::style_for_edge_kind(chars, edge.kind);
         // Back-edges always override with cycle styling.
         if edge.is_back_edge {
             route_chars.edge_h = chars.back_h;

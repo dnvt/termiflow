@@ -3,6 +3,8 @@
 //! Provides the core `Canvas` type and character classification utilities
 //! for detecting line types, junctions, and resolving overlapping characters.
 
+use std::collections::HashMap;
+
 use crate::graph::Node;
 use crate::style::{display_char_width, StyleChars, ASCII_CHARS, UNICODE_CHARS};
 
@@ -287,6 +289,9 @@ pub struct Canvas {
     fallback_route_plans: Vec<FallbackRoutePlan>,
     fallback_route_evidence: Vec<FallbackRoutePlan>,
     fallback_route_rejections: Vec<FallbackRouteRejection>,
+    /// Subgraph titles the final title pass slid off a line crossing their
+    /// band: subgraph id -> new start column of the formatted title.
+    moved_titles: HashMap<String, usize>,
 }
 
 impl Canvas {
@@ -305,6 +310,7 @@ impl Canvas {
             fallback_route_plans: Vec::new(),
             fallback_route_evidence: Vec::new(),
             fallback_route_rejections: Vec::new(),
+            moved_titles: HashMap::new(),
         }
     }
 
@@ -731,6 +737,19 @@ impl Canvas {
         self.fallback_route_plans.push(plan);
     }
 
+    /// The corner cells of every reserved fallback route with `strategy`.
+    pub(crate) fn fallback_route_corner_points(&self, strategy: &str) -> Vec<(usize, usize)> {
+        self.fallback_route_plans
+            .iter()
+            .filter(|plan| plan.strategy == strategy)
+            .flat_map(|plan| {
+                plan.corners
+                    .iter()
+                    .map(|corner| (corner.point.x, corner.point.y))
+            })
+            .collect()
+    }
+
     /// Record a route for final audit evidence without reserving its cells
     /// against later route lowering.  Some generic routes are painted before
     /// a legitimate crossing/branch is lowered; making their diagnostic plan
@@ -762,6 +781,17 @@ impl Canvas {
             .chain(self.fallback_route_evidence.iter())
             .map(|plan| plan.trace_on(self))
             .collect()
+    }
+
+    /// Record that the final title pass slid `subgraph_id`'s title to start
+    /// at `start_x`.
+    pub(crate) fn record_moved_title(&mut self, subgraph_id: &str, start_x: usize) {
+        self.moved_titles.insert(subgraph_id.to_string(), start_x);
+    }
+
+    /// Where the final title pass moved `subgraph_id`'s title, if it did.
+    pub(crate) fn moved_title_start(&self, subgraph_id: &str) -> Option<usize> {
+        self.moved_titles.get(subgraph_id).copied()
     }
 
     pub(crate) fn fallback_route_rejections(&self) -> Vec<FallbackRouteRejection> {

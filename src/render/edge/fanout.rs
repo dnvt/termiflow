@@ -7,13 +7,13 @@ use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
 use super::super::edge_policy::{
-    td_single_incoming_route_x, td_single_outgoing_route_x, title_safe_td_entry_x,
+    straight_entry_x, td_single_incoming_route_x, td_single_outgoing_route_x, title_safe_td_entry_x,
 };
 use super::super::fallback_route::FallbackRoutePlan;
 use super::super::semantic::{CellOwnerKind, CellRole};
 use super::edge_primitives::{
     adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, edge_exit_point,
-    get_node_center,
+    fan_out_target_uses_left_port, get_node_center, hits_foreign_subgraph_border,
 };
 use super::subgraph::{
     route_cross_subgraph_bt, route_cross_subgraph_td, route_divergent_into_subgraph_bt,
@@ -271,6 +271,12 @@ pub fn route_divergent_edges(
 
     // Calculate source center based on orientation
     let (src_x, src_y) = get_node_center(from);
+    // Decided before any branch is drawn, from the exits already on the canvas.
+    let left_ports: Vec<&str> = visible_targets
+        .iter()
+        .filter(|target| fan_out_target_uses_left_port(from, target, canvas, style, graph))
+        .map(|target| target.id.as_str())
+        .collect();
 
     // Calculate stem start position (edge of source box on primary axis)
     let (stem_start_x, stem_start_y) = edge_exit_point(from, direction);
@@ -408,6 +414,61 @@ pub fn route_divergent_edges(
         }
     }
 
+    // Labeled horizontal fan-out: each branch label is drawn on its branch run
+    // (bus -> arrow). Move the bus toward the source until the shortest run
+    // fits the widest branch label with a shaft cell on each side, so labels
+    // neither float before the bus nor overwrite its corners.
+    // A target one row off the source row exits through its own adjacent
+    // port; pulling the junction back would merge it into a new bus.
+    let source_row = coords.secondary_coord(stem_start_x, stem_start_y);
+    let has_adjacent_row_target = target_positions.iter().any(|(_, _, n)| {
+        let (ax, ay) = adjusted_edge_entry_point(n, direction, graph);
+        coords.secondary_coord(ax, ay).abs_diff(source_row) == 1
+    });
+    if matches!(direction, Direction::LR | Direction::RL)
+        && target_positions.len() > 1
+        && !has_adjacent_row_target
+    {
+        let widest_label = target_positions
+            .iter()
+            .filter_map(|(_, _, target)| {
+                graph
+                    .edges
+                    .iter()
+                    .find(|edge| !edge.is_back_edge && edge.from == from.id && edge.to == target.id)
+                    .and_then(|edge| edge.label.as_deref())
+            })
+            .map(|label| crate::display_profile::display_width(label).min(20))
+            .max();
+        if let Some(widest_label) = widest_label {
+            let stem_start_primary = coords.primary_coord(stem_start_x, stem_start_y);
+            let junction_primary = coords.primary_coord(junction_x, junction_y);
+            let room = widest_label + 3;
+            let nearest_arrow_primary = target_positions
+                .iter()
+                .map(|(_, _, n)| {
+                    let (ax, ay) = adjusted_edge_entry_point(n, direction, graph);
+                    coords.primary_coord(ax, ay)
+                })
+                .min_by_key(|p| junction_primary.abs_diff(*p));
+            if let Some(arrow_primary) = nearest_arrow_primary {
+                let adjusted_primary = match direction {
+                    Direction::LR => arrow_primary
+                        .saturating_sub(room)
+                        .min(junction_primary)
+                        .max(stem_start_primary + 1),
+                    _ => arrow_primary
+                        .saturating_add(room)
+                        .max(junction_primary)
+                        .min(stem_start_primary.saturating_sub(1)),
+                };
+                if adjusted_primary != junction_primary {
+                    coords.set_primary(&mut junction_x, &mut junction_y, adjusted_primary);
+                }
+            }
+        }
+    }
+
     // A source can contribute to a downstream fan-in while also branching to
     // another target.  Convergence is rendered before this pass, so keep the
     // later LR/RL spine away from an already-owned fan-in junction when the
@@ -449,6 +510,7 @@ pub fn route_divergent_edges(
     {
         if let Some((candidate_x, candidate_y)) = mixed_vertical_fanout_clearance(
             &target_positions,
+            &left_ports,
             junction_x,
             junction_y,
             stem_start_x,
@@ -476,6 +538,16 @@ pub fn route_divergent_edges(
         };
 
         let (mut arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+        // Nested boundary chains pick their own portal lanes, so only routes that
+        // cross at most one subgraph border can promise a straight shaft here.
+        let (exits, enters) = graph.edge_boundary_crossings(&from.id, &target.id);
+        if let Some(lane_x) = (exits.len() + enters.len() <= 1)
+            .then(|| straight_entry_x(from, target, stem_start_x, arrow_x, arrow_y, graph))
+            .flatten()
+        {
+            arrow_x = lane_x;
+            target_x = lane_x;
+        }
 
         if matches!(direction, Direction::TD | Direction::TB) {
             let from_sg = graph.get_node_subgraph(&from.id);
@@ -488,7 +560,7 @@ pub fn route_divergent_edges(
                     target_x = transaction_x;
                 }
             }
-            let cross_arrow_x = if from_sg != to_sg {
+            let mut cross_arrow_x = if from_sg != to_sg {
                 td_complex_title_portal_entry_x(from, target, stem_start_x, arrow_y, graph)
                     .or_else(|| td_single_incoming_route_x(from, target, arrow_x, arrow_y, graph))
                     .unwrap_or_else(|| {
@@ -509,7 +581,7 @@ pub fn route_divergent_edges(
                     target,
                     stem_start_x,
                     stem_start_y,
-                    cross_arrow_x,
+                    &mut cross_arrow_x,
                     arrow_y,
                     canvas,
                     style,
@@ -541,6 +613,7 @@ pub fn route_divergent_edges(
                     style,
                     graph,
                     Some(route_owner),
+                    Some(&mut arrow_x),
                 ) {
                     BtRouteOutcome::Handled | BtRouteOutcome::Rejected => {
                         set_route_char(
@@ -989,7 +1062,8 @@ pub fn route_divergent_edges(
     let target_secondaries: Vec<usize> = target_positions
         .iter()
         .map(|(_, _, target)| {
-            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let (arrow_x, arrow_y) =
+                fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
             coords.secondary_coord(arrow_x, arrow_y)
         })
         .collect();
@@ -1004,13 +1078,36 @@ pub fn route_divergent_edges(
         .max()
         .unwrap_or(src_secondary);
 
-    let span_start = first_secondary;
-    let span_end = last_secondary;
+    // A source beyond every target (a subgraph can push its exit past them)
+    // still reaches the span: it extends to the source, which turns into it
+    // on a corner.  Only across blank cells, so it never runs along another
+    // route sharing that line.
+    let extension = if src_secondary < first_secondary {
+        Some(src_secondary..first_secondary)
+    } else if src_secondary > last_secondary {
+        Some(last_secondary + 1..src_secondary + 1)
+    } else {
+        None
+    };
+    let source_beyond_targets = extension.is_some_and(|mut extension| {
+        extension.all(|pos| {
+            let (x, y) = coords.with_secondary(junction_x, junction_y, pos);
+            canvas.get(x, y) == ' '
+        })
+    });
+    let (span_start, span_end) = if source_beyond_targets {
+        (
+            first_secondary.min(src_secondary),
+            last_secondary.max(src_secondary),
+        )
+    } else {
+        (first_secondary, last_secondary)
+    };
 
     // If the source column sits on the edge of the span, nudge the junction inward
     // so the bar keeps corners at both ends.
     let mut junction_secondary = src_secondary;
-    if span_end > span_start {
+    if span_end > span_start && !source_beyond_targets {
         if junction_secondary == span_start {
             junction_secondary = span_start + 1;
         } else if junction_secondary == span_end {
@@ -1036,7 +1133,7 @@ pub fn route_divergent_edges(
         // Check if this position is a target drop point (not the source junction)
         let is_target_drop = pos != junction_secondary && target_secondaries.contains(&pos);
 
-        let c = if pos == junction_secondary {
+        let c = if pos == junction_secondary && !source_beyond_targets {
             // Junction at source position - stem meets vertical span
             match direction {
                 Direction::TD | Direction::TB => style.junction_up, // ┴
@@ -1109,7 +1206,8 @@ pub fn route_divergent_edges(
             .map(|e| e.kind)
             .unwrap_or(EdgeKind::Arrow);
         let branch_style = style_for_edge_kind(style, edge_kind);
-        let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+        let (arrow_x, arrow_y) =
+            fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
         let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
 
         // Draw vertical drop from junction+1 to arrow
@@ -1303,7 +1401,8 @@ pub fn route_divergent_edges(
                 .map(|e| e.kind)
                 .unwrap_or(EdgeKind::Arrow);
             let branch_style = style_for_edge_kind(style, edge_kind);
-            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let (arrow_x, arrow_y) =
+                fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
             let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
             let (drop_x, drop_y) = coords.with_secondary(junction_x, junction_y, target_secondary);
             let (drop_start_x, drop_start_y) = coords.advance(drop_x, drop_y, 1);
@@ -1383,7 +1482,8 @@ pub fn route_divergent_edges(
                 .map(|edge| edge.kind)
                 .unwrap_or(EdgeKind::Arrow);
             let branch_style = style_for_edge_kind(style, edge_kind);
-            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let (arrow_x, arrow_y) =
+                fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
             let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
             let drop = coords.with_secondary(junction_x, junction_y, target_secondary);
             let drop_start = coords.advance(drop.0, drop.1, 1);
@@ -1400,6 +1500,117 @@ pub fn route_divergent_edges(
 
         canvas.record_fallback_route_evidence(plan);
     }
+}
+
+/// Where a vertical fan-out branch enters its target.
+///
+/// A target in `left_ports` (see [`fan_out_target_uses_left_port`]) takes a
+/// trunk coming down its left centre column straight into its branch (`┼`)
+/// instead of landing beside it (`┴┬`).
+fn fanout_entry_point(
+    target: &Node,
+    trunk_x: usize,
+    left_ports: &[&str],
+    bus_y: usize,
+    direction: Direction,
+    graph: &Graph,
+) -> (usize, usize) {
+    let entry = adjusted_edge_entry_point(target, direction, graph);
+    if entry.0 == target.center_x()
+        && trunk_x + 1 == entry.0
+        && left_ports.contains(&target.id.as_str())
+        && !hits_foreign_subgraph_border(target, trunk_x, entry.1, graph)
+    {
+        return (trunk_x, entry.1);
+    }
+    // A branch dropping down a frame's side wall, through another box or
+    // right beside it would read as part of that wall or box; enter the target
+    // a few columns over instead, keeping a blank column clear. The drop runs
+    // from the bus row (which can itself lie on a frame border) to the arrow.
+    let drop_rows = match direction {
+        Direction::TD | Direction::TB => Some((bus_y, entry.1)),
+        Direction::BT => Some((entry.1 + 1, bus_y + 1)),
+        Direction::LR | Direction::RL => None,
+    };
+    if let Some((top, bottom)) = drop_rows {
+        let on_side_wall = |x: usize| {
+            graph.subgraphs.iter().any(|sg| {
+                let b = &sg.bounds;
+                b.is_valid()
+                    && (x == b.x || x + 1 == b.x + b.width)
+                    && b.y < bottom
+                    && top < b.y + b.height
+            })
+        };
+        // A self-loop's return leg runs two columns right of its box, so a
+        // self-looping box claims those columns too.
+        let hugs_box = |x: usize| {
+            graph.nodes.iter().any(|node| {
+                let loop_cols = if graph
+                    .edges
+                    .iter()
+                    .any(|e| e.from == node.id && e.to == node.id)
+                {
+                    2
+                } else {
+                    0
+                };
+                node.id != target.id
+                    && node.y < bottom
+                    && top < node.y + node.height
+                    && x + 1 >= node.x
+                    && x <= node.x + node.width + loop_cols
+            })
+        };
+        let blocked = |x: usize| on_side_wall(x) || hugs_box(x);
+        // A centred drop one column beside the trunk would sit next to the
+        // stem on the bus (`┴┬`); a flat contour spanning the trunk column
+        // takes it there instead, so stem and drop meet in one junction.  Only
+        // for a target past the bus along the flow: one behind it is reached
+        // by a route that leaves the bus, which a shared column would merge.
+        // And only for a target with no edge of its own leaving it: its exit
+        // stays centred, and entry and exit must share one column.
+        let past_bus = match direction {
+            Direction::BT => entry.1 < bus_y,
+            _ => entry.1 > bus_y,
+        };
+        let leaves_target = graph
+            .edges
+            .iter()
+            .any(|edge| !edge.is_back_edge && edge.from == target.id);
+        if past_bus
+            && !leaves_target
+            && entry.0 == target.center_x()
+            && entry.0.abs_diff(trunk_x) == 1
+            && target.shape.has_flat_vertical_entry()
+            && trunk_x > target.x
+            && trunk_x + 1 < target.x + target.width
+            && !blocked(trunk_x)
+            && !hits_foreign_subgraph_border(target, trunk_x, entry.1, graph)
+        {
+            return (trunk_x, entry.1);
+        }
+        if blocked(entry.0) {
+            let inside_target = |x: usize| x > target.x && x + 1 < target.x + target.width;
+            if let Some(x) = [
+                entry.0.checked_sub(2),
+                Some(entry.0 + 2),
+                entry.0.checked_sub(1),
+                Some(entry.0 + 1),
+                entry.0.checked_sub(3),
+                Some(entry.0 + 3),
+                entry.0.checked_sub(4),
+                Some(entry.0 + 4),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|&x| inside_target(x) && !blocked(x))
+            {
+                return (x, entry.1);
+            }
+        }
+    }
+    entry
 }
 
 fn push_axis_aligned_plan_segment(
@@ -1421,6 +1632,7 @@ fn push_axis_aligned_plan_segment(
 #[allow(clippy::too_many_arguments)]
 fn mixed_vertical_fanout_clearance(
     target_positions: &[(usize, usize, &Node)],
+    left_ports: &[&str],
     junction_x: usize,
     junction_y: usize,
     stem_start_x: usize,
@@ -1450,7 +1662,14 @@ fn mixed_vertical_fanout_clearance(
     let target_secondaries: Vec<usize> = target_positions
         .iter()
         .map(|(_, _, target)| {
-            let (arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
+            let (arrow_x, arrow_y) = fanout_entry_point(
+                target,
+                stem_start_x,
+                left_ports,
+                junction_y,
+                direction,
+                graph,
+            );
             coords.secondary_coord(arrow_x, arrow_y)
         })
         .collect();

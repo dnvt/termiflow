@@ -38,6 +38,7 @@ mod layout_repair;
 pub(crate) mod layout_snapshot;
 pub mod measure;
 pub mod orientation;
+mod parallel_edges;
 pub mod parser;
 pub mod portals;
 pub mod render;
@@ -373,6 +374,7 @@ fn layout_and_render_with_feedback_inner(
     graph: Graph,
     config: Config,
 ) -> Result<(Graph, RenderOutcome)> {
+    let (graph, parallel_merge) = parallel_edges::merge(graph);
     let mut best_config = config.clone();
     let (mut best_graph, best_contract) = layout_graph(graph.clone(), &best_config.spacing, None)?;
     let mut best_outcome = render::render_with_feedback_with_contract(
@@ -472,6 +474,10 @@ fn layout_and_render_with_feedback_inner(
         best_outcome.layout_repairs_applied = layout_repairs_applied;
         best_outcome.layout_attempts = attempts;
         best_outcome.warnings.extend(budget_warnings);
+    }
+
+    if let Some(merge) = parallel_merge {
+        merge.restore(&mut best_graph, &mut best_outcome);
     }
 
     Ok((best_graph, best_outcome))

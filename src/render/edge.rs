@@ -47,7 +47,10 @@ pub(super) use database_fan_in::{
 };
 pub(super) use dedicated_fan_in::route_dedicated_fan_in_edges;
 pub(super) use dense_crossing::plan_dense_crossing_scenes;
-pub(super) use diamond::plan_diamond_scenes;
+pub(super) use diamond::{
+    edge_path_is_blocked, plan_blocked_edge_detours, plan_diamond_scenes,
+    settle_blocked_edge_detour_joins,
+};
 pub use edge_primitives::edge_exit_point;
 pub(super) use edge_primitives::{edge_entry_candidates, is_subgraph_title_cell};
 #[cfg(test)]
@@ -65,7 +68,7 @@ pub(super) use td_sibling_target::plan_td_sibling_target_scene;
 pub(super) use vertical_fan_in::route_vertical_fan_in_edges;
 pub(super) use wide_terminal_fan_in::route_wide_terminal_fan_in_edges;
 
-const ROUTE_Z_INDEX: u8 = 5;
+pub(super) const ROUTE_Z_INDEX: u8 = 5;
 
 #[derive(Copy, Clone)]
 struct RouteOwner<'a> {
@@ -129,7 +132,7 @@ fn set_route_edge_char(
     }
 }
 
-fn style_for_edge_kind(style: &StyleChars, kind: EdgeKind) -> StyleChars {
+pub(super) fn style_for_edge_kind(style: &StyleChars, kind: EdgeKind) -> StyleChars {
     let mut branch_style = *style;
     match kind {
         EdgeKind::Thick => {
@@ -274,14 +277,14 @@ mod tests {
     }
 
     #[test]
-    fn diamond_entry_point_has_one_cell_visual_clearance_in_all_directions() {
+    fn diamond_entry_point_touches_the_contour_in_all_directions() {
         let mut n = make_node("diamond", 10, 5, 6, 3);
         n.shape = NodeShape::Diamond;
 
-        assert_eq!(edge_entry_point(&n, Direction::TD), (13, 3));
-        assert_eq!(edge_entry_point(&n, Direction::BT), (13, 9));
-        assert_eq!(edge_entry_point(&n, Direction::LR), (8, 6));
-        assert_eq!(edge_entry_point(&n, Direction::RL), (17, 6));
+        assert_eq!(edge_entry_point(&n, Direction::TD), (13, 4));
+        assert_eq!(edge_entry_point(&n, Direction::BT), (13, 8));
+        assert_eq!(edge_entry_point(&n, Direction::LR), (9, 6));
+        assert_eq!(edge_entry_point(&n, Direction::RL), (16, 6));
     }
 
     #[test]
@@ -306,11 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn asymmetric_lr_entry_point_separates_left_point_from_arrow() {
+    fn asymmetric_lr_entry_point_touches_left_point() {
         let mut n = make_node("flag", 10, 5, 6, 3);
         n.shape = NodeShape::Asymmetric;
 
-        assert_eq!(edge_entry_point(&n, Direction::LR), (8, 6));
+        assert_eq!(edge_entry_point(&n, Direction::LR), (9, 6));
         assert_eq!(edge_entry_point(&n, Direction::RL), (16, 6));
         assert_eq!(edge_entry_point(&n, Direction::TD), (13, 4));
         assert_eq!(edge_entry_point(&n, Direction::BT), (13, 8));

@@ -43,6 +43,9 @@ pub(super) struct Placement {
     pub(super) node_rects: HashMap<String, Rect>,
     pub(super) canvas: Rect,
     pub(super) ranks: HashMap<String, usize>,
+    /// Whole-rank TD shift request sets already seen to make no progress in
+    /// the current envelope pass; its later loop stops on them.
+    pub(super) futile_td_requests: Vec<Vec<(usize, usize)>>,
 }
 
 pub(super) fn gap_for_axis(axis: Axis, cfg: &CoarseLayoutConfig) -> usize {
@@ -456,24 +459,70 @@ impl LayoutSpacingPolicy {
             // short of an eight-cell label.  The four-cell allowance matches the
             // LR/RL inline label margins and keeps the policy bounded by the
             // public label-width contract.
+            //
+            // A label drawn inline on the run into a single-entry target also
+            // needs a shaft cell between the source side and its leading blank
+            // when the run ends in a marker; boxes narrower than the layer
+            // column already have that cell.
             if has_labels {
-                let widest_label = layer
+                let column_width = layer
+                    .iter()
+                    .map(|&idx| graph.nodes[idx].width)
+                    .max()
+                    .unwrap_or(0);
+                let single_entry = |id: &str| {
+                    graph
+                        .edges
+                        .iter()
+                        .filter(|edge| !edge.is_back_edge && edge.to == id)
+                        .count()
+                        == 1
+                };
+                let wall_room = self.gutter + 1;
+                // Only an edge into the next layer draws its label in this gap.
+                let next_layer_ids: HashSet<&str> = layers
+                    .get(layer_idx + 1)
+                    .into_iter()
+                    .flatten()
+                    .map(|&idx| graph.nodes[idx].id.as_str())
+                    .collect();
+                let next_layer_ids = &next_layer_ids;
+                let reserved = layer
                     .iter()
                     .flat_map(|&idx| {
-                        let source_id = &graph.nodes[idx].id;
+                        let source = &graph.nodes[idx];
+                        let flush = source.width == column_width;
                         graph
                             .edges
                             .iter()
-                            .filter(move |edge| {
-                                !edge.is_back_edge && edge.from.as_str() == source_id.as_str()
+                            .filter(move |edge| !edge.is_back_edge && edge.from == source.id)
+                            .filter_map(move |edge| {
+                                let width =
+                                    crate::display_profile::display_width(edge.label.as_deref()?)
+                                        .min(crate::spacing::MAX_LABEL_WIDTH);
+                                let marked = edge.kind != crate::graph::EdgeKind::Open;
+                                let lead = usize::from(flush && marked && single_entry(&edge.to));
+                                // Each frame wall crossed takes its gutter and the wall
+                                // itself out of the gap, and the label then sits in the
+                                // stretch beyond the walls with its own shaft cells.
+                                let (exits, entries) =
+                                    graph.edge_boundary_crossings(&edge.from, &edge.to);
+                                let adjacent = next_layer_ids.contains(edge.to.as_str());
+                                // Between sibling frames the frames' own separation
+                                // already widens the gap.
+                                let one_sided = exits.is_empty() != entries.is_empty();
+                                let crossed = if adjacent && one_sided {
+                                    exits.len() + entries.len()
+                                } else {
+                                    0
+                                };
+                                let walls = crossed * wall_room + if crossed > 0 { 2 } else { 0 };
+                                Some(width + 4 + lead + walls)
                             })
-                            .filter_map(|edge| edge.label.as_deref())
-                            .map(crate::display_profile::display_width)
                     })
                     .max()
-                    .unwrap_or(0)
-                    .min(crate::spacing::MAX_LABEL_WIDTH);
-                spacing = spacing.max(widest_label.saturating_add(4));
+                    .unwrap_or(0);
+                spacing = spacing.max(reserved);
             }
 
             // The strict horizontal subgraph fan-in route owns one wall-clear
@@ -1187,6 +1236,7 @@ pub(super) fn place_nodes(
         node_rects,
         canvas,
         ranks,
+        futile_td_requests: Vec::new(),
     }
 }
 

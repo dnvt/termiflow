@@ -19,6 +19,7 @@ use crate::portals::{compute_envelopes, SubgraphEnvelope};
 use crate::spacing::SpacingConfig;
 use crate::style::{box_width, BOX_MIN_WIDTH};
 
+mod centre_polish;
 mod constraints;
 mod dense_pipeline;
 mod dual_junction;

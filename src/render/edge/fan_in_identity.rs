@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 
-use crate::graph::{Direction, Graph, Node};
+use crate::graph::{Direction, EdgeKind, Graph, Node};
 use crate::orientation::{Axis, OrientedCoords};
 use crate::style::StyleChars;
 
@@ -21,7 +21,9 @@ use super::super::semantic::CellOwnerKind;
 use super::edge_primitives::{
     draw_line_primary, draw_line_secondary, edge_entry_point, edge_exit_point,
 };
-use super::{edge_route_owner_id, set_route_char, RouteOwner};
+use super::{
+    edge_route_owner_id, set_route_char, set_route_endpoint_char, style_for_edge_kind, RouteOwner,
+};
 
 struct PlannedRoute<'a> {
     source: &'a Node,
@@ -31,6 +33,7 @@ struct PlannedRoute<'a> {
     turn: (usize, usize),
     target_turn: (usize, usize),
     target_secondary: usize,
+    kind: EdgeKind,
 }
 
 /// Lower an ordinary fan-in target with one visible arrowhead per incoming
@@ -222,6 +225,11 @@ fn route_fan_in_identity_edges_impl(
             turn,
             target_turn,
             target_secondary,
+            kind: graph
+                .edges
+                .iter()
+                .find(|edge| !edge.is_back_edge && edge.from == source.id && edge.to == target.id)
+                .map_or(EdgeKind::Arrow, |edge| edge.kind),
         });
     }
 
@@ -446,6 +454,7 @@ fn paint_route(
     graph: &Graph,
     coords: &OrientedCoords,
 ) {
+    let branch_style = style_for_edge_kind(style, plan.kind);
     let owner_id = edge_route_owner_id(graph, &plan.source.id, &plan.target.id);
     let owner = RouteOwner {
         kind: CellOwnerKind::EdgeSegment,
@@ -461,7 +470,7 @@ fn paint_route(
             plan.target_entry.1,
             coords,
             canvas,
-            style,
+            &branch_style,
             Some(graph),
             Some(owner),
         );
@@ -477,7 +486,7 @@ fn paint_route(
             plan.turn.1,
             coords,
             canvas,
-            style,
+            &branch_style,
             Some(graph),
             Some(owner),
         );
@@ -489,7 +498,7 @@ fn paint_route(
             plan.target_turn.1,
             coords,
             canvas,
-            style,
+            &branch_style,
             Some(graph),
             Some(owner),
         );
@@ -501,7 +510,7 @@ fn paint_route(
             plan.target_entry.1,
             coords,
             canvas,
-            style,
+            &branch_style,
             Some(graph),
             Some(owner),
         );
@@ -521,13 +530,33 @@ fn paint_route(
         );
     }
 
-    set_route_char(
-        canvas,
-        plan.target_entry.0,
-        plan.target_entry.1,
-        coords.arrow_end(style),
-        Some(owner),
-    );
+    let tip = identity_tip(plan.kind, style, &branch_style, coords);
+    if matches!(plan.kind, EdgeKind::CircleEnd | EdgeKind::CrossEnd) {
+        set_route_endpoint_char(canvas, plan.target_entry.0, plan.target_entry.1, tip, owner);
+    } else {
+        set_route_char(
+            canvas,
+            plan.target_entry.0,
+            plan.target_entry.1,
+            tip,
+            Some(owner),
+        );
+    }
+}
+
+/// The glyph that ends an identity route at its target port.
+fn identity_tip(
+    kind: EdgeKind,
+    style: &StyleChars,
+    branch_style: &StyleChars,
+    coords: &OrientedCoords,
+) -> char {
+    match kind {
+        EdgeKind::CircleEnd => style.circle_end,
+        EdgeKind::CrossEnd => style.cross_end,
+        EdgeKind::Open => coords.primary_edge_char(branch_style),
+        _ => coords.arrow_end(style),
+    }
 }
 
 /// Record the same primitive route that `paint_route` just lowered.  Keeping
@@ -539,14 +568,27 @@ fn record_identity_route_evidence(
     coords: &OrientedCoords,
     style: &StyleChars,
 ) {
+    let branch_style = style_for_edge_kind(style, plan.kind);
     let source_secondary = coords.secondary_coord(plan.source_exit.0, plan.source_exit.1);
     if source_secondary == plan.target_secondary {
-        push_primary_segment(fallback, plan.source_exit, plan.target_entry, coords, style);
+        push_primary_segment(
+            fallback,
+            plan.source_exit,
+            plan.target_entry,
+            coords,
+            &branch_style,
+        );
     } else {
-        push_primary_segment(fallback, plan.source_exit, plan.turn, coords, style);
-        push_secondary_segment(fallback, plan.turn, plan.target_turn, coords, style);
+        push_primary_segment(fallback, plan.source_exit, plan.turn, coords, &branch_style);
+        push_secondary_segment(fallback, plan.turn, plan.target_turn, coords, &branch_style);
         let final_start = coords.advance(plan.target_turn.0, plan.target_turn.1, 1);
-        push_primary_segment(fallback, final_start, plan.target_entry, coords, style);
+        push_primary_segment(
+            fallback,
+            final_start,
+            plan.target_entry,
+            coords,
+            &branch_style,
+        );
         let going_before = source_secondary > plan.target_secondary;
         fallback.push_corner(
             plan.turn.0,
@@ -562,7 +604,7 @@ fn record_identity_route_evidence(
     fallback.push_paint(
         plan.target_entry.0,
         plan.target_entry.1,
-        coords.arrow_end(style),
+        identity_tip(plan.kind, style, &branch_style, coords),
     );
 }
 

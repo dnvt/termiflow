@@ -146,6 +146,8 @@ fn annotate_subgraph_region(
             title_gutter.trailing_extra_padding,
         ) {
             let title_y = super::subgraph_title_y(bounds, direction);
+            // A title the final title pass slid off a line sits at its new start.
+            let start_x = canvas.moved_title_start(&subgraph.id).unwrap_or(start_x);
             for (i, _) in title_fmt.chars().enumerate() {
                 let x = start_x + i;
                 if x < canvas.width {
