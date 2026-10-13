@@ -1002,7 +1002,10 @@ pub(super) fn render_with_feedback_with_contract(
         let Some(from) = graph_index.node_by_name(&edge.from) else {
             continue;
         };
-        if !canvas.is_visible(from) || !from.shape.has_flat_vertical_entry() {
+        // LR/RL exits leave through the bottom border, which other shapes
+        // (a hexagon) also draw flat; the glyph checks below guard the cell.
+        let horizontal = matches!(graph.direction, Direction::LR | Direction::RL);
+        if !canvas.is_visible(from) || !(horizontal || from.shape.has_flat_vertical_entry()) {
             continue;
         }
         let exit = match graph.direction {

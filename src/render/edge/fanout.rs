@@ -414,6 +414,40 @@ pub fn route_divergent_edges(
         }
     }
 
+    // Targets inside frames the source is not in: the bus stays outside the
+    // outermost of them, a blank column clear of its border, instead of
+    // running down the border itself.
+    if matches!(direction, Direction::LR | Direction::RL) && target_positions.len() > 1 {
+        let entered: Vec<&crate::graph::Subgraph> = graph
+            .subgraphs
+            .iter()
+            .filter(|sg| sg.bounds.is_valid())
+            .filter(|sg| !graph.is_node_in_subgraph_tree(&from.id, &sg.id))
+            .filter(|sg| {
+                target_positions
+                    .iter()
+                    .all(|(_, _, target)| graph.is_node_in_subgraph_tree(&target.id, &sg.id))
+            })
+            .collect();
+        let stem_start_primary = coords.primary_coord(stem_start_x, stem_start_y);
+        let junction_primary = coords.primary_coord(junction_x, junction_y);
+        let clear = match direction {
+            Direction::RL => entered
+                .iter()
+                .map(|sg| sg.bounds.x + sg.bounds.width + 1)
+                .max()
+                .filter(|&clear| clear > junction_primary && clear < stem_start_primary),
+            _ => entered
+                .iter()
+                .filter_map(|sg| sg.bounds.x.checked_sub(2))
+                .min()
+                .filter(|&clear| clear < junction_primary && clear > stem_start_primary),
+        };
+        if let Some(clear) = clear {
+            coords.set_primary(&mut junction_x, &mut junction_y, clear);
+        }
+    }
+
     // Labeled horizontal fan-out: each branch label is drawn on its branch run
     // (bus -> arrow). Move the bus toward the source until the shortest run
     // fits the widest branch label with a shaft cell on each side, so labels

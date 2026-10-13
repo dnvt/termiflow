@@ -433,3 +433,60 @@ fn an_open_back_edge_tees_into_its_target() {
         }
     }
 }
+
+/// The search that picks back edges started from the first declared node, a
+/// subgraph member here, and broke the cycle at Candidate's entries: Candidate
+/// then ranked last and drew at the far end of the RL flow, every edge
+/// looping around. It now starts from the edges' first-named source, so the
+/// cycle breaks at Iterate -> Candidate and Candidate starts the flow.
+#[test]
+fn a_cycle_breaks_at_the_edge_that_closes_it() {
+    let input = "graph RL
+    subgraph Eval [Model Evaluation]
+        Bench[Benchmark Suite]
+        RedTeam[Red Team]
+    end
+    Candidate[Candidate Model] --> Bench
+    Candidate --> RedTeam
+    Bench & RedTeam --> Gate{Meets bar?}
+    Gate --> Iterate[Iterate on Training]
+    Iterate --> Candidate
+";
+    let frame =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Unicode))
+            .expect("render")
+            .output;
+    let column = |label: &str| {
+        frame
+            .lines()
+            .find_map(|row| row.find(label).map(|at| row[..at].chars().count()))
+            .expect(label)
+    };
+    assert!(
+        column("Candidate Model") > column("Meets bar?"),
+        "Candidate starts the RL flow, right of the gate:\n{frame}"
+    );
+}
+
+/// A back edge leaving a diamond's bottom in LR/RL started detached below
+/// the flat border; it now gets the tee a rectangle source gets.
+#[test]
+fn a_back_edge_leaving_a_diamond_tees_its_border() {
+    let input = "graph RL
+    User((User)) --> Login[Login Page]
+    Login --> Creds{Valid?}
+    Creds -->|no| Lock{Too many?}
+    Lock -->|no| Login
+    Creds -->|yes| Home[Home]
+";
+    let frame =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Unicode))
+            .expect("render")
+            .output;
+    assert!(
+        frame
+            .lines()
+            .any(|row| row.contains('╲') && row.contains('┬')),
+        "the back edge leaves Too many? through a tee:\n{frame}"
+    );
+}

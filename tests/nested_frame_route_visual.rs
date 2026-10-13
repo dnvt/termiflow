@@ -201,3 +201,49 @@ fn a_bt_fan_in_from_sibling_frames_merges_above_them() {
         );
     }
 }
+
+/// A horizontal fan-out into a frame put its bus on the frame's border
+/// column, turning the border into a `├─` comb; the bus now stays outside.
+#[test]
+fn a_horizontal_fan_out_into_a_frame_keeps_its_bus_off_the_border() {
+    let input = "graph LR
+Router[Request Router]
+subgraph SG1 [Handler Group]
+H1[Handler 1]
+H2[Handler 2]
+H3[Handler 3]
+end
+Router --> H1
+Router --> H2
+Router --> H3
+";
+    let frame = render(input, BaseStyle::Unicode);
+    assert!(
+        !frame.contains("├─ "),
+        "the frame border is not a comb of bus stubs:\n{frame}"
+    );
+}
+
+/// An LR nested frame drifted toward its parent's leading edge until it
+/// was a gap from the outside node feeding it, dragging the parent into that
+/// node's own frame; it now stops short of the other frame.
+#[test]
+fn an_lr_nested_frame_does_not_drag_its_parent_into_a_neighbour() {
+    let input = "graph LR
+    subgraph A [A]
+        subgraph Ai [Ai]
+            x[x]
+        end
+    end
+    subgraph B [B]
+        y[y] --> z[z]
+    end
+    x --> y
+    z --> x
+";
+    let frame = render(input, BaseStyle::Unicode);
+    assert!(
+        !frame.contains("││") && !frame.contains("┃┃"),
+        "frames A and B do not overlap:\n{frame}"
+    );
+}

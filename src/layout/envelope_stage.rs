@@ -3091,7 +3091,73 @@ pub(super) fn resolve_subgraph_envelopes(
                     continue;
                 }
 
-                let delta = target_left as isize - child_env.outer.x as isize;
+                let mut delta = target_left as isize - child_env.outer.x as isize;
+                // The parent wraps the child, so once the child reaches the
+                // parent's inner edge the parent drifts with it; the pair stops
+                // a column short of any other frame on that side instead of
+                // sliding into it (the child's gap only counts the outside
+                // node, not that node's frame), and the child stays inside the
+                // parent's padding.
+                // Where a sibling frame on the drift side stops the child, the
+                // follow gap short of it; only then is the parent's free space
+                // not the child's to take.
+                let sibling_side = |leftward: bool| -> Option<isize> {
+                    subgraph_envelopes
+                        .iter()
+                        .filter(|(id, _)| {
+                            *id != &child_subgraph.id
+                                && input
+                                    .graph
+                                    .get_subgraph(id)
+                                    .is_some_and(|sg| sg.parent_id.as_deref() == Some(parent_id))
+                        })
+                        .filter(|(_, sibling)| {
+                            rects_overlap_vertically(sibling.outer, child_env.outer)
+                        })
+                        .filter_map(|(_, sibling)| {
+                            if leftward && sibling.outer.right() <= child_env.outer.x {
+                                Some(sibling.outer.right() as isize + gap as isize)
+                            } else if !leftward && child_env.outer.right() <= sibling.outer.x {
+                                Some(sibling.outer.x as isize - gap as isize)
+                            } else {
+                                None
+                            }
+                        })
+                        .reduce(|a, b| if leftward { a.max(b) } else { a.min(b) })
+                };
+                for (other_id, other) in &subgraph_envelopes {
+                    if other_id == parent_id
+                        || input.graph.is_subgraph_ancestor(other_id, parent_id)
+                        || input.graph.is_subgraph_ancestor(parent_id, other_id)
+                        || !rects_overlap_vertically(other.outer, parent_env.outer)
+                    {
+                        continue;
+                    }
+                    if delta < 0 && other.outer.right() <= parent_env.outer.x {
+                        let room =
+                            (parent_env.outer.x as isize - other.outer.right() as isize - 1).max(0);
+                        let free = child_env.outer.x as isize - parent_env.inner.x as isize - 1;
+                        delta = match sibling_side(true) {
+                            Some(stop) => delta.max(-(child_env.outer.x as isize - stop).max(0)),
+                            None => delta.max(-(free.max(0) + room)),
+                        };
+                    } else if delta > 0 && parent_env.outer.right() <= other.outer.x {
+                        let room =
+                            (other.outer.x as isize - parent_env.outer.right() as isize - 1).max(0);
+                        let free = parent_env.inner.right() as isize
+                            - child_env.outer.right() as isize
+                            - 1;
+                        delta = match sibling_side(false) {
+                            Some(stop) => {
+                                delta.min((stop - child_env.outer.right() as isize).max(0))
+                            }
+                            None => delta.min(free.max(0) + room),
+                        };
+                    }
+                }
+                if delta == 0 {
+                    continue;
+                }
                 required_shift_by_id
                     .entry(child_subgraph.id.clone())
                     .and_modify(|existing| {

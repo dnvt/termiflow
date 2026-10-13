@@ -351,7 +351,22 @@ pub(super) fn mark_back_edges(graph: &mut Graph) -> bool {
         state[u] = 2;
     }
 
-    for u in 0..graph.nodes.len() {
+    // Search from the nodes in the order the edges first name them as a
+    // source: a cycle then breaks at the edge that closes it in the author's
+    // flow (gen_a_169: Iterate -> Candidate), not wherever a node declared
+    // early in a subgraph happens to start the search.
+    let mut roots: Vec<usize> = Vec::with_capacity(graph.nodes.len());
+    let mut rooted = vec![false; graph.nodes.len()];
+    for edge in &graph.edges {
+        if let Some(&idx) = index_map.get(edge.from.as_str()) {
+            if !rooted[idx] {
+                rooted[idx] = true;
+                roots.push(idx);
+            }
+        }
+    }
+    roots.extend((0..graph.nodes.len()).filter(|&idx| !rooted[idx]));
+    for u in roots {
         if state[u] == 0 {
             dfs(
                 u,
