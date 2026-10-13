@@ -233,6 +233,18 @@ impl LayoutSpacingPolicy {
         if has_fan_out && has_fan_in && !has_labels {
             spacing = spacing.max(SPACING_FANIN + 1);
         }
+        // A fan-out branch whose target also takes an edge from an earlier
+        // rank across a frame border: the merge bus for that target and the
+        // fan-out bus would share a row, and the long edge would seem to feed
+        // every branch on it. (Elsewhere the long edge often runs through the
+        // boxes between, and the extra row only staggers a clean split.)
+        if has_fan_out
+            && matches!(graph.direction, Direction::TD | Direction::TB)
+            && !has_labels
+            && fan_out_target_merges_long_edge(graph, layer, layers.get(layer_idx + 1))
+        {
+            spacing = spacing.max(SPACING_FANIN + 1);
+        }
 
         // Wide terminal fan-in is lowered with one independent horizontal
         // channel per source. Reserve the exact corridor consumed by that
@@ -861,6 +873,40 @@ fn database_intermediate_scene_requires_headroom(
         layer
             .iter()
             .any(|index| graph.nodes[*index].id == intermediate.id)
+    })
+}
+
+/// Whether a node in `layer` fans out into the next layer and one of those
+/// targets also takes a forward edge from a node outside `layer` (ranked
+/// earlier, so that edge runs past this layer) and outside the target's frame.
+fn fan_out_target_merges_long_edge(
+    graph: &Graph,
+    layer: &[usize],
+    next: Option<&Vec<usize>>,
+) -> bool {
+    let Some(next) = next else {
+        return false;
+    };
+    let in_layer = |id: &str| layer.iter().any(|&idx| graph.nodes[idx].id == id);
+    let in_next = |id: &str| next.iter().any(|&idx| graph.nodes[idx].id == id);
+    let forward = || graph.edges.iter().filter(|edge| !edge.is_back_edge);
+    layer.iter().any(|&idx| {
+        let source = graph.nodes[idx].id.as_str();
+        let targets: Vec<&str> = forward()
+            .filter(|edge| edge.from == source)
+            .map(|edge| edge.to.as_str())
+            .collect();
+        targets.len() > 1
+            && targets.iter().any(|&target| {
+                in_next(target)
+                    && forward().any(|edge| {
+                        edge.to == target
+                            && edge.from != source
+                            && !in_layer(&edge.from)
+                            && graph.get_node_subgraph(&edge.from)
+                                != graph.get_node_subgraph(target)
+                    })
+            })
     })
 }
 

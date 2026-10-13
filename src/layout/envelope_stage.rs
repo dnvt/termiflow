@@ -3501,6 +3501,50 @@ pub(super) fn resolve_subgraph_envelopes(
                 title_band_ranks.push(shift_rank);
             }
 
+            // A nested frame starts two rows below the parent's own nodes ranked
+            // before it, room for an edge to turn between them; a border drawn
+            // across them is pushed aside instead, and the sideways shift
+            // cascades through every deeper frame.
+            for child_subgraph in input
+                .graph
+                .subgraphs
+                .iter()
+                .filter(|subgraph| subgraph.parent_id.is_some())
+            {
+                let (Some(parent_id), Some(child_env)) = (
+                    child_subgraph.parent_id.as_deref(),
+                    subgraph_envelopes.get(&child_subgraph.id),
+                ) else {
+                    continue;
+                };
+                let Some(&shift_rank) = subgraph_min_rank.get(child_subgraph.id.as_str()) else {
+                    continue;
+                };
+                let required_child_top = placement
+                    .node_rects
+                    .iter()
+                    .filter(|(id, _)| {
+                        input.graph.is_node_in_subgraph_tree(id, parent_id)
+                            && !input.graph.is_node_in_subgraph_tree(id, &child_subgraph.id)
+                            && placement
+                                .ranks
+                                .get(*id)
+                                .is_some_and(|&rank| rank < shift_rank)
+                    })
+                    .map(|(_, rect)| rect.bottom().saturating_add(2))
+                    .max();
+                let Some(required_child_top) = required_child_top else {
+                    continue;
+                };
+                if child_env.outer.y < required_child_top {
+                    let delta = required_child_top - child_env.outer.y;
+                    required_shift_by_rank
+                        .entry(shift_rank)
+                        .and_modify(|existing| *existing = (*existing).max(delta))
+                        .or_insert(delta);
+                }
+            }
+
             // Ensure enough clearance above a subgraph top border for incoming edges.
             for (sg_id, env) in subgraph_envelopes.iter() {
                 let Some(&shift_rank) = subgraph_min_rank.get(sg_id.as_str()) else {

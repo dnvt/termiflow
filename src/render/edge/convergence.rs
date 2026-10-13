@@ -1004,10 +1004,22 @@ fn draw_source_lines_to_merge(
 ) -> (usize, usize) {
     let aligned = align_sources_to_trunk(source_positions, merge_x, direction, graph);
     let source_positions = aligned.as_slice();
+    let drops: Vec<usize> = source_positions
+        .iter()
+        .map(|&(src_x, _, source)| {
+            graph
+                .zip(target_id)
+                .filter(|_| matches!(direction, Direction::TD | Direction::TB))
+                .and_then(|(graph, target_id)| {
+                    td_fan_in_drop_x(graph, canvas, style, source, target_id, src_x, merge_y)
+                })
+                .unwrap_or(src_x)
+        })
+        .collect();
     // Pre-compute span bounds BEFORE drawing so corner characters are correct
     let mut span_start = usize::MAX;
     let mut span_end = 0;
-    for &(src_x, src_y, _) in source_positions {
+    for (&(_, src_y, _), &src_x) in source_positions.iter().zip(&drops) {
         let src_secondary = coords.secondary_coord(src_x, src_y);
         span_start = span_start.min(src_secondary);
         span_end = span_end.max(src_secondary);
@@ -1018,7 +1030,7 @@ fn draw_source_lines_to_merge(
         span_end = span_end.max(merge_secondary);
     }
 
-    for &(src_x, src_y, source) in source_positions {
+    for (&(src_x, src_y, source), &drop_x) in source_positions.iter().zip(&drops) {
         let owner_id = graph
             .zip(target_id)
             .map(|(graph, target_id)| edge_route_owner_id(graph, &source.id, target_id));
@@ -1026,8 +1038,24 @@ fn draw_source_lines_to_merge(
             kind: CellOwnerKind::EdgeSegment,
             id: owner_id,
         });
-        let (edge_x, edge_y) = edge_exit_point(source, direction);
-        let src_secondary = coords.secondary_coord(src_x, src_y);
+        let (edge_x, mut edge_y) = edge_exit_point(source, direction);
+        let src_secondary = coords.secondary_coord(drop_x, src_y);
+        if drop_x != src_x {
+            // The jog to the clear drop column, on the row below the source.
+            let (low, high) = (drop_x.min(src_x), drop_x.max(src_x));
+            for x in low.saturating_add(1)..high {
+                set_route_edge_char(canvas, x, edge_y, style.edge_h, style, owner);
+            }
+            let (source_end, drop_end) = if drop_x > src_x {
+                (style.corner_ul, style.corner_dr)
+            } else {
+                (style.corner_ur, style.corner_dl)
+            };
+            set_route_edge_char(canvas, src_x, edge_y, source_end, style, owner);
+            set_route_edge_char(canvas, drop_x, edge_y, drop_end, style, owner);
+            edge_y += 1;
+        }
+        let (source_x, src_x) = (src_x, drop_x);
 
         // Line from source to just before merge point (along primary axis)
         let (merge_col_x, merge_col_y) = coords.with_secondary(merge_x, merge_y, src_secondary);
@@ -1104,8 +1132,15 @@ fn draw_source_lines_to_merge(
             Direction::TD | Direction::TB => {
                 // Vertical layouts: place junction on bottom border of source
                 let border_y = source.y + source.height.saturating_sub(1);
-                if src_x < canvas.width && border_y < canvas.height {
-                    set_route_edge_char(canvas, src_x, border_y, style.junction_down, style, owner);
+                if source_x < canvas.width && border_y < canvas.height {
+                    set_route_edge_char(
+                        canvas,
+                        source_x,
+                        border_y,
+                        style.junction_down,
+                        style,
+                        owner,
+                    );
                 }
             }
             Direction::BT => {
@@ -1130,6 +1165,85 @@ fn draw_source_lines_to_merge(
     }
 
     (span_start, span_end)
+}
+
+/// A TD fan-in source drops straight down its centre column to the merge
+/// row. When that drop meets a box inside a frame the source is not in, it
+/// reads as an edge into that box; drop down the nearest clear column instead
+/// (clear of the boxes' sides first), reached by a jog on the row below the
+/// source. The column meets no box,
+/// frame title or other vertical line, and the jog meets no box or frame side.
+#[allow(clippy::too_many_arguments)]
+fn td_fan_in_drop_x(
+    graph: &Graph,
+    canvas: &Canvas,
+    style: &StyleChars,
+    source: &Node,
+    target_id: &str,
+    src_x: usize,
+    merge_y: usize,
+) -> Option<usize> {
+    let (_, jog_y) = edge_exit_point(source, graph.direction);
+    let bottom = merge_y.checked_sub(1).filter(|&row| row > jog_y)?;
+    let meets_box = |x0: usize, x1: usize, y0: usize, y1: usize, margin: usize| {
+        graph.nodes.iter().any(|node| {
+            node.id != source.id
+                && node.id != target_id
+                && x1 + margin >= node.x
+                && x0 < node.x + node.width + margin
+                && node.y <= y1
+                && y0 < node.y + node.height
+        })
+    };
+    // Only a box inside a frame the source is not in: within the source's own
+    // frame a straight drop past a box is the common TD fan-in geometry.
+    let foreign_box = graph.nodes.iter().any(|node| {
+        node.id != source.id
+            && node.id != target_id
+            && src_x >= node.x
+            && src_x < node.x + node.width
+            && node.y <= bottom
+            && jog_y < node.y + node.height
+            && graph
+                .get_node_subgraph(&node.id)
+                .is_some_and(|frame| !graph.is_node_in_subgraph_tree(&source.id, frame))
+    });
+    // Another edge from the source leaves down the same column; a jog there
+    // would cut it off.
+    let shares_exit = graph
+        .edges
+        .iter()
+        .any(|edge| !edge.is_back_edge && edge.from == source.id && edge.to != target_id);
+    if !foreign_box || shares_exit {
+        return None;
+    }
+    let crosses_frame_side = |low: usize, high: usize| {
+        graph.subgraphs.iter().any(|frame| {
+            let bounds = &frame.bounds;
+            let right = (bounds.x + bounds.width).saturating_sub(1);
+            bounds.is_valid()
+                && bounds.y <= jog_y
+                && jog_y < bounds.y + bounds.height
+                && ((low < bounds.x && bounds.x <= high) || (low <= right && right < high))
+        })
+    };
+    let clear = |x: usize, margin: usize| {
+        let (low, high) = (x.min(src_x), x.max(src_x));
+        !meets_box(x, x, jog_y, bottom, margin)
+            && !meets_box(low, high, jog_y, jog_y, 0)
+            && !crosses_frame_side(low, high)
+            && (jog_y..=bottom).all(|y| {
+                (x.saturating_sub(1)..=x + 1).all(|cx| !is_subgraph_title_cell(graph, cx, y))
+            })
+            && (jog_y..=bottom).all(|y| !super::super::canvas::is_vertical(canvas.get(x, y), style))
+    };
+    let window =
+        src_x.saturating_sub(40)..=src_x.saturating_add(40).min(canvas.width.saturating_sub(1));
+    let mut lanes: Vec<usize> = window.filter(|&x| x != src_x).collect();
+    lanes.sort_by_key(|&x| (x.abs_diff(src_x), x));
+    [1, 0]
+        .into_iter()
+        .find_map(|margin| lanes.iter().copied().find(|&x| clear(x, margin)))
 }
 
 /// Get the appropriate corner character for convergence based on position on span.

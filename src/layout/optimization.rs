@@ -61,6 +61,7 @@ pub(super) fn assign_layers(graph: &Graph) -> Vec<Vec<usize>> {
     promote_nested_child_root_ranks(graph, &index_map, &adj, &order, &mut rank);
     promote_subgraph_roots_below_external_sources(graph, &index_map, &adj, &order, &mut rank);
     sink_frame_sources_to_their_targets(graph, &adj, &mut rank);
+    sink_frame_exits_below_frames(graph, &adj, &order, &mut rank);
 
     let mut by_rank: HashMap<usize, Vec<usize>> = HashMap::new();
     for (idx, r) in rank.iter().enumerate() {
@@ -649,6 +650,76 @@ fn sink_frame_sources_to_their_targets(graph: &Graph, adj: &[Vec<usize>], rank: 
         let nearest = adj[idx].iter().map(|&target| rank[target]).min();
         if let (true, Some(nearest)) = (in_frame, nearest) {
             rank[idx] = rank[idx].max(nearest.saturating_sub(1));
+        }
+    }
+}
+
+/// A node outside a frame that only frame members feed ranks right after its
+/// source, which can sit inside the frame's rank span: the frame then has to
+/// be pushed past it. A frame without nested frames moves such a node out from
+/// under itself while its members stay; a frame with nested ones cannot, and
+/// the border followed every whole-rank shift (gen_c_145: 67 bare rows). Rank
+/// such a node after that frame's last rank instead, unless it leads back
+/// into the frame.
+fn sink_frame_exits_below_frames(
+    graph: &Graph,
+    adj: &[Vec<usize>],
+    order: &[usize],
+    rank: &mut [usize],
+) {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) {
+        return;
+    }
+    let mut frames: Vec<_> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.parent_id.is_none() && !subgraph.child_ids.is_empty())
+        .collect();
+    frames.sort_by(|left, right| left.id.cmp(&right.id));
+    for frame in frames {
+        let inside: Vec<bool> = graph
+            .nodes
+            .iter()
+            .map(|node| graph.is_node_in_subgraph_tree(&node.id, &frame.id))
+            .collect();
+        let Some(last) = (0..graph.nodes.len())
+            .filter(|&idx| inside[idx])
+            .map(|idx| rank[idx])
+            .max()
+        else {
+            continue;
+        };
+        let mut moved = false;
+        for idx in 0..graph.nodes.len() {
+            if inside[idx] || rank[idx] > last {
+                continue;
+            }
+            let mut feeders = (0..graph.nodes.len()).filter(|&from| adj[from].contains(&idx));
+            let Some(first) = feeders.next() else {
+                continue;
+            };
+            if !inside[first] || !feeders.all(|from| inside[from]) {
+                continue;
+            }
+            let mut seen = vec![false; graph.nodes.len()];
+            let mut stack = vec![idx];
+            let mut returns = false;
+            while let Some(at) = stack.pop() {
+                for &next in &adj[at] {
+                    returns |= inside[next];
+                    if !seen[next] {
+                        seen[next] = true;
+                        stack.push(next);
+                    }
+                }
+            }
+            if !returns {
+                rank[idx] = last + 1;
+                moved = true;
+            }
+        }
+        if moved {
+            propagate_ranks(adj, order, rank);
         }
     }
 }

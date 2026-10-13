@@ -166,6 +166,246 @@ fn legacy_preferred_portal_x(
     x
 }
 
+/// Whether a nested TD entry's run down column `x`, from the border of
+/// `frame` to the row above the border of `next`, meets a box other than the
+/// edge's own: the shared lane can run straight through the boxes placed
+/// above the inner frame.
+fn nested_run_meets_box(
+    graph: &Graph,
+    ends: [&str; 2],
+    frame: &crate::graph::Subgraph,
+    next: &crate::graph::Subgraph,
+    x: usize,
+) -> bool {
+    let top = frame.bounds.y.saturating_add(1);
+    let bottom = next.bounds.y.saturating_sub(1);
+    graph.nodes.iter().any(|node| {
+        !ends.contains(&node.id.as_str())
+            && x >= node.x
+            && x < node.x + node.width
+            && node.y <= bottom
+            && top < node.y + node.height
+    })
+}
+
+/// A column for a nested TD entry's run from the border of `frames[0]` to
+/// the row above the border of the last frame, when the usual lane meets a
+/// box: the nearest one whose run meets no box, unrelated frame or other
+/// vertical line (clear of the boxes' sides and the frame's own borders
+/// first; the edge's own boxes do not count).
+/// Without `jog_to` the column must enter the last frame straight, title-safe
+/// in every frame; with it, the run stays in `frames[0]` and then jogs along
+/// the row above the last border to `jog_to`, which must meet no box. `None`
+/// when no such column exists.
+fn clear_nested_entry_lane(
+    graph: &Graph,
+    ends: [&str; 2],
+    canvas: &Canvas,
+    style: &StyleChars,
+    frames: &[&crate::graph::Subgraph],
+    lane: usize,
+    jog_to: Option<usize>,
+) -> Option<usize> {
+    let (outer, inner) = (frames.first()?, frames.last()?);
+    if frames.len() < 2 {
+        return None;
+    }
+    let top = outer.bounds.y.saturating_add(1);
+    let bottom = inner.bounds.y.checked_sub(1).filter(|&row| row >= top)?;
+    let meets_box = |x: usize, y0: usize, y1: usize, margin: usize| {
+        graph.nodes.iter().any(|node| {
+            !ends.contains(&node.id.as_str())
+                && x + margin >= node.x
+                && x < node.x + node.width + margin
+                && node.y <= y1
+                && y0 < node.y + node.height
+        })
+    };
+    let meets_frame = |x: usize| {
+        graph.subgraphs.iter().any(|other| {
+            !frames.iter().any(|frame| frame.id == other.id)
+                && other.bounds.is_valid()
+                && !graph.is_subgraph_ancestor(&other.id, &outer.id)
+                && x >= other.bounds.x
+                && x < other.bounds.x + other.bounds.width
+                && other.bounds.y <= bottom
+                && top < other.bounds.y + other.bounds.height
+        })
+    };
+    let run_clear = |x: usize, margin: usize| {
+        !meets_box(x, top, bottom, margin)
+            && !meets_frame(x)
+            && (top..=bottom).all(|y| !super::super::canvas::is_vertical(canvas.get(x, y), style))
+    };
+    let jog_clear = |x: usize| {
+        jog_to.is_none_or(|to| (x.min(to)..=x.max(to)).all(|cx| !meets_box(cx, bottom, bottom, 0)))
+    };
+    let span = if jog_to.is_some() { outer } else { inner };
+    let first = span.bounds.x.saturating_add(1);
+    let last = (span.bounds.x + span.bounds.width).saturating_sub(2);
+    let safe = |x: &usize| {
+        let checked = if jog_to.is_some() {
+            &frames[..1]
+        } else {
+            frames
+        };
+        checked.iter().all(|frame| {
+            nearest_title_safe_x(&frame.bounds, frame.title.as_deref(), *x, graph.direction) == *x
+        })
+    };
+    // Clear of the boxes' sides and the frame's own borders first.
+    [1, 0].into_iter().find_map(|margin| {
+        (first..=last)
+            .filter(safe)
+            .filter(|&x| margin == 0 || (x > first && x < last))
+            .filter(|&x| run_clear(x, margin) && jog_clear(x))
+            .min_by_key(|&x| (x.abs_diff(lane), x))
+    })
+}
+
+/// A TD edge leaving frames for a target straight below drops down the
+/// source's centre column. When that drop meets another box or a frame the
+/// edge does not leave (a nested frame placed under the source), it reads as
+/// an edge into them; run it down the nearest clear column of the frame it
+/// leaves instead: a jog on the row below the source, the run, and a jog back
+/// on the lowest free row from which the drop into the target is clear.
+#[allow(clippy::too_many_arguments)]
+fn route_td_exit_detour(
+    from: &Node,
+    to: &Node,
+    stem_start_x: usize,
+    stem_start_y: usize,
+    arrow_x: usize,
+    arrow_y: usize,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+    owner: Option<RouteOwner<'_>>,
+) -> bool {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) || stem_start_x != arrow_x {
+        return false;
+    }
+    let (exits, enters) = graph.edge_boundary_crossings(&from.id, &to.id);
+    if exits.is_empty() || !enters.is_empty() {
+        return false;
+    }
+    let frames: Vec<&crate::graph::Subgraph> = exits
+        .iter()
+        .filter_map(|id| graph.get_subgraph(id))
+        .filter(|frame| frame.bounds.is_valid())
+        .collect();
+    let Some(inner) = frames.first() else {
+        return false;
+    };
+    let border_rows: Vec<usize> = frames
+        .iter()
+        .map(|frame| (frame.bounds.y + frame.bounds.height).saturating_sub(1))
+        .collect();
+    let (top, last_row) = (stem_start_y, arrow_y.saturating_sub(1));
+    if last_row <= top + 1 {
+        return false;
+    }
+    let meets_box = |x0: usize, x1: usize, y0: usize, y1: usize, margin: usize| {
+        graph.nodes.iter().any(|node| {
+            node.id != from.id
+                && node.id != to.id
+                && x1 + margin >= node.x
+                && x0 < node.x + node.width + margin
+                && node.y <= y1
+                && y0 < node.y + node.height
+        })
+    };
+    let meets_frame = |x0: usize, x1: usize, y0: usize, y1: usize, margin: usize| {
+        graph.subgraphs.iter().any(|frame| {
+            frame.bounds.is_valid()
+                && !graph.is_node_in_subgraph_tree(&from.id, &frame.id)
+                && !graph.is_node_in_subgraph_tree(&to.id, &frame.id)
+                && x1 + margin >= frame.bounds.x
+                && x0 < frame.bounds.x + frame.bounds.width + margin
+                && frame.bounds.y <= y1
+                && y0 < frame.bounds.y + frame.bounds.height
+        })
+    };
+    let drop_clear = |y0: usize, margin: usize| {
+        !meets_box(stem_start_x, stem_start_x, y0, last_row, margin)
+            && !meets_frame(stem_start_x, stem_start_x, y0, last_row, margin)
+    };
+    if drop_clear(top, 0) {
+        return false;
+    }
+    // A jog row meets no box or unrelated frame, and carries no other line
+    // except a vertical one it crosses.
+    let jog_clear = |lane: usize, y: usize| {
+        let (low, high) = (lane.min(stem_start_x), lane.max(stem_start_x));
+        !meets_box(low, high, y, y, 0)
+            && !meets_frame(low, high, y, y, 0)
+            && (low..=high).all(|x| {
+                let cell = canvas.get(x, y);
+                cell == ' '
+                    || (x != low && x != high && super::super::canvas::is_vertical(cell, style))
+            })
+    };
+    let run_clear = |lane: usize, y1: usize, margin: usize| {
+        !meets_box(lane, lane, top, y1, margin)
+            && !meets_frame(lane, lane, top, y1, margin)
+            && (top..=y1).all(|y| canvas.get(lane, y) == ' ' || border_rows.contains(&y))
+    };
+    let first = inner.bounds.x.saturating_add(1);
+    let last = (inner.bounds.x + inner.bounds.width).saturating_sub(2);
+    let mut lanes: Vec<usize> = (first..=last).filter(|&x| x != stem_start_x).collect();
+    lanes.sort_by_key(|&x| (x.abs_diff(stem_start_x), x));
+    let Some((lane, turn)) = [1, 0].into_iter().find_map(|margin| {
+        lanes.iter().find_map(|&lane| {
+            ((top + 2)..=last_row)
+                .rev()
+                .filter(|y| !border_rows.contains(y))
+                .find(|&turn| {
+                    drop_clear(turn, 0)
+                        && run_clear(lane, turn, margin)
+                        && jog_clear(lane, top)
+                        && jog_clear(lane, turn)
+                })
+                .map(|turn| (lane, turn))
+        })
+    }) else {
+        return false;
+    };
+
+    let rightward = lane > stem_start_x;
+    let (low, high) = (lane.min(stem_start_x), lane.max(stem_start_x));
+    let (source_top, lane_top, lane_turn, source_turn) = if rightward {
+        (
+            style.corner_ul,
+            style.corner_dr,
+            style.corner_ur,
+            style.corner_dl,
+        )
+    } else {
+        (
+            style.corner_ur,
+            style.corner_dl,
+            style.corner_ul,
+            style.corner_dr,
+        )
+    };
+    for y in [top, turn] {
+        for x in low.saturating_add(1)..high {
+            set_route_edge_char(canvas, x, y, style.edge_h, style, owner);
+        }
+    }
+    set_route_edge_char(canvas, stem_start_x, top, source_top, style, owner);
+    set_route_edge_char(canvas, lane, top, lane_top, style, owner);
+    for y in top.saturating_add(1)..turn {
+        set_route_edge_char(canvas, lane, y, style.edge_v, style, owner);
+    }
+    set_route_edge_char(canvas, lane, turn, lane_turn, style, owner);
+    set_route_edge_char(canvas, stem_start_x, turn, source_turn, style, owner);
+    for y in turn.saturating_add(1)..arrow_y {
+        set_route_edge_char(canvas, stem_start_x, y, style.edge_v, style, owner);
+    }
+    true
+}
+
 fn nearest_title_safe_x(
     bounds: &crate::graph::Rectangle,
     title: Option<&str>,
@@ -1555,6 +1795,24 @@ pub(super) fn route_cross_subgraph_td(
         return true;
     }
 
+    if route_td_exit_detour(
+        from,
+        to,
+        stem_start_x,
+        stem_start_y,
+        arrow_x,
+        arrow_y,
+        canvas,
+        style,
+        graph,
+        owner,
+    ) {
+        if debug_timing {
+            eprintln!("  cross-subgraph exit detour {} -> {}", from.id, to.id);
+        }
+        return true;
+    }
+
     // Use the target subgraph bounds to enter just below the top border.
     let Some(sg_id) = to_sg else {
         return false;
@@ -1727,14 +1985,40 @@ pub(super) fn route_cross_subgraph_td(
                         }
                     })
             });
-        for ancestor_id in enter_subgraphs.iter().rev() {
-            let Some(ancestor_sg) = graph.get_subgraph(ancestor_id) else {
-                continue;
-            };
-            if !ancestor_sg.bounds.is_valid() {
-                continue;
+        let chain: Vec<&crate::graph::Subgraph> = enter_subgraphs
+            .iter()
+            .rev()
+            .filter_map(|ancestor_id| graph.get_subgraph(ancestor_id))
+            .filter(|ancestor_sg| ancestor_sg.bounds.is_valid())
+            .collect();
+        let lane_x = |frame: &crate::graph::Subgraph| {
+            if direct_sibling_entry && frame.id == sg.id {
+                sibling_entry_x
+            } else {
+                nearest_title_safe_x(
+                    &frame.bounds,
+                    frame.title.as_deref(),
+                    shared_entry_x,
+                    graph.direction,
+                )
             }
-
+        };
+        // Each frame's lane runs down to the next border and jogs there. When
+        // one of those runs meets a box, one clear lane through the whole chain
+        // is taken if there is one, else a clear run and jog in each frame whose
+        // run meets a box.
+        let ends = [from.id.as_str(), to.id.as_str()];
+        let blocked = |depth: usize| {
+            chain.get(depth + 1).is_some_and(|next| {
+                nested_run_meets_box(graph, ends, chain[depth], next, lane_x(chain[depth]))
+            })
+        };
+        let straight_lane = (!direct_sibling_entry && (0..chain.len()).any(blocked))
+            .then(|| {
+                clear_nested_entry_lane(graph, ends, canvas, style, &chain, shared_entry_x, None)
+            })
+            .flatten();
+        for (depth, ancestor_sg) in chain.iter().enumerate() {
             let outside_y = ancestor_sg.bounds.y.saturating_sub(1);
             if current_y <= outside_y {
                 for y in current_y..=outside_y {
@@ -1742,15 +2026,22 @@ pub(super) fn route_cross_subgraph_td(
                 }
             }
 
-            let entry_x = if direct_sibling_entry && ancestor_sg.id == sg.id {
-                sibling_entry_x
-            } else {
-                nearest_title_safe_x(
-                    &ancestor_sg.bounds,
-                    ancestor_sg.title.as_deref(),
-                    shared_entry_x,
-                    graph.direction,
-                )
+            let entry_x = match (straight_lane, chain.get(depth + 1)) {
+                (Some(lane), _) => lane,
+                (None, Some(next)) if blocked(depth) => {
+                    let next_x = lane_x(next);
+                    clear_nested_entry_lane(
+                        graph,
+                        ends,
+                        canvas,
+                        style,
+                        &[ancestor_sg, next],
+                        lane_x(ancestor_sg),
+                        Some(next_x),
+                    )
+                    .unwrap_or_else(|| lane_x(ancestor_sg))
+                }
+                _ => lane_x(ancestor_sg),
             };
 
             if entry_x != current_x && outside_y < canvas.height {

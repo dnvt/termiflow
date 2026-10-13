@@ -433,3 +433,57 @@ fn a_cycle_through_a_frame_keeps_its_members_together() {
         );
     }
 }
+
+/// Nodes outside a nested frame that only its members feed ranked right after
+/// their sources, inside the frame's rank span; every shift meant to clear
+/// them moved members along, and the frame stretched to 122 rows with the
+/// outside nodes drawn inside it. They now rank after the frame's last rank.
+#[test]
+fn outside_nodes_fed_from_a_nested_frame_rank_below_it() {
+    let input = "graph TD
+    E1[e1] --> r1
+    E2[e2] --> m1
+    subgraph R [Root]
+        r1[r1] --> r2[r2]
+        r1 --> r3[r3]
+        subgraph M [Mid]
+            m1[m1] --> m2[m2]
+            m1 --> m3[m3]
+            subgraph L [Leaf]
+                l1[l1] --> l2[l2]
+                l1 --> l3[l3]
+            end
+        end
+    end
+    r2 --> m2
+    m3 --> l1
+    E3[e3] --> l1
+    l2 --> O1[o1]
+    l3 --> O2[o2]
+    r3 --> O3[o3]
+    m2 --> O4[o4]
+    O1 --> O5[o5]
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        let rows: Vec<&str> = frame.lines().collect();
+        let outside = rows
+            .iter()
+            .position(|row| {
+                ["o1", "o2", "o3", "o4"]
+                    .iter()
+                    .all(|label| row.contains(label))
+            })
+            .expect("o1 to o4 share a row");
+        let last_frame_border = rows
+            .iter()
+            .rposition(|row| row.starts_with(['└', '┗', '+']))
+            .expect("Root's bottom border");
+        assert!(
+            rows.len() < 80 && longest_shaft_run(&frame) < 12 && outside > last_frame_border,
+            "{} rows, longest shaft {}, outside nodes below the frames ({style:?}):\n{frame}",
+            rows.len(),
+            longest_shaft_run(&frame)
+        );
+    }
+}
