@@ -2908,6 +2908,45 @@ fn feeds_back_into(graph: &Graph, node: &str, subgraph_id: &str) -> bool {
     })
 }
 
+/// Whether a forward path leads from `subgraph_id` into another frame and a
+/// forward path from that frame leads back: the two interleave in rank, and
+/// no vertical shift of one can clear the other.
+fn frame_interleaves(graph: &Graph, subgraph_id: &str) -> bool {
+    let reached_from = |start: &dyn Fn(&str) -> bool| {
+        let mut seen: HashSet<&str> = graph
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .filter(|id| start(id))
+            .collect();
+        let mut stack: Vec<&str> = seen.iter().copied().collect();
+        while let Some(current) = stack.pop() {
+            for edge in graph
+                .edges
+                .iter()
+                .filter(|e| !e.is_back_edge && e.from == current)
+            {
+                if seen.insert(edge.to.as_str()) {
+                    stack.push(edge.to.as_str());
+                }
+            }
+        }
+        seen
+    };
+    let from_frame = reached_from(&|id| graph.is_node_in_subgraph_tree(id, subgraph_id));
+    graph.subgraphs.iter().any(|other| {
+        other.id != subgraph_id
+            && !graph.is_subgraph_ancestor(&other.id, subgraph_id)
+            && !graph.is_subgraph_ancestor(subgraph_id, &other.id)
+            && from_frame
+                .iter()
+                .any(|id| graph.is_node_in_subgraph_tree(id, &other.id))
+            && reached_from(&|id| graph.is_node_in_subgraph_tree(id, &other.id))
+                .iter()
+                .any(|id| graph.is_node_in_subgraph_tree(id, subgraph_id))
+    })
+}
+
 fn record_outside_shift(
     shifts: &mut HashMap<usize, (usize, Vec<String>)>,
     rank: usize,
@@ -3473,6 +3512,19 @@ pub(super) fn resolve_subgraph_envelopes(
                     // subgraph padding and routing, and enforcing "outside" clearance here
                     // can cause runaway vertical expansion.
                     if input.graph.get_node_subgraph(&edge.from).is_some() {
+                        continue;
+                    }
+                    // A source ranked at or below the frame's top rank moves with
+                    // the shift, so the gap it asks for never opens and every
+                    // pass would only add blank rows.  (Frames that interleave
+                    // with another keep the old shift: their outside nodes are
+                    // placed by it.)
+                    if placement
+                        .ranks
+                        .get(&edge.from)
+                        .is_some_and(|&from_rank| from_rank >= shift_rank)
+                        && !frame_interleaves(input.graph, sg_id)
+                    {
                         continue;
                     }
                     let Some(from_rect) = placement.node_rects.get(&edge.from) else {

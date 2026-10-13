@@ -195,3 +195,53 @@ fn bt_sibling_source_between_frame_members_stays_compact() {
         );
     }
 }
+
+/// The longest run of rows holding nothing but blanks and vertical lines.
+fn longest_shaft_run(frame: &str) -> usize {
+    let mut longest = 0;
+    let mut run = 0;
+    for row in frame.lines() {
+        if row
+            .chars()
+            .all(|c| matches!(c, ' ' | '│' | '┃' | '║' | '╎' | '|' | ':'))
+        {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    longest
+}
+
+/// A top-level node ranked between a frame's members that feeds back into
+/// the frame asked the frame's top border to clear it; shifting the frame
+/// moved that node too, so every pass added a frame height of blank rows.
+#[test]
+fn a_source_ranked_inside_a_frame_does_not_stretch_it() {
+    let input = "graph TD
+    Incident([Data Breach Suspected]) --> Contain[Contain Systems]
+    subgraph Response [Response Team]
+        Forensics[Forensic Analysis]
+        Legal[Legal Counsel]
+        Comms[Communications]
+    end
+    Contain --> Forensics
+    Forensics --> Scope{PII exposed?}
+    Scope -->|yes| Legal
+    Scope -->|no| Remediate[Remediate]
+    Legal --> Notify[Notify Regulators]
+    Legal --> Comms
+    Comms --> Customers[Notify Customers]
+    Notify --> Remediate
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        assert!(
+            frame.lines().count() < 80 && longest_shaft_run(&frame) < 12,
+            "{} rows, longest shaft {} ({style:?}):\n{frame}",
+            frame.lines().count(),
+            longest_shaft_run(&frame)
+        );
+    }
+}
