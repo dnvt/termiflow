@@ -487,3 +487,59 @@ fn outside_nodes_fed_from_a_nested_frame_rank_below_it() {
         );
     }
 }
+
+/// A nested frame was ranked after every node of its parent, including the
+/// one it feeds itself (l2b -> l1b); the whole chain moved down and the parent
+/// frame held a long empty shaft above it.
+#[test]
+fn a_nested_frame_is_not_ranked_after_the_parent_nodes_it_feeds() {
+    let input = "graph TD
+    o1[o1] --> l1a
+    subgraph L1 [L1]
+        l1a[l1a]
+        l1b[l1b]
+        subgraph L2 [L2]
+            l2a[l2a]
+            l2b[l2b]
+            subgraph L3 [L3]
+                l3[l3]
+            end
+        end
+    end
+    l1a --> l2a --> l3 --> l2b --> l1b --> o2[o2]
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        assert!(
+            frame.lines().count() < 50 && longest_shaft_run(&frame) < 6,
+            "{} rows, longest shaft {} ({style:?}):\n{frame}",
+            frame.lines().count(),
+            longest_shaft_run(&frame)
+        );
+    }
+}
+
+/// An outside source entering a nested frame whose parent's own node comes
+/// after it: the clearance rule shifted the parent's own rank, which left the
+/// parent's top border (held up by the nested frame) above the source.
+#[test]
+fn an_outside_source_stays_above_a_frame_whose_nested_frame_comes_first() {
+    let input = "graph TD
+    subgraph P [Parent]
+        pn[Parent node]
+        subgraph C [Child]
+            cn[Child node]
+        end
+    end
+    E[Entry] --> cn
+    cn --> pn
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        let row = |text: &str| frame.lines().position(|row| row.contains(text));
+        assert!(
+            row("Entry") < row("Parent ") && frame.lines().count() < 40,
+            "Entry sits above the Parent frame ({style:?}):\n{frame}"
+        );
+    }
+}

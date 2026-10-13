@@ -140,3 +140,25 @@ fn a_nested_frame_starts_below_its_parents_nodes() {
         );
     }
 }
+
+/// ASCII draws every corner and tee as `+`, so a jog starting right under a
+/// box read as a line into its bottom border and left a stray `+` beside the
+/// real exit.
+#[test]
+fn a_jog_under_a_box_leaves_its_ascii_border_alone() {
+    let input = "graph TD
+    subgraph P [Parent]
+        subgraph C [Child]
+            cn[Child node]
+        end
+    end
+    E[Entry] --> cn
+";
+    let frame = render(input, BaseStyle::Ascii);
+    let (_, bottom) = box_borders(&frame, "Entry");
+    assert_eq!(
+        tees(&bottom),
+        1,
+        "only Entry's exit marks its border:\n{frame}"
+    );
+}

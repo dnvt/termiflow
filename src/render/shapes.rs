@@ -452,10 +452,25 @@ fn draw_boxlike(
         let c = if matches!(direction, Direction::TD | Direction::TB) {
             let below = canvas.get(pos_x, bottom_y + 1);
             // Check for vertical lines, junctions, or corners with upward component
-            let has_up_arm = is_vertical(below, style)
+            let mut has_up_arm = is_vertical(below, style)
                 || is_junction(below, style)
                 || below == style.corner_ur  // ┘ - up/left corner
                 || below == style.corner_ul; // └ - up/right corner
+            if has_up_arm && below == style.corner_dr && style.corner_dr == style.corner_ur {
+                // ASCII draws every corner and tee as `+`. One that runs on
+                // down and off to one side is a turn on its way down (a jog
+                // starting under the box), not a line into the border; the
+                // source's real exits get their junction afterwards.
+                let row = bottom_y + 1;
+                let side = |cell: char| is_horizontal(cell, style) || cell == below;
+                let down = canvas.get(pos_x, row + 1);
+                let runs_down = is_vertical(down, style) || down == below || is_arrow(down);
+                // One side only: with lines on both sides it is as likely a line
+                // crossing a frame border on its way up.
+                let turns = side(canvas.get(pos_x.saturating_sub(1), row))
+                    != side(canvas.get(pos_x + 1, row));
+                has_up_arm = !(runs_down && turns);
+            }
             if has_up_arm {
                 style.junction_down
             } else {

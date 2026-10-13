@@ -103,10 +103,33 @@ fn promote_nested_child_root_ranks(
             continue;
         };
 
+        // In TD, the parent's own nodes the child feeds come after it in the
+        // flow (gen_c_073: l2b -> l1b); ranking the child below them too pushed
+        // the whole chain down and left the parent frame mostly empty. BT and
+        // LR/RL keep the old ranks: there a tighter frame put stubs on
+        // borders (gen_c_103, gen_c_132).
+        let td = matches!(graph.direction, Direction::TD | Direction::TB);
+        let mut downstream = vec![false; graph.nodes.len()];
+        let mut stack: Vec<usize> = graph
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| graph.is_node_in_subgraph_tree(&node.id, &subgraph.id))
+            .map(|(idx, _)| idx)
+            .collect();
+        while let Some(idx) = stack.pop() {
+            for &next in &adj[idx] {
+                if !downstream[next] {
+                    downstream[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
         let Some(parent_direct_max_rank) = parent
             .node_ids
             .iter()
             .filter_map(|node_id| index_map.get(node_id.as_str()).copied())
+            .filter(|&idx| !td || !downstream[idx])
             .map(|idx| rank[idx])
             .max()
         else {

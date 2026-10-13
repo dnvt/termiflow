@@ -3547,7 +3547,15 @@ pub(super) fn resolve_subgraph_envelopes(
 
             // Ensure enough clearance above a subgraph top border for incoming edges.
             for (sg_id, env) in subgraph_envelopes.iter() {
-                let Some(&shift_rank) = subgraph_min_rank.get(sg_id.as_str()) else {
+                // The rank the frame's top border moves with: a nested frame
+                // ranked before the frame's own nodes holds it up.
+                let Some(shift_rank) = placement
+                    .ranks
+                    .iter()
+                    .filter(|(id, _)| input.graph.is_node_in_subgraph_tree(id, sg_id))
+                    .map(|(_, &rank)| rank)
+                    .min()
+                else {
                     continue;
                 };
                 for edge in input.graph.edges.iter().filter(|e| !e.is_back_edge) {
