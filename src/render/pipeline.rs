@@ -662,7 +662,7 @@ pub(super) fn render_with_feedback_with_contract(
             end_kind,
             cycle_lanes.get(&edge_idx).copied(),
             cycle_source_detours.get(&edge_idx).copied(),
-            cycle_target_detours.get(&edge_idx).copied(),
+            cycle_target_detours.get(&edge_idx).map(Vec::as_slice),
             cycle_bottom_exits.get(&edge_idx).copied(),
             cycle_gutter_insets.get(&edge_idx).copied().unwrap_or(0),
         );

@@ -383,3 +383,28 @@ fn a_td_back_edge_leaves_through_the_bottom_when_its_side_cell_takes_one_in() {
         );
     }
 }
+
+/// Back edges into targets that share a row with other boxes each enter
+/// through a jog of their own from a clear row below the rank, even when the
+/// first rows there are taken by a merge bus or another detour, instead of
+/// running along the row behind the boxes beside them.
+#[test]
+fn back_edges_into_a_crowded_row_each_enter_by_their_own_jog() {
+    let input = "graph TD\nA --> B --> A\nC --> D --> E --> C\nF --> F\n";
+    for (style, jog, behind) in [
+        (BaseStyle::Unicode, "←┐", "←───│"),
+        (BaseStyle::Ascii, "<+", "<---|"),
+    ] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let top = frame
+            .lines()
+            .find(|row| row.contains("  C  ") && row.contains("  A  "))
+            .expect("top rank");
+        assert!(
+            top.matches(jog).count() >= 2 && !top.contains(behind),
+            "C and A each take their own jog, nothing runs behind a box ({style:?}):\n{frame}"
+        );
+    }
+}
