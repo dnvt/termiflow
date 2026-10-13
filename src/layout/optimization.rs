@@ -340,7 +340,82 @@ pub(super) fn mark_back_edges(graph: &mut Graph) -> bool {
         }
     }
 
+    if has_cycle {
+        prefer_frame_entries_as_back_edges(graph);
+    }
+
     has_cycle
+}
+
+/// A cycle through a frame member can be broken at the member's exit or at
+/// the entries leading back into it. The search above takes whichever it
+/// meets first, which can break one member's exit while a peer in the same
+/// frame keeps its forward edge to the same target: the member then ranks
+/// after the rest of the cycle and its frame stretches across every rank
+/// between. When every forward entry into such a member comes from outside
+/// its frame and closes the cycle, break those entries instead: the member
+/// then has no forward entry, so no forward cycle can pass through it.
+fn prefer_frame_entries_as_back_edges(graph: &mut Graph) {
+    let reaches = |graph: &Graph, from: &str, to: &str| {
+        let mut seen: HashSet<&str> = HashSet::from([from]);
+        let mut stack = vec![from];
+        while let Some(current) = stack.pop() {
+            if current == to {
+                return true;
+            }
+            for edge in graph
+                .edges
+                .iter()
+                .filter(|e| !e.is_back_edge && e.from == current)
+            {
+                if seen.insert(edge.to.as_str()) {
+                    stack.push(edge.to.as_str());
+                }
+            }
+        }
+        false
+    };
+    for back_idx in 0..graph.edges.len() {
+        let back = &graph.edges[back_idx];
+        if !back.is_back_edge || back.from == back.to {
+            continue;
+        }
+        let member = back.from.clone();
+        let target = back.to.clone();
+        let Some(frame) = graph.get_node_subgraph(&member).map(str::to_string) else {
+            continue;
+        };
+        // Only where the frame broke the cycle inconsistently: another member
+        // of the frame keeps its forward edge to the same target.
+        let peer_flows_forward = graph.edges.iter().any(|e| {
+            !e.is_back_edge
+                && e.to == target
+                && e.from != member
+                && graph.is_node_in_subgraph_tree(&e.from, &frame)
+        });
+        if !peer_flows_forward {
+            continue;
+        }
+        let entries: Vec<usize> = graph
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.is_back_edge && e.to == member)
+            .map(|(idx, _)| idx)
+            .collect();
+        let breaks_cycle = |graph: &Graph, idx: usize| {
+            let entry = &graph.edges[idx];
+            !graph.is_node_in_subgraph_tree(&entry.from, &frame)
+                && reaches(graph, &target, &entry.from)
+        };
+        if entries.is_empty() || !entries.iter().all(|&idx| breaks_cycle(graph, idx)) {
+            continue;
+        }
+        for idx in entries {
+            graph.edges[idx].is_back_edge = true;
+        }
+        graph.edges[back_idx].is_back_edge = false;
+    }
 }
 
 // -----------------------------------------------------------------------------

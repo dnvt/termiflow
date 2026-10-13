@@ -64,7 +64,7 @@ pub fn route_cycle_edge_on_lane(
     kind: EdgeKind,
     lane: Option<HorizontalCycleLane>,
     source_detour: Option<usize>,
-    target_detour: Option<usize>,
+    target_detour: Option<(usize, usize)>,
     bottom_exit: Option<CycleBottomExit>,
     gutter_inset: usize,
 ) {
@@ -221,16 +221,36 @@ pub fn route_cycle_edge_on_lane(
             // Taken only over blank cells and lines it crosses, like the source
             // detour.
             let jog_x = to.x + to.width + 1;
-            let target_detour = target_detour.filter(|&detour_y| {
-                detour_y < canvas.height
-                    && detour_y > to_y
-                    && (to_y..=detour_y).all(|y| canvas.get(jog_x, y) == ' ')
-                    && (jog_x + 1..=gutter_x).all(|x| {
-                        let c = canvas.get(x, detour_y);
-                        c == ' ' || super::canvas::is_vertical(c, style)
-                    })
+            // Of the planned rows, the first clear one: the jog may cross a plain
+            // horizontal line (a merge bus) on its way down, but its corners and
+            // the row itself meet only blanks and vertical lines.
+            let target_detour = target_detour.and_then(|(first, last)| {
+                (first..=last).find(|&detour_y| {
+                    detour_y < canvas.height
+                        && detour_y > to_y
+                        && canvas.get(jog_x, to_y) == ' '
+                        && canvas.get(jog_x, detour_y) == ' '
+                        && (to_y + 1..detour_y).all(|y| {
+                            let c = canvas.get(jog_x, y);
+                            c == ' '
+                                || (super::canvas::is_horizontal(c, style)
+                                    && !super::canvas::is_junction(c, style))
+                        })
+                        && (jog_x + 1..=gutter_x).all(|x| {
+                            let c = canvas.get(x, detour_y);
+                            c == ' ' || super::canvas::is_vertical(c, style)
+                        })
+                })
             });
             let entry_y = target_detour.unwrap_or(to_y);
+
+            // A turn onto a gutter column another loop already runs down joins it
+            // with a tee rather than cutting it with a corner (read before this
+            // loop draws its own run down the column).
+            let joins = |canvas: &Canvas, y: usize| {
+                super::canvas::is_vertical(canvas.get(gutter_x, y), style)
+            };
+            let (source_joins, entry_joins) = (joins(canvas, from_y), joins(canvas, entry_y));
 
             // Vertical line in gutter
             let (top, bottom) = if from_y < entry_y {
@@ -263,16 +283,19 @@ pub fn route_cycle_edge_on_lane(
 
             // Corners at source-to-gutter and gutter-to-target junctions
             // Path: horizontal right from source → vertical in gutter → horizontal left to target
+            let turn = |joins: bool, corner: char| if joins { style.junction_left } else { corner };
             if from_y < entry_y {
                 // Downward: right-then-down at source, down-then-left at target
-                set_cycle_char(canvas, gutter_x, from_y, style.corner_dr, owner_id); // ┐
-                set_cycle_char(canvas, gutter_x, entry_y, style.corner_ur, owner_id);
-            // ┘
+                let source_turn = turn(source_joins, style.corner_dr); // ┐
+                let target_turn = turn(entry_joins, style.corner_ur); // ┘
+                set_cycle_char(canvas, gutter_x, from_y, source_turn, owner_id);
+                set_cycle_char(canvas, gutter_x, entry_y, target_turn, owner_id);
             } else {
                 // Upward: right-then-up at source, up-then-left at target
-                set_cycle_char(canvas, gutter_x, from_y, style.corner_ur, owner_id); // ┘
-                set_cycle_char(canvas, gutter_x, entry_y, style.corner_dr, owner_id);
-                // ┐
+                let source_turn = turn(source_joins, style.corner_ur); // ┘
+                let target_turn = turn(entry_joins, style.corner_dr); // ┐
+                set_cycle_char(canvas, gutter_x, from_y, source_turn, owner_id);
+                set_cycle_char(canvas, gutter_x, entry_y, target_turn, owner_id);
             }
 
             // Arrow pointing into target - back-edge always enters from right gutter
@@ -565,7 +588,7 @@ pub fn plan_vertical_cycle_source_detours(graph: &Graph) -> HashMap<usize, usize
 /// target would cross a box on the target's row, the row it enters along
 /// instead: below the target's rank, with one blank row between it and the
 /// boxes, and a jog up into the target's side.
-pub fn plan_vertical_cycle_target_detours(graph: &Graph) -> HashMap<usize, usize> {
+pub fn plan_vertical_cycle_target_detours(graph: &Graph) -> HashMap<usize, (usize, usize)> {
     let mut detours = HashMap::new();
     if !matches!(graph.direction, Direction::TD | Direction::TB) {
         return detours;
@@ -598,22 +621,33 @@ pub fn plan_vertical_cycle_target_detours(graph: &Graph) -> HashMap<usize, usize
             .map(|n| last_row(n))
             .fold(last_row(to), usize::max)
             + 2;
-        // The detour row must lie above the source's row, clear of every
-        // box it runs past, and the jog column clear of boxes up to it.
-        let row_blocked = graph.nodes.iter().any(|n| {
-            n.x + n.width > jog_x && n.y.saturating_sub(1) <= detour && detour <= last_row(n) + 1
-        });
-        let jog_blocked = graph.nodes.iter().any(|n| {
-            n.id != to.id
-                && n.x <= jog_x + 1
-                && jog_x <= n.x + n.width
-                && n.y <= detour
-                && row <= last_row(n)
-        });
-        if detour >= from.center_y() || row_blocked || jog_blocked {
+        // A detour row must lie above the source's row, clear of every box it
+        // runs past, and the jog column clear of boxes up to it.
+        let clear = |detour: usize| {
+            let row_blocked = graph.nodes.iter().any(|n| {
+                n.x + n.width > jog_x
+                    && n.y.saturating_sub(1) <= detour
+                    && detour <= last_row(n) + 1
+            });
+            let jog_blocked = graph.nodes.iter().any(|n| {
+                n.id != to.id
+                    && n.x <= jog_x + 1
+                    && jog_x <= n.x + n.width
+                    && n.y <= detour
+                    && row <= last_row(n)
+            });
+            detour < from.center_y() && !row_blocked && !jog_blocked
+        };
+        if !clear(detour) {
             continue;
         }
-        detours.insert(idx, detour);
+        // Up to two rows further down are offered too: the router takes the
+        // first that a line drawn since (a merge bus) leaves clear.
+        let last = (detour + 1..=detour + 2)
+            .take_while(|&candidate| clear(candidate))
+            .last()
+            .unwrap_or(detour);
+        detours.insert(idx, (detour, last));
     }
 
     // A jog meets its target beside the target's side cell; another back
@@ -621,18 +655,19 @@ pub fn plan_vertical_cycle_target_detours(graph: &Graph) -> HashMap<usize, usize
     // source, would pass that cell and turn the jog's corner into a tee.
     // Dropping a detour puts its edge back on the row, so repeat until none
     // changes.
-    let row_runs = |detours: &HashMap<usize, usize>, row: usize, past_x: usize, skip: usize| {
-        graph.edges.iter().enumerate().any(|(idx, edge)| {
-            idx != skip
-                && edge.is_back_edge
-                && edge.from != edge.to
-                && [(&edge.to, !detours.contains_key(&idx)), (&edge.from, true)]
-                    .into_iter()
-                    .filter(|(_, on_row)| *on_row)
-                    .filter_map(|(id, _)| node(id))
-                    .any(|n| n.center_y() == row && n.x + n.width <= past_x)
-        })
-    };
+    let row_runs =
+        |detours: &HashMap<usize, (usize, usize)>, row: usize, past_x: usize, skip: usize| {
+            graph.edges.iter().enumerate().any(|(idx, edge)| {
+                idx != skip
+                    && edge.is_back_edge
+                    && edge.from != edge.to
+                    && [(&edge.to, !detours.contains_key(&idx)), (&edge.from, true)]
+                        .into_iter()
+                        .filter(|(_, on_row)| *on_row)
+                        .filter_map(|(id, _)| node(id))
+                        .any(|n| n.center_y() == row && n.x + n.width <= past_x)
+            })
+        };
     loop {
         let crossed: Vec<usize> = detours
             .keys()
@@ -763,7 +798,7 @@ pub fn plan_vertical_cycle_gutters(
     graph: &Graph,
     spacing: &SpacingConfig,
     source_detours: &HashMap<usize, usize>,
-    target_detours: &HashMap<usize, usize>,
+    target_detours: &HashMap<usize, (usize, usize)>,
 ) -> HashMap<usize, usize> {
     let mut insets = HashMap::new();
     if !matches!(
@@ -789,7 +824,9 @@ pub fn plan_vertical_cycle_gutters(
                 }
             } else {
                 let from_y = source_detours.get(&idx).copied().unwrap_or(from.center_y());
-                let to_y = target_detours.get(&idx).copied().unwrap_or(to.center_y());
+                let to_y = target_detours
+                    .get(&idx)
+                    .map_or(to.center_y(), |&(first, _)| first);
                 (from_y.min(to_y), from_y.max(to_y))
             };
             Some((bottom - top, top, bottom, idx))

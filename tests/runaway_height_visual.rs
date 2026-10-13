@@ -393,3 +393,43 @@ fn nested_frames_do_not_repeat_a_futile_shift_within_a_pass() {
         );
     }
 }
+
+/// A cycle through a frame was broken at two members' exits while a third
+/// member kept its forward edge to the same target, so those two ranked after
+/// the rest of the cycle and the frame stretched over every rank between. The
+/// entries leading back into them are now the back edges, and the frame's
+/// members stay on one rank.
+#[test]
+fn a_cycle_through_a_frame_keeps_its_members_together() {
+    let input = "graph TD
+    subgraph Stores [Retail Stores]
+        S1[Store 101]
+        S2[Store 102]
+        S3[Store 103]
+    end
+    subgraph HQ [Headquarters]
+        Replen[Replenishment Engine]
+        Forecast[Demand Forecast]
+        Forecast --> Replen
+    end
+    S1 & S2 & S3 --> POSData[(POS Sales Data)]
+    POSData --> Forecast
+    Replen --> DC[Distribution Center]
+    DC --> S1
+    DC --> S2
+    DC --> S3
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        let stores_row = frame
+            .lines()
+            .find(|row| row.contains("Store 101"))
+            .expect("store row");
+        assert!(
+            stores_row.contains("Store 102")
+                && stores_row.contains("Store 103")
+                && frame.lines().count() < 60,
+            "the stores share one rank and the frame stays short ({style:?}):\n{frame}"
+        );
+    }
+}
