@@ -1563,6 +1563,33 @@ fn fanout_entry_point(
             })
         };
         let blocked = |x: usize| on_side_wall(x) || hugs_box(x);
+        // A centred drop one column beside the trunk would sit next to the
+        // stem on the bus (`┴┬`); a flat contour spanning the trunk column
+        // takes it there instead, so stem and drop meet in one junction.  Only
+        // for a target past the bus along the flow: one behind it is reached
+        // by a route that leaves the bus, which a shared column would merge.
+        // And only for a target with no edge of its own leaving it: its exit
+        // stays centred, and entry and exit must share one column.
+        let past_bus = match direction {
+            Direction::BT => entry.1 < bus_y,
+            _ => entry.1 > bus_y,
+        };
+        let leaves_target = graph
+            .edges
+            .iter()
+            .any(|edge| !edge.is_back_edge && edge.from == target.id);
+        if past_bus
+            && !leaves_target
+            && entry.0 == target.center_x()
+            && entry.0.abs_diff(trunk_x) == 1
+            && target.shape.has_flat_vertical_entry()
+            && trunk_x > target.x
+            && trunk_x + 1 < target.x + target.width
+            && !blocked(trunk_x)
+            && !hits_foreign_subgraph_border(target, trunk_x, entry.1, graph)
+        {
+            return (trunk_x, entry.1);
+        }
         if blocked(entry.0) {
             let inside_target = |x: usize| x > target.x && x + 1 < target.x + target.width;
             if let Some(x) = [

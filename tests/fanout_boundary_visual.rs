@@ -137,3 +137,44 @@ fn a_fan_out_from_beyond_its_targets_joins_its_bus() {
         );
     }
 }
+
+/// A TD fan-out whose middle target, with no edge of its own leaving it,
+/// sits one column off the source stem drops into it on the stem's column,
+/// so the bus shows one junction rather than two side by side (`┴┬`, ASCII
+/// `++`).
+#[test]
+fn a_near_miss_fan_out_drop_meets_the_stem() {
+    let input = "graph TD
+    subgraph Building [Building Access]
+        Badge[Badge Reader]
+        Door[Door Controller]
+        Badge --> Door
+    end
+    subgraph Backend [Access Control Server]
+        Check{Badge authorized?}
+        Log[(Access Log)]
+        Check --> Log
+    end
+    Door --> Check
+    Check --> Unlock[Unlock Door]
+    Check --> Deny[Deny and Alert]
+    Deny --> Guard[Security Desk]
+";
+    for (style, pairs) in [
+        (BaseStyle::Unicode, ["┴┬", "┬┴"]),
+        (BaseStyle::Ascii, ["++", "++"]),
+    ] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let bus = frame
+            .lines()
+            .skip_while(|line| !line.contains("Badge authorized?"))
+            .find(|line| line.contains('┌') || line.contains("+-"))
+            .expect("fan-out bus row");
+        assert!(
+            pairs.iter().all(|pair| !bus.contains(pair)),
+            "stem and drop sit side by side on the bus ({style:?}):\n{frame}"
+        );
+    }
+}
