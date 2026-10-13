@@ -280,3 +280,35 @@ fn a_repeated_whole_rank_shift_does_not_stretch_sibling_frames() {
         );
     }
 }
+
+/// A BT shift whose request comes back unchanged moved what had to clear the
+/// frame along with it; it is applied once and dropped, so nested BT frames
+/// fed from below do not stretch over hundreds of bare rows.
+#[test]
+fn a_bt_fanning_source_beside_nested_frames_does_not_stretch_them() {
+    let input = "graph BT
+    subgraph Org [GitHub Org]
+        subgraph TeamA [Team Platform]
+            RepoInfra[infra repo]
+            RepoCI[ci-templates]
+        end
+        subgraph TeamB [Team Product]
+            RepoApp[app repo]
+            RepoDocs[docs repo]
+        end
+    end
+    RepoApp --> RepoCI
+    RepoDocs --> RepoCI
+    RepoInfra --> RepoCI
+    SSO[Okta SSO] --> RepoInfra
+    SSO --> RepoApp
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        assert!(
+            frame.lines().count() < 120,
+            "{} rows for a 5-node graph ({style:?}):\n{frame}",
+            frame.lines().count()
+        );
+    }
+}

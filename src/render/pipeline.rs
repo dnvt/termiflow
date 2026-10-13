@@ -1164,6 +1164,7 @@ pub(super) fn render_with_feedback_with_contract(
     for subgraph in &graph.subgraphs {
         draw_subgraph_title(
             &mut canvas,
+            &subgraph.id,
             &subgraph.bounds,
             subgraph.title.as_deref(),
             graph.direction,

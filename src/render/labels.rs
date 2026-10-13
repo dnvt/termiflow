@@ -1194,11 +1194,47 @@ pub(super) fn draw_convergent_edge_label(
         }
         Direction::BT => {
             let src_x = center_x(from);
+            let target_x = center_x(to);
             let stem_start_y = from.y.saturating_sub(1);
-            let label_y = stem_start_y.saturating_sub(1);
+            let mut label_y = stem_start_y.saturating_sub(1);
 
-            let label_start_x =
-                convergent_vertical_label_start(src_x, center_x(to), label_width, canvas.width);
+            let mut label_start_x =
+                convergent_vertical_label_start(src_x, target_x, label_width, canvas.width);
+            // The label belongs where the source's stem turns toward the target.
+            // When that turn lies higher up than the row just above the source
+            // (the merge bus sits near the target), put the label on a plain
+            // stretch of that run instead of in empty space beside the stem.
+            let mut turn_y = stem_start_y;
+            while turn_y > 0 && canvas::is_vertical(canvas.get(src_x, turn_y), style) {
+                turn_y -= 1;
+            }
+            // A real turn: a corner or tee leading sideways, below the target
+            // (not its arrowhead or border, where a straight stem ends).
+            let turn_cell = canvas.get(src_x, turn_y);
+            let turns = turn_y > to.bottom_y()
+                && !canvas::is_arrow(turn_cell)
+                && (super::topology::char_connects_left(turn_cell)
+                    || super::topology::char_connects_right(turn_cell));
+            if turns && turn_y + 1 < label_y {
+                let (run_start, run_end) = if src_x <= target_x {
+                    (src_x + 1, target_x)
+                } else {
+                    (target_x + 1, src_x)
+                };
+                let preferred = run_start + run_end.saturating_sub(run_start + label_width) / 2;
+                if let Some(start) = nearest_routed_label_slot(
+                    canvas,
+                    run_start,
+                    run_end,
+                    preferred,
+                    label_width,
+                    turn_y,
+                    style,
+                ) {
+                    label_y = turn_y;
+                    label_start_x = start;
+                }
+            }
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
                 if x_pos < canvas.width && label_y < canvas.height {

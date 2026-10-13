@@ -3751,6 +3751,11 @@ pub(super) fn resolve_subgraph_envelopes(
     // targets above) and between stacked subgraphs (so connectors don't overwrite
     // titles/corners on adjacent borders).
     if input.graph.direction == Direction::BT && !subgraph_envelopes.is_empty() {
+        // A shift whose request comes back unchanged made no progress (the
+        // frame moved along with what had to clear it); its rank is dropped
+        // from later passes so the other requests still run.
+        let mut last_shift: Option<(usize, usize)> = None;
+        let mut futile_ranks: HashSet<usize> = HashSet::new();
         for _ in 0..8 {
             // A root subgraph may have an outgoing edge to a top-level node that
             // is ordered above it by rank but still lands inside the enlarged
@@ -3931,7 +3936,21 @@ pub(super) fn resolve_subgraph_envelopes(
                     // Only a top-level source moves alone; a source inside another
                     // frame would split that frame.
                     let top_level = input.graph.get_node_subgraph(&edge.from).is_none();
-                    if tree_min_rank == Some(rank) && !fans_in && top_level {
+                    // Nor does a source fanning into frames elsewhere: moved
+                    // alone below this one, its other legs would have to cross
+                    // nested frame borders from below.
+                    let fans_into_frames = input
+                        .graph
+                        .edges
+                        .iter()
+                        .filter(|other| {
+                            !other.is_back_edge
+                                && other.from == edge.from
+                                && input.graph.get_node_subgraph(&other.to).is_some()
+                        })
+                        .count()
+                        > 1;
+                    if tree_min_rank == Some(rank) && !fans_in && !fans_into_frames && top_level {
                         let entry = outside_source_shift
                             .entry(rank)
                             .or_insert_with(|| (0, Vec::new()));
@@ -4017,6 +4036,12 @@ pub(super) fn resolve_subgraph_envelopes(
                     .or_insert(delta);
             }
 
+            if let Some((rank, delta)) = last_shift.take() {
+                if required_shift_by_rank.get(&rank) == Some(&delta) {
+                    futile_ranks.insert(rank);
+                }
+            }
+            required_shift_by_rank.retain(|rank, _| !futile_ranks.contains(rank));
             if required_shift_by_rank.is_empty() {
                 if let Some((&rank, (delta_y, kept))) =
                     outside_source_shift.iter().max_by_key(|(rank, _)| **rank)
@@ -4051,6 +4076,7 @@ pub(super) fn resolve_subgraph_envelopes(
             else {
                 break;
             };
+            last_shift = Some((max_rank, delta_y));
 
             shift_nodes_up_to_rank_bt(
                 &mut placement.positions,
