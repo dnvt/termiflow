@@ -247,3 +247,97 @@ fn an_lr_nested_frame_does_not_drag_its_parent_into_a_neighbour() {
         "frames A and B do not overlap:\n{frame}"
     );
 }
+
+/// Whether a frame's left or right border, found from the corner on its title
+/// row's border line, is a comb: a bus run just inside it, each of its tees
+/// stubbing through the border.
+fn border_is_a_comb(frame: &str, title: &str, right: bool) -> bool {
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    let title_row = rows
+        .iter()
+        .position(|row| row.iter().collect::<String>().contains(title))
+        .expect("title row");
+    let top = &rows[title_row - 1];
+    let corners: Vec<usize> = top
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| matches!(cell, '┌' | '┐' | '┏' | '┓'))
+        .map(|(column, _)| column)
+        .collect();
+    let title_column = rows[title_row]
+        .iter()
+        .collect::<String>()
+        .find(title)
+        .map(|byte| {
+            rows[title_row].iter().collect::<String>()[..byte]
+                .chars()
+                .count()
+        })
+        .expect("title column");
+    let column = if right {
+        corners.into_iter().filter(|&c| c > title_column).min()
+    } else {
+        corners.into_iter().filter(|&c| c < title_column).max()
+    }
+    .expect("frame corner");
+    let inside = if right { column - 1 } else { column + 1 };
+    let heavy = matches!(top.get(column), Some('┏' | '┓'));
+    rows[title_row..]
+        .iter()
+        .take_while(|row| !matches!(row.get(column), Some('└' | '┘' | '┗' | '┛')))
+        .any(|row| {
+            // A line stubbing through the border into a tee just inside it, or
+            // dead-ending on it with nothing inside.
+            let stub = matches!(row.get(column), Some('─'))
+                && matches!(row.get(inside), Some('├' | '┤' | '┼' | '┬' | '┴' | ' '));
+            // A heavy frame border drawn over by a light bus.
+            let bus = heavy && matches!(row.get(column), Some('│' | '├' | '┤' | '┼' | '┬' | '┴'));
+            stub || bus
+        })
+}
+
+/// A fan-in from frame members to a node outside merged on the frame's
+/// border column; the merge now sits a blank column outside it.
+#[test]
+fn a_horizontal_fan_in_leaving_a_frame_merges_outside_its_border() {
+    let input = "flowchart LR
+    Doc[(Documents)] --> Chunker[Chunker]
+    subgraph Indexing
+        Embedder[Embedding Model]
+        BM25[BM25 Index]
+        ANN[(ANN Index)]
+        Embedder --> ANN
+    end
+    Chunker --> Embedder
+    Chunker --> BM25
+    Query[Search Query] --> Hybrid[Hybrid Retriever]
+    ANN --> Hybrid
+    BM25 --> Hybrid
+";
+    let frame = render(input, BaseStyle::Unicode);
+    assert!(
+        !border_is_a_comb(&frame, "Indexing", true),
+        "Indexing's right border stays a border:\n{frame}"
+    );
+}
+
+/// A fan-out from inside a frame to nodes outside put its bus on the frame's
+/// border column; the bus now starts a blank column outside it.
+#[test]
+fn a_horizontal_fan_out_leaving_a_frame_keeps_its_bus_off_the_border() {
+    let input = "graph RL
+    subgraph O [Outer]
+        subgraph I [Inner]
+            s[Signal]
+        end
+    end
+    s -.-> t1[t1]
+    s -.-> t2[t2]
+    s -.-> t3[t3]
+";
+    let frame = render(input, BaseStyle::Unicode);
+    assert!(
+        !border_is_a_comb(&frame, "Outer", false),
+        "Outer's left border stays a border:\n{frame}"
+    );
+}

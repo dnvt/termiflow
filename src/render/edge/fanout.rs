@@ -446,6 +446,43 @@ pub fn route_divergent_edges(
         if let Some(clear) = clear {
             coords.set_primary(&mut junction_x, &mut junction_y, clear);
         }
+        // Likewise for frames the source leaves that hold none of the targets:
+        // the bus starts a blank column outside the outermost of them.
+        let left: Vec<&crate::graph::Subgraph> = graph
+            .subgraphs
+            .iter()
+            .filter(|sg| sg.bounds.is_valid())
+            .filter(|sg| graph.is_node_in_subgraph_tree(&from.id, &sg.id))
+            .filter(|sg| {
+                target_positions
+                    .iter()
+                    .all(|(_, _, target)| !graph.is_node_in_subgraph_tree(&target.id, &sg.id))
+            })
+            .collect();
+        let junction_primary = coords.primary_coord(junction_x, junction_y);
+        let arrows = target_positions.iter().map(|(_, _, target)| {
+            let (ax, ay) = adjusted_edge_entry_point(target, direction, graph);
+            coords.primary_coord(ax, ay)
+        });
+        let clear = match direction {
+            Direction::RL => {
+                let nearest_arrow = arrows.max().unwrap_or(0);
+                left.iter()
+                    .filter_map(|sg| sg.bounds.x.checked_sub(2))
+                    .min()
+                    .filter(|&clear| clear < junction_primary && clear > nearest_arrow + 1)
+            }
+            _ => {
+                let nearest_arrow = arrows.min().unwrap_or(usize::MAX);
+                left.iter()
+                    .map(|sg| sg.bounds.x + sg.bounds.width + 1)
+                    .max()
+                    .filter(|&clear| clear > junction_primary && clear + 1 < nearest_arrow)
+            }
+        };
+        if let Some(clear) = clear {
+            coords.set_primary(&mut junction_x, &mut junction_y, clear);
+        }
     }
 
     // Labeled horizontal fan-out: each branch label is drawn on its branch run

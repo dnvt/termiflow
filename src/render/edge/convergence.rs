@@ -1508,6 +1508,44 @@ pub fn route_convergent_edges(
     }
     let mut merge_primary = coords.primary_coord(merge_x, merge_y);
     let arrow_primary = coords.primary_coord(arrow_x, arrow_y);
+    // The first column outside the frames sources leave without the target,
+    // a blank column past their border: right of them in LR, left in RL.
+    // The last column before the frames the target is in without the sources,
+    // a blank column short of their border: left of them in LR, right in RL.
+    let entered_frames_edge = |rightward: bool| -> Option<usize> {
+        let frames = graph
+            .subgraphs
+            .iter()
+            .filter(|sg| sg.bounds.is_valid())
+            .filter(|sg| graph.is_node_in_subgraph_tree(&to.id, &sg.id))
+            .filter(|sg| {
+                !visible_sources
+                    .iter()
+                    .any(|source| graph.is_node_in_subgraph_tree(&source.id, &sg.id))
+            });
+        if rightward {
+            frames.filter_map(|sg| sg.bounds.x.checked_sub(2)).min()
+        } else {
+            frames.map(|sg| sg.bounds.x + sg.bounds.width + 1).max()
+        }
+    };
+    let left_frames_edge = |rightward: bool| -> Option<usize> {
+        let frames = graph
+            .subgraphs
+            .iter()
+            .filter(|sg| sg.bounds.is_valid())
+            .filter(|sg| !graph.is_node_in_subgraph_tree(&to.id, &sg.id))
+            .filter(|sg| {
+                visible_sources
+                    .iter()
+                    .any(|source| graph.is_node_in_subgraph_tree(&source.id, &sg.id))
+            });
+        if rightward {
+            frames.map(|sg| sg.bounds.x + sg.bounds.width + 1).max()
+        } else {
+            frames.filter_map(|sg| sg.bounds.x.checked_sub(2)).min()
+        }
+    };
 
     match direction {
         Direction::LR => {
@@ -1528,6 +1566,16 @@ pub fn route_convergent_edges(
                 merge_primary = merge_primary.max(min_merge);
                 merge_primary = merge_primary.min(max_merge);
             }
+            // Sources leaving frames the target is not in: merge a blank
+            // column outside the outermost of them, not on its border.
+            // It must also stay a blank column short of the frames the target
+            // is in; where both do not fit, the merge stays put.
+            if let Some(clear) = left_frames_edge(true)
+                .filter(|&clear| clear <= max_merge)
+                .filter(|&clear| entered_frames_edge(true).is_none_or(|limit| clear <= limit))
+            {
+                merge_primary = merge_primary.max(clear);
+            }
         }
         Direction::RL => {
             // Merge just to the left of the closest source, but after the target arrow.
@@ -1546,6 +1594,12 @@ pub fn route_convergent_edges(
             } else {
                 merge_primary = merge_primary.min(max_merge);
                 merge_primary = merge_primary.max(min_merge);
+            }
+            if let Some(clear) = left_frames_edge(false)
+                .filter(|&clear| clear >= min_merge)
+                .filter(|&clear| entered_frames_edge(false).is_none_or(|limit| clear >= limit))
+            {
+                merge_primary = merge_primary.min(clear);
             }
         }
         Direction::TD | Direction::TB => {
