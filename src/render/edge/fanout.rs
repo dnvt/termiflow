@@ -414,10 +414,43 @@ pub fn route_divergent_edges(
         }
     }
 
-    // Targets inside frames the source is not in: the bus stays outside the
-    // outermost of them, a blank column clear of its border, instead of
-    // running down the border itself.
-    if matches!(direction, Direction::LR | Direction::RL) && target_positions.len() > 1 {
+    // Targets inside frames the source is not in: the bus (or a single
+    // target's turn) stays outside the outermost of them, a blank column clear
+    // of its border, instead of running down the border itself.
+    // A single target's turn moves only when it lands on a frame's side
+    // border, where the border hides it; elsewhere it keeps its column.
+    let on_frame_side = {
+        let x = junction_x;
+        graph.subgraphs.iter().any(|sg| {
+            sg.bounds.is_valid()
+                && (x == sg.bounds.x || x + 1 == sg.bounds.x + sg.bounds.width)
+                && sg.bounds.y <= junction_y
+                && junction_y < sg.bounds.y + sg.bounds.height
+        })
+    };
+    // A single target's new turn column must not already carry another
+    // vertical line between the source and target rows: the turn would run
+    // along it and merge the two (gen_a_174's Publish onto a fan-in bus).
+    let turn_row = junction_y;
+    let free_turn = |column: usize| {
+        if target_positions.len() > 1 {
+            return true;
+        }
+        let rows = target_positions
+            .iter()
+            .map(|(_, _, target)| adjusted_edge_entry_point(target, direction, graph).1)
+            .chain([turn_row]);
+        let (low, high) = rows.fold((usize::MAX, 0), |(low, high), y| (low.min(y), high.max(y)));
+        (low..=high).all(|y| {
+            let cell = canvas.get(column, y);
+            !super::super::canvas::is_vertical(cell, style)
+                && !super::super::canvas::is_junction(cell, style)
+                && !super::super::canvas::is_corner(cell, style)
+        })
+    };
+    if matches!(direction, Direction::LR | Direction::RL)
+        && (target_positions.len() > 1 || (target_positions.len() == 1 && on_frame_side))
+    {
         let entered: Vec<&crate::graph::Subgraph> = graph
             .subgraphs
             .iter()
@@ -443,7 +476,7 @@ pub fn route_divergent_edges(
                 .min()
                 .filter(|&clear| clear < junction_primary && clear > stem_start_primary),
         };
-        if let Some(clear) = clear {
+        if let Some(clear) = clear.filter(|&clear| free_turn(clear)) {
             coords.set_primary(&mut junction_x, &mut junction_y, clear);
         }
         // Likewise for frames the source leaves that hold none of the targets:
@@ -480,7 +513,7 @@ pub fn route_divergent_edges(
                     .filter(|&clear| clear > junction_primary && clear + 1 < nearest_arrow)
             }
         };
-        if let Some(clear) = clear {
+        if let Some(clear) = clear.filter(|&clear| free_turn(clear)) {
             coords.set_primary(&mut junction_x, &mut junction_y, clear);
         }
     }

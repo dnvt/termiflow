@@ -341,3 +341,98 @@ fn a_horizontal_fan_out_leaving_a_frame_keeps_its_bus_off_the_border() {
         "Outer's left border stays a border:\n{frame}"
     );
 }
+
+/// Frames nested around content near the canvas edge were clamped there and
+/// collapsed onto the outer frame's border: each inner frame's corner sat on
+/// the outer frame's side. Every row between the outer frame's corners now
+/// keeps its side.
+#[test]
+fn nested_frames_at_the_canvas_edge_keep_their_padding() {
+    let input = "graph TD
+subgraph Outer [Outer]
+    subgraph Inner [Inner]
+        subgraph Deep [Deep]
+            A[Node]
+        end
+    end
+end
+B[In] --> A
+A --> C[Out]
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style);
+        let rows: Vec<&str> = frame.lines().collect();
+        let top = rows
+            .iter()
+            .position(|row| row.starts_with(['┌', '┏', '+']))
+            .expect("outer top");
+        let bottom = rows
+            .iter()
+            .rposition(|row| row.starts_with(['└', '┗', '+']))
+            .expect("outer bottom");
+        assert!(
+            rows[top + 1..bottom]
+                .iter()
+                .all(|row| row.starts_with(['│', '┃', '|'])),
+            "no inner frame collapses onto Outer's side ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// A TD nested frame fed by its parent's own node was not kept clear of
+/// that node: the node sat inside the nested frame's columns, its border
+/// running through the box.
+#[test]
+fn a_parent_node_feeding_a_nested_frame_sits_beside_it() {
+    let input = "graph TD
+    Ext[External] --> I1
+    subgraph Outer [Outer]
+        O1[Outer node]
+        subgraph Inner [Inner]
+            I1[Inner node] --> I2[Inner tail]
+        end
+        O1 --> I2
+    end
+";
+    let frame = render(input, BaseStyle::Unicode);
+    let (_, bottom) = box_borders(&frame, "Outer node");
+    assert_eq!(
+        tees(&bottom),
+        1,
+        "only Outer node's own exit marks its border:\n{frame}"
+    );
+}
+
+/// A TD fan-in from three nesting depths merged on a row inside the frames,
+/// the innermost frame's bottom border, which the border then redrew over,
+/// cutting two branches off; it now merges below the frames.
+#[test]
+fn a_td_fan_in_from_nested_depths_merges_below_the_frames() {
+    let input = "graph TD
+    subgraph L1 [L1]
+        a[depth1]
+        subgraph L2 [L2]
+            b[depth2]
+            subgraph L3 [L3]
+                c[depth3]
+            end
+        end
+    end
+    a --> Z[Collector]
+    b --> Z
+    c --> Z
+";
+    let frame = render(input, BaseStyle::Unicode);
+    let rows: Vec<&str> = frame.lines().collect();
+    let target = rows
+        .iter()
+        .position(|row| row.contains("Collector"))
+        .expect("Collector");
+    // The merge bar, right above the arrow into Collector's top border,
+    // joins all three branches.
+    let bar = rows[target - 3];
+    assert!(
+        bar.matches(['┴', '┘', '└', '├', '┤', '┬']).count() >= 3,
+        "three branches reach the merge bar below the frames:\n{frame}"
+    );
+}

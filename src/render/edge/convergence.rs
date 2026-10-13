@@ -1629,6 +1629,40 @@ pub fn route_convergent_edges(
                     merge_primary = top - 1;
                 }
             }
+            // Sources leaving frames the target is not in, at different
+            // depths (no frame holds them all), merged on a row inside those
+            // frames, often a border row the border then redraws over; merge
+            // on the row below the lowest of their bottom borders instead.
+            let shared_frame = visible_sources
+                .first()
+                .and_then(|source| graph.get_node_subgraph(&source.id))
+                .is_some_and(|frame| {
+                    visible_sources
+                        .iter()
+                        .all(|source| graph.get_node_subgraph(&source.id) == Some(frame))
+                });
+            let left_bottom = visible_sources
+                .iter()
+                .flat_map(|source| graph.node_subgraph_chain(&source.id))
+                .filter(|sg_id| !graph.is_node_in_subgraph_tree(&to.id, sg_id))
+                .filter_map(|sg_id| graph.get_subgraph(sg_id))
+                .filter(|sg| sg.bounds.is_valid())
+                .map(|sg| sg.bounds.y + sg.bounds.height)
+                .max();
+            // A merge one column wide is nudged up off the border later, so
+            // it keeps merging inside, where one line then leaves the frames.
+            let columns = visible_sources
+                .iter()
+                .map(|source| get_node_center(source).0)
+                .chain([get_node_center(to).0]);
+            let (low, high) =
+                columns.fold((usize::MAX, 0), |(low, high), x| (low.min(x), high.max(x)));
+            let tiny = high.saturating_sub(low) <= 1;
+            if let Some(below) = left_bottom.filter(|_| !shared_frame && !tiny) {
+                if below > merge_primary && below <= limit {
+                    merge_primary = below;
+                }
+            }
         }
         Direction::BT => {
             // Merge one row above the source exits.  Using the source-exit row
@@ -1797,7 +1831,17 @@ pub fn route_convergent_edges(
 
     if matches!(direction, Direction::TD | Direction::TB) {
         let span_width = final_span_end.saturating_sub(final_span_start);
-        if span_width <= 1 {
+        // The nudge clears the row above; a frame border there must stay.
+        let border_above = merge_y.checked_sub(1).is_some_and(|row| {
+            graph.subgraphs.iter().any(|sg| {
+                let bounds = &sg.bounds;
+                bounds.is_valid()
+                    && (bounds.y == row || bounds.y + bounds.height == row + 1)
+                    && bounds.x <= final_span_start
+                    && final_span_end < bounds.x + bounds.width
+            })
+        });
+        if span_width <= 1 && !border_above {
             for pos in final_span_start..=final_span_end {
                 let (x, y) = coords.with_secondary(merge_x, merge_y, pos);
                 if !canvas.fallback_route_claims_cell(x, y) {

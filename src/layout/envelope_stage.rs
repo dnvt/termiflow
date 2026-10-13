@@ -3044,6 +3044,15 @@ pub(super) fn resolve_subgraph_envelopes(
     // Futile request sets are remembered within one pass only: the passes
     // between change the geometry, so a set futile in one can help the next.
     placement.futile_td_requests.clear();
+    if std::env::var_os("TF_DBG").is_some() {
+        let mut p: Vec<_> = placement
+            .node_rects
+            .iter()
+            .map(|(k, v)| (k.clone(), v.x))
+            .collect();
+        p.sort();
+        eprintln!("START {:?}", p);
+    }
     let mut subgraph_envelopes =
         compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
     adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
@@ -3181,6 +3190,25 @@ pub(super) fn resolve_subgraph_envelopes(
             else {
                 break;
             };
+
+            // A drift toward the canvas's left edge stops before the frames
+            // would reach past it: they are clamped there and collapse onto
+            // one border, and the margin pass moving everything back right
+            // only spaces the other frames further out.
+            if delta_x < 0 {
+                let mut moved = placement.node_rects.clone();
+                for (id, rect) in moved.iter_mut() {
+                    if input.graph.is_node_in_subgraph_tree(id, &subgraph_id) {
+                        rect.x = rect.x.saturating_sub(delta_x.unsigned_abs());
+                    }
+                }
+                let reach = |rects: &HashMap<String, Rect>| {
+                    frames_reach_past_edges(input.graph, rects, config.subgraph_gutter).0
+                };
+                if reach(&moved) > reach(&placement.node_rects) {
+                    break;
+                }
+            }
 
             shift_nodes_in_subgraph_tree_x_signed(
                 input.graph,
@@ -3375,12 +3403,15 @@ pub(super) fn resolve_subgraph_envelopes(
                     if !rect_fully_inside(parent_env.outer, child_env.outer) {
                         continue;
                     }
-                    let child_has_external_outgoing = input.graph.edges.iter().any(|edge| {
+                    // An edge across the child's border, either way: a parent node
+                    // beside it then sits on that edge's way (gen_c_009: Outer node
+                    // feeding Inner).
+                    let child_has_external_edge = input.graph.edges.iter().any(|edge| {
                         !edge.is_back_edge
                             && input.graph.is_node_in_subgraph_tree(&edge.from, child_id)
-                            && !input.graph.is_node_in_subgraph_tree(&edge.to, child_id)
+                                != input.graph.is_node_in_subgraph_tree(&edge.to, child_id)
                     });
-                    if !child_has_external_outgoing {
+                    if !child_has_external_edge {
                         continue;
                     }
 
@@ -4701,8 +4732,90 @@ pub(super) fn resolve_subgraph_envelopes(
             compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
         adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
     }
+    if reserve_frame_margins(input.graph, config, placement) {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
 
     subgraph_envelopes
+}
+
+/// How far the frames around these node rects would reach past the canvas's
+/// left and top edges, where their envelopes are clamped (columns, rows).
+fn frames_reach_past_edges(
+    graph: &Graph,
+    node_rects: &HashMap<String, Rect>,
+    gutter: usize,
+) -> (usize, usize) {
+    if graph.subgraphs.is_empty() {
+        return (0, 0);
+    }
+    // Far enough from the edge that no envelope is clamped.
+    const PROBE: usize = 256;
+    let probe: HashMap<String, Rect> = node_rects
+        .iter()
+        .map(|(id, rect)| {
+            let moved = Rect::new(rect.x + PROBE, rect.y + PROBE, rect.width, rect.height);
+            (id.clone(), moved)
+        })
+        .collect();
+    let envelopes = compute_envelopes(graph, &probe, gutter);
+    let reach = |edge: fn(&Rect) -> usize| {
+        envelopes
+            .values()
+            .map(|envelope| PROBE.saturating_sub(edge(&envelope.outer)))
+            .max()
+            .unwrap_or(0)
+    };
+    (reach(|rect| rect.x), reach(|rect| rect.y))
+}
+
+/// Envelopes stop at the canvas edge, so frames nested around content near
+/// column or row 0 collapse onto one border line there (a parent's border
+/// on its child's, or `││`). Move every node right or down by as far as
+/// the frames would reach past that edge. Whether a move happened.
+fn reserve_frame_margins(
+    graph: &Graph,
+    config: &CoarseLayoutConfig,
+    placement: &mut Placement,
+) -> bool {
+    if graph.subgraphs.is_empty() {
+        return false;
+    }
+    let (reach_x, reach_y) =
+        frames_reach_past_edges(graph, &placement.node_rects, config.subgraph_gutter);
+    // Only where a nested frame's border then meets its parent's: a lone
+    // frame at the edge just keeps a narrower margin.
+    let clamped = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
+    let collapsed = |edge: fn(&Rect) -> usize| {
+        graph.subgraphs.iter().any(|child| {
+            let parent = child.parent_id.as_deref().and_then(|id| clamped.get(id));
+            match (parent, clamped.get(&child.id)) {
+                (Some(parent), Some(child)) => edge(&child.outer) < edge(&parent.outer) + 2,
+                _ => false,
+            }
+        })
+    };
+    let dx = if collapsed(|rect| rect.x) { reach_x } else { 0 };
+    let dy = if collapsed(|rect| rect.y) { reach_y } else { 0 };
+    if std::env::var_os("TF_DBG").is_some() {
+        eprintln!("margins dx {dx} dy {dy}");
+    }
+    if dx == 0 && dy == 0 {
+        return false;
+    }
+    for point in placement.positions.values_mut() {
+        point.x += dx;
+        point.y += dy;
+    }
+    for rect in placement.node_rects.values_mut() {
+        rect.x += dx;
+        rect.y += dy;
+    }
+    placement.canvas.width += dx;
+    placement.canvas.height += dy;
+    true
 }
 
 /// Align the external receiver of a strict boundary-owned fan-in scene to the
