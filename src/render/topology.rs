@@ -67,8 +67,41 @@ pub fn canvas_connections(canvas: &Canvas, x: usize, y: usize) -> Connections {
     }
 }
 
+/// Read access to a rendered grid, the canvas while rendering or the semantic
+/// frame the critic reads, so both judge ASCII corners by the same rules.
+trait GlyphGrid {
+    fn glyph(&self, x: usize, y: usize) -> char;
+    fn owner(&self, x: usize, y: usize) -> Option<CellOwnerKind>;
+}
+
+impl GlyphGrid for Canvas {
+    fn glyph(&self, x: usize, y: usize) -> char {
+        self.get(x, y)
+    }
+
+    fn owner(&self, x: usize, y: usize) -> Option<CellOwnerKind> {
+        self.get_meta(x, y).map(|meta| meta.owner_kind)
+    }
+}
+
+impl GlyphGrid for SemanticFrame {
+    fn glyph(&self, x: usize, y: usize) -> char {
+        self.get(x, y).map_or(' ', |cell| cell.ch)
+    }
+
+    fn owner(&self, x: usize, y: usize) -> Option<CellOwnerKind> {
+        self.get(x, y).map(|cell| cell.owner_kind)
+    }
+}
+
 fn frame_connects_up(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     if y == 0 {
+        return false;
+    }
+    if is_ascii_frame_corner(frame, x, y - 1, is_ascii_plain_h(frame.glyph(x, y)))
+        || (is_ascii_plain_h(frame.glyph(x, y))
+            && ascii_corner_is_complete(frame, x, y - 1, (0, 1)))
+    {
         return false;
     }
 
@@ -93,6 +126,12 @@ fn frame_connects_down(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     if y + 1 >= frame.height {
         return false;
     }
+    if is_ascii_frame_corner(frame, x, y + 1, is_ascii_plain_h(frame.glyph(x, y)))
+        || (is_ascii_plain_h(frame.glyph(x, y))
+            && ascii_corner_is_complete(frame, x, y + 1, (0, -1)))
+    {
+        return false;
+    }
 
     let Some(below) = frame.get(x, y + 1) else {
         return false;
@@ -115,6 +154,12 @@ fn frame_connects_left(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     if x == 0 {
         return false;
     }
+    if is_ascii_frame_corner(frame, x - 1, y, is_ascii_plain_v(frame.glyph(x, y)))
+        || (is_ascii_plain_v(frame.glyph(x, y))
+            && ascii_corner_is_complete(frame, x - 1, y, (1, 0)))
+    {
+        return false;
+    }
 
     let Some(left) = frame.get(x - 1, y) else {
         return false;
@@ -135,6 +180,12 @@ fn frame_connects_left(frame: &SemanticFrame, x: usize, y: usize) -> bool {
 
 fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     if x + 1 >= frame.width {
+        return false;
+    }
+    if is_ascii_frame_corner(frame, x + 1, y, is_ascii_plain_v(frame.glyph(x, y)))
+        || (is_ascii_plain_v(frame.glyph(x, y))
+            && ascii_corner_is_complete(frame, x + 1, y, (-1, 0)))
+    {
         return false;
     }
 
@@ -162,10 +213,10 @@ fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
 /// would turn an edge merely passing the corner into a junction. Turns and
 /// junctions keep the arm, so routes that already bend at a corner are left
 /// as they are.
-fn is_ascii_frame_corner(canvas: &Canvas, x: usize, y: usize, plain_run: bool) -> bool {
-    let owner = |x: usize| canvas.get_meta(x, y).map(|meta| meta.owner_kind);
+fn is_ascii_frame_corner(grid: &impl GlyphGrid, x: usize, y: usize, plain_run: bool) -> bool {
+    let owner = |x: usize| grid.owner(x, y);
     plain_run
-        && canvas.get(x, y) == '+'
+        && grid.glyph(x, y) == '+'
         && match owner(x) {
             Some(CellOwnerKind::SubgraphBorder) => true,
             // A box corner has its border on one side only; a `+` with border
@@ -193,17 +244,20 @@ fn is_ascii_plain_v(ch: char) -> bool {
 /// of its other sides, so the plain run on `side` (the asking cell, relative
 /// to the `+`) is not one of its arms: a `-` cannot take a vertical arm, nor
 /// a `|` a horizontal one.
-fn ascii_corner_is_complete(canvas: &Canvas, x: usize, y: usize, side: (isize, isize)) -> bool {
-    if canvas.get(x, y) != '+' {
+fn ascii_corner_is_complete(
+    grid: &impl GlyphGrid,
+    x: usize,
+    y: usize,
+    side: (isize, isize),
+) -> bool {
+    if grid.glyph(x, y) != '+' {
         return false;
     }
     // Box and frame borders have their own rules; this one is for edge turns.
-    let edge_owned = canvas.get_meta(x, y).is_some_and(|meta| {
-        matches!(
-            meta.owner_kind,
-            CellOwnerKind::EdgeSegment | CellOwnerKind::Junction | CellOwnerKind::CycleEdge
-        )
-    });
+    let edge_owned = matches!(
+        grid.owner(x, y),
+        Some(CellOwnerKind::EdgeSegment | CellOwnerKind::Junction | CellOwnerKind::CycleEdge)
+    );
     if !edge_owned {
         return false;
     }
@@ -214,7 +268,7 @@ fn ascii_corner_is_complete(canvas: &Canvas, x: usize, y: usize, side: (isize, i
             let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy)) else {
                 return false;
             };
-            let ch = canvas.get(nx, ny);
+            let ch = grid.glyph(nx, ny);
             match (dx, dy) {
                 (0, -1) => char_connects_down(ch),
                 (0, 1) => char_connects_up(ch),
