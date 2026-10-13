@@ -190,7 +190,9 @@ pub(super) fn title_safe_td_entry_x(
 /// Keep a single-target vertical route straight when the source lane already
 /// lies inside the target's flat entry edge. The arrow lands slightly off the
 /// target centre instead of the route jogging one to three cells sideways
-/// just before the arrowhead. `None` keeps the centred entry.
+/// just before the arrowhead. `None` keeps the centred entry, as does a
+/// labelled edge: its label is centred on the target and must stay on the
+/// shaft.
 pub(super) fn straight_entry_x(
     from: &Node,
     target: &Node,
@@ -221,6 +223,10 @@ pub(super) fn straight_entry_x(
             .filter(|edge| !edge.is_back_edge && edge.from == from.id)
             .count()
             != 1
+        || graph
+            .edges
+            .iter()
+            .any(|edge| edge.from == from.id && edge.to == target.id && edge.label.is_some())
     {
         return None;
     }

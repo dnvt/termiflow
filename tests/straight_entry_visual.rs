@@ -164,3 +164,23 @@ fn bt_titled_entry_lands_on_a_title_safe_lane_inside_the_target() {
         }
     }
 }
+
+/// A labelled edge keeps its centred entry: its label is centred on the
+/// target, so a straight entry one column over would leave the label off the
+/// shaft and read as a tee into the label (`ok┤`, ASCII `ok+`).
+#[test]
+fn a_labelled_entry_keeps_its_label_on_the_shaft() {
+    let input = "flowchart TD
+    X[Source node here] -->|ok| A
+    subgraph S [Outer frame]
+        A[A] --> B[Some much wider target]
+    end
+";
+    for (style, tee) in [(BaseStyle::Unicode, "ok┤"), (BaseStyle::Ascii, "ok+")] {
+        let frame = render(input, style, false);
+        assert!(
+            frame.contains("ok") && !frame.contains(tee),
+            "the label must sit on the shaft, not beside it ({style:?}):\n{frame}"
+        );
+    }
+}
