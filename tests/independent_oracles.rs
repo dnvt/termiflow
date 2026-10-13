@@ -5160,6 +5160,28 @@ fn topology_label_skip(
     None
 }
 
+/// Negative control: the trace reaches only the nodes an edge joins, in both
+/// modes, so a flood that returned every node would fail here.
+#[test]
+fn topology_trace_does_not_reach_unconnected_nodes() {
+    for direction in ["TD", "LR"] {
+        let input =
+            format!("graph {direction}\n    A[Alpha] --> B[Beta]\n    C[Gamma] --> D[Delta]\n");
+        let (graph, frame, _) =
+            boundary_crossing_connectivity_errors(&input, BaseStyle::Unicode, false)
+                .expect("render");
+        let grid = ConnectivityGrid::new(&frame);
+        let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+        for strict in [false, true] {
+            let reached = topology_reached_nodes(&graph, &grid, origin, "A", strict);
+            assert!(
+                reached.contains("B") && !reached.contains("C") && !reached.contains("D"),
+                "A reaches exactly B ({direction}, strict={strict}): {reached:?}\n{frame}"
+            );
+        }
+    }
+}
+
 #[test]
 fn topology_trace_reads_through_a_label_word_gap_on_a_vertical_shaft() {
     let input = "graph TD\n    A[Source] -->|ab cd| B[Target]\n";
@@ -5216,6 +5238,9 @@ fn topology_audit() {
         let Some((graph, frame, _)) =
             boundary_crossing_connectivity_errors(&input, BaseStyle::Unicode, false)
         else {
+            // Record the failure: a frame that stops rendering must not
+            // silently drop its rows and lower the counts.
+            rows.push(format!("{stem}\tRENDER\t-\t-"));
             continue;
         };
         let grid = ConnectivityGrid::new(&frame);

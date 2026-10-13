@@ -28,8 +28,13 @@ fn a_wide_label_over_a_fan_out_drop_keeps_the_corner() {
         frame.contains("はい") && frame.contains("いいえ"),
         "{frame}"
     );
+    let lines: Vec<&str> = frame.lines().collect();
+    let label_row = lines
+        .iter()
+        .position(|line| line.contains("いいえ"))
+        .expect("label row");
     assert!(
-        frame.lines().any(|line| line.trim_end().ends_with('┐')),
+        label_row > 0 && lines[label_row - 1].trim_end().ends_with('┐'),
         "the right drop keeps its corner above the label:\n{frame}"
     );
 }
