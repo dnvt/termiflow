@@ -245,3 +245,38 @@ fn a_source_ranked_inside_a_frame_does_not_stretch_it() {
         );
     }
 }
+
+/// A TD frame clearance asked for a whole-rank shift that moved the frame
+/// along with what had to clear it; the loop repeated it to its budget and
+/// stacked sibling frames gained long bare shafts. The shift now stops once
+/// it repeats without progress.
+#[test]
+fn a_repeated_whole_rank_shift_does_not_stretch_sibling_frames() {
+    let input = "flowchart TB
+    subgraph Upstream
+        Mirror[Package Mirror]
+    end
+    subgraph Build [Hermetic Build]
+        Fetch[Fetch Pinned Deps]
+        Compile[Compile]
+        SBOM[Generate SBOM]
+        Fetch --> Compile --> SBOM
+    end
+    subgraph Attest [Attestation]
+        Sign[Sigstore Sign]
+        Prov[SLSA Provenance]
+    end
+    Mirror --> Fetch
+    SBOM --> Sign
+    Compile --> Prov
+    Sign & Prov --> Registry[(OCI Registry)]
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        assert!(
+            longest_shaft_run(&frame) < 20,
+            "longest shaft {} rows ({style:?}):\n{frame}",
+            longest_shaft_run(&frame)
+        );
+    }
+}

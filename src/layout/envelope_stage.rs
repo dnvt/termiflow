@@ -3427,13 +3427,14 @@ pub(super) fn resolve_subgraph_envelopes(
     if matches!(input.graph.direction, Direction::TD | Direction::TB)
         && !subgraph_envelopes.is_empty()
     {
-        let mut last_shift = None;
+        let mut last_requests: Option<Vec<(usize, usize)>> = None;
         for _ in 0..8 {
             let mut required_shift_by_rank: HashMap<usize, usize> = HashMap::new();
             // Shifts that must leave the members of these subgraph trees in place.
             let mut outside_shift_by_rank: HashMap<usize, (usize, Vec<String>)> = HashMap::new();
-            // Ranks a nested frame's exit rule asked to shift as a whole.
-            let mut nested_exit_ranks: Vec<usize> = Vec::new();
+            // Ranks a parent's title band asked to shift: against a frame held at
+            // the canvas top the same request makes progress pass after pass.
+            let mut title_band_ranks: Vec<usize> = Vec::new();
 
             let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
             for sg in &input.graph.subgraphs {
@@ -3494,6 +3495,7 @@ pub(super) fn resolve_subgraph_envelopes(
                     .entry(shift_rank)
                     .and_modify(|existing| *existing = (*existing).max(delta))
                     .or_insert(delta);
+                title_band_ranks.push(shift_rank);
             }
 
             // Ensure enough clearance above a subgraph top border for incoming edges.
@@ -3658,22 +3660,20 @@ pub(super) fn resolve_subgraph_envelopes(
                         continue;
                     };
                     let delta = required_target_y - to_rect.y;
+                    // Nested frames keep the whole-rank shift; the repeat guard
+                    // below stops it once it no longer makes progress.
                     if border_follows_rank_shift(input.graph, &placement.ranks, *rank, subgraph_id)
+                        && is_leaf_subgraph(input.graph, subgraph_id)
                     {
-                        if is_leaf_subgraph(input.graph, subgraph_id) {
-                            if !feeds_back_into(input.graph, &edge.to, subgraph_id) {
-                                record_outside_shift(
-                                    &mut outside_shift_by_rank,
-                                    *rank,
-                                    delta,
-                                    subgraph_id,
-                                );
-                            }
-                            continue;
+                        if !feeds_back_into(input.graph, &edge.to, subgraph_id) {
+                            record_outside_shift(
+                                &mut outside_shift_by_rank,
+                                *rank,
+                                delta,
+                                subgraph_id,
+                            );
                         }
-                        // Nested frames keep the whole-rank shift; the repeat guard
-                        // below stops it once it no longer makes progress.
-                        nested_exit_ranks.push(*rank);
+                        continue;
                     }
                     required_shift_by_rank
                         .entry(*rank)
@@ -3687,11 +3687,19 @@ pub(super) fn resolve_subgraph_envelopes(
             else {
                 break;
             };
-            // A nested frame's exit shift asked for again means the last one
-            // made no progress: a member moved with the target and the border
-            // followed. Repeating it would only add blank rows.
-            let repeated = last_shift.replace((min_rank, delta_y)) == Some((min_rank, delta_y));
-            if kept.is_empty() && repeated && nested_exit_ranks.contains(&min_rank) {
+            // The same whole-rank requests after a shift mean it made no
+            // progress: what had to clear the frame moved along with it (a member
+            // moved with the target and the border followed). Repeating it would
+            // only add blank rows. (Nested frames can ask for the same shift one
+            // after another while making progress, so all requests are compared,
+            // and a title band keeps its passes.)
+            let mut requests: Vec<(usize, usize)> = required_shift_by_rank
+                .iter()
+                .map(|(&rank, &delta)| (rank, delta))
+                .collect();
+            requests.sort_unstable();
+            let repeated = last_requests.replace(requests.clone()) == Some(requests);
+            if kept.is_empty() && repeated && !title_band_ranks.contains(&min_rank) {
                 break;
             }
 
