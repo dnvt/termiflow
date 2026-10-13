@@ -545,9 +545,46 @@ pub(super) fn render_with_feedback_with_contract(
             EdgeKind::Thick | EdgeKind::Dotted
         )
     });
+    // The cells where back edges touch their nodes: in TD/BT every back edge
+    // at a node uses the node's one side cell; in LR/RL each uses its lane's
+    // column below the node.  A marker or head drawn on a cell several back
+    // edges share would label all of them, so those keep the plain arrow.
+    let vertical_cycles = !matches!(graph.direction, Direction::LR | Direction::RL);
+    let end_cells = |edge_idx: usize, from: &Node, to: &Node| {
+        let lane = cycle_lanes.get(&edge_idx);
+        let side = |node: &Node, lane_x: Option<usize>| {
+            let x = if vertical_cycles {
+                usize::MAX
+            } else {
+                lane_x.unwrap_or(node.x + node.width / 2)
+            };
+            (node.id.clone(), x)
+        };
+        (
+            side(from, lane.map(|lane| lane.from_x)),
+            side(to, lane.map(|lane| lane.to_x)),
+        )
+    };
+    let mut end_cell_uses: HashMap<(String, usize), usize> = HashMap::new();
+    for (edge_idx, _, from, to) in &cycle_edges {
+        let (source, target) = end_cells(*edge_idx, from, to);
+        *end_cell_uses.entry(source.clone()).or_default() += 1;
+        if target != source {
+            *end_cell_uses.entry(target).or_default() += 1;
+        }
+    }
+    let shared = |cell: &(String, usize)| end_cell_uses.get(cell).is_some_and(|&uses| uses > 1);
     for (edge_idx, owner_id, from, to) in cycle_edges {
         // A thick or dotted back edge keeps its kind along the cycle route.
         let kind = graph.edges[edge_idx].kind;
+        let (source, target) = end_cells(edge_idx, from, to);
+        let end_kind = match kind {
+            EdgeKind::Bidirectional if shared(&source) => EdgeKind::Arrow,
+            EdgeKind::CircleEnd | EdgeKind::CrossEnd | EdgeKind::Open if shared(&target) => {
+                EdgeKind::Arrow
+            }
+            kind => kind,
+        };
         let mut cycle_chars = chars;
         if matches!(kind, EdgeKind::Thick | EdgeKind::Dotted) {
             let kind_chars = super::edge::style_for_edge_kind(&chars, kind);
@@ -562,6 +599,7 @@ pub(super) fn render_with_feedback_with_contract(
             &config.spacing,
             graph.direction,
             Some(owner_id.as_str()),
+            end_kind,
             cycle_lanes.get(&edge_idx).copied(),
             cycle_source_detours.get(&edge_idx).copied(),
             cycle_gutter_insets.get(&edge_idx).copied().unwrap_or(0),

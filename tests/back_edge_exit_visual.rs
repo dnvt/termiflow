@@ -195,3 +195,90 @@ fn a_detoured_td_back_edge_keeps_its_label_on_its_run() {
         "the label sits on the detour run:\n{frame}"
     );
 }
+
+/// A back edge ends with its own marker: a circle or cross end draws that
+/// marker at the target instead of a plain arrowhead, and a bidirectional
+/// back edge also points back into its source.
+#[test]
+fn back_edges_draw_their_end_markers() {
+    let render = |direction: &str, edge: &str, style: BaseStyle| {
+        let input = format!("graph {direction}\nA-->B-->C\n{edge}\n");
+        termiflow::render_with_feedback(&input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output
+    };
+    for (style, wall, circle, cross, left, up) in [
+        (BaseStyle::Unicode, '│', '○', '✕', '←', '↑'),
+        (BaseStyle::Ascii, '|', 'o', 'x', '<', '^'),
+    ] {
+        // TD: the back edge enters A's right side on its label row.
+        for (edge, marker) in [("C --o A", circle), ("C --x A", cross)] {
+            let frame = render("TD", edge, style);
+            let row = frame
+                .lines()
+                .find(|line| line.contains("  A  "))
+                .expect("A row");
+            assert!(
+                row.contains(&format!("{wall}{marker}")),
+                "{edge} ends with its marker at A ({style:?}):\n{frame}"
+            );
+        }
+        let frame = render("TD", "C <--> A", style);
+        for node in ["  A  ", "  C  "] {
+            let row = frame.lines().find(|line| line.contains(node)).expect("row");
+            assert!(
+                row.contains(left),
+                "a bidirectional back edge points into both ends ({style:?}):\n{frame}"
+            );
+        }
+        // LR: the back edge leaves and enters through the row below the boxes.
+        for (edge, marker) in [("C --o A", circle), ("C --x A", cross)] {
+            let frame = render("LR", edge, style);
+            let below = frame.lines().nth(3).expect("row below the boxes");
+            assert!(
+                below.trim_start().starts_with(marker),
+                "{edge} ends with its marker below A ({style:?}):\n{frame}"
+            );
+        }
+        let frame = render("LR", "C <--> A", style);
+        let below = frame.lines().nth(3).expect("row below the boxes");
+        assert_eq!(
+            below.matches(up).count(),
+            2,
+            "a bidirectional back edge points into both ends ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// Back edges that share a node's side cell keep the plain arrow there and
+/// draw no source head: one edge's circle, cross or head on a shared cell
+/// would label every edge through it.
+#[test]
+fn back_edges_on_a_shared_cell_keep_a_plain_arrow() {
+    let input =
+        "graph TD\nA --> B --> C --> D --> E\nE -.-> A\nE ==> B\nD --o A\nC --x A\nE <--> C\n";
+    for (style, arrow, markers) in [
+        (BaseStyle::Unicode, '←', ['○', '✕']),
+        (BaseStyle::Ascii, '<', ['o', 'x']),
+    ] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let row = |label: &str| {
+            frame
+                .lines()
+                .find(|line| line.contains(label))
+                .expect("node row")
+                .to_owned()
+        };
+        let a = row("  A  ");
+        assert!(
+            a.contains(arrow) && !a.contains(markers),
+            "A's shared entry keeps a plain arrow ({style:?}):\n{frame}"
+        );
+        assert!(
+            !row("  E  ").contains(arrow),
+            "E's shared exit draws no source head ({style:?}):\n{frame}"
+        );
+    }
+}

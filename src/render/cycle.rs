@@ -11,7 +11,7 @@ use crate::spacing::SpacingConfig;
 use crate::style::StyleChars;
 
 use super::canvas::Canvas;
-use super::semantic::CellOwnerKind;
+use super::semantic::{CellOwnerKind, CellRole};
 
 const CYCLE_Z_INDEX: u8 = 5;
 
@@ -33,7 +33,17 @@ pub fn route_cycle_edge(
     owner_id: Option<&str>,
 ) {
     route_cycle_edge_on_lane(
-        from, to, canvas, style, spacing, direction, owner_id, None, None, 0,
+        from,
+        to,
+        canvas,
+        style,
+        spacing,
+        direction,
+        owner_id,
+        EdgeKind::Arrow,
+        None,
+        None,
+        0,
     );
 }
 
@@ -49,6 +59,7 @@ pub fn route_cycle_edge_on_lane(
     spacing: &SpacingConfig,
     direction: crate::graph::Direction,
     owner_id: Option<&str>,
+    kind: EdgeKind,
     lane: Option<HorizontalCycleLane>,
     source_detour: Option<usize>,
     gutter_inset: usize,
@@ -130,7 +141,8 @@ pub fn route_cycle_edge_on_lane(
                 }
 
                 set_cycle_char(canvas, return_x, from_y, return_junction, owner_id);
-                set_cycle_char(canvas, node_right, from_y, style.arrow_left, owner_id);
+                let end = cycle_end_char(kind, style.arrow_left, style.back_h, style);
+                set_cycle_end(canvas, node_right, from_y, end, kind, owner_id);
                 return;
             }
 
@@ -208,7 +220,18 @@ pub fn route_cycle_edge_on_lane(
             }
 
             // Arrow pointing into target - back-edge always enters from right gutter
-            set_cycle_char(canvas, to.x + to.width, to_y, style.arrow_left, owner_id);
+            let end = cycle_end_char(kind, style.arrow_left, style.back_h, style);
+            set_cycle_end(canvas, to.x + to.width, to_y, end, kind, owner_id);
+            // A bidirectional back edge also points back into its source.
+            if kind == EdgeKind::Bidirectional {
+                set_cycle_char(
+                    canvas,
+                    from.x + from.width,
+                    from.center_y(),
+                    style.arrow_left,
+                    owner_id,
+                );
+            }
         }
         Direction::LR | Direction::RL => {
             // Horizontal layout: use bottom gutter for back-edge
@@ -264,7 +287,8 @@ pub fn route_cycle_edge_on_lane(
                 // Place the visible arrow on the outside entry row so the later
                 // box redraw doesn't erase it.
                 if node_bottom < canvas.height {
-                    set_cycle_char(canvas, center_x, node_bottom, style.arrow_up, owner_id);
+                    let end = cycle_end_char(kind, style.arrow_up, style.back_v, style);
+                    set_cycle_end(canvas, center_x, node_bottom, end, kind, owner_id);
                 }
                 return;
             }
@@ -311,9 +335,51 @@ pub fn route_cycle_edge_on_lane(
             // Place the visible arrow on the outside entry row so the later box
             // redraw doesn't erase it.
             if target_bottom_y < canvas.height {
-                set_cycle_char(canvas, to_x, target_bottom_y, style.arrow_up, owner_id);
+                let end = cycle_end_char(kind, style.arrow_up, style.back_v, style);
+                set_cycle_end(canvas, to_x, target_bottom_y, end, kind, owner_id);
+            }
+            // A bidirectional back edge also points back up into its source.
+            if kind == EdgeKind::Bidirectional && from.bottom_y() < canvas.height {
+                set_cycle_char(canvas, from_x, from.bottom_y(), style.arrow_up, owner_id);
             }
         }
+    }
+}
+
+/// The glyph a back edge ends with at its target: a circle or cross marker by
+/// kind, no head for an open link, otherwise `arrow`.
+fn cycle_end_char(kind: EdgeKind, arrow: char, shaft: char, style: &StyleChars) -> char {
+    match kind {
+        EdgeKind::CircleEnd => style.circle_end,
+        EdgeKind::CrossEnd => style.cross_end,
+        EdgeKind::Open => shaft,
+        _ => arrow,
+    }
+}
+
+/// Write a back edge's target end; a circle or cross marker keeps the
+/// endpoint-marker role forward edges give it.
+fn set_cycle_end(
+    canvas: &mut Canvas,
+    x: usize,
+    y: usize,
+    ch: char,
+    kind: EdgeKind,
+    owner_id: Option<&str>,
+) {
+    match owner_id {
+        Some(owner_id) if matches!(kind, EdgeKind::CircleEnd | EdgeKind::CrossEnd) => {
+            canvas.set_owned_with_role(
+                x,
+                y,
+                ch,
+                CellOwnerKind::CycleEdge,
+                owner_id,
+                CellRole::EndpointMarker,
+                CYCLE_Z_INDEX,
+            );
+        }
+        _ => set_cycle_char(canvas, x, y, ch, owner_id),
     }
 }
 
