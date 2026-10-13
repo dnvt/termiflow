@@ -312,3 +312,84 @@ fn a_bt_fanning_source_beside_nested_frames_does_not_stretch_them() {
         );
     }
 }
+
+/// A frame member with no incoming edge sat on the first rank however far
+/// down its target was, so its frame spanned (and wrapped) the frames ranked
+/// between; it now sits just before its target and the frames stack in flow
+/// order.
+#[test]
+fn a_frame_source_sits_next_to_its_target_so_frames_stack() {
+    let input = "flowchart TB
+    subgraph Recv [Receiving]
+        Dock[Loading Dock]
+        Inspect[Inspection]
+        Dock --> Inspect
+    end
+    subgraph Store [Storage]
+        Putaway[Putaway]
+        Bins[(Bin Locations)]
+        Putaway --> Bins
+    end
+    subgraph Out [Outbound]
+        Wave[Wave Planning]
+        PickO[Picking]
+        PackO[Packing]
+        Wave --> PickO --> PackO
+    end
+    Inspect --> Putaway
+    Bins --> PickO
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        let row_of = |text: &str| {
+            frame
+                .lines()
+                .position(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("{text} ({style:?}):\n{frame}"))
+        };
+        assert!(
+            row_of("Receiving") < row_of("Storage")
+                && row_of("Storage") < row_of("Outbound")
+                && longest_shaft_run(&frame) < 12,
+            "frames stack in flow order without bare shafts ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// Within one envelope pass, a shift request set the first loop found
+/// futile is not applied again by the second.
+#[test]
+fn nested_frames_do_not_repeat_a_futile_shift_within_a_pass() {
+    let input = "graph TD
+    E1[e1] --> r1
+    E2[e2] --> m1
+    subgraph R [Root]
+        r1[r1] --> r2[r2]
+        r1 --> r3[r3]
+        subgraph M [Mid]
+            m1[m1] --> m2[m2]
+            m1 --> m3[m3]
+            subgraph L [Leaf]
+                l1[l1] --> l2[l2]
+                l1 --> l3[l3]
+            end
+        end
+    end
+    r2 --> m2
+    m3 --> l1
+    E3[e3] --> l1
+    l2 --> O1[o1]
+    l3 --> O2[o2]
+    r3 --> O3[o3]
+    m2 --> O4[o4]
+    O1 --> O5[o5]
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style, false);
+        assert!(
+            frame.lines().count() < 150,
+            "{} rows for 14 nodes ({style:?}):\n{frame}",
+            frame.lines().count()
+        );
+    }
+}

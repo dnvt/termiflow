@@ -3041,6 +3041,9 @@ pub(super) fn resolve_subgraph_envelopes(
     debug_timing: bool,
 ) -> HashMap<String, SubgraphEnvelope> {
     // 3) Subgraph bounds + gutters.
+    // Futile request sets are remembered within one pass only: the passes
+    // between change the geometry, so a set futile in one can help the next.
+    placement.futile_td_requests.clear();
     let mut subgraph_envelopes =
         compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
     adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
@@ -3698,8 +3701,13 @@ pub(super) fn resolve_subgraph_envelopes(
                 .map(|(&rank, &delta)| (rank, delta))
                 .collect();
             requests.sort_unstable();
-            let repeated = last_requests.replace(requests.clone()) == Some(requests);
-            if kept.is_empty() && repeated && !title_band_ranks.contains(&min_rank) {
+            let whole = kept.is_empty() && !title_band_ranks.contains(&min_rank);
+            if whole && placement.futile_td_requests.contains(&requests) {
+                break;
+            }
+            let repeated = last_requests.replace(requests.clone()) == Some(requests.clone());
+            if whole && repeated {
+                placement.futile_td_requests.push(requests);
                 break;
             }
 
@@ -4324,8 +4332,18 @@ pub(super) fn resolve_subgraph_envelopes(
             // A nested frame's exit shift asked for again means the last one
             // made no progress: a member moved with the target and the border
             // followed. Repeating it would only add blank rows.
+            let mut requests: Vec<(usize, usize)> = required_shift_by_rank
+                .iter()
+                .map(|(&rank, &delta)| (rank, delta))
+                .collect();
+            requests.sort_unstable();
+            // A request set the earlier loop of this pass found futile stops here.
+            if kept.is_empty() && placement.futile_td_requests.contains(&requests) {
+                break;
+            }
             let repeated = last_shift.replace((min_rank, delta_y)) == Some((min_rank, delta_y));
             if kept.is_empty() && repeated && nested_exit_ranks.contains(&min_rank) {
+                placement.futile_td_requests.push(requests);
                 break;
             }
 

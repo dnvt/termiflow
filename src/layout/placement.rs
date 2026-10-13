@@ -43,6 +43,9 @@ pub(super) struct Placement {
     pub(super) node_rects: HashMap<String, Rect>,
     pub(super) canvas: Rect,
     pub(super) ranks: HashMap<String, usize>,
+    /// Whole-rank TD shift request sets already seen to make no progress in
+    /// the current envelope pass; its later loop stops on them.
+    pub(super) futile_td_requests: Vec<Vec<(usize, usize)>>,
 }
 
 pub(super) fn gap_for_axis(axis: Axis, cfg: &CoarseLayoutConfig) -> usize {
@@ -1233,6 +1236,7 @@ pub(super) fn place_nodes(
         node_rects,
         canvas,
         ranks,
+        futile_td_requests: Vec::new(),
     }
 }
 

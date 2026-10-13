@@ -60,6 +60,7 @@ pub(super) fn assign_layers(graph: &Graph) -> Vec<Vec<usize>> {
 
     promote_nested_child_root_ranks(graph, &index_map, &adj, &order, &mut rank);
     promote_subgraph_roots_below_external_sources(graph, &index_map, &adj, &order, &mut rank);
+    sink_frame_sources_to_their_targets(graph, &adj, &mut rank);
 
     let mut by_rank: HashMap<usize, Vec<usize>> = HashMap::new();
     for (idx, r) in rank.iter().enumerate() {
@@ -545,3 +546,34 @@ fn apply_balance_pass(
 }
 
 // -----------------------------------------------------------------------------
+
+/// A frame member with no incoming edge starts on rank 0, however far down
+/// its targets sit; when those targets are later in the frame, the frame then
+/// spans every rank between and wraps around other frames placed there. Move
+/// such a source down to the rank just before its nearest target, when all
+/// its edges stay inside its own frame.
+/// BT keeps the old ranks: its envelopes infer nesting from rank order, and a
+/// shorter BT frame there moved routes onto boxes.
+fn sink_frame_sources_to_their_targets(graph: &Graph, adj: &[Vec<usize>], rank: &mut [usize]) {
+    if graph.direction == Direction::BT {
+        return;
+    }
+    let has_incoming: Vec<bool> = (0..graph.nodes.len())
+        .map(|idx| adj.iter().any(|targets| targets.contains(&idx)))
+        .collect();
+    for (idx, node) in graph.nodes.iter().enumerate() {
+        if has_incoming[idx] || adj[idx].is_empty() {
+            continue;
+        }
+        let Some(frame) = graph.get_node_subgraph(&node.id) else {
+            continue;
+        };
+        let in_frame = adj[idx]
+            .iter()
+            .all(|&target| graph.is_node_in_subgraph_tree(&graph.nodes[target].id, frame));
+        let nearest = adj[idx].iter().map(|&target| rank[target]).min();
+        if let (true, Some(nearest)) = (in_frame, nearest) {
+            rank[idx] = rank[idx].max(nearest.saturating_sub(1));
+        }
+    }
+}
