@@ -162,6 +162,33 @@ pub(super) fn render_with_feedback_with_contract(
     if let Some(lowest_detour) = cycle_source_detours.values().max() {
         height = height.max(lowest_detour.saturating_add(2).min(max_canvas_height));
     }
+    // A TD/TB self-loop closes on a row below its box; on the bottom rank
+    // that row lies past the layout, and the loop would not be drawn. Rows
+    // are reserved only for a loop with its node's side cell to itself: its
+    // arrow on a cell another back edge leaves from would hide that exit.
+    let self_loop_offset = config.spacing.row_spacing.max(2);
+    let height_before_self_loops = height;
+    let side_cell_shared = |node_id: &str| {
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.is_back_edge && (edge.from == node_id || edge.to == node_id))
+            .count()
+            > 1
+    };
+    if matches!(graph.direction, Direction::TD | Direction::TB) {
+        let lowest_loop = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.is_back_edge && edge.from == edge.to)
+            .filter(|edge| !side_cell_shared(&edge.from))
+            .filter_map(|edge| graph_index.node_by_name(&edge.from))
+            .map(|node| node.bottom_y() + self_loop_offset)
+            .max();
+        if let Some(loop_y) = lowest_loop {
+            height = height.max(loop_y.saturating_add(1).min(max_canvas_height));
+        }
+    }
     // Back edges whose loops meet each take their own gutter column, two
     // apart; without the width for them they share the outermost one.
     let mut cycle_gutter_insets =
@@ -575,6 +602,15 @@ pub(super) fn render_with_feedback_with_contract(
     }
     let shared = |cell: &(String, usize)| end_cell_uses.get(cell).is_some_and(|&uses| uses > 1);
     for (edge_idx, owner_id, from, to) in cycle_edges {
+        // A self-loop on a shared side cell that had no row before the loop
+        // rows were reserved stays undrawn, as it was.
+        if from.id == to.id
+            && matches!(graph.direction, Direction::TD | Direction::TB)
+            && side_cell_shared(&from.id)
+            && from.bottom_y() + self_loop_offset >= height_before_self_loops
+        {
+            continue;
+        }
         // A thick or dotted back edge keeps its kind along the cycle route.
         let kind = graph.edges[edge_idx].kind;
         let (source, target) = end_cells(edge_idx, from, to);

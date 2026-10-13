@@ -282,3 +282,41 @@ fn back_edges_on_a_shared_cell_keep_a_plain_arrow() {
         );
     }
 }
+
+/// A TD self-loop on the bottom rank is drawn: the canvas keeps the row its
+/// loop closes on. A self-loop whose node's side cell another back edge
+/// leaves from is not forced in, so that exit keeps its tee.
+#[test]
+fn bottom_rank_td_self_loops_are_drawn_unless_their_cell_is_shared() {
+    let render = |input: &str| {
+        termiflow::render_with_feedback(input, RenderOptions::new())
+            .expect("render")
+            .output
+    };
+    for input in [
+        "graph TD\nA --> B\nB --> B\n",
+        "graph TD\nA[Loop] -->|forever| A\n",
+    ] {
+        let frame = render(input);
+        let node_row = frame
+            .lines()
+            .position(|line| line.contains("  B  ") || line.contains("  Loop  "))
+            .expect("node row");
+        assert!(
+            frame
+                .lines()
+                .nth(node_row)
+                .is_some_and(|row| row.contains('←'))
+                && frame
+                    .lines()
+                    .skip(node_row + 2)
+                    .any(|row| row.contains('┘')),
+            "the bottom-rank self-loop is drawn and closes below its box:\n{frame}"
+        );
+    }
+    let frame = render("graph TD\nA --> B\nA --> A\nB --> B\nB --> A\n");
+    assert!(
+        frame.contains("│  B  ├"),
+        "B's back edge to A keeps its exit tee:\n{frame}"
+    );
+}
