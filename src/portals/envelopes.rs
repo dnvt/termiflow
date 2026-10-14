@@ -419,73 +419,6 @@ fn harmonize_side_by_side_horizontal_top_level_sibling_heights(
     }
 }
 
-fn is_horizontal_visual_nesting_candidate(
-    graph: &Graph,
-    node_rects: &HashMap<String, Rect>,
-    parent_id: &str,
-    child_id: &str,
-    parent: &SubgraphEnvelope,
-    child: &SubgraphEnvelope,
-    gutter: usize,
-) -> bool {
-    if !matches!(graph.direction, Direction::LR | Direction::RL) {
-        return false;
-    }
-    if subgraphs_have_declared_hierarchy(graph, parent_id, child_id) {
-        return false;
-    }
-
-    let cross_boundary_targets: HashSet<&str> = graph
-        .edges
-        .iter()
-        .filter(|edge| {
-            !edge.is_back_edge
-                && graph.get_node_subgraph(&edge.from) == Some(parent_id)
-                && graph.get_node_subgraph(&edge.to) == Some(child_id)
-        })
-        .map(|edge| edge.to.as_str())
-        .collect();
-    if cross_boundary_targets.len() < 2 {
-        return false;
-    }
-
-    let child_has_external_outgoing = graph.edges.iter().any(|edge| {
-        !edge.is_back_edge
-            && graph.is_node_in_subgraph_tree(&edge.from, child_id)
-            && !graph.is_node_in_subgraph_tree(&edge.to, child_id)
-    });
-    if !child_has_external_outgoing {
-        return false;
-    }
-
-    let near_parent_flow_band = match graph.direction {
-        Direction::LR => {
-            child.outer.x
-                <= parent
-                    .outer
-                    .right()
-                    .saturating_add(gutter.saturating_add(2))
-        }
-        Direction::RL => {
-            child.outer.right().saturating_add(gutter.saturating_add(2)) >= parent.outer.x
-        }
-        _ => false,
-    };
-    if !near_parent_flow_band {
-        return false;
-    }
-
-    node_rects.iter().any(|(node_id, rect)| {
-        graph.get_node_subgraph(node_id) == Some(parent_id)
-            && rects_overlap_vertically(*rect, child.outer)
-            && match graph.direction {
-                Direction::LR => rect.x < child.outer.right(),
-                Direction::RL => rect.right() > child.outer.x,
-                _ => false,
-            }
-    })
-}
-
 pub(super) fn current_node_rect(
     rects: &HashMap<String, Rect>,
     node_id: &str,
@@ -667,63 +600,6 @@ pub fn compute_envelopes(
                     }
                 }
             }
-            if let Some(parent_mut) = envelopes.get_mut(parent_id) {
-                parent_mut.outer = new_outer;
-            }
-        }
-    }
-
-    if matches!(graph.direction, Direction::LR | Direction::RL) {
-        for e in &graph.edges {
-            let Some(from_sg) = graph.get_node_subgraph(&e.from) else {
-                continue;
-            };
-            let Some(to_sg) = graph.get_node_subgraph(&e.to) else {
-                continue;
-            };
-            if from_sg == to_sg {
-                continue;
-            }
-            if subgraphs_have_declared_hierarchy(graph, from_sg, to_sg) {
-                continue;
-            }
-
-            let parent_id = from_sg;
-            let child_id = to_sg;
-            let (Some(parent), Some(child)) = (envelopes.get(parent_id), envelopes.get(child_id))
-            else {
-                continue;
-            };
-            if !is_horizontal_visual_nesting_candidate(
-                graph, node_rects, parent_id, child_id, parent, child, gutter,
-            ) {
-                continue;
-            }
-
-            let mut new_outer = parent.outer.union(&child.outer);
-            let desired_bottom = child.outer.bottom().saturating_add(1);
-            if new_outer.bottom() < desired_bottom {
-                new_outer.height += desired_bottom - new_outer.bottom();
-            }
-
-            match graph.direction {
-                Direction::LR => {
-                    let desired_right = child.outer.right().saturating_add(2);
-                    if new_outer.right() < desired_right {
-                        new_outer.width += desired_right - new_outer.right();
-                    }
-                }
-                Direction::RL => {
-                    let desired_left = child.outer.x.saturating_sub(2);
-                    if new_outer.x > desired_left {
-                        let extra = new_outer.x - desired_left;
-                        new_outer.x = desired_left;
-                        new_outer.width += extra;
-                    }
-                }
-                _ => {}
-            }
-
             if let Some(parent_mut) = envelopes.get_mut(parent_id) {
                 parent_mut.outer = new_outer;
             }

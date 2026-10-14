@@ -232,13 +232,18 @@ fn a_route_along_a_frame_border_keeps_its_corners() {
     UTM --> Attribution[(Attribution Model)]
 ";
     let frame = render(input);
-    for line in frame.lines().filter(|line| line.contains('━')) {
-        // The routes running on along these borders are a separate defect.
-        let first = line.trim().chars().next().unwrap_or(' ');
-        assert!(
-            matches!(first, '┏' | '┌' | '┗' | '└'),
-            "a frame border lost its corner:\n{frame}"
-        );
+    // Every run of a frame's border starts at a corner (the routes running
+    // on along these borders are a separate defect).
+    for line in frame.lines() {
+        let cells: Vec<char> = line.chars().collect();
+        for (x, pair) in cells.windows(2).enumerate() {
+            if pair[1] == '━' && pair[0] != '━' {
+                assert!(
+                    matches!(pair[0], '┏' | '┌' | '┗' | '└'),
+                    "a frame border lost its corner at column {x}:\n{frame}"
+                );
+            }
+        }
     }
 }
 
@@ -402,5 +407,46 @@ fn an_rl_nested_frame_drift_does_not_stretch_its_parent() {
     assert!(
         row(&frame, row_of(&frame, "  Done  ")).contains("├←"),
         "Done's arrowhead is not on its near side:\n{frame}"
+    );
+}
+
+/// gen_a_044: Build fans into the adjacent Test frame, which was then taken
+/// as visually nested in Build; the gap rebalancer pushed it out past
+/// Build's far wall, upstream of it in RL. Frames now keep RL order.
+#[test]
+fn rl_frames_a_frame_fans_into_keep_flow_order() {
+    let input = "graph RL
+    subgraph Build [Build Stage]
+        Src[Source] --> Compile[Compile]
+        Compile --> Bundle[Bundle Assets]
+    end
+    subgraph Test [Test Stage]
+        E2E[E2E Tests]
+        Perf[Perf Tests]
+    end
+    subgraph Release [Release Stage]
+        Sign[Sign Binary]
+        Publish[Publish]
+    end
+    Bundle --> E2E
+    Bundle --> Perf
+    E2E & Perf --> Sign
+    Sign --> Publish
+";
+    let frame = render(input);
+    let column = |title: &str| {
+        frame
+            .lines()
+            .find_map(|line| line.find(title).map(|byte| line[..byte].chars().count()))
+            .unwrap_or_else(|| panic!("no {title}:\n{frame}"))
+    };
+    let (release, test, build) = (
+        column("Release Stage"),
+        column("Test Stage"),
+        column("Build Stage"),
+    );
+    assert!(
+        release < test && test < build,
+        "frames out of RL order:\n{frame}"
     );
 }
