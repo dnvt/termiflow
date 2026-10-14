@@ -883,6 +883,33 @@ pub(super) fn finalize_horizontal_side_portals(
 /// Vault fan-in's merge tee kept an arm out through Parent's wall). Close the
 /// wall and trim the stub back to the junction it leaves. A stub carrying an
 /// arrowhead, or reaching a box, is left alone.
+/// Whether two route owners belong to one fan: they share a source or a
+/// target (`fanout:<source>`, `fanin:<target>`, `edge:<i>:<from>-><to>`).
+fn same_edge_family(left: &str, right: &str) -> bool {
+    let ends = |owner: &str| -> (Option<String>, Option<String>) {
+        if let Some(source) = owner.strip_prefix("fanout:") {
+            (Some(source.to_owned()), None)
+        } else if let Some(target) = owner.strip_prefix("fanin:") {
+            (None, Some(target.to_owned()))
+        } else if let Some((_, pair)) = owner
+            .strip_prefix("edge:")
+            .and_then(|rest| rest.split_once(':'))
+        {
+            match pair.split_once("->") {
+                Some((from, to)) => (Some(from.to_owned()), Some(to.to_owned())),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        }
+    };
+    let (left_from, left_to) = ends(left);
+    let (right_from, right_to) = ends(right);
+    left == right
+        || left_from.is_some() && left_from == right_from
+        || left_to.is_some() && left_to == right_to
+}
+
 pub(super) fn trim_side_wall_stubs(
     canvas: &mut Canvas,
     graph: &Graph,
@@ -985,10 +1012,10 @@ pub(super) fn trim_side_wall_stubs(
                     .flatten()
                     .filter_map(|ay| owner(junction, ay))
                     .collect::<Vec<_>>();
-                if through
-                    .as_ref()
-                    .is_some_and(|through| !vertical.is_empty() && !vertical.contains(through))
-                {
+                if through.as_ref().is_some_and(|through| {
+                    !vertical.is_empty()
+                        && !vertical.iter().any(|arm| same_edge_family(arm, through))
+                }) {
                     continue;
                 }
                 canvas.set_owned(

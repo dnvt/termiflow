@@ -320,3 +320,25 @@ fn a_merge_tee_beside_a_frame_wall_keeps_no_stub_through_it() {
     let row = row(&frame, row_of(&frame, "Vault"));
     assert!(!row.contains("─┼") && !row.contains("━┼"), "{frame}");
 }
+
+/// gen_c_132: ok?'s split tee kept an arm out through Inner's wall to
+/// nothing. Its arms are owned by the fan and by the edge to Done, one
+/// source's fan all the same, so the stub is trimmed there too.
+#[test]
+fn a_split_tee_beside_a_frame_wall_keeps_no_stub_through_it() {
+    let input = "graph RL
+    In[In] --> q
+    subgraph O [Outer]
+        r[Retry]
+        subgraph I [Inner]
+            q{ok?}
+        end
+    end
+    q -->|no| r
+    q -->|yes| Done[Done]
+    r --> q
+";
+    let frame = render(input);
+    let row = row(&frame, row_of(&frame, "  Done  "));
+    assert!(!row.contains("─┬") && !row.contains("━┬"), "{frame}");
+}
