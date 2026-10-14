@@ -28,7 +28,9 @@ use super::portal_projection::{
     finalize_dedicated_portal_markers, finalize_horizontal_side_portals,
     finalize_td_parallel_portal_seams, reinforce_subgraph_portals,
 };
-use super::portal_restore::{cleanup_bt_title_rows, draw_subgraph_title, restore_subgraph_borders};
+use super::portal_restore::{
+    cleanup_bt_title_rows, draw_subgraph_title, restore_subgraph_borders, route_runs_through_box,
+};
 use super::precomputed;
 use super::provenance::{edge_owner_id, refresh_provenance};
 use super::repair::{
@@ -1191,6 +1193,7 @@ pub(super) fn render_with_feedback_with_contract(
 
     // Redraw subgraph titles last so portals/edges cannot corrupt the text.
     canvas.set_write_stage("title-redraw");
+    let reconnect_lines = !route_runs_through_box(&canvas, graph);
     for subgraph in &graph.subgraphs {
         draw_subgraph_title(
             &mut canvas,
@@ -1199,6 +1202,7 @@ pub(super) fn render_with_feedback_with_contract(
             subgraph.title.as_deref(),
             graph.direction,
             td_sibling_title_gutter(graph, &subgraph.id),
+            reconnect_lines,
         );
     }
     if graph.direction == Direction::BT {

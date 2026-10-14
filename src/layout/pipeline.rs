@@ -208,8 +208,13 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                         continue;
                     };
 
-                    // Shift the later-ranked subgraph down until it clears the earlier one
-                    let (late_id, early_env, late_env) = if rank1 <= rank2 {
+                    // Shift the later-ranked subgraph down until it clears the earlier one.
+                    // On a tie, the frame feeding the other one comes first.
+                    let first_feeds_second = sends(sg_ids[i], sg_ids[j]);
+                    let second_feeds_first = sends(sg_ids[j], sg_ids[i]);
+                    let first_is_early = rank1 < rank2
+                        || rank1 == rank2 && (first_feeds_second || !second_feeds_first);
+                    let (late_id, early_env, late_env) = if first_is_early {
                         (sg_ids[j].as_str(), env1, env2)
                     } else {
                         (sg_ids[i].as_str(), env2, env1)

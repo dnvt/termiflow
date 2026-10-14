@@ -319,6 +319,58 @@ pub(super) fn restore_subgraph_borders(
     }
 }
 
+/// Whether some edge's line runs straight through a box it does not end at,
+/// entering one side and leaving the opposite one. Such a line reads as
+/// touching that box, so reconnecting gaps elsewhere could complete a path
+/// through it.
+pub(super) fn route_runs_through_box(canvas: &Canvas, graph: &Graph) -> bool {
+    let route_owner = |x: usize, y: usize| {
+        canvas
+            .get_meta(x, y)
+            .filter(|meta| {
+                matches!(
+                    meta.owner_kind,
+                    semantic::CellOwnerKind::EdgeSegment | semantic::CellOwnerKind::ArrowHead
+                )
+            })
+            .and_then(|meta| meta.owner_id.clone())
+    };
+    let ends: HashMap<String, (&str, &str)> = graph
+        .edges
+        .iter()
+        .enumerate()
+        .map(|(index, edge)| {
+            (
+                provenance::edge_owner_id(index, edge),
+                (edge.from.as_str(), edge.to.as_str()),
+            )
+        })
+        .collect();
+    let foreign = |owner: Option<String>, node: &str| {
+        owner
+            .and_then(|owner| ends.get(&owner).copied())
+            .is_some_and(|(from, to)| from != node && to != node)
+    };
+    graph.nodes.iter().any(|node| {
+        let (left, top) = (node.x, node.y);
+        let (right, bottom) = (
+            node.x + node.width.saturating_sub(1),
+            node.y + node.height.max(crate::style::BOX_HEIGHT).saturating_sub(1),
+        );
+        let across_rows = top > 0
+            && (left + 1..right).any(|x| {
+                let above = route_owner(x, top - 1);
+                above.is_some() && above == route_owner(x, bottom + 1) && foreign(above, &node.id)
+            });
+        let across_columns = left > 0
+            && (top + 1..bottom).any(|y| {
+                let before = route_owner(left - 1, y);
+                before.is_some() && before == route_owner(right + 1, y) && foreign(before, &node.id)
+            });
+        across_rows || across_columns
+    })
+}
+
 pub(super) fn draw_subgraph_title(
     canvas: &mut Canvas,
     subgraph_id: &str,
@@ -326,6 +378,7 @@ pub(super) fn draw_subgraph_title(
     title: Option<&str>,
     direction: Direction,
     title_gutter: TitleGutter,
+    reconnect_lines: bool,
 ) {
     let Some(t) = title else {
         return;
@@ -422,7 +475,31 @@ pub(super) fn draw_subgraph_title(
                 && !topology::char_connects_up(canvas.get(x, border))
         })
     };
-    let crossed = |canvas: &Canvas, x: usize| holds_route(canvas, x) || passes_through(canvas, x);
+    // One edge's plain vertical run on both sides of the title band: that
+    // edge's line goes through the band, whatever the border cell shows.
+    let one_route_through = |canvas: &Canvas, x: usize| {
+        border_y.and_then(|(_, outer, inner)| {
+            let run_owner = |y: usize| {
+                canvas
+                    .get_meta(x, y)
+                    .filter(|meta| {
+                        matches!(canvas.get(x, y), '│' | '┃' | '║' | '|')
+                            && meta.owner_kind
+                                == crate::render::semantic::CellOwnerKind::EdgeSegment
+                    })
+                    .and_then(|meta| meta.owner_id.clone())
+            };
+            let outer = outer.filter(|&outer| outer < canvas.height)?;
+            let owner = run_owner(outer)?;
+            (inner < canvas.height && run_owner(inner).as_ref() == Some(&owner))
+                .then(|| (canvas.get(x, inner), owner))
+        })
+    };
+    let crossed = |canvas: &Canvas, x: usize| {
+        holds_route(canvas, x)
+            || passes_through(canvas, x)
+            || one_route_through(canvas, x).is_some()
+    };
     let clear_at = |canvas: &Canvas, start: usize| {
         start > rect.x
             && start + width < rect.x + rect.width
@@ -434,6 +511,7 @@ pub(super) fn draw_subgraph_title(
         && title_gutter.trailing_extra_padding == 0
         && (start_x..start_x + width).any(|x| {
             passes_through(canvas, x)
+                || one_route_through(canvas, x).is_some()
                 || holds_route(canvas, x)
                     && matches!(canvas.get(x, title_y), '│' | '┃' | '║' | '╎' | '|' | ':')
         })
@@ -455,6 +533,22 @@ pub(super) fn draw_subgraph_title(
                 canvas.set(start + i, title_y, c);
             }
             canvas.record_moved_title(subgraph_id, start);
+            // Give a line the title sat on back its title-band cells.
+            let edge = crate::render::semantic::CellOwnerKind::EdgeSegment;
+            let uncovered = (start_x..start_x + width).filter(|&x| x < start || x >= start + width);
+            for x in uncovered.filter(|_| reconnect_lines) {
+                let (Some((run, owner)), Some((border, _, _))) =
+                    (one_route_through(canvas, x), border_y)
+                else {
+                    continue;
+                };
+                if canvas.get(x, title_y) == ' ' {
+                    canvas.set_owned(x, title_y, run, edge, &owner, 5);
+                }
+                if matches!(canvas.get(x, border), '─' | '━' | '═' | '-') {
+                    canvas.set_owned(x, border, run, edge, &owner, 5);
+                }
+            }
             return;
         }
     }

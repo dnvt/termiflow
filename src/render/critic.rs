@@ -658,6 +658,26 @@ fn find_subgraph_title_corruption(
         };
         let title_len = title_fmt.chars().count();
         let title_y = subgraph_title_y(&subgraph.bounds, direction);
+        // A title the renderer slid off a line sits elsewhere on its row:
+        // where its text reads in full, on cells that title owns.
+        let text_at = |start: usize| {
+            title_fmt.chars().enumerate().all(|(offset, ch)| {
+                ch == ' '
+                    || frame.get(start + offset, title_y).is_some_and(|cell| {
+                        cell.ch == ch
+                            && cell.owner_kind == CellOwnerKind::SubgraphTitle
+                            && cell.owner_id.as_deref() == Some(subgraph.id.as_str())
+                    })
+            })
+        };
+        let default_start = start_x;
+        let start_x = if text_at(default_start) {
+            default_start
+        } else {
+            (subgraph.bounds.x..subgraph.bounds.x + subgraph.bounds.width)
+                .find(|&start| text_at(start))
+                .unwrap_or(default_start)
+        };
         let visible_title_span = crate::graph::subgraph_title_text_span_with_padding_sides(
             subgraph.bounds.x,
             subgraph.bounds.width,
@@ -665,7 +685,13 @@ fn find_subgraph_title_corruption(
             direction,
             title_gutter.leading_extra_padding,
             title_gutter.trailing_extra_padding,
-        );
+        )
+        .map(|(visible_start, visible_end)| {
+            (
+                visible_start.saturating_sub(default_start) + start_x,
+                visible_end.saturating_sub(default_start) + start_x,
+            )
+        });
 
         let mut cells = Vec::new();
         for (offset, expected_ch) in title_fmt.chars().enumerate() {

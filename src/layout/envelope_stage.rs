@@ -2890,6 +2890,20 @@ fn border_follows_rank_shift(
     })
 }
 
+/// Whether `subgraph_id` is `root` or nested somewhere inside it.
+fn subgraph_tree_contains(graph: &Graph, root: &str, subgraph_id: &str) -> bool {
+    let mut current = Some(subgraph_id);
+    while let Some(id) = current {
+        if id == root {
+            return true;
+        }
+        current = graph
+            .get_subgraph(id)
+            .and_then(|subgraph| subgraph.parent_id.as_deref());
+    }
+    false
+}
+
 /// A top-level subgraph with no nested subgraphs. Moving nodes out from under
 /// a nested frame reroutes edges through the frames around or inside it, so
 /// only these frames do it.
@@ -3044,15 +3058,6 @@ pub(super) fn resolve_subgraph_envelopes(
     // Futile request sets are remembered within one pass only: the passes
     // between change the geometry, so a set futile in one can help the next.
     placement.futile_td_requests.clear();
-    if std::env::var_os("TF_DBG").is_some() {
-        let mut p: Vec<_> = placement
-            .node_rects
-            .iter()
-            .map(|(k, v)| (k.clone(), v.x))
-            .collect();
-        p.sort();
-        eprintln!("START {:?}", p);
-    }
     let mut subgraph_envelopes =
         compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
     adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
@@ -4056,16 +4061,43 @@ pub(super) fn resolve_subgraph_envelopes(
                     if !rect_fully_inside(env.outer, *from_rect) {
                         continue;
                     }
-                    // The source node must start at least one row below the outer envelope
-                    // bottom so there is room for the routing connector between them.
-                    let required_source_y = env.outer.bottom().saturating_add(source_clearance);
-                    if from_rect.y >= required_source_y {
-                        continue;
-                    }
                     let Some(&rank) = placement.ranks.get(&edge.from) else {
                         continue;
                     };
-                    let delta = required_source_y - from_rect.y;
+                    // Only a top-level source moves alone; a source inside another
+                    // frame would split that frame. A source frame apart from
+                    // this one, with no member ranked past the source, moves
+                    // whole with it instead, and its top border needs the
+                    // connector row too.
+                    let source_root = input.graph.node_subgraph_chain(&edge.from).last().copied();
+                    let top_level = source_root.is_none_or(|source_root| {
+                        !subgraph_tree_contains(input.graph, source_root, sg_id)
+                            && input.graph.nodes.iter().all(|node| {
+                                !input.graph.is_node_in_subgraph_tree(&node.id, source_root)
+                                    || placement
+                                        .ranks
+                                        .get(&node.id)
+                                        .is_some_and(|&member| member <= rank)
+                            })
+                    });
+                    let frame_delta = source_root
+                        .filter(|_| top_level)
+                        .and_then(|source_root| subgraph_envelopes.get(source_root))
+                        .map_or(0, |source_env| {
+                            env.outer
+                                .bottom()
+                                .saturating_add(1)
+                                .saturating_sub(source_env.outer.y)
+                        });
+                    // The source node must start at least one row below the outer envelope
+                    // bottom so there is room for the routing connector between them.
+                    let required_source_y = env.outer.bottom().saturating_add(source_clearance);
+                    let delta = required_source_y
+                        .saturating_sub(from_rect.y)
+                        .max(frame_delta);
+                    if delta == 0 {
+                        continue;
+                    }
                     // When the frame's lowest members share the source's rank,
                     // a whole-rank shift moves them (and the border) along with
                     // the source, so the gap reopens every pass. Move only the
@@ -4090,9 +4122,6 @@ pub(super) fn resolve_subgraph_envelopes(
                         })
                         .count()
                         > 1;
-                    // Only a top-level source moves alone; a source inside another
-                    // frame would split that frame.
-                    let top_level = input.graph.get_node_subgraph(&edge.from).is_none();
                     // Nor does a source fanning into frames elsewhere: moved
                     // alone below this one, its other legs would have to cross
                     // nested frame borders from below.
@@ -4187,6 +4216,22 @@ pub(super) fn resolve_subgraph_envelopes(
                     continue;
                 }
                 let delta = required_from_top - from_env.outer.y;
+                // Target frame members on the shifted ranks would move along,
+                // so the frames never part and the target frame only grows.
+                // Two top-level frames part by moving all but the target.
+                let top_level_pair = [from_sg, to_sg].iter().all(|id| {
+                    input
+                        .graph
+                        .get_subgraph(id)
+                        .is_some_and(|subgraph| subgraph.parent_id.is_none())
+                });
+                if top_level_pair
+                    && subgraph_tree_rank_range(input.graph, &placement.ranks, to_sg)
+                        .is_some_and(|(to_min_rank, _)| to_min_rank <= shift_rank)
+                {
+                    record_outside_shift(&mut outside_source_shift, shift_rank, delta, to_sg);
+                    continue;
+                }
                 required_shift_by_rank
                     .entry(shift_rank)
                     .and_modify(|d| *d = (*d).max(delta))
@@ -4724,6 +4769,12 @@ pub(super) fn resolve_subgraph_envelopes(
         }
     }
 
+    if close_bt_frame_gap_bands(input.graph, config, placement, &subgraph_envelopes) {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
     // Earlier passes move nodes independently (envelope eviction, recentring,
     // corridor reservation) and can stack two boxes on the same cells, which
     // hides one node entirely. Separate any remaining collision last.
@@ -4739,6 +4790,82 @@ pub(super) fn resolve_subgraph_envelopes(
     }
 
     subgraph_envelopes
+}
+
+/// BT stacking can leave a tall empty band between a top-level frame and the
+/// frame feeding it from below. When only plain edges cross the band, close
+/// it to the rows an edge needs to leave one frame, turn and enter the other.
+fn close_bt_frame_gap_bands(
+    graph: &Graph,
+    config: &CoarseLayoutConfig,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> bool {
+    const KEPT_ROWS: usize = 3;
+    if graph.direction != Direction::BT {
+        return false;
+    }
+    let mut envelopes = envelopes.clone();
+    let mut changed = false;
+    for _ in 0..8 {
+        let mut frames: Vec<(&str, Rect)> = graph
+            .subgraphs
+            .iter()
+            .filter(|subgraph| subgraph.parent_id.is_none())
+            .filter_map(|subgraph| {
+                envelopes
+                    .get(&subgraph.id)
+                    .map(|env| (subgraph.id.as_str(), env.outer))
+            })
+            .collect();
+        frames.sort_by_key(|&(id, outer)| (outer.y, id));
+        let band = frames.iter().find_map(|&(upper_id, upper)| {
+            frames.iter().find_map(|&(lower_id, lower)| {
+                let (start, end) = (upper.bottom(), lower.y);
+                if end <= start + KEPT_ROWS || !rects_overlap_horizontally(upper, lower) {
+                    return None;
+                }
+                let feeds = graph.edges.iter().any(|edge| {
+                    !edge.is_back_edge
+                        && graph.is_node_in_subgraph_tree(&edge.from, lower_id)
+                        && graph.is_node_in_subgraph_tree(&edge.to, upper_id)
+                });
+                let in_band = |rect: &Rect| rect.y < end && rect.bottom() > start;
+                let occupied = envelopes.values().any(|env| in_band(&env.outer))
+                    || placement.node_rects.values().any(in_band);
+                let crossing = |edge: &crate::graph::Edge| {
+                    let (Some(from), Some(to)) = (
+                        placement.node_rects.get(&edge.from),
+                        placement.node_rects.get(&edge.to),
+                    ) else {
+                        return false;
+                    };
+                    (from.bottom() <= start && to.y >= end)
+                        || (to.bottom() <= start && from.y >= end)
+                };
+                let busy = graph
+                    .edges
+                    .iter()
+                    .any(|edge| crossing(edge) && (edge.is_back_edge || edge.label.is_some()));
+                (feeds && !occupied && !busy).then_some((end, end - start - KEPT_ROWS))
+            })
+        });
+        let Some((end, delta)) = band else {
+            break;
+        };
+        for (id, rect) in placement.node_rects.iter_mut() {
+            if rect.y >= end {
+                rect.y -= delta;
+                if let Some(position) = placement.positions.get_mut(id) {
+                    position.y -= delta;
+                }
+            }
+        }
+        placement.canvas.height = placement.canvas.height.saturating_sub(delta);
+        envelopes = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
+        changed = true;
+    }
+    changed
 }
 
 /// How far the frames around these node rects would reach past the canvas's
@@ -4799,9 +4926,6 @@ fn reserve_frame_margins(
     };
     let dx = if collapsed(|rect| rect.x) { reach_x } else { 0 };
     let dy = if collapsed(|rect| rect.y) { reach_y } else { 0 };
-    if std::env::var_os("TF_DBG").is_some() {
-        eprintln!("margins dx {dx} dy {dy}");
-    }
     if dx == 0 && dy == 0 {
         return false;
     }

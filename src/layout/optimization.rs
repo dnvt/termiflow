@@ -177,11 +177,7 @@ fn promote_subgraph_roots_below_external_sources(
     for _ in 0..4 {
         let mut promoted = false;
         for subgraph in &subgraphs {
-            // BT envelopes infer visual nesting from rank order, so lifting a
-            // parent with child subgraphs can make its siblings read as nested.
-            if subgraph.parent_id.is_some()
-                || (graph.direction == Direction::BT && !subgraph.child_ids.is_empty())
-            {
+            if subgraph.parent_id.is_some() {
                 continue;
             }
             let inside: Vec<bool> = graph
@@ -192,7 +188,18 @@ fn promote_subgraph_roots_below_external_sources(
             let sources: Vec<usize> = (0..graph.nodes.len())
                 .filter(|&from| !inside[from] && adj[from].iter().any(|&to| inside[to]))
                 .collect();
-            if sources.is_empty() {
+            // BT envelopes infer visual nesting from rank order, so lifting a
+            // parent with child subgraphs can make its siblings read as nested.
+            // A source fanning into such a parent is lifted over all the same:
+            // the envelope stage cannot move it out from under the frame.
+            let fanning_source = sources
+                .iter()
+                .any(|&source| adj[source].iter().filter(|&&to| inside[to]).count() > 1);
+            if sources.is_empty()
+                || graph.direction == Direction::BT
+                    && !subgraph.child_ids.is_empty()
+                    && !fanning_source
+            {
                 continue;
             }
 
