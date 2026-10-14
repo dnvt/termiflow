@@ -4058,7 +4058,11 @@ pub(super) fn resolve_subgraph_envelopes(
                     if !input.graph.is_node_in_subgraph_tree(&edge.to, sg_id) {
                         continue;
                     }
-                    if !rect_fully_inside(env.outer, *from_rect) {
+                    // A source box straddling the bottom border counts as well.
+                    let straddles_bottom = rects_overlap_horizontally(env.outer, *from_rect)
+                        && from_rect.y > env.outer.y
+                        && from_rect.y < env.outer.bottom();
+                    if !rect_fully_inside(env.outer, *from_rect) && !straddles_bottom {
                         continue;
                     }
                     let Some(&rank) = placement.ranks.get(&edge.from) else {

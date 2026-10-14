@@ -360,13 +360,14 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 break;
             };
 
-            // Shift all nodes in the subgraph down
-            shift_nodes_in_subgraph_y(
+            // Shift every node in the subgraph tree down: a frame holding only
+            // nested frames has no direct members to move.
+            shift_nodes_in_subgraph_tree_y_signed(
                 input.graph,
                 &mut placement.positions,
                 &mut placement.node_rects,
                 &sg_id,
-                delta,
+                delta as isize,
             );
         }
     }

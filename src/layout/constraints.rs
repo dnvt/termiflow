@@ -493,29 +493,6 @@ pub(super) fn shift_nodes_in_subgraph(
     }
 }
 
-pub(super) fn shift_nodes_in_subgraph_y(
-    graph: &Graph,
-    positions: &mut HashMap<String, Point>,
-    node_rects: &mut HashMap<String, Rect>,
-    subgraph_id: &str,
-    delta_y: usize,
-) {
-    if delta_y == 0 {
-        return;
-    }
-    let Some(sg) = graph.get_subgraph(subgraph_id) else {
-        return;
-    };
-    for node_id in &sg.node_ids {
-        if let Some(p) = positions.get_mut(node_id) {
-            p.y += delta_y;
-        }
-        if let Some(r) = node_rects.get_mut(node_id) {
-            r.y += delta_y;
-        }
-    }
-}
-
 pub(super) fn shift_nodes_in_subgraph_tree_y_signed(
     graph: &Graph,
     positions: &mut HashMap<String, Point>,
