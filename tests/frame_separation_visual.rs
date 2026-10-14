@@ -177,3 +177,67 @@ fn an_ascii_jog_above_a_bt_box_leaves_its_top_border_alone() {
     let border: String = top[start..].chars().take(10).collect();
     assert_eq!(border.matches('+').count(), 3, "{frame}");
 }
+
+/// gen_c_090: a merge bus running down beside a frame's side wall had the
+/// wall opened on every row it passed (a comb of `─┤` stubs); only the rows
+/// where a line actually leaves the frame open it now.
+#[test]
+fn a_line_beside_a_frame_wall_opens_it_only_where_it_crosses() {
+    let input = "graph LR
+    a[a] --> m1
+    b[b] --> m2
+    c[c] --> m3
+    subgraph Mid [Pass]
+        m1[m1]
+        m2[m2]
+        m3[m3]
+    end
+    m1 --> x[x]
+    m2 --> y[y]
+    m3 --> x
+";
+    let frame = render(input);
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    let right = rows[0]
+        .iter()
+        .position(|&c| c == '┓')
+        .unwrap_or_else(|| panic!("no frame corner:\n{frame}"));
+    let openings = rows
+        .iter()
+        .filter(|cells| matches!(cells.get(right), Some('─' | '━')))
+        .count();
+    assert_eq!(openings, 2, "{frame}");
+}
+
+/// gen_a_134: a route running along a frame's border through its corner
+/// had the corner rewritten to whichever line its neighbours connected,
+/// once the wall below stopped being opened; frame corners are kept.
+#[test]
+fn a_route_along_a_frame_border_keeps_its_corners() {
+    let input = "graph RL
+    subgraph Marketing
+        Campaign[Campaign Brief]
+        Creative[Creative Assets]
+        Campaign --> Creative
+    end
+    subgraph Channels
+        Social[Social Ads]
+        Search[Search Ads]
+        Newsletter[Newsletter]
+    end
+    Creative --> Social
+    Creative --> Search
+    Creative --> Newsletter
+    Social & Search & Newsletter --> UTM[UTM Tracking]
+    UTM --> Attribution[(Attribution Model)]
+";
+    let frame = render(input);
+    for line in frame.lines().filter(|line| line.contains('━')) {
+        // The routes running on along these borders are a separate defect.
+        let first = line.trim().chars().next().unwrap_or(' ');
+        assert!(
+            matches!(first, '┏' | '┌' | '┗' | '└'),
+            "a frame border lost its corner:\n{frame}"
+        );
+    }
+}

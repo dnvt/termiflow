@@ -13,7 +13,7 @@ use super::topology::{canonical_routing_glyph, canvas_connections};
 use crate::graph::{Direction, Graph};
 use crate::portals::{td_sibling_title_gutter, PortalSlots};
 use crate::style::StyleChars;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Apply a bounded number of local repair passes to the canvas.
 #[allow(clippy::too_many_arguments)]
@@ -119,11 +119,22 @@ pub fn optimize_canvas(
 /// implied by their visible neighbors. This keeps default rendering free of
 /// obvious tee/corner mismatches without enabling heavier repair behavior.
 pub fn stabilize_routing_topology(canvas: &mut Canvas, chars: &StyleChars) -> bool {
+    stabilize_routing_topology_keeping(canvas, chars, &HashSet::new())
+}
+
+/// `stabilize_routing_topology`, leaving the `kept` cells as they are: a
+/// frame corner a route runs through keeps its corner rather than becoming
+/// whichever line its neighbours happen to connect.
+pub fn stabilize_routing_topology_keeping(
+    canvas: &mut Canvas,
+    chars: &StyleChars,
+    kept: &HashSet<(usize, usize)>,
+) -> bool {
     let mut updates = Vec::new();
 
     for y in 0..canvas.height {
         for x in 0..canvas.width {
-            if canvas.fallback_route_claims_cell(x, y) {
+            if canvas.fallback_route_claims_cell(x, y) || kept.contains(&(x, y)) {
                 continue;
             }
             let Some(meta) = canvas.get_meta(x, y).cloned() else {

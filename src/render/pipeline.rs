@@ -35,7 +35,7 @@ use super::precomputed;
 use super::provenance::{edge_owner_id, refresh_provenance};
 use super::repair::{
     optimize_canvas, stabilize_arrow_shafts, stabilize_degree_mismatches, stabilize_junction_cells,
-    stabilize_routing_topology, stabilize_straight_segments,
+    stabilize_routing_topology_keeping, stabilize_straight_segments,
 };
 use super::scene::{Scene, SceneIntent, SceneRecorder};
 use super::semantic::{CellOwnerKind, CellRole, SemanticFrame};
@@ -1334,7 +1334,7 @@ pub(super) fn render_with_feedback_with_contract(
     canvas.set_write_stage("stabilize");
     if !render_stabilization_protected
         && optimize_render
-        && stabilize_routing_topology(&mut canvas, &chars)
+        && stabilize_routing_topology_keeping(&mut canvas, &chars, &frame_corners(graph))
     {
         canvas.set_write_stage("provenance");
         refresh_provenance(
@@ -1390,7 +1390,9 @@ pub(super) fn render_with_feedback_with_contract(
         &edge_label_placements,
     );
     canvas.set_write_stage("stabilize");
-    if !render_stabilization_protected && stabilize_routing_topology(&mut canvas, &chars) {
+    if !render_stabilization_protected
+        && stabilize_routing_topology_keeping(&mut canvas, &chars, &frame_corners(graph))
+    {
         canvas.set_write_stage("provenance");
         refresh_provenance(
             &mut canvas,
@@ -1543,6 +1545,26 @@ fn open_back_edge_end_tees(
         }
     }
     tees
+}
+
+/// The four corner cells of every frame.
+fn frame_corners(graph: &Graph) -> HashSet<(usize, usize)> {
+    graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.bounds.is_valid())
+        .flat_map(|subgraph| {
+            let bounds = &subgraph.bounds;
+            let right = bounds.x + bounds.width.saturating_sub(1);
+            let bottom = bounds.y + bounds.height.saturating_sub(1);
+            [
+                (bounds.x, bounds.y),
+                (right, bounds.y),
+                (bounds.x, bottom),
+                (right, bottom),
+            ]
+        })
+        .collect()
 }
 
 fn canvas_has_explicit_route_cell(canvas: &Canvas, x: usize, y: usize) -> bool {

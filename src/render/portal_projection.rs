@@ -860,10 +860,17 @@ pub(super) fn finalize_horizontal_side_portals(
                 } else {
                     (segment.to.x, segment.from.x)
                 };
-                if left_x >= min_x && left_x <= max_x {
+                // Only where a drawn line meets the wall: the renderer may
+                // have taken the edge across another row than the layout's
+                // route, and an opening with no line beside it is a stub.
+                let drawn_beside = |canvas: &Canvas, x: usize| {
+                    is_horizontalish(canvas.get(x.saturating_sub(1), y))
+                        || is_horizontalish(canvas.get(x + 1, y))
+                };
+                if left_x >= min_x && left_x <= max_x && drawn_beside(canvas, left_x) {
                     stamp_side_portal(canvas, left_x, y);
                 }
-                if right_x >= min_x && right_x <= max_x {
+                if right_x >= min_x && right_x <= max_x && drawn_beside(canvas, right_x) {
                     stamp_side_portal(canvas, right_x, y);
                 }
             }
@@ -910,6 +917,23 @@ pub(super) fn finalize_dedicated_portal_markers(
             || x.checked_sub(1)
                 .is_some_and(|xx| is_route_neighbor(xx, y, canvas))
             || (x + 1 < canvas.width && is_route_neighbor(x + 1, y, canvas))
+    };
+    // A side wall is crossed sideways, by a line reaching it from the left or
+    // right: the opening one row up or down, or a line running down beside
+    // the wall, is not a line through this cell.
+    let side_slot_has_route_neighbor = |x: usize, y: usize, canvas: &Canvas| {
+        let toward = |xx: usize, from_left: bool| {
+            let cell = canvas.get(xx, y);
+            is_route_neighbor(xx, y, canvas)
+                && (canvas::is_arrow(cell)
+                    || if from_left {
+                        topology::char_connects_right(cell)
+                    } else {
+                        topology::char_connects_left(cell)
+                    })
+        };
+        x.checked_sub(1).is_some_and(|xx| toward(xx, true))
+            || (x + 1 < canvas.width && toward(x + 1, false))
     };
 
     // A route uses a top or bottom border cell when it reaches it vertically,
@@ -990,9 +1014,18 @@ pub(super) fn finalize_dedicated_portal_markers(
                     && x > bounds.x
                     && x + 1 < bounds.x + bounds.width
             });
+            let on_side_border = graph.subgraphs.iter().any(|subgraph| {
+                let bounds = &subgraph.bounds;
+                bounds.is_valid()
+                    && (x == bounds.x || x + 1 == bounds.x + bounds.width)
+                    && y > bounds.y
+                    && y + 1 < bounds.y + bounds.height
+            });
             let used = if on_horizontal_border {
                 let (up, down) = reaches_vertically(x, y, canvas);
                 up || down
+            } else if on_side_border {
+                side_slot_has_route_neighbor(x, y, canvas)
             } else {
                 slot_has_route_neighbor(x, y, canvas)
             };
@@ -1041,14 +1074,14 @@ pub(super) fn finalize_dedicated_portal_markers(
             }
             for &y in &portals.left {
                 let py = clamp_vertical(bounds, y);
-                if slot_has_route_neighbor(bounds.x, py, canvas) {
+                if side_slot_has_route_neighbor(bounds.x, py, canvas) {
                     push_unique_marker(&mut markers, bounds.x, py, &subgraph.id);
                 }
             }
             let right_x = bounds.x + bounds.width.saturating_sub(1);
             for &y in &portals.right {
                 let py = clamp_vertical(bounds, y);
-                if slot_has_route_neighbor(right_x, py, canvas) {
+                if side_slot_has_route_neighbor(right_x, py, canvas) {
                     push_unique_marker(&mut markers, right_x, py, &subgraph.id);
                 }
             }
@@ -1118,12 +1151,7 @@ pub(super) fn finalize_dedicated_portal_markers(
                     {
                         continue;
                     }
-                    let left_route = border_x
-                        .checked_sub(1)
-                        .is_some_and(|xx| is_route_neighbor(xx, y, canvas));
-                    let right_route =
-                        border_x + 1 < canvas.width && is_route_neighbor(border_x + 1, y, canvas);
-                    if left_route || right_route {
+                    if side_slot_has_route_neighbor(border_x, y, canvas) {
                         push_unique_marker(&mut markers, border_x, y, &subgraph.id);
                     }
                 }
