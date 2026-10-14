@@ -97,6 +97,8 @@ pub(super) fn normalize_orientation_and_gutters(
             let mut external_node_shifts: HashMap<String, usize> = HashMap::new();
             // Frames whose right wall an external node clears; they never follow it.
             let mut cleared_frames: HashSet<String> = HashSet::new();
+            // Outside nodes to stand left of a frame they overlap: (node, at x).
+            let mut left_inserts: HashMap<String, usize> = HashMap::new();
 
             for (subgraph_id, env) in &envelopes {
                 for edge in graph.edges.iter().filter(|edge| !edge.is_back_edge) {
@@ -155,13 +157,49 @@ pub(super) fn normalize_orientation_and_gutters(
                         }
                     } else {
                         let overlaps_right_wall = external_rect.x < env.outer.right();
+                        let external_node_id = if from_inside_tree {
+                            edge.to.clone()
+                        } else {
+                            edge.from.clone()
+                        };
+                        // RL flows leftward: a node only fed from inside the
+                        // frame goes left of it, not right (gen_c_132's Done,
+                        // fed from Inner, went right of Outer and got its
+                        // arrowhead on its far side). LR keeps the old rule:
+                        // upstream nodes moved left there broke routes
+                        // (gen_a_077, gen_a_207, gen_a_247).
+                        // A fan-in target is dropped below the frame by a later
+                        // pass, where the old place serves it as well
+                        // (fx_subgraph_complex_rl's Response Builder).
+                        let flow_left = |id: &str| {
+                            let joins = |forward: bool| {
+                                graph
+                                    .edges
+                                    .iter()
+                                    .filter(|other| {
+                                        let (near, far) = if forward {
+                                            (&other.to, &other.from)
+                                        } else {
+                                            (&other.from, &other.to)
+                                        };
+                                        !other.is_back_edge
+                                            && near == id
+                                            && graph.is_node_in_subgraph_tree(far, subgraph_id)
+                                    })
+                                    .count()
+                            };
+                            let (fed, feeds) = (joins(true), joins(false));
+                            graph.direction == Direction::RL && fed == 1 && feeds == 0
+                        };
+                        if overlaps_right_wall && flow_left(&external_node_id) {
+                            left_inserts
+                                .entry(external_node_id)
+                                .and_modify(|at: &mut usize| *at = (*at).min(env.outer.x))
+                                .or_insert(env.outer.x);
+                            continue;
+                        }
                         if overlaps_right_wall {
                             let required_external_x = env.outer.right().saturating_add(2);
-                            let external_node_id = if from_inside_tree {
-                                edge.to.clone()
-                            } else {
-                                edge.from.clone()
-                            };
                             let delta_x = required_external_x - external_rect.x;
                             cleared_frames.insert(subgraph_id.clone());
                             external_node_shifts
@@ -224,8 +262,38 @@ pub(super) fn normalize_orientation_and_gutters(
                 }
             }
 
-            if required_env_shift.is_none() && external_node_shifts.is_empty() {
+            if required_env_shift.is_none()
+                && external_node_shifts.is_empty()
+                && left_inserts.is_empty()
+            {
                 break;
+            }
+            // One at a time: the node stands where the frame began and every
+            // other node from there on moves right past it; the next pass
+            // clears the rest of the frame wall.
+            let mut inserts: Vec<_> = left_inserts.into_iter().collect();
+            inserts.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+            if let Some((node_id, at_x)) = inserts.first().cloned() {
+                let width = placement
+                    .node_rects
+                    .get(&node_id)
+                    .map_or(0, |rect| rect.width);
+                let room = width + 2 + config.subgraph_gutter;
+                for (id, rect) in placement.node_rects.iter_mut() {
+                    if *id != node_id && rect.x >= at_x {
+                        rect.x += room;
+                        if let Some(position) = placement.positions.get_mut(id) {
+                            position.x = rect.x;
+                        }
+                    }
+                }
+                if let Some(rect) = placement.node_rects.get_mut(&node_id) {
+                    rect.x = at_x;
+                }
+                if let Some(position) = placement.positions.get_mut(&node_id) {
+                    position.x = at_x;
+                }
+                continue;
             }
 
             if let Some((threshold_x, delta_x)) = required_env_shift {

@@ -3169,6 +3169,24 @@ pub(super) fn resolve_subgraph_envelopes(
                         };
                     }
                 }
+                // RL: with other members of the parent staying put, a drift
+                // past the parent's free inner space only stretches the parent
+                // around them (gen_c_132's Inner drifted toward In once Done
+                // stood left of Outer, leaving Retry 30 columns behind). LR
+                // fan-ins rely on that room (gen_c_034, gen_c_126).
+                // Only the parent's own nodes: sibling frames have their stop
+                // above (gen_c_012, gen_d_155 balance their padding that way).
+                let parent_keeps_members = input
+                    .graph
+                    .nodes
+                    .iter()
+                    .any(|node| input.graph.get_node_subgraph(&node.id) == Some(parent_id));
+                if parent_keeps_members && input.graph.direction == Direction::RL {
+                    let free_right =
+                        parent_env.inner.right() as isize - child_env.outer.right() as isize - 1;
+                    let free_left = child_env.outer.x as isize - parent_env.inner.x as isize - 1;
+                    delta = delta.clamp(-free_left.max(0), free_right.max(0));
+                }
                 if delta == 0 {
                     continue;
                 }

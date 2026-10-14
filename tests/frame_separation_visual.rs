@@ -342,3 +342,65 @@ fn a_split_tee_beside_a_frame_wall_keeps_no_stub_through_it() {
     let row = row(&frame, row_of(&frame, "  Done  "));
     assert!(!row.contains("─┬") && !row.contains("━┬"), "{frame}");
 }
+
+/// gen_c_040: an RL node fed only from inside a frame overlapped it and was
+/// pushed out past the frame's right wall, upstream of its own source, so its
+/// arrowhead landed on its far side with nothing feeding it. It now stands
+/// left of the frame, where RL flow ends.
+#[test]
+fn an_rl_node_fed_from_a_frame_stands_left_of_it() {
+    let input = "graph RL
+    E1[Edge] --> n
+    subgraph O [Out]
+        subgraph In [Extremely Long Inner Container Heading Text]
+            n[n]
+        end
+    end
+    n --> E2[Exit]
+";
+    let frame = render(input);
+    let row: Vec<char> = row(&frame, row_of(&frame, "Exit")).chars().collect();
+    let exit = row
+        .windows(4)
+        .position(|w| w == ['E', 'x', 'i', 't'])
+        .expect("Exit");
+    // The row above Exit's label row shows the frame walls uncrossed.
+    let wall = self::row(&frame, row_of(&frame, "Exit") - 1)
+        .chars()
+        .position(|c| c == '┃')
+        .expect("a wall");
+    assert!(exit < wall, "Exit is not left of Out:\n{frame}");
+}
+
+/// gen_c_132: with Done left of Outer, Inner's RL drift toward its parent's
+/// leading edge ran until the next outside node stopped it, stretching Outer
+/// around Retry. The drift now keeps to the parent's free inner space.
+#[test]
+fn an_rl_nested_frame_drift_does_not_stretch_its_parent() {
+    let input = "graph RL
+    In[In] --> q
+    subgraph O [Outer]
+        r[Retry]
+        subgraph I [Inner]
+            q{ok?}
+        end
+    end
+    q -->|no| r
+    q -->|yes| Done[Done]
+    r --> q
+";
+    let frame = render(input);
+    let top: Vec<char> = frame
+        .lines()
+        .find(|line| line.contains('┏'))
+        .expect("Outer's top border")
+        .chars()
+        .collect();
+    let left = top.iter().position(|&c| c == '┏').expect("corner");
+    let right = top.iter().position(|&c| c == '┓').expect("corner");
+    assert!(right - left <= 50, "Outer is stretched:\n{frame}");
+    assert!(
+        row(&frame, row_of(&frame, "  Done  ")).contains("├←"),
+        "Done's arrowhead is not on its near side:\n{frame}"
+    );
+}
