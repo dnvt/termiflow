@@ -121,3 +121,34 @@ fn bt_fan_sources_sit_below_their_bus() {
         "the fan bus runs along the source box tops:\n{frame}"
     );
 }
+
+/// gen_d_115: a BT fan-in trunk crossing a frame's title row and bottom
+/// border without a reserved portal slot had that crossing restored to a
+/// plain border, and its title-row cell blanked, cutting the line in two.
+#[test]
+fn a_bt_fan_in_trunk_stays_whole_through_a_frame_border() {
+    let input = "graph BT
+subgraph l [Left]
+  A
+end
+subgraph r [Right]
+  B
+end
+A <--> B
+A --> B
+";
+    let frame = render(input);
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    let (x, arrow) = rows
+        .iter()
+        .enumerate()
+        .find_map(|(y, cells)| cells.iter().position(|&c| c == '↑').map(|x| (x, y)))
+        .unwrap_or_else(|| panic!("no arrow:\n{frame}"));
+    let a_top = row_of(&frame, "  A  ") - 1;
+    for (y, cells) in rows.iter().enumerate().take(a_top).skip(arrow + 1) {
+        assert!(
+            matches!(cells.get(x), Some('│' | '┃' | '┼' | '┴' | '┬')),
+            "the trunk breaks at row {y}:\n{frame}"
+        );
+    }
+}

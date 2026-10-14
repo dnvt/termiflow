@@ -25,13 +25,16 @@ fn routed_crossing_owner<'a>(
         return None;
     }
     let owner_id = meta.owner_id.as_deref()?;
-    // A shared fan-out trunk is owned by `fanout:<source>`; it crosses this
-    // subgraph when any edge out of that source does.
+    // A shared fan-out trunk is owned by `fanout:<source>`, a shared fan-in
+    // trunk by `fanin:<target>`; either crosses this subgraph when any edge
+    // out of that source, or into that target, does.
     let fanout_source = owner_id.strip_prefix("fanout:");
+    let fanin_target = owner_id.strip_prefix("fanin:");
     let crosses = graph.edges.iter().enumerate().any(|(index, edge)| {
-        let owned = match fanout_source {
-            Some(source) => edge.from == source,
-            None => provenance::edge_owner_id(index, edge) == owner_id,
+        let owned = match (fanout_source, fanin_target) {
+            (Some(source), _) => edge.from == source,
+            (None, Some(target)) => edge.to == target,
+            (None, None) => provenance::edge_owner_id(index, edge) == owner_id,
         };
         if !owned {
             return false;
