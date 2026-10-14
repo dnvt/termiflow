@@ -878,6 +878,155 @@ pub(super) fn finalize_horizontal_side_portals(
     }
 }
 
+/// Routes end at nodes, so a horizontal route through a frame's side wall
+/// with a line on one side only is a stub leading nowhere (gen_c_034: the
+/// Vault fan-in's merge tee kept an arm out through Parent's wall). Close the
+/// wall and trim the stub back to the junction it leaves. A stub carrying an
+/// arrowhead, or reaching a box, is left alone.
+pub(super) fn trim_side_wall_stubs(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    chars: &StyleChars,
+    subgraph_chars: &StyleChars,
+) {
+    const MAX_STUB: usize = 4;
+    let is_route = |canvas: &Canvas, x: usize, y: usize| {
+        canvas.get_meta(x, y).is_some_and(|meta| {
+            matches!(
+                meta.owner_kind,
+                semantic::CellOwnerKind::EdgeSegment
+                    | semantic::CellOwnerKind::Junction
+                    | semantic::CellOwnerKind::PortalOpening
+            )
+        })
+    };
+    for subgraph in &graph.subgraphs {
+        let bounds = &subgraph.bounds;
+        if !bounds.is_valid() || bounds.height < 3 {
+            continue;
+        }
+        let right_x = bounds.x + bounds.width.saturating_sub(1);
+        let bottom_y = bounds.y + bounds.height.saturating_sub(1);
+        for wall_x in [bounds.x, right_x] {
+            for y in bounds.y + 1..bottom_y {
+                if wall_x >= canvas.width
+                    || y >= canvas.height
+                    || !canvas::is_horizontal(canvas.get(wall_x, y), chars)
+                    || !is_route(canvas, wall_x, y)
+                {
+                    continue;
+                }
+                // The two sides, each with whether its cell reaches the wall.
+                let reaches = |x: Option<usize>, from_left: bool| {
+                    x.filter(|&x| x < canvas.width).is_some_and(|x| {
+                        let cell = canvas.get(x, y);
+                        canvas::is_arrow(cell)
+                            || if from_left {
+                                topology::char_connects_right(cell)
+                            } else {
+                                topology::char_connects_left(cell)
+                            }
+                    })
+                };
+                let left = reaches(wall_x.checked_sub(1), true);
+                let right = reaches(Some(wall_x + 1), false);
+                if left == right {
+                    continue;
+                }
+                // A box on the other side: the line ends at a node there,
+                // arrowhead or not, and is no stub.
+                let other = if left {
+                    Some(wall_x + 1)
+                } else {
+                    wall_x.checked_sub(1)
+                };
+                if other.is_some_and(|x| is_node_owned_cell(canvas, x, y)) {
+                    continue;
+                }
+                // Walk from the wall along the stub to the junction it leaves.
+                let step = |x: usize| if left { x.checked_sub(1) } else { Some(x + 1) };
+                let mut run = Vec::new();
+                let mut at = step(wall_x);
+                let junction = loop {
+                    let Some(x) = at.filter(|&x| x < canvas.width) else {
+                        break None;
+                    };
+                    let cell = canvas.get(x, y);
+                    if !is_route(canvas, x, y) || canvas::is_arrow(cell) {
+                        break None;
+                    }
+                    if canvas::is_horizontal(cell, chars) && run.len() < MAX_STUB {
+                        run.push(x);
+                        at = step(x);
+                        continue;
+                    }
+                    if canvas::is_junction(cell, chars) || canvas::is_corner(cell, chars) {
+                        break Some(x);
+                    }
+                    break None;
+                };
+                let Some(junction) = junction else {
+                    continue;
+                };
+                // A line carrying on past the junction that belongs to another
+                // edge than the junction's vertical arms crosses them there:
+                // the "stub" is its tail, and trimming it would join the two
+                // edges in a tee (gen_a_174's Moderator -> Publish across the
+                // Remove fan-in).
+                let owner = |x: usize, y: usize| {
+                    canvas
+                        .get_meta(x, y)
+                        .filter(|_| is_route(canvas, x, y))
+                        .and_then(|meta| meta.owner_id.clone())
+                };
+                let through = step(junction).and_then(|x| owner(x, y));
+                let vertical = [y.checked_sub(1), Some(y + 1)]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|ay| owner(junction, ay))
+                    .collect::<Vec<_>>();
+                if through
+                    .as_ref()
+                    .is_some_and(|through| !vertical.is_empty() && !vertical.contains(through))
+                {
+                    continue;
+                }
+                canvas.set_owned(
+                    wall_x,
+                    y,
+                    subgraph_chars.v,
+                    semantic::CellOwnerKind::SubgraphBorder,
+                    &subgraph.id,
+                    1,
+                );
+                for x in run {
+                    canvas.set(x, y, ' ');
+                }
+                let Some(meta) = canvas.get_meta(junction, y).cloned() else {
+                    continue;
+                };
+                if let Some(glyph) = topology::canonical_routing_glyph(
+                    topology::canvas_connections(canvas, junction, y),
+                    chars,
+                    meta.owner_kind,
+                ) {
+                    match meta.owner_id.as_deref() {
+                        Some(owner) => canvas.set_owned(
+                            junction,
+                            y,
+                            glyph,
+                            meta.owner_kind,
+                            owner,
+                            meta.z_index,
+                        ),
+                        None => canvas.set(junction, y, glyph),
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn finalize_dedicated_portal_markers(
     canvas: &mut Canvas,
     graph: &Graph,

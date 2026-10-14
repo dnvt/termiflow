@@ -26,7 +26,7 @@ use super::outcome::RenderOutcome;
 use super::portal_projection::{
     annotate_node_region, annotate_subgraph_region, carve_subgraph_portals_on_canvas,
     finalize_dedicated_portal_markers, finalize_horizontal_side_portals,
-    finalize_td_parallel_portal_seams, reinforce_subgraph_portals,
+    finalize_td_parallel_portal_seams, reinforce_subgraph_portals, trim_side_wall_stubs,
 };
 use super::portal_restore::{
     cleanup_bt_title_rows, draw_subgraph_title, restore_subgraph_borders, route_runs_through_box,
@@ -1459,6 +1459,9 @@ pub(super) fn render_with_feedback_with_contract(
 
     canvas.set_write_stage("portal-seam-finalize");
     finalize_td_parallel_portal_seams(&mut canvas, graph, &portal_slots, &chars, subgraph_chars);
+
+    canvas.set_write_stage("wall-stub-trim");
+    trim_side_wall_stubs(&mut canvas, graph, &chars, subgraph_chars);
 
     let portal_trace = super::trace::PortalTrace::from_canvas(
         graph,

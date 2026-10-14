@@ -298,3 +298,25 @@ fn a_bus_junction_beside_a_frame_wall_does_not_open_it() {
     let row = row(&frame, row_of(&frame, "  X  "));
     assert!(!row.contains("─┼"), "{frame}");
 }
+
+/// gen_c_034: the Vault fan-in's merge tee kept an arm out through Parent's
+/// wall, with nothing beyond it; the stub is trimmed and the wall closed.
+#[test]
+fn a_merge_tee_beside_a_frame_wall_keeps_no_stub_through_it() {
+    let input = "graph LR
+    O1[Ext A] --> K
+    O2[Ext B] --> K
+    subgraph P [Parent]
+        Q[Peer]
+        subgraph I [Key]
+            K[(Vault)]
+        end
+        Q --> K
+    end
+    K --> O3[Ext C]
+    K --> Q
+";
+    let frame = render(input);
+    let row = row(&frame, row_of(&frame, "Vault"));
+    assert!(!row.contains("─┼") && !row.contains("━┼"), "{frame}");
+}
