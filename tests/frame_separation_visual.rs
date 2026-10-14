@@ -241,3 +241,60 @@ fn a_route_along_a_frame_border_keeps_its_corners() {
         );
     }
 }
+
+/// ASCII draws every corner and tee as `+`, so a box corner or a bus turning
+/// beside a frame's side wall read as a line reaching it and opened the wall
+/// (gen_c_090's Pass, gen_c_034's Ext A and Ext B); unicode was already clean.
+#[test]
+fn an_ascii_corner_beside_a_frame_wall_leaves_it_closed() {
+    let input = "graph LR
+    a[a] --> m1
+    b[b] --> m2
+    c[c] --> m3
+    subgraph Mid [Pass]
+        m1[m1]
+        m2[m2]
+        m3[m3]
+    end
+    m1 --> x[x]
+    m2 --> y[y]
+    m3 --> x
+";
+    let frame =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Ascii))
+            .expect("render")
+            .output;
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    let right = rows[0]
+        .iter()
+        .rposition(|&c| c == '+')
+        .unwrap_or_else(|| panic!("no frame corner:\n{frame}"));
+    let openings = rows[1..rows.len() - 1]
+        .iter()
+        .filter(|cells| cells.get(right) == Some(&'-'))
+        .count();
+    assert_eq!(openings, 2, "{frame}");
+}
+
+/// gen_c_124: a fan bus junction beside an inner frame's wall kept a stray
+/// arm into it, which opened the wall to nothing beyond.
+#[test]
+fn a_bus_junction_beside_a_frame_wall_does_not_open_it() {
+    let input = "graph RL
+    X[X] --> a
+    X --> b
+    subgraph A [A]
+        subgraph Ai [Ai]
+            a[a]
+        end
+    end
+    subgraph B [B]
+        subgraph Bi [Bi]
+            b[b]
+        end
+    end
+";
+    let frame = render(input);
+    let row = row(&frame, row_of(&frame, "  X  "));
+    assert!(!row.contains("─┼"), "{frame}");
+}

@@ -922,15 +922,33 @@ pub(super) fn finalize_dedicated_portal_markers(
     // right: the opening one row up or down, or a line running down beside
     // the wall, is not a line through this cell.
     let side_slot_has_route_neighbor = |x: usize, y: usize, canvas: &Canvas| {
-        let toward = |xx: usize, from_left: bool| {
+        let points_at_wall = |xx: usize, from_left: bool| {
             let cell = canvas.get(xx, y);
-            is_route_neighbor(xx, y, canvas)
-                && (canvas::is_arrow(cell)
-                    || if from_left {
-                        topology::char_connects_right(cell)
-                    } else {
-                        topology::char_connects_left(cell)
-                    })
+            canvas::is_arrow(cell)
+                || if from_left {
+                    topology::char_connects_right(cell)
+                } else {
+                    topology::char_connects_left(cell)
+                }
+        };
+        let toward = |xx: usize, from_left: bool| {
+            if !is_route_neighbor(xx, y, canvas) || !points_at_wall(xx, from_left) {
+                return false;
+            }
+            // A tee or corner beside the wall (ASCII draws both as `+`) may
+            // belong to a bus running beside it or turning away from it: it
+            // crosses only when the line also carries on past the wall.
+            let cell = canvas.get(xx, y);
+            let ambiguous = canvas::is_junction(cell, chars)
+                || canvas::is_corner(cell, chars)
+                || chars.corner_dr == chars.corner_ur && cell == chars.corner_dr;
+            let beyond = if from_left {
+                x.checked_add(1)
+            } else {
+                x.checked_sub(1)
+            };
+            !ambiguous
+                || beyond.is_some_and(|bx| bx < canvas.width && points_at_wall(bx, !from_left))
         };
         x.checked_sub(1).is_some_and(|xx| toward(xx, true))
             || (x + 1 < canvas.width && toward(x + 1, false))

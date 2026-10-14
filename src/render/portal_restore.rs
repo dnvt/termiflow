@@ -87,6 +87,20 @@ pub(super) fn restore_subgraph_borders(
             || canvas::is_junction(c, subgraph_chars)
             || canvas::is_arrow(c)
     };
+    // A line beside a side wall at `side_x` reaching it. A tee or corner there
+    // (ASCII draws both as `+`, box corners included) may belong to a bus
+    // running beside the wall or turning away from it: it reaches the wall
+    // only when the line also carries on past it.
+    let meets_wall = |canvas: &Canvas, side_x: usize, beyond_x: Option<usize>, y: usize| {
+        let cell = canvas.get(side_x, y);
+        let ambiguous = canvas::is_junction(cell, chars)
+            || canvas::is_corner(cell, chars)
+            || chars.corner_dr == chars.corner_ur && cell == chars.corner_dr;
+        is_horizontalish(cell)
+            && (!ambiguous
+                || beyond_x
+                    .is_some_and(|bx| bx < canvas.width && is_horizontalish(canvas.get(bx, y))))
+    };
     for subgraph in &graph.subgraphs {
         let bounds = &subgraph.bounds;
         if !bounds.is_valid() {
@@ -236,21 +250,14 @@ pub(super) fn restore_subgraph_borders(
                 && !is_node_owned_cell(canvas, left_x, y)
             {
                 let current = canvas.get(left_x, y);
-                let left = if left_x > 0 {
-                    canvas.get(left_x - 1, y)
-                } else {
-                    ' '
-                };
-                let right = if left_x + 1 < canvas.width {
-                    canvas.get(left_x + 1, y)
-                } else {
-                    ' '
-                };
                 if canvas::is_horizontal(current, chars)
                     || canvas::is_junction(current, chars)
                     || canvas::is_arrow(current)
-                    || is_horizontalish(left)
-                    || is_horizontalish(right)
+                    || left_x
+                        .checked_sub(1)
+                        .is_some_and(|lx| meets_wall(canvas, lx, Some(left_x + 1), y))
+                    || (left_x + 1 < canvas.width
+                        && meets_wall(canvas, left_x + 1, left_x.checked_sub(1), y))
                 {
                     stamp_portal_opening(
                         canvas,
@@ -279,21 +286,14 @@ pub(super) fn restore_subgraph_borders(
                 && !is_node_owned_cell(canvas, right_x, y)
             {
                 let current = canvas.get(right_x, y);
-                let left = if right_x > 0 {
-                    canvas.get(right_x - 1, y)
-                } else {
-                    ' '
-                };
-                let right = if right_x + 1 < canvas.width {
-                    canvas.get(right_x + 1, y)
-                } else {
-                    ' '
-                };
                 if canvas::is_horizontal(current, chars)
                     || canvas::is_junction(current, chars)
                     || canvas::is_arrow(current)
-                    || is_horizontalish(left)
-                    || is_horizontalish(right)
+                    || right_x
+                        .checked_sub(1)
+                        .is_some_and(|lx| meets_wall(canvas, lx, Some(right_x + 1), y))
+                    || (right_x + 1 < canvas.width
+                        && meets_wall(canvas, right_x + 1, right_x.checked_sub(1), y))
                 {
                     stamp_portal_opening(
                         canvas,
