@@ -185,3 +185,26 @@ fn a_bt_stack_feeding_another_stack_moves_below_it_whole() {
         .unwrap_or_else(|| panic!("no frame crossed by the edge:\n{frame}"));
     assert!(a_top > b_bottom, "A overlaps B:\n{frame}");
 }
+
+/// gen_c_107: an outside node feeding a frame from below sat six rows
+/// under it, past an overshoot band crossed by labeled and back edges; the
+/// band now closes to three rows there too.
+#[test]
+fn an_outside_node_below_a_bt_frame_keeps_three_rows_to_it() {
+    let input = "graph BT
+    C[Client] -->|GET| R
+    C -->|POST| R
+    R -->|200| C
+    subgraph O [Server]
+        subgraph I [Router]
+            R[Route]
+        end
+    end
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style);
+        let border = row_of(&frame, "Server") + 1;
+        let client_top = row_of(&frame, "Client") - 1;
+        assert_eq!(client_top - border - 1, 3, "{frame}");
+    }
+}

@@ -4793,8 +4793,9 @@ pub(super) fn resolve_subgraph_envelopes(
 }
 
 /// BT stacking can leave a tall empty band between a top-level frame and the
-/// frame feeding it from below. When only plain edges cross the band, close
-/// it to the rows an edge needs to leave one frame, turn and enter the other.
+/// frame or outside node feeding it from below, or between a frame and the
+/// outside node it feeds. When nothing but edges cross the band, close it to
+/// the rows an edge needs to leave one side, turn and enter the other.
 fn close_bt_frame_gap_bands(
     graph: &Graph,
     config: &CoarseLayoutConfig,
@@ -4808,27 +4809,51 @@ fn close_bt_frame_gap_bands(
     let mut envelopes = envelopes.clone();
     let mut changed = false;
     for _ in 0..8 {
-        let mut frames: Vec<(&str, Rect)> = graph
+        // Top-level frames, and top-level nodes beside them: (id, rect, frame).
+        let mut items: Vec<(&str, Rect, bool)> = graph
             .subgraphs
             .iter()
             .filter(|subgraph| subgraph.parent_id.is_none())
             .filter_map(|subgraph| {
                 envelopes
                     .get(&subgraph.id)
-                    .map(|env| (subgraph.id.as_str(), env.outer))
+                    .map(|env| (subgraph.id.as_str(), env.outer, true))
             })
             .collect();
-        frames.sort_by_key(|&(id, outer)| (outer.y, id));
-        let band = frames.iter().find_map(|&(upper_id, upper)| {
-            frames.iter().find_map(|&(lower_id, lower)| {
+        items.extend(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| graph.get_node_subgraph(&node.id).is_none())
+                .filter_map(|node| {
+                    placement
+                        .node_rects
+                        .get(&node.id)
+                        .map(|rect| (node.id.as_str(), *rect, false))
+                }),
+        );
+        items.sort_by_key(|&(id, outer, _)| (outer.y, id));
+        let member = |node: &str, (id, _, frame): (&str, Rect, bool)| {
+            if frame {
+                graph.is_node_in_subgraph_tree(node, id)
+            } else {
+                node == id
+            }
+        };
+        let band = items.iter().find_map(|&upper_item| {
+            items.iter().find_map(|&lower_item| {
+                let (upper, lower) = (upper_item.1, lower_item.1);
                 let (start, end) = (upper.bottom(), lower.y);
-                if end <= start + KEPT_ROWS || !rects_overlap_horizontally(upper, lower) {
+                if end <= start + KEPT_ROWS
+                    || !rects_overlap_horizontally(upper, lower)
+                    || !(upper_item.2 || lower_item.2)
+                {
                     return None;
                 }
                 let feeds = graph.edges.iter().any(|edge| {
                     !edge.is_back_edge
-                        && graph.is_node_in_subgraph_tree(&edge.from, lower_id)
-                        && graph.is_node_in_subgraph_tree(&edge.to, upper_id)
+                        && member(&edge.from, lower_item)
+                        && member(&edge.to, upper_item)
                 });
                 let in_band = |rect: &Rect| rect.y < end && rect.bottom() > start;
                 let occupied = envelopes.values().any(|env| in_band(&env.outer))
@@ -4843,11 +4868,16 @@ fn close_bt_frame_gap_bands(
                     (from.bottom() <= start && to.y >= end)
                         || (to.bottom() <= start && from.y >= end)
                 };
-                let busy = graph
-                    .edges
-                    .iter()
-                    .any(|edge| crossing(edge) && (edge.is_back_edge || edge.label.is_some()));
-                (feeds && !occupied && !busy).then_some((end, end - start - KEPT_ROWS))
+                // Separate arrows into a node above need rows to spread out;
+                // squeezed, they merge into a bus inside the frame below.
+                let fans_into_node = !upper_item.2
+                    && graph
+                        .edges
+                        .iter()
+                        .filter(|edge| crossing(edge) && edge.to == upper_item.0)
+                        .count()
+                        > 1;
+                (feeds && !occupied && !fans_into_node).then_some((end, end - start - KEPT_ROWS))
             })
         });
         let Some((end, delta)) = band else {
