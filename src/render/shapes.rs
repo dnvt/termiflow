@@ -349,23 +349,45 @@ fn draw_boxlike(
 
     // Top border - check for edge exits above (BT direction only)
     let mut bt_preferred_down_arm: Option<usize> = None;
+    // Whether the line above the top border at `pos_x` runs down into it.
+    let has_down_arm = |canvas: &Canvas, pos_x: usize| {
+        let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
+        let above2 = if y > 1 { canvas.get(pos_x, y - 2) } else { ' ' };
+        let above_is_vertical = is_vertical(above, style) || is_arrow(above);
+        let above_is_corner_down = above == style.corner_dr || above == style.corner_dl;
+        let above_is_junction = is_junction(above, style);
+        let above2_is_vertical =
+            is_vertical(above2, style) || is_arrow(above2) || is_junction(above2, style);
+        above_is_vertical || ((above_is_corner_down || above_is_junction) && above2_is_vertical)
+    };
+    // ASCII draws every corner and tee as `+`, so one with a line above it
+    // and a line on one side only may be a turn on its way up (a jog above
+    // the box) as well as a tee into the border. Right under an arrowhead it
+    // is the line running straight up into its target.
+    let ascii_turn = |canvas: &Canvas, pos_x: usize| {
+        let above = canvas.get(pos_x, y - 1);
+        if y < 2 || is_arrow(canvas.get(pos_x, y - 2)) {
+            return false;
+        }
+        let side = |cell: char| is_horizontal(cell, style) || cell == above;
+        style.corner_dr == style.corner_ur
+            && above == style.corner_dr
+            && side(canvas.get(pos_x.saturating_sub(1), y - 1))
+                != side(canvas.get(pos_x + 1, y - 1))
+    };
     if direction == Direction::BT {
         let center_x = x + width / 2;
         let mut candidates: Vec<usize> = Vec::new();
         for i in 1..width.saturating_sub(1) {
             let pos_x = x + i;
-            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            let above2 = if y > 1 { canvas.get(pos_x, y - 2) } else { ' ' };
-            let above_is_vertical = is_vertical(above, style) || is_arrow(above);
-            let above_is_corner_down = above == style.corner_dr || above == style.corner_dl;
-            let above_is_junction = is_junction(above, style);
-            let above2_is_vertical =
-                is_vertical(above2, style) || is_arrow(above2) || is_junction(above2, style);
-            let has_down_arm = above_is_vertical
-                || ((above_is_corner_down || above_is_junction) && above2_is_vertical);
-            if has_down_arm {
+            if has_down_arm(canvas, pos_x) {
                 candidates.push(pos_x);
             }
+        }
+        // When every candidate could be such a turn, none is taken: the
+        // source's real exits get their junction afterwards.
+        if candidates.iter().all(|&pos_x| ascii_turn(canvas, pos_x)) {
+            candidates.clear();
         }
         if let Some(best) = candidates.into_iter().min_by_key(|pos| {
             let dist = (*pos).abs_diff(center_x);
@@ -380,16 +402,10 @@ fn draw_boxlike(
         let pos_x = x + i;
         let c = if direction == Direction::BT {
             let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            let above2 = if y > 1 { canvas.get(pos_x, y - 2) } else { ' ' };
-            // Only treat junctions/corners as a down arm if a vertical continues above them.
             let above_is_vertical = is_vertical(above, style) || is_arrow(above);
-            let above_is_corner_down = above == style.corner_dr || above == style.corner_dl;
-            let above_is_junction = is_junction(above, style);
-            let above2_is_vertical =
-                is_vertical(above2, style) || is_arrow(above2) || is_junction(above2, style);
-            let has_down_arm = above_is_vertical
-                || ((above_is_corner_down || above_is_junction) && above2_is_vertical);
-            if has_down_arm && (bt_preferred_down_arm == Some(pos_x) || above_is_vertical) {
+            if has_down_arm(canvas, pos_x)
+                && (bt_preferred_down_arm == Some(pos_x) || above_is_vertical)
+            {
                 style.junction_up
             } else {
                 top_h

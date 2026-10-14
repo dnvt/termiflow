@@ -152,3 +152,28 @@ A --> B
         );
     }
 }
+
+/// gen_c_147: ASCII draws corners and tees alike as `+`, so a jog right
+/// above a BT box (its exit turning toward a frame crossing) read as a line
+/// into the box's top border and left a stray `+` beside the real exit.
+#[test]
+fn an_ascii_jog_above_a_bt_box_leaves_its_top_border_alone() {
+    let input = "graph BT
+    U[User] -- submit --> f
+    subgraph O [App]
+        subgraph I [Form]
+            f[form]
+        end
+    end
+    f -- saved --> D[(DB)]
+    f -- error --> U
+";
+    let frame =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Ascii))
+            .expect("render")
+            .output;
+    let top = row(&frame, row_of(&frame, "|  User  |") - 1);
+    let start = top.find('+').expect("box corner");
+    let border: String = top[start..].chars().take(10).collect();
+    assert_eq!(border.matches('+').count(), 3, "{frame}");
+}
