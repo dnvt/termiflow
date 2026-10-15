@@ -565,3 +565,59 @@ fn an_lr_back_edge_gutter_steps_below_a_box() {
         "back-edge loops not below the frames:\n{frame}"
     );
 }
+
+/// gen_c_124: two same-rank stacks fed by one node overlapped, since the
+/// frame to move held only a nested frame and moving its direct members
+/// moved nothing; each frame's corners were drawn through the other's.
+/// Parallel lanes now stack, nested frames and all.
+#[test]
+fn parallel_rl_frame_stacks_do_not_overlap() {
+    let input = "graph RL
+    X[X] --> a
+    X --> b
+    subgraph A [A]
+        subgraph Ai [Ai]
+            a[a]
+        end
+    end
+    subgraph B [B]
+        subgraph Bi [Bi]
+            b[b]
+        end
+    end
+";
+    let frame = render(input);
+    for corner in ['┏', '┓', '┗', '┛'] {
+        assert_eq!(
+            frame.matches(corner).count(),
+            4,
+            "frame corner {corner} lost to an overlap:\n{frame}"
+        );
+    }
+}
+
+/// gen_a_132: three shards fed by one router were laid out as a diagonal
+/// cascade, and the lines to the lower shards ran along the upper shards'
+/// bottom borders. The shards now stack and each line reaches its own.
+#[test]
+fn parallel_lr_frames_fed_by_one_node_stack() {
+    let input = "flowchart LR
+    Router[Query Router]
+    subgraph Shard1 [Shard 1]
+        P1[(Primary)] --> R1[(Replica)]
+    end
+    subgraph Shard2 [Shard 2]
+        P2[(Primary)] --> R2[(Replica)]
+    end
+    subgraph Shard3 [Shard 3]
+        P3[(Primary)] --> R3[(Replica)]
+    end
+    Router --> P1
+    Router --> P2
+    Router --> P3
+";
+    let frame = render(input);
+    for line in frame.lines().filter(|line| line.contains("Primary")) {
+        assert!(!line.contains('━'), "line on a frame border:\n{frame}");
+    }
+}

@@ -56,6 +56,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     {
         for _ in 0..8 {
             let mut required_shift_by_id: HashMap<String, usize> = HashMap::new();
+            let mut required_drop_by_id: HashMap<String, usize> = HashMap::new();
 
             let mut subgraph_min_rank: HashMap<&str, usize> = HashMap::new();
             for sg in &input.graph.subgraphs {
@@ -99,13 +100,30 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                     let (Some(rank1), Some(rank2)) = (r1, r2) else {
                         continue;
                     };
-                    // Shift the later-ranked subgraph to the right until it clears the earlier one.
+                    // Shift the later-ranked subgraph, with its nested frames, to the
+                    // right until it clears the earlier one. Parallel lanes of the same
+                    // rank (one node fans into both, or both feed one place) stack
+                    // instead: drawn side by side, each lane's lines ran along or
+                    // through the other (gen_c_124, gen_a_132, gen_c_070).
                     let (late_id, early_env, late_env) = if rank1 <= rank2 {
                         (sg_ids[j].as_str(), env1, env2)
                     } else {
                         (sg_ids[i].as_str(), env2, env1)
                     };
 
+                    if rank1 == rank2
+                        && frames_are_parallel_lanes(input.graph, sg_ids[i], sg_ids[j])
+                    {
+                        let required_top = early_env.outer.bottom().saturating_add(1);
+                        if late_env.outer.y < required_top {
+                            let delta = required_top - late_env.outer.y;
+                            required_drop_by_id
+                                .entry(late_id.to_string())
+                                .and_modify(|d| *d = (*d).max(delta))
+                                .or_insert(delta);
+                        }
+                        continue;
+                    }
                     let required_left = early_env.outer.right().saturating_add(1);
                     if late_env.outer.x < required_left {
                         let delta = required_left - late_env.outer.x;
@@ -117,6 +135,24 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 }
             }
 
+            if let Some((late_id, delta_y)) = required_drop_by_id
+                .iter()
+                .max_by(|(left_id, left_delta), (right_id, right_delta)| {
+                    left_delta
+                        .cmp(right_delta)
+                        .then_with(|| right_id.cmp(left_id))
+                })
+                .map(|(id, delta)| (id.clone(), *delta))
+            {
+                shift_nodes_in_subgraph_tree_y_signed(
+                    input.graph,
+                    &mut placement.positions,
+                    &mut placement.node_rects,
+                    &late_id,
+                    delta_y as isize,
+                );
+                continue;
+            }
             let Some((late_id, delta_x)) = required_shift_by_id
                 .iter()
                 .max_by(|(left_id, left_delta), (right_id, right_delta)| {
@@ -129,12 +165,12 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 break;
             };
 
-            shift_nodes_in_subgraph(
+            shift_nodes_in_subgraph_tree_x_signed(
                 input.graph,
                 &mut placement.positions,
                 &mut placement.node_rects,
                 &late_id,
-                delta_x,
+                delta_x as isize,
             );
         }
     }
@@ -764,4 +800,47 @@ fn reserve_nested_bt_external_entry_lanes(
         }
         placement.canvas.width = placement.canvas.width.max(candidate.right());
     }
+}
+
+/// Two frames are parallel lanes when one outside node, or one other frame,
+/// links to both of them: a fan feeding both, or both feeding one place.
+fn frames_are_parallel_lanes(graph: &Graph, a: &str, b: &str) -> bool {
+    let outside =
+        |id: &str| !graph.is_node_in_subgraph_tree(id, a) && !graph.is_node_in_subgraph_tree(id, b);
+    let neighbours = |frame: &str| -> Vec<&str> {
+        graph
+            .edges
+            .iter()
+            .filter_map(|edge| {
+                let from_in = graph.is_node_in_subgraph_tree(&edge.from, frame);
+                let to_in = graph.is_node_in_subgraph_tree(&edge.to, frame);
+                match (from_in, to_in) {
+                    (true, false) => Some(edge.to.as_str()),
+                    (false, true) => Some(edge.from.as_str()),
+                    _ => None,
+                }
+            })
+            .filter(|id| outside(id))
+            .collect()
+    };
+    let (of_a, of_b) = (neighbours(a), neighbours(b));
+    if of_a.iter().any(|id| of_b.contains(id)) {
+        return true;
+    }
+    graph
+        .subgraphs
+        .iter()
+        .filter(|other| {
+            !subgraphs_have_declared_hierarchy(graph, &other.id, a)
+                && !subgraphs_have_declared_hierarchy(graph, &other.id, b)
+                && other.id != a
+                && other.id != b
+        })
+        .any(|other| {
+            of_a.iter()
+                .any(|id| graph.is_node_in_subgraph_tree(id, &other.id))
+                && of_b
+                    .iter()
+                    .any(|id| graph.is_node_in_subgraph_tree(id, &other.id))
+        })
 }
