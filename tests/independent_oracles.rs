@@ -4453,20 +4453,30 @@ fn connectivity_frame_origin(
             ))
         })
         .collect();
-    for dy in 0..=12isize {
-        for dx in 0..=12isize {
-            let (ox, oy) = (min_x - dx, min_y - dy);
-            let all_found = probes.iter().all(|(probe, x, y, width, height)| {
-                (y - oy..y - oy + height).any(|row| {
-                    let text: String = (x - ox..x - ox + width)
-                        .map(|col| grid.get(col, row))
-                        .filter(|c| c.is_ascii_alphanumeric())
-                        .collect();
-                    text.contains(probe.as_str())
-                })
-            });
-            if all_found {
-                return Some((ox, oy));
+    // First on the box's centre row, where a one-line label sits: a frame with
+    // rows above its top box (a BT back edge's run) would otherwise match a
+    // label one row off and shift every box. Then anywhere in the box.
+    for strict in [true, false] {
+        for dy in 0..=12isize {
+            for dx in 0..=12isize {
+                let (ox, oy) = (min_x - dx, min_y - dy);
+                let all_found = probes.iter().all(|(probe, x, y, width, height)| {
+                    let rows = if strict {
+                        y - oy + height / 2..y - oy + height / 2 + 1
+                    } else {
+                        y - oy..y - oy + height
+                    };
+                    rows.into_iter().any(|row| {
+                        let text: String = (x - ox..x - ox + width)
+                            .map(|col| grid.get(col, row))
+                            .filter(|c| c.is_ascii_alphanumeric())
+                            .collect();
+                        text.contains(probe.as_str())
+                    })
+                });
+                if all_found {
+                    return Some((ox, oy));
+                }
             }
         }
     }
