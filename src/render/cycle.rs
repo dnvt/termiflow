@@ -909,7 +909,8 @@ type CycleEndpoint = ((bool, isize, usize), usize, bool);
 /// Plan LR/RL back-edge lanes so that no two back edges share a column at a
 /// node or a gutter row over overlapping spans, and no gutter run lies on or
 /// beside a subgraph's top or bottom border. A back edge without such a
-/// conflict keeps the default geometry (box centers, first gutter row).
+/// conflict keeps the default geometry (box centers, first gutter row). A run
+/// that would cross an unrelated box drops below it.
 pub fn plan_horizontal_cycle_lanes(
     graph: &Graph,
     spacing: &SpacingConfig,
@@ -977,6 +978,23 @@ pub fn plan_horizontal_cycle_lanes(
                 .any(|&(row, p_left, p_right)| row == gutter_y && p_left < right && left < p_right)
             {
                 gutter_y += 2;
+                continue;
+            }
+            // A box on the gutter row would have the run cross it; step below
+            // the box rather than give every back edge the default geometry.
+            if let Some(bottom) = graph
+                .nodes
+                .iter()
+                .filter(|other| other.id != from.id && other.id != to.id)
+                .filter(|other| {
+                    (other.y..other.bottom_y()).contains(&gutter_y)
+                        && other.x <= right
+                        && left < other.x + other.width
+                })
+                .map(Node::bottom_y)
+                .max()
+            {
+                gutter_y = bottom + 1;
                 continue;
             }
             break;

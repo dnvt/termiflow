@@ -474,3 +474,94 @@ fn an_rl_terminal_target_left_of_the_crossings_stays_level() {
         "{frame}"
     );
 }
+
+/// gen_a_229: Resolver Cache, fed from inside DNS Resolution, had its centre
+/// row on the frame's bottom border, so the fan branch to it ran along the
+/// border to the frame's corner. The node now stands two rows lower and the
+/// branch drops through the border instead.
+#[test]
+fn an_rl_branch_leaving_a_frame_keeps_off_its_border() {
+    let input = "graph RL
+    subgraph DNS [DNS Resolution]
+        Stub[Stub Resolver]
+        Recursive[Recursive Resolver]
+        Root[Root Server]
+        TLD[TLD Server]
+        Auth[Authoritative Server]
+        Stub --> Recursive
+        Recursive --> Root
+        Recursive --> TLD
+        Recursive --> Auth
+    end
+    App[Application] --> Stub
+    Recursive --> Cache[(Resolver Cache)]
+";
+    let frame = render(input);
+    let cache = row(&frame, row_of(&frame, "Resolver Cache"));
+    assert!(!cache.contains('━'), "line on the frame border:\n{frame}");
+}
+
+/// gen_a_207: Compactor's line to Object Storage ran along Cold Path's bottom
+/// border, which its centre row shared. It now runs below the frame.
+#[test]
+fn an_lr_line_past_a_frame_keeps_off_its_border() {
+    let input = "flowchart LR
+    subgraph Hot [Hot Path]
+        API[Write API]
+        Mem[(In-memory Index)]
+        API --> Mem
+    end
+    subgraph Cold [Cold Path]
+        Seg[Segment Writer]
+        Obj[(Object Storage)]
+        Seg --> Obj
+    end
+    Mem -->|flush every 2h| Seg
+    Query[Query Frontend] --> Mem
+    Query --> Obj
+    Compactor[Compactor] --> Obj
+";
+    let frame = render(input);
+    let compactor = row(&frame, row_of(&frame, "Compactor"));
+    assert!(
+        !compactor.contains('━'),
+        "line on the frame border:\n{frame}"
+    );
+}
+
+/// gen_a_052: the planned gutter for the LR back edges crossed token
+/// endpoint's box, so every back edge fell back to the default geometry and
+/// the loops ran on the frames' bottom borders. The gutter now steps below
+/// the box and both loops run under the frames.
+#[test]
+fn an_lr_back_edge_gutter_steps_below_a_box() {
+    let input = "flowchart LR
+    subgraph Client [Client Side]
+        App[Mobile App]
+        PKCE[Generate PKCE Verifier]
+        App --> PKCE
+    end
+    subgraph IdP [Identity Provider]
+        Authorize[authorize endpoint]
+        TokenEP[token endpoint]
+        JWKS[(JWKS)]
+    end
+    PKCE -->|code challenge| Authorize
+    Authorize -->|auth code| App
+    App -->|code + verifier| TokenEP
+    TokenEP -->|id token| App
+    App -.->|verify signature| JWKS
+";
+    let frame = render(input);
+    let last_border = frame
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains('┛'))
+        .map(|(index, _)| index)
+        .last()
+        .expect("frame border");
+    assert!(
+        row_of(&frame, "auth code") > last_border && row_of(&frame, "id token") > last_border,
+        "back-edge loops not below the frames:\n{frame}"
+    );
+}

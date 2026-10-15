@@ -376,6 +376,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     resolve_subgraph_envelopes(&input, &config, &mut placement, debug_timing);
     reserve_sibling_subgraph_target_corridor(input.graph, &mut placement, &config);
     reserve_nested_bt_external_entry_lanes(input.graph, &mut placement, &config);
+    clear_frame_border_centerlines(input.graph, &mut placement, &config);
     let mut subgraph_envelopes =
         resolve_subgraph_envelopes(&input, &config, &mut placement, debug_timing);
     // H154 is the final fixed-envelope owner for the exact direct three-rail
@@ -501,6 +502,165 @@ fn reserve_sibling_subgraph_target_corridor(
         }
         placement.canvas.width = placement.canvas.width.max(rect.right());
         placement.canvas.height = placement.canvas.height.max(rect.bottom());
+    }
+}
+
+fn rects_overlap(a: &Rect, b: &Rect) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+}
+
+/// Columns a fan needs between its members and a frame to draw its bus
+/// there rather than inside the frame.
+const FAN_BUS_ROOM: usize = 5;
+
+/// The row step that takes an LR/RL node's centre row off a frame border its
+/// edge to `other` would run along: the node stands outside the frame, its
+/// centre row is the frame's top or bottom border, and the edge has to pass
+/// the frame. `fellows` are the other members of a fan `other` draws to the
+/// node: a frame holding `other` and none of them leaves the bus outside it
+/// when the gap has room, and the node's line then never reaches the frame.
+fn border_centerline_step(
+    graph: &Graph,
+    (node_id, rect): (&str, &Rect),
+    (other_id, other): (&str, &Rect),
+    fellows: &[&str],
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> Option<isize> {
+    let centre = rect.y + rect.height / 2;
+    let mut ids: Vec<&String> = envelopes.keys().collect();
+    ids.sort();
+    for sg in ids {
+        if graph.is_node_in_subgraph_tree(node_id, sg) {
+            continue;
+        }
+        let frame = envelopes[sg].outer;
+        let gap = if rect.right() <= frame.x {
+            frame.x - rect.right()
+        } else if rect.x >= frame.right() {
+            rect.x - frame.right()
+        } else {
+            continue;
+        };
+        let (a, b) = (rect.x + rect.width / 2, other.x + other.width / 2);
+        if a.min(b) >= frame.right() || a.max(b) <= frame.x {
+            continue;
+        }
+        let bus_outside = !fellows.is_empty()
+            && gap >= FAN_BUS_ROOM
+            && graph.is_node_in_subgraph_tree(other_id, sg)
+            && !fellows
+                .iter()
+                .any(|fellow| graph.is_node_in_subgraph_tree(fellow, sg));
+        if bus_outside {
+            continue;
+        }
+        if centre == frame.y {
+            return Some(-2);
+        }
+        if centre + 1 == frame.bottom() {
+            return Some(2);
+        }
+    }
+    None
+}
+
+/// The first border step any of a node's edges asks for. A node fanning
+/// lines out, or taking a fan in, meets them at a bus beside it, so only
+/// its single lines count.
+fn node_border_step(
+    graph: &Graph,
+    id: &str,
+    rect: &Rect,
+    node_rects: &HashMap<String, Rect>,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> Option<isize> {
+    let out_degree = graph.edges.iter().filter(|e| e.from == id).count();
+    let in_degree = graph.edges.iter().filter(|e| e.to == id).count();
+    graph.edges.iter().find_map(|edge| {
+        let (other_id, fellows): (&str, Vec<&str>) = if edge.from == id && out_degree == 1 {
+            let fellows = graph
+                .edges
+                .iter()
+                .filter(|e| e.to == edge.to && e.from != id)
+                .map(|e| e.from.as_str())
+                .collect();
+            (&edge.to, fellows)
+        } else if edge.to == id && in_degree == 1 {
+            let fellows = graph
+                .edges
+                .iter()
+                .filter(|e| e.from == edge.from && e.to != id)
+                .map(|e| e.to.as_str())
+                .collect();
+            (&edge.from, fellows)
+        } else {
+            return None;
+        };
+        let other = node_rects.get(other_id)?;
+        border_centerline_step(graph, (id, rect), (other_id, other), &fellows, envelopes)
+    })
+}
+
+/// In LR/RL, move a node outside every frame two rows off a frame border
+/// its centre row lies on, when the edge would otherwise run along that
+/// border (gen_a_229's Resolver Cache, gen_a_207's Compactor), and the room
+/// is free. A move can free the room another node needs, so the sweep
+/// repeats a few times.
+fn clear_frame_border_centerlines(
+    graph: &Graph,
+    placement: &mut placement::Placement,
+    config: &CoarseLayoutConfig,
+) {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) {
+        return;
+    }
+    let mut ids: Vec<String> = graph
+        .nodes
+        .iter()
+        .filter(|node| graph.get_node_subgraph(&node.id).is_none())
+        .map(|node| node.id.clone())
+        .collect();
+    ids.sort();
+    for _ in 0..3 {
+        let mut moved_any = false;
+        for id in &ids {
+            let envelopes = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
+            let Some(rect) = placement.node_rects.get(id).copied() else {
+                continue;
+            };
+            let Some(step) = node_border_step(graph, id, &rect, &placement.node_rects, &envelopes)
+            else {
+                continue;
+            };
+            if step < 0 && rect.y < step.unsigned_abs() {
+                continue;
+            }
+            let moved = Rect {
+                y: shift_coordinate(rect.y, step),
+                ..rect
+            };
+            let clear_of_nodes = placement.node_rects.iter().all(|(other_id, other)| {
+                other_id == id || !rects_overlap(&moved.inflate(1), other)
+            });
+            let clear_of_frames = envelopes
+                .values()
+                .all(|envelope| !rects_overlap(&moved, &envelope.outer));
+            if !clear_of_nodes
+                || !clear_of_frames
+                || node_border_step(graph, id, &moved, &placement.node_rects, &envelopes).is_some()
+            {
+                continue;
+            }
+            placement.node_rects.insert(id.clone(), moved);
+            if let Some(position) = placement.positions.get_mut(id) {
+                position.y = moved.y;
+            }
+            placement.canvas.height = placement.canvas.height.max(moved.bottom());
+            moved_any = true;
+        }
+        if !moved_any {
+            break;
+        }
     }
 }
 
