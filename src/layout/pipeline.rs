@@ -299,11 +299,36 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                             )
                         })
                     };
-                    let share_a_rank = share_a_rank
-                        && !cycles_through(sg_ids[i])
-                        && !cycles_through(sg_ids[j])
-                        && !woven(sg_ids[i])
-                        && !woven(sg_ids[j]);
+                    let (cycles_i, cycles_j) =
+                        (cycles_through(sg_ids[i]), cycles_through(sg_ids[j]));
+                    let unwoven = !woven(sg_ids[i]) && !woven(sg_ids[j]);
+                    // Back edges run to the right gutter, so side by side the frame a
+                    // back edge reaches stands right of the other (gen_c_095).
+                    if input.graph.direction == Direction::BT
+                        && top_level(sg_ids[i])
+                        && top_level(sg_ids[j])
+                        && share_a_rank
+                        && unwoven
+                        && cycles_i != cycles_j
+                        && !sends(sg_ids[i], sg_ids[j])
+                        && !sends(sg_ids[j], sg_ids[i])
+                    {
+                        let (right_id, left_env, right_env) = if cycles_i {
+                            (sg_ids[i].as_str(), env2, env1)
+                        } else {
+                            (sg_ids[j].as_str(), env1, env2)
+                        };
+                        let required_left = left_env.outer.right().saturating_add(1);
+                        if right_env.outer.x < required_left {
+                            let delta = required_left - right_env.outer.x;
+                            side_shifts
+                                .entry(right_id.to_string())
+                                .and_modify(|d| *d = (*d).max(delta))
+                                .or_insert(delta);
+                        }
+                        continue;
+                    }
+                    let share_a_rank = share_a_rank && !cycles_i && !cycles_j && unwoven;
                     if input.graph.direction == Direction::BT
                         && top_level(sg_ids[i])
                         && top_level(sg_ids[j])

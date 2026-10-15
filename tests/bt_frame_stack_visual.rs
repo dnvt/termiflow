@@ -233,3 +233,36 @@ fn a_bt_target_above_a_frame_keeps_a_row_for_its_arrowhead() {
         .unwrap_or_default();
     assert!(below.contains('↑'), "no arrowhead under Archive:\n{frame}");
 }
+
+/// gen_c_095: frames A and C share the bottom rank, and the back edge
+/// Hub -> a reaches A, so they were stacked rather than set side by side;
+/// C landed above Hub on B's border and c's edge ran up into B. C now stands
+/// left of A, where the back edge's run to the right gutter stays clear.
+#[test]
+fn a_bt_frame_a_back_edge_reaches_stands_right_of_its_rank_peer() {
+    let input = "graph BT
+    subgraph A [A]
+        a[a]
+    end
+    subgraph B [B]
+        b[b]
+    end
+    subgraph C [C]
+        c[c]
+    end
+    a --> H((Hub))
+    H --> b
+    c --> H
+    H --> a
+";
+    let frame = render(input, BaseStyle::Unicode);
+    assert_eq!(
+        row_of(&frame, "  c  "),
+        row_of(&frame, "  a  "),
+        "c is not beside a:\n{frame}"
+    );
+    assert!(
+        row_of(&frame, "  Hub  ") < row_of(&frame, "  c  "),
+        "c is not below Hub:\n{frame}"
+    );
+}
