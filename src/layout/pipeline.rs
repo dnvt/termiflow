@@ -41,6 +41,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         &mut placement.node_rects,
         input.prior_positions.as_ref(),
     );
+    clear_skip_edge_columns(input.graph, &mut placement);
     if debug_timing {
         eprintln!(
             "termiflow: placement {:?} (canvas {}x{})",
@@ -1032,4 +1033,109 @@ fn reserve_bt_back_edge_exit_rows(
         envelope.inner.y += extra;
     }
     placement.canvas.height += extra;
+}
+
+/// A fan-in source's line drops straight down its centre column to the
+/// merge above its target. An edge that skips ranks has no node of its own
+/// on the ranks between, so a box placed there in that column hides the line
+/// (gen_a_045's Score above 0.8? -> Approve through Manual Review). In a
+/// TD/BT graph without frames, for a fan-in with a labelled line in (an
+/// unlabelled one has renderer lanes of its own, fx_shape_database_td),
+/// every such box moves just clear of the column, to the nearer side, when
+/// all of them can without meeting another box; a box whose own labelled
+/// line runs into the target stays, since its turn would take the label
+/// (gen_d_023), and so then do the others (gen_a_070).
+fn clear_skip_edge_columns(graph: &Graph, placement: &mut placement::Placement) {
+    if !matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) || !graph.subgraphs.is_empty()
+    {
+        return;
+    }
+    let fan_in = |id: &str| {
+        let into: Vec<&crate::graph::Edge> = graph
+            .edges
+            .iter()
+            .filter(|edge| !edge.is_back_edge && edge.to == id)
+            .collect();
+        into.len() > 1 && into.iter().any(|edge| edge.label.is_some())
+    };
+    let mut skips: Vec<(&str, &str, usize, usize)> = graph
+        .edges
+        .iter()
+        .filter(|edge| !edge.is_back_edge && edge.from != edge.to && fan_in(&edge.to))
+        .filter_map(|edge| {
+            let from = *placement.ranks.get(&edge.from)?;
+            let to = *placement.ranks.get(&edge.to)?;
+            (to >= from + 2).then_some((edge.from.as_str(), edge.to.as_str(), from, to))
+        })
+        .collect();
+    skips.sort();
+    let mut ids: Vec<String> = placement.node_rects.keys().cloned().collect();
+    ids.sort();
+    for (from_id, to_id, from_rank, to_rank) in skips {
+        let Some(source) = placement.node_rects.get(from_id).copied() else {
+            continue;
+        };
+        let column = source.x + source.width / 2;
+        let mut rects = placement.node_rects.clone();
+        let mut moves: Vec<(String, Rect)> = Vec::new();
+        let mut movable = true;
+        for id in &ids {
+            if id == from_id || id == to_id {
+                continue;
+            }
+            let Some(rank) = placement.ranks.get(id).copied() else {
+                continue;
+            };
+            let rect = rects[id];
+            if rank <= from_rank || rank >= to_rank || column + 1 < rect.x || column > rect.right()
+            {
+                continue;
+            }
+            if graph
+                .edges
+                .iter()
+                .any(|edge| edge.from == *id && edge.to == to_id && edge.label.is_some())
+            {
+                movable = false;
+                break;
+            }
+            let right = Rect {
+                x: column + 2,
+                ..rect
+            };
+            let left = (rect.right() + 1)
+                .checked_sub(column)
+                .and_then(|delta| rect.x.checked_sub(delta))
+                .map(|x| Rect { x, ..rect });
+            let options = match left {
+                Some(left) if left.x.abs_diff(rect.x) < right.x.abs_diff(rect.x) => {
+                    [Some(left), Some(right)]
+                }
+                left => [Some(right), left],
+            };
+            let Some(moved) = options.into_iter().flatten().find(|moved| {
+                rects.iter().all(|(other_id, other)| {
+                    other_id == id || !rects_overlap(&moved.inflate(1), other)
+                })
+            }) else {
+                movable = false;
+                break;
+            };
+            rects.insert(id.clone(), moved);
+            moves.push((id.clone(), moved));
+        }
+        if !movable {
+            continue;
+        }
+        for (id, moved) in moves {
+            placement.node_rects.insert(id.clone(), moved);
+            if let Some(point) = placement.positions.get_mut(&id) {
+                point.x = moved.x;
+            }
+            placement.canvas.width = placement.canvas.width.max(moved.right());
+        }
+    }
 }

@@ -76,3 +76,41 @@ fn a_bt_fan_in_line_steps_around_a_box_in_its_column() {
         "no lane beside Service C:\n{frame}"
     );
 }
+
+/// gen_a_091: Helpful? -> Close Chat ("yes") skips a rank, and the box on
+/// that rank, Hand off to Agent, stood in the decision's column: the line
+/// ran hidden through it. The box now stands beside the column.
+#[test]
+fn a_skip_edge_drops_beside_the_box_on_the_rank_it_skips() {
+    let input = "graph TD
+    User((User)) --> Bot[Support Chatbot]
+    Bot --> Intent{Understood?}
+    Intent -->|yes| FAQ[Answer from KB]
+    Intent -->|no| Rephrase[Ask to Rephrase]
+    Rephrase --> Intent
+    FAQ --> Helpful{Helpful?}
+    Helpful -->|yes| Done([Close Chat])
+    Helpful -->|no| Human[Hand off to Agent]
+    Human --> Done
+";
+    let frame = render(input);
+    let lines: Vec<&str> = frame.lines().collect();
+    let row = lines
+        .iter()
+        .position(|line| line.contains("Hand off to Agent"))
+        .expect("Hand off to Agent");
+    let helpful = lines
+        .iter()
+        .find(|line| line.contains("Helpful?"))
+        .expect("Helpful?");
+    let column = helpful[..helpful.find("Helpful?").expect("label")]
+        .chars()
+        .count()
+        + 4;
+    let below: Vec<char> = lines[row].chars().collect();
+    assert_eq!(
+        below.get(column),
+        Some(&'│'),
+        "the decision's line is not beside Hand off to Agent:\n{frame}"
+    );
+}
