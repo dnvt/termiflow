@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::geom::Rect;
 use crate::graph::{Direction, EdgeKind, Graph, Node};
 use crate::spacing::SpacingConfig;
 use crate::style::StyleChars;
@@ -46,6 +47,7 @@ pub fn route_cycle_edge(
         None,
         None,
         0,
+        None,
     );
 }
 
@@ -67,6 +69,7 @@ pub fn route_cycle_edge_on_lane(
     target_detour: Option<&[usize]>,
     bottom_exit: Option<CycleBottomExit>,
     gutter_inset: usize,
+    local_boxes: Option<&[Rect]>,
 ) {
     use crate::graph::Direction;
 
@@ -149,6 +152,26 @@ pub fn route_cycle_edge_on_lane(
                 set_cycle_end(canvas, node_right, from_y, end, kind, owner_id);
                 return;
             }
+
+            // A box on the run along either end's row that no planned detour
+            // avoids would be crossed: the loop closes in the nearest clear
+            // column right of both ends instead, on their own rows (gen_d_094).
+            let local_gutter = local_boxes.and_then(|boxes| {
+                local_cycle_gutter(
+                    from,
+                    to,
+                    boxes,
+                    canvas,
+                    style,
+                    gutter_x,
+                    source_detour.is_some() || bottom_exit.is_some(),
+                    target_detour.is_some(),
+                )
+            });
+            let (gutter_x, source_detour, target_detour, bottom_exit) = match local_gutter {
+                Some(x) => (x, None, None, None),
+                None => (gutter_x, source_detour, target_detour, bottom_exit),
+            };
 
             // Horizontal line from source to gutter.  A box on the source's row
             // sends it along its planned detour row instead: a one-cell stub,
@@ -1101,6 +1124,62 @@ pub fn center_x(node: &Node) -> usize {
 #[inline]
 pub fn center_y(node: &Node) -> usize {
     node.center_y()
+}
+
+/// The column a TD/BT back edge closes its loop in when its run along the
+/// source's or the target's row to the right gutter would cross a box no
+/// planned detour avoids: the nearest one right of both ends whose runs on
+/// the two rows meet no box and cross only vertical lines, and whose column
+/// meets no box (with a blank column beside it) and no other vertical line,
+/// with none beside it.
+#[allow(clippy::too_many_arguments)]
+fn local_cycle_gutter(
+    from: &Node,
+    to: &Node,
+    boxes: &[Rect],
+    canvas: &Canvas,
+    style: &StyleChars,
+    gutter_x: usize,
+    source_covered: bool,
+    target_covered: bool,
+) -> Option<usize> {
+    let others: Vec<&Rect> = boxes
+        .iter()
+        .filter(|rect| (rect.x, rect.y) != (from.x, from.y) && (rect.x, rect.y) != (to.x, to.y))
+        .collect();
+    let (from_y, to_y) = (from.center_y(), to.center_y());
+    let (from_right, to_right) = (from.x + from.width, to.x + to.width);
+    let run_meets_box = |start: usize, end: usize, row: usize| {
+        others.iter().any(|rect| {
+            rect.y <= row && row < rect.bottom() && rect.x < end && start < rect.right()
+        })
+    };
+    let source_blocked = !source_covered && run_meets_box(from_right, gutter_x, from_y);
+    let target_blocked = !target_covered && run_meets_box(to_right, gutter_x, to_y);
+    if !source_blocked && !target_blocked {
+        return None;
+    }
+    let (top, bottom) = (from_y.min(to_y), from_y.max(to_y));
+    let run_clear = |start: usize, end: usize, row: usize| {
+        (start..end).all(|x| {
+            let c = canvas.get(x, row);
+            c == ' ' || super::canvas::is_vertical(c, style)
+        })
+    };
+    (from_right.max(to_right) + 2..gutter_x).find(|&x| {
+        !run_meets_box(from_right, x + 2, from_y)
+            && !run_meets_box(to_right, x + 2, to_y)
+            && !others.iter().any(|rect| {
+                rect.x <= x + 1 && x < rect.right() + 1 && rect.y <= bottom && top < rect.bottom()
+            })
+            && run_clear(from_right, x, from_y)
+            && run_clear(to_right, x, to_y)
+            && (top..=bottom).all(|y| {
+                canvas.get(x, y) == ' '
+                    && !super::canvas::is_vertical(canvas.get(x - 1, y), style)
+                    && !super::canvas::is_vertical(canvas.get(x + 1, y), style)
+            })
+    })
 }
 
 #[cfg(test)]

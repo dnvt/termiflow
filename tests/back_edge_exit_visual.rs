@@ -490,3 +490,25 @@ fn a_back_edge_leaving_a_diamond_tees_its_border() {
         "the back edge leaves Too many? through a tee:\n{frame}"
     );
 }
+
+/// gen_d_094: two separate cycles side by side. A's back edge from C went
+/// out to the right gutter past the second cycle and came back along A's
+/// row straight through D. Its loop now closes in the free column between
+/// the two cycles.
+#[test]
+fn a_td_back_edge_loop_closes_short_of_a_box_on_its_row() {
+    let input = "graph TD\nA --> B --> C --> A\nD --> E --> F --> D\n";
+    let frame =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Unicode))
+            .expect("render")
+            .output;
+    let row = frame
+        .lines()
+        .find(|line| line.contains("  A  "))
+        .expect("A's row");
+    let between = &row[row.find("  A  ").expect("A") + 5..row.find("  D  ").expect("D")];
+    assert!(
+        between.contains('┐'),
+        "A's back edge runs along its row through D:\n{frame}"
+    );
+}

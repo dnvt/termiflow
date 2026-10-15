@@ -627,6 +627,17 @@ pub(super) fn render_with_feedback_with_contract(
         }
     }
     let shared = |cell: &(String, usize)| end_cell_uses.get(cell).is_some_and(|&uses| uses > 1);
+    // Boxes a back edge's loop may close beside; frames would have it cross
+    // their walls, so a graph with frames keeps the right gutter.
+    let local_cycle_boxes: Option<Vec<crate::geom::Rect>> = graph.subgraphs.is_empty().then(|| {
+        graph
+            .nodes
+            .iter()
+            .map(|node| {
+                crate::geom::Rect::new(node.x, node.y, node.width, node.bottom_y() - node.y)
+            })
+            .collect()
+    });
     for (edge_idx, owner_id, from, to) in cycle_edges {
         // A self-loop on a shared side cell that had no row before the loop
         // rows were reserved stays undrawn, as it was.
@@ -667,6 +678,7 @@ pub(super) fn render_with_feedback_with_contract(
             cycle_target_detours.get(&edge_idx).map(Vec::as_slice),
             cycle_bottom_exits.get(&edge_idx).copied(),
             cycle_gutter_insets.get(&edge_idx).copied().unwrap_or(0),
+            local_cycle_boxes.as_deref(),
         );
     }
 
