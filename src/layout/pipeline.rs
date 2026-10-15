@@ -449,6 +449,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         &mut placement,
         &mut subgraph_envelopes,
     );
+    reserve_title_turn_rows(input.graph, &mut placement, &mut subgraph_envelopes);
 
     let routes = route_stage(
         input.graph,
@@ -868,4 +869,116 @@ fn frames_are_parallel_lanes(graph: &Graph, a: &str, b: &str) -> bool {
                     .iter()
                     .any(|id| graph.is_node_in_subgraph_tree(id, &other.id))
         })
+}
+
+/// A TD/TB line entering a titled frame above a target that sits under the
+/// title passes the title in a lane beside it, then turns back on the row
+/// under the title, above the arrow row. The settled frame gains the rows it
+/// lacks, upward, when they and a row above them are free of boxes, of other
+/// frames and of an enclosing frame's title (gen_c_081's Second had only its
+/// title row).
+fn reserve_title_turn_rows(
+    graph: &Graph,
+    placement: &mut placement::Placement,
+    envelopes: &mut HashMap<String, SubgraphEnvelope>,
+) {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) {
+        return;
+    }
+    let mut ids: Vec<String> = envelopes.keys().cloned().collect();
+    ids.sort();
+    for id in ids {
+        let Some(subgraph) = graph.get_subgraph(&id) else {
+            continue;
+        };
+        let Some(len) = subgraph
+            .title
+            .as_deref()
+            .map(crate::graph::subgraph_title_len)
+        else {
+            continue;
+        };
+        let outer = envelopes[&id].outer;
+        let entries: Vec<(&Rect, bool)> = graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                !edge.is_back_edge
+                    && !graph.is_node_in_subgraph_tree(&edge.from, &id)
+                    && graph.is_node_in_subgraph_tree(&edge.to, &id)
+            })
+            .filter_map(|edge| Some((placement.node_rects.get(&edge.to)?, edge.label.is_some())))
+            .filter(|(rect, _)| rect.x + rect.width / 2 <= outer.x + len && rect.y > outer.y)
+            .collect();
+        // The router's lane one cell past the padded title, else the column
+        // beside the left wall; a lane off the target's top edge turns.
+        let lane = if outer.x + 2 + len + 2 < outer.right() {
+            outer.x + 2 + len
+        } else {
+            outer.x + 1
+        };
+        let turning: Vec<&(&Rect, bool)> = entries
+            .iter()
+            .filter(|(rect, _)| lane < rect.x + 1 || lane + 2 > rect.right())
+            .collect();
+        // A label would land on the turn row and hide it (gen_d_032).
+        if turning.is_empty() || turning.iter().any(|(_, labelled)| *labelled) {
+            continue;
+        }
+        let needed = 4;
+        let top = turning
+            .iter()
+            .map(|(rect, _)| rect.y)
+            .min()
+            .unwrap_or(outer.y)
+            .saturating_sub(outer.y);
+        if top >= needed {
+            continue;
+        }
+        let extra = needed - top;
+        let band = Rect::new(outer.x, outer.y - extra - 1, outer.width, extra + 1);
+        let meets = |rect: &Rect| {
+            rect.x < band.right()
+                && band.x < rect.right()
+                && rect.y < band.bottom()
+                && band.y < rect.bottom()
+        };
+        let boxes_clear = placement.node_rects.values().all(|rect| !meets(rect));
+        let frames_clear = envelopes.iter().all(|(other_id, envelope)| {
+            if other_id == &id {
+                return true;
+            }
+            if graph.is_subgraph_ancestor(other_id, &id) {
+                return outer.y - extra >= envelope.outer.y + 3;
+            }
+            !meets(&envelope.outer)
+        });
+        if outer.y > extra && boxes_clear && frames_clear {
+            let envelope = envelopes.get_mut(&id).expect("envelope");
+            envelope.outer.y -= extra;
+            envelope.outer.height += extra;
+            continue;
+        }
+        // No room above: insert the rows under the title, moving everything
+        // from there down and growing every frame across that row.
+        let row = outer.y + 2;
+        for (node_id, rect) in placement.node_rects.iter_mut() {
+            if rect.y >= row {
+                rect.y += extra;
+                if let Some(point) = placement.positions.get_mut(node_id) {
+                    point.y = rect.y;
+                }
+            }
+        }
+        for envelope in envelopes.values_mut() {
+            for rect in [&mut envelope.outer, &mut envelope.inner] {
+                if rect.y >= row {
+                    rect.y += extra;
+                } else if rect.bottom() > row {
+                    rect.height += extra;
+                }
+            }
+        }
+        placement.canvas.height += extra;
+    }
 }

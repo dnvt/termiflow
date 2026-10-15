@@ -1139,12 +1139,57 @@ fn build_envelope(
         top_pad = top_pad.saturating_add(1);
     }
 
-    let outer = Rect::new(
+    let mut outer = Rect::new(
         inner.x.saturating_sub(side_pad),
         inner.y.saturating_sub(top_pad),
         inner.width + side_pad * 2,
         inner.height + top_pad + bottom_pad,
     );
+    // A TD line entering above a target that sits under the title has to pass
+    // the title in a lane beside it (gen_c_081); the rows it turns back on are
+    // reserved once the layout settles (`reserve_title_turn_rows`).
+    if title_on_top
+        && incoming_cross_count > 0
+        && matches!(graph.direction, Direction::TD | Direction::TB)
+    {
+        if let Some(len) = subgraph
+            .title
+            .as_deref()
+            .map(crate::graph::subgraph_title_len)
+        {
+            // Targets whose centre lies on the title text (its padded span ends at
+            // x + 1 + len).
+            let text_end = outer.x + len;
+            let under: Vec<&Rect> = incoming_inside_targets
+                .iter()
+                .filter_map(|id| node_rects.get(*id))
+                .filter(|rect| rect.x + rect.width / 2 <= text_end)
+                .collect();
+            // A line from a sibling frame takes the sibling corridor's own lane,
+            // beside the title on either side (fx_subgraph_chain_td). A labelled
+            // line's label lands on the turn below the title and hides it
+            // (gen_d_032), so such a frame keeps its width.
+            let from_sibling_or_labelled = graph.edges.iter().any(|edge| {
+                !edge.is_back_edge
+                    && (edge.label.is_some()
+                        || graph.subgraphs.iter().any(|sibling| {
+                            sibling.id != subgraph.id
+                                && sibling.parent_id == subgraph.parent_id
+                                && graph.is_node_in_subgraph_tree(&edge.from, &sibling.id)
+                        }))
+                    && !graph.is_node_in_subgraph_tree(&edge.from, &subgraph.id)
+                    && graph.is_node_in_subgraph_tree(&edge.to, &subgraph.id)
+            });
+            if !under.is_empty() && !from_sibling_or_labelled {
+                // Room for a lane one cell past the padded title, a column clear
+                // of the right wall.
+                let grow = (len + 5).saturating_sub(outer.width);
+                let left = (grow / 2).min(outer.x);
+                outer.x -= left;
+                outer.width += grow;
+            }
+        }
+    }
     SubgraphEnvelope {
         outer,
         inner,

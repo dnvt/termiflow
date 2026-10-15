@@ -4290,15 +4290,12 @@ fn strict_subgraph_fan_in_preserves_boundary_lanes_and_target_ports() {
 /// disconnected in the current renderer. Each entry is a confirmed human-eye
 /// defect; the corpus sweep requires the observed failing set to equal this
 /// list exactly, so fixes must shrink it and regressions cannot hide.
-const BOUNDARY_CONNECTIVITY_KNOWN_DISCONNECTED: &[&str] = &[
-    // Mechanism A: external and internal lanes diverge at a border and no jog
-    // joins them (two cuts, or a lane shift on the border row).
-    "inline:subgraph_single_td_long_title",
-];
+const BOUNDARY_CONNECTIVITY_KNOWN_DISCONNECTED: &[&str] = &[];
 
 /// Regression inputs that are not (yet) golden fixtures. The TD long-title
-/// entry remains disconnected (its step lands on the title row); the BT
-/// variant is the corpus fixture `subgraph_single_bt_long_title`.
+/// entry was disconnected while its step landed on the title row; it now
+/// enters past the title and turns below it. The BT variant is the corpus
+/// fixture `subgraph_single_bt_long_title`.
 const BOUNDARY_CONNECTIVITY_INLINE_CASES: &[(&str, &str)] = &[
     (
         "subgraph_single_td_long_title",
