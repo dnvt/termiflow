@@ -201,6 +201,38 @@ pub(super) fn draw_edge_label(
                 label_y = label_y.min(arrow_y.saturating_sub(1));
             }
 
+            // A line that passes a frame title in a lane turns back toward the
+            // target on the row above its arrow; a label there hides the turn
+            // (gen_c_097). It goes instead on the nearest row above where the
+            // line runs straight down, clear of boxes and of frame borders and
+            // titles, over blanks and the line itself.
+            let mut edge_x = edge_x;
+            let own = |x: usize, y: usize| {
+                canvas
+                    .get_meta(x, y)
+                    .is_some_and(|meta| meta.owner_id.as_deref() == Some(owner_id.as_str()))
+            };
+            if own(edge_x, label_y) && !canvas::is_vertical(canvas.get(edge_x, label_y), base_style)
+            {
+                let nodes: Vec<&Node> = graph.nodes.iter().collect();
+                let straight = (lower_bound..label_y).rev().find_map(|y| {
+                    let x = (0..canvas.width).find(|&x| {
+                        own(x, y) && canvas::is_vertical(canvas.get(x, y), base_style)
+                    })?;
+                    let start = x.saturating_sub(label_width / 2);
+                    let clear = !is_reserved_subgraph_label_row(graph, y)
+                        && !overlaps_reserved_subgraph_cells(graph, start, y, label_width)
+                        && !overlaps_node(&nodes, start, y, label_width)
+                        && (start..start + label_width)
+                            .all(|cx| canvas.get(cx, y) == ' ' || own(cx, y));
+                    clear.then_some((x, y))
+                });
+                if let Some((x, y)) = straight {
+                    edge_x = x;
+                    label_y = y;
+                }
+            }
+
             // Center the label around the edge position
             let max_label_start = canvas.width.saturating_sub(label_width);
             let mut label_start_x = edge_x.saturating_sub(label_width / 2).min(max_label_start);

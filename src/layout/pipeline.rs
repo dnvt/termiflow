@@ -899,7 +899,7 @@ fn reserve_title_turn_rows(
             continue;
         };
         let outer = envelopes[&id].outer;
-        let entries: Vec<(&Rect, bool)> = graph
+        let entries: Vec<&Rect> = graph
             .edges
             .iter()
             .filter(|edge| {
@@ -907,8 +907,8 @@ fn reserve_title_turn_rows(
                     && !graph.is_node_in_subgraph_tree(&edge.from, &id)
                     && graph.is_node_in_subgraph_tree(&edge.to, &id)
             })
-            .filter_map(|edge| Some((placement.node_rects.get(&edge.to)?, edge.label.is_some())))
-            .filter(|(rect, _)| rect.x + rect.width / 2 <= outer.x + len && rect.y > outer.y)
+            .filter_map(|edge| placement.node_rects.get(&edge.to))
+            .filter(|rect| rect.x + rect.width / 2 <= outer.x + len && rect.y > outer.y)
             .collect();
         // The router's lane one cell past the padded title, else the column
         // beside the left wall; a lane off the target's top edge turns.
@@ -917,18 +917,17 @@ fn reserve_title_turn_rows(
         } else {
             outer.x + 1
         };
-        let turning: Vec<&(&Rect, bool)> = entries
+        let turning: Vec<&&Rect> = entries
             .iter()
-            .filter(|(rect, _)| lane < rect.x + 1 || lane + 2 > rect.right())
+            .filter(|rect| lane < rect.x + 1 || lane + 2 > rect.right())
             .collect();
-        // A label would land on the turn row and hide it (gen_d_032).
-        if turning.is_empty() || turning.iter().any(|(_, labelled)| *labelled) {
+        if turning.is_empty() {
             continue;
         }
         let needed = 4;
         let top = turning
             .iter()
-            .map(|(rect, _)| rect.y)
+            .map(|rect| rect.y)
             .min()
             .unwrap_or(outer.y)
             .saturating_sub(outer.y);

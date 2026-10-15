@@ -98,3 +98,35 @@ fn a_td_line_through_nested_frames_passes_the_inner_title() {
     let frame = render(input);
     assert_line_beside_title(&frame, "Right leaf");
 }
+
+/// gen_c_097: p -> c passed Consumer's title in a lane and turned back on the
+/// row above its arrow, where its label "data" was drawn over the turn. The
+/// label now sits on the line's straight run above the frame.
+#[test]
+fn a_labelled_line_keeps_its_label_off_the_turn_below_a_title() {
+    let input = "graph TD
+    subgraph P [Producer]
+        p[p]
+    end
+    subgraph C [Consumer]
+        c[c]
+    end
+    p -->|data| c
+    c -->|ack| p
+";
+    let frame = render(input);
+    let lines: Vec<&str> = frame.lines().collect();
+    let title = lines
+        .iter()
+        .position(|line| line.contains("  Consumer"))
+        .expect("Consumer");
+    let label = lines
+        .iter()
+        .position(|line| line.contains("data"))
+        .expect("data");
+    assert!(label < title, "the label is inside the frame:\n{frame}");
+    assert!(
+        lines[title + 1].contains('┘'),
+        "no turn under the title:\n{frame}"
+    );
+}

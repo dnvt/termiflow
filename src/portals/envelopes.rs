@@ -1165,22 +1165,30 @@ fn build_envelope(
                 .filter_map(|id| node_rects.get(*id))
                 .filter(|rect| rect.x + rect.width / 2 <= text_end)
                 .collect();
-            // A line from a sibling frame takes the sibling corridor's own lane,
-            // beside the title on either side (fx_subgraph_chain_td). A labelled
-            // line's label lands on the turn below the title and hides it
-            // (gen_d_032), so such a frame keeps its width.
-            let from_sibling_or_labelled = graph.edges.iter().any(|edge| {
+            // A plain line from a sibling frame takes the sibling corridor's own
+            // lane, beside the title on either side (fx_subgraph_chain_td).
+            let from_sibling = graph.edges.iter().any(|edge| {
                 !edge.is_back_edge
-                    && (edge.label.is_some()
-                        || graph.subgraphs.iter().any(|sibling| {
-                            sibling.id != subgraph.id
-                                && sibling.parent_id == subgraph.parent_id
-                                && graph.is_node_in_subgraph_tree(&edge.from, &sibling.id)
-                        }))
+                    && edge.kind == crate::graph::EdgeKind::Arrow
+                    && edge.label.is_none()
                     && !graph.is_node_in_subgraph_tree(&edge.from, &subgraph.id)
                     && graph.is_node_in_subgraph_tree(&edge.to, &subgraph.id)
+                    && graph.subgraphs.iter().any(|sibling| {
+                        sibling.id != subgraph.id
+                            && sibling.parent_id == subgraph.parent_id
+                            && graph.is_node_in_subgraph_tree(&edge.from, &sibling.id)
+                    })
             });
-            if !under.is_empty() && !from_sibling_or_labelled {
+            // A labelled line beside another line into the frame shares its column
+            // above the frame; the other one keeps on down through the title, now
+            // beside the lane (gen_d_032).
+            let labelled_among_others = incoming_cross_count > 1
+                && graph.edges.iter().any(|edge| {
+                    edge.label.is_some()
+                        && !graph.is_node_in_subgraph_tree(&edge.from, &subgraph.id)
+                        && graph.is_node_in_subgraph_tree(&edge.to, &subgraph.id)
+                });
+            if !under.is_empty() && !from_sibling && !labelled_among_others {
                 // Room for a lane one cell past the padded title, a column clear
                 // of the right wall.
                 let grow = (len + 5).saturating_sub(outer.width);
