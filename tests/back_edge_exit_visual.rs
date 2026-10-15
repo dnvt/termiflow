@@ -547,3 +547,24 @@ fn an_lr_back_edge_leg_drops_beside_a_box_below_its_end() {
         "Rework's back edge does not pass beside Scrap:\n{frame}"
     );
 }
+
+/// gen_d_095: B and D share the top rank and both loop back to Hub. B's back
+/// edge ran along its row to the right gutter straight through D. It now
+/// leaves through B's top and runs above the rank.
+#[test]
+fn a_bt_back_edge_with_a_box_on_its_row_leaves_through_the_top() {
+    let input = "graph BT\nH[Hub] --> A --> B --> H\nH --> C --> D --> H\n";
+    let frame =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Unicode))
+            .expect("render")
+            .output;
+    let row = frame
+        .lines()
+        .find(|line| line.contains("  B  "))
+        .expect("B's row");
+    let between = &row[row.find("  B  ").expect("B") + 5..row.find("  D  ").expect("D")];
+    assert!(
+        !between.contains('─'),
+        "B's back edge runs through D:\n{frame}"
+    );
+}

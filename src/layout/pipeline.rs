@@ -450,6 +450,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
         &mut subgraph_envelopes,
     );
     reserve_title_turn_rows(input.graph, &mut placement, &mut subgraph_envelopes);
+    reserve_bt_back_edge_exit_rows(input.graph, &mut placement, &mut subgraph_envelopes);
 
     let routes = route_stage(
         input.graph,
@@ -980,4 +981,55 @@ fn reserve_title_turn_rows(
         }
         placement.canvas.height += extra;
     }
+}
+
+/// A BT back edge whose run along its source's row would cross a box leaves
+/// through the source's top border and runs to the right gutter two rows
+/// above the top rank (`plan_bt_cycle_top_exits`). In a graph without frames
+/// those two rows are kept free above everything.
+fn reserve_bt_back_edge_exit_rows(
+    graph: &Graph,
+    placement: &mut placement::Placement,
+    envelopes: &mut HashMap<String, SubgraphEnvelope>,
+) {
+    if graph.direction != Direction::BT || !graph.subgraphs.is_empty() {
+        return;
+    }
+    let boxes: Vec<(usize, usize, usize, usize)> = placement
+        .node_rects
+        .values()
+        .map(|rect| (rect.x, rect.y, rect.width, rect.height))
+        .collect();
+    let blocked = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.is_back_edge && edge.from != edge.to)
+        .filter_map(|edge| placement.node_rects.get(&edge.from))
+        .any(|from| {
+            crate::render::cycle::bt_back_edge_row_blocked(
+                (from.x, from.y, from.width, from.height),
+                boxes.iter().copied(),
+            )
+        });
+    let top = placement.node_rects.values().map(|rect| rect.y).min();
+    let Some(extra) = top
+        .filter(|_| blocked)
+        .map(|top| 2usize.saturating_sub(top))
+    else {
+        return;
+    };
+    if extra == 0 {
+        return;
+    }
+    for (id, rect) in placement.node_rects.iter_mut() {
+        rect.y += extra;
+        if let Some(point) = placement.positions.get_mut(id) {
+            point.y = rect.y;
+        }
+    }
+    for envelope in envelopes.values_mut() {
+        envelope.outer.y += extra;
+        envelope.inner.y += extra;
+    }
+    placement.canvas.height += extra;
 }

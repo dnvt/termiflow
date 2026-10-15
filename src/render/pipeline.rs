@@ -1039,6 +1039,12 @@ pub(super) fn render_with_feedback_with_contract(
                     && canvas::is_vertical(canvas.get(x, from.bottom_y()), &chars))
                 .then_some((x, border_y, chars.junction_down))
             }
+            Direction::BT if cycle_bottom_exits.contains_key(&edge_idx) => {
+                let x = cycle_bottom_exits[&edge_idx].x;
+                (canvas::is_horizontal(canvas.get(x, from.y), &chars)
+                    && canvas::is_vertical(canvas.get(x, from.y.saturating_sub(1)), &chars))
+                .then_some((x, from.y, chars.junction_up))
+            }
             Direction::TD | Direction::TB | Direction::BT => {
                 let border_x = from.x + from.width.saturating_sub(1);
                 let y = cycle::center_y(from);

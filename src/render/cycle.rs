@@ -190,21 +190,50 @@ pub fn route_cycle_edge_on_lane(
             };
             // A source that also takes a back edge in leaves through its bottom
             // border instead, when that drop and its row are clear.
+            // In BT the exit rises from the source's top border instead.
+            let rises = matches!(direction, Direction::BT);
+            let exit_rows = |exit: &CycleBottomExit| {
+                if rises {
+                    exit.row..=from.y.saturating_sub(1)
+                } else {
+                    from.bottom_y()..=exit.row
+                }
+            };
             let bottom_exit = bottom_exit.filter(|exit| {
                 exit.row < canvas.height
                     && exit.x < gutter_x
-                    && (from.bottom_y()..=exit.row).all(|y| canvas.get(exit.x, y) == ' ')
-                    && (exit.x + 1..=gutter_x).all(|x| {
-                        let c = canvas.get(x, exit.row);
-                        c == ' ' || super::canvas::is_vertical(c, style)
+                    && exit_rows(exit).all(|y| {
+                        let c = canvas.get(exit.x, y);
+                        // A BT loop into the same target already runs along the
+                        // exit row; this one joins it with a tee.
+                        c == ' ' || rises && y == exit.row && super::canvas::is_horizontal(c, style)
                     })
+                    && ((rises
+                        && super::canvas::is_horizontal(canvas.get(exit.x, exit.row), style))
+                        || (exit.x + 1..=gutter_x).all(|x| {
+                            let c = canvas.get(x, exit.row);
+                            c == ' ' || super::canvas::is_vertical(c, style)
+                        }))
             });
             let source_y = match (bottom_exit, source_detour.filter(|y| detour_clear(*y))) {
                 (Some(exit), _) => {
-                    for y in from.bottom_y()..exit.row {
+                    let joins = super::canvas::is_horizontal(canvas.get(exit.x, exit.row), style);
+                    let (rows, turn) = if rises {
+                        (
+                            exit.row + 1..from.y,
+                            if joins {
+                                style.junction_down
+                            } else {
+                                style.corner_dl
+                            },
+                        )
+                    } else {
+                        (from.bottom_y()..exit.row, style.corner_ul)
+                    };
+                    for y in rows {
                         set_cycle_edge_char(canvas, exit.x, y, style.back_v, style, owner_id);
                     }
-                    set_cycle_char(canvas, exit.x, exit.row, style.corner_ul, owner_id);
+                    set_cycle_char(canvas, exit.x, exit.row, turn, owner_id);
                     for x in exit.x + 1..gutter_x {
                         set_cycle_edge_char(canvas, x, exit.row, style.back_h, style, owner_id);
                     }
@@ -749,6 +778,82 @@ pub struct CycleBottomExit {
     pub row: usize,
 }
 
+/// A BT back edge leaves its source's right side for the right gutter along
+/// the source's row. Whether another box stands further along that row,
+/// where the run would cross it (gen_d_095's B -> H through D). Boxes are
+/// `(x, y, width, height)`.
+pub(crate) fn bt_back_edge_row_blocked(
+    from: (usize, usize, usize, usize),
+    boxes: impl IntoIterator<Item = (usize, usize, usize, usize)>,
+) -> bool {
+    let (x, y, width, height) = from;
+    let row = y + height.max(3) / 2;
+    boxes.into_iter().any(|(bx, by, _, bh)| {
+        (bx, by) != (x, y) && bx >= x + width && by <= row && row < by + bh.max(3)
+    })
+}
+
+/// In a BT graph without frames, a back edge whose run along its source's
+/// row would cross a box leaves through the source's top border instead and
+/// runs to the right gutter two rows above the top rank, which the layout
+/// keeps free. Several such loops share that row only into one target.
+fn plan_bt_cycle_top_exits(graph: &Graph) -> HashMap<usize, CycleBottomExit> {
+    let mut exits = HashMap::new();
+    if !graph.subgraphs.is_empty() {
+        return exits;
+    }
+    let Some(row) = graph
+        .nodes
+        .iter()
+        .map(|node| node.y)
+        .min()
+        .and_then(|top| top.checked_sub(2))
+    else {
+        return exits;
+    };
+    let boxes: Vec<(usize, usize, usize, usize)> = graph
+        .nodes
+        .iter()
+        .map(|node| (node.x, node.y, node.width, node.height))
+        .collect();
+    let mut target: Option<&str> = None;
+    for (idx, edge) in graph.edges.iter().enumerate() {
+        if !edge.is_back_edge || edge.from == edge.to || edge.kind == EdgeKind::Bidirectional {
+            continue;
+        }
+        let Some(from) = graph.nodes.iter().find(|node| node.id == edge.from) else {
+            continue;
+        };
+        if !from.shape.has_flat_vertical_entry()
+            || graph
+                .edges
+                .iter()
+                .any(|other| !other.is_back_edge && other.from == from.id)
+            || !bt_back_edge_row_blocked(
+                (from.x, from.y, from.width, from.height),
+                boxes.iter().copied(),
+            )
+            || target.is_some_and(|target| target != edge.to)
+        {
+            continue;
+        }
+        let x = from.center_x();
+        let rise_blocked = graph.nodes.iter().any(|node| {
+            node.id != from.id
+                && node.x <= x + 1
+                && x <= node.x + node.width
+                && node.y < from.y
+                && row < node.bottom_y()
+        });
+        if rise_blocked {
+            continue;
+        }
+        target = Some(edge.to.as_str());
+        exits.insert(idx, CycleBottomExit { x, row });
+    }
+    exits
+}
+
 /// Plan a bottom-border exit for each TD/TB back edge whose source also
 /// takes a back edge in (or loops on itself). Both would otherwise use the
 /// source's one side cell, where an arrow in hides the exit. The exit drops
@@ -761,6 +866,9 @@ pub fn plan_vertical_cycle_bottom_exits(
     spacing: &SpacingConfig,
 ) -> HashMap<usize, CycleBottomExit> {
     let mut exits = HashMap::new();
+    if graph.direction == Direction::BT {
+        return plan_bt_cycle_top_exits(graph);
+    }
     if !matches!(graph.direction, Direction::TD | Direction::TB) {
         return exits;
     }
