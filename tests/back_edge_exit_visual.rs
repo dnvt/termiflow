@@ -512,3 +512,38 @@ fn a_td_back_edge_loop_closes_short_of_a_box_on_its_row() {
         "A's back edge runs along its row through D:\n{frame}"
     );
 }
+
+/// gen_a_222: Rework's back edge to QC dropped from the middle of Rework
+/// straight through Scrap below it, so every lane was dropped and the
+/// default loop crossed Scrap. The leg now drops beside Scrap.
+#[test]
+fn an_lr_back_edge_leg_drops_beside_a_box_below_its_end() {
+    let input = "flowchart LR
+    subgraph Prod [Factory Floor]
+        Line1[Assembly Line 1]
+        Line2[Assembly Line 2]
+        QC{QC Station}
+        Line1 --> QC
+        Line2 --> QC
+    end
+    QC --> Pass[Finished Goods]
+    QC --> Rework[Rework Cell]
+    Rework --> QC
+    QC --> Scrap[Scrap]
+    Pass --> Ship[Shipping]
+";
+    let frame =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Unicode))
+            .expect("render")
+            .output;
+    let row = frame
+        .lines()
+        .find(|line| line.contains("  Scrap  "))
+        .expect("Scrap's row");
+    let after = &row[row.find("  Scrap  ").expect("Scrap")..];
+    assert_eq!(
+        after.matches('│').count(),
+        2,
+        "Rework's back edge does not pass beside Scrap:\n{frame}"
+    );
+}

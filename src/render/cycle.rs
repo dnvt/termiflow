@@ -1082,7 +1082,69 @@ pub fn plan_horizontal_cycle_lanes(
         );
     }
 
-    // A back edge whose planned route would cross an unrelated box belongs to
+    // A leg dropping through an unrelated box below its end moves to the
+    // nearest column of that end's box that drops clear, with a blank
+    // column either side and away from the end's other legs (gen_a_222).
+    let mut used: Vec<(&str, usize)> = lanes
+        .iter()
+        .flat_map(|(idx, lane)| {
+            let (_, from, to) = back_edges.iter().find(|(i, _, _)| i == idx).copied()?;
+            Some([(from.id.as_str(), lane.from_x), (to.id.as_str(), lane.to_x)])
+        })
+        .flatten()
+        .collect();
+    let mut ids: Vec<usize> = lanes.keys().copied().collect();
+    ids.sort_unstable();
+    for idx in ids {
+        let Some(&(_, from, to)) = back_edges.iter().find(|(i, _, _)| *i == idx) else {
+            continue;
+        };
+        let gutter_y = lanes[&idx].gutter_y;
+        for (owner, is_exit) in [(from, true), (to, false)] {
+            let x = if is_exit {
+                lanes[&idx].from_x
+            } else {
+                lanes[&idx].to_x
+            };
+            let hits = |x: usize| {
+                graph
+                    .nodes
+                    .iter()
+                    .filter(|other| other.id != from.id && other.id != to.id)
+                    .any(|other| {
+                        (other.x..other.x + other.width).contains(&x)
+                            && owner.bottom_y() < other.bottom_y()
+                            && other.y <= gutter_y
+                    })
+            };
+            if !hits(x) {
+                continue;
+            }
+            let taken = |c: usize| {
+                used.iter()
+                    .any(|&(id, other)| id == owner.id && other != x && other.abs_diff(c) <= 1)
+            };
+            let mut candidates: Vec<usize> =
+                (owner.x + 2..(owner.x + owner.width).saturating_sub(2)).collect();
+            candidates.sort_by_key(|&c| (c.abs_diff(x), c));
+            let Some(moved) = candidates
+                .into_iter()
+                .find(|&c| !hits(c.saturating_sub(1)) && !hits(c) && !hits(c + 1) && !taken(c))
+            else {
+                continue;
+            };
+            if let Some(entry) = used.iter_mut().find(|(id, c)| *id == owner.id && *c == x) {
+                entry.1 = moved;
+            }
+            let lane = lanes.get_mut(&idx).expect("lane");
+            if is_exit {
+                lane.from_x = moved;
+            } else {
+                lane.to_x = moved;
+            }
+        }
+    }
+
     // a layout the gutter cannot fix; extra lanes would only add clutter, so
     // keep the default geometry for every back edge.
     let crosses_a_box = back_edges.iter().any(|&(idx, from, to)| {
