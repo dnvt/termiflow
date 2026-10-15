@@ -4009,6 +4009,8 @@ pub(super) fn resolve_subgraph_envelopes(
             }
 
             let mut required_shift_by_rank: HashMap<usize, usize> = HashMap::new();
+            // Targets above a frame left in place by its rank shift: (rank, ids).
+            let mut rank_shift_keeps: HashMap<usize, HashSet<String>> = HashMap::new();
             // Rank -> (delta, frames whose members stay) for sources that share
             // a rank with the lowest members of the frame they feed.
             let mut outside_source_shift: HashMap<usize, (usize, Vec<String>)> = HashMap::new();
@@ -4050,6 +4052,19 @@ pub(super) fn resolve_subgraph_envelopes(
                         .entry(shift_rank)
                         .and_modify(|d| *d = (*d).max(delta))
                         .or_insert(delta);
+                    // A target ranked with the frame's own lowest members would
+                    // move along and never clear the border (gen_c_011's Archive
+                    // sat on Org's top border, its arrowhead lost): it stays.
+                    if placement
+                        .ranks
+                        .get(&edge.to)
+                        .is_some_and(|&rank| rank <= shift_rank)
+                    {
+                        rank_shift_keeps
+                            .entry(shift_rank)
+                            .or_default()
+                            .insert(edge.to.clone());
+                    }
                 }
             }
 
@@ -4302,6 +4317,17 @@ pub(super) fn resolve_subgraph_envelopes(
             };
             last_shift = Some((max_rank, delta_y));
 
+            let keeps = rank_shift_keeps.remove(&max_rank).unwrap_or_default();
+            let kept: Vec<(String, crate::geom::Point, Rect)> = keeps
+                .iter()
+                .filter_map(|id| {
+                    Some((
+                        id.clone(),
+                        *placement.positions.get(id)?,
+                        *placement.node_rects.get(id)?,
+                    ))
+                })
+                .collect();
             shift_nodes_up_to_rank_bt(
                 &mut placement.positions,
                 &mut placement.node_rects,
@@ -4309,6 +4335,10 @@ pub(super) fn resolve_subgraph_envelopes(
                 max_rank,
                 delta_y,
             );
+            for (id, position, rect) in kept {
+                placement.positions.insert(id.clone(), position);
+                placement.node_rects.insert(id, rect);
+            }
 
             let max_bottom = placement
                 .node_rects

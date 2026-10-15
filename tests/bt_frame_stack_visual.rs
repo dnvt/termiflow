@@ -208,3 +208,28 @@ fn an_outside_node_below_a_bt_frame_keeps_three_rows_to_it() {
         assert_eq!(client_top - border - 1, 3, "{frame}");
     }
 }
+
+/// gen_c_011: a BT target above a frame, ranked with the frame's lowest
+/// members, sat on the frame's top border: the rank shift meant to open a
+/// connector row moved it along, so its arrowhead had no row. It stays put
+/// now while the frame moves down.
+#[test]
+fn a_bt_target_above_a_frame_keeps_a_row_for_its_arrowhead() {
+    let input = "graph BT
+    subgraph A [Org]
+        subgraph B [Team]
+            subgraph C [Squad]
+                X[Dev] --> Y[Review]
+            end
+        end
+    end
+    Y --> Prod[Prod] --> Mon[Monitor]
+    X --> Arch[(Archive)]
+";
+    let frame = render(input, BaseStyle::Unicode);
+    let below = frame
+        .lines()
+        .nth(row_of(&frame, "Archive") + 2)
+        .unwrap_or_default();
+    assert!(below.contains('↑'), "no arrowhead under Archive:\n{frame}");
+}
