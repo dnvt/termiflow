@@ -5133,7 +5133,11 @@ fn reserve_horizontal_external_target_corridors(
             }
             let from = placement.node_rects.get(&edge.from).copied()?;
             let to = placement.node_rects.get(&edge.to).copied()?;
-            Some((from.y.min(to.y), from.bottom().max(to.bottom())))
+            Some((
+                from.y.min(to.y),
+                from.bottom().max(to.bottom()),
+                from.x.min(to.x),
+            ))
         })
         .collect::<Vec<_>>();
     if crossing_ranges.is_empty() {
@@ -5172,10 +5176,17 @@ fn reserve_horizontal_external_target_corridors(
         {
             continue;
         }
+        // An RL target standing left of a crossing, downstream of it, has
+        // its own corridor there and never meets it (fx_subgraph_complex_rl's
+        // Response Builder sank 14 rows below the frames for nothing).
         let Some(max_crossing_bottom) = crossing_ranges
             .iter()
-            .filter(|(top, bottom)| rect.y < *bottom && *top < rect.bottom())
-            .map(|(_, bottom)| *bottom)
+            .filter(|(top, bottom, left)| {
+                rect.y < *bottom
+                    && *top < rect.bottom()
+                    && !(graph.direction == Direction::RL && rect.right() <= *left)
+            })
+            .map(|(_, bottom, _)| *bottom)
             .max()
         else {
             continue;

@@ -450,3 +450,27 @@ fn rl_frames_a_frame_fans_into_keep_flow_order() {
         "frames out of RL order:\n{frame}"
     );
 }
+
+/// gen_c_100: an RL terminal target left of the frames was dropped below
+/// every frame-to-frame crossing (a corridor rule written for targets right
+/// of or below them), so ETL -> Report became a long L-shaped drop. A target
+/// downstream of all crossings now stays on its source's row.
+#[test]
+fn an_rl_terminal_target_left_of_the_crossings_stays_level() {
+    let input = "graph RL
+    subgraph A [Customer Facing Application Tier]
+        a[UI]
+    end
+    subgraph B [Internal Reporting And Analytics Tier]
+        b[ETL]
+    end
+    a --> b
+    b --> r[Report]
+";
+    let frame = render(input);
+    assert_eq!(
+        row_of(&frame, "  Report  "),
+        row_of(&frame, "  ETL  "),
+        "{frame}"
+    );
+}
