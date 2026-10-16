@@ -803,6 +803,7 @@ pub(super) fn render_with_feedback_with_contract(
                 config,
                 edge_idx,
                 edge,
+                graph,
             ) {
                 edge_label_placements.push(placement);
             }

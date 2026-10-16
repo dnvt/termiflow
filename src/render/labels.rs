@@ -280,8 +280,37 @@ pub(super) fn draw_edge_label(
                 label_y = lower_bound.min(stem_start_y);
             }
 
-            let label_start_x =
+            let mut label_start_x =
                 pick_bt_vertical_label_start(canvas, &[from, to], edge_x, label_y, label_width);
+            // A label over a frame's border or wall breaks the frame (gen_c_031's
+            // "result" on System's top border). It goes instead on the nearest
+            // row further along the line clear of frames, boxes and other lines.
+            if overlaps_reserved_subgraph_cells(graph, label_start_x, label_y, label_width) {
+                let nodes: Vec<&Node> = graph.nodes.iter().collect();
+                let own = |x: usize, y: usize| {
+                    canvas
+                        .get_meta(x, y)
+                        .is_some_and(|meta| meta.owner_id.as_deref() == Some(owner_id.as_str()))
+                };
+                let clear_row = (label_y + 1..=upper_bound.min(canvas.height.saturating_sub(1)))
+                    .find_map(|y| {
+                        let x = (0..canvas.width).find(|&x| {
+                            own(x, y) && canvas::is_vertical(canvas.get(x, y), base_style)
+                        })?;
+                        let start =
+                            pick_bt_vertical_label_start(canvas, &[from, to], x, y, label_width);
+                        let clear = !overlaps_reserved_subgraph_cells(graph, start, y, label_width)
+                            && !overlaps_node(&nodes, start, y, label_width)
+                            && label_neighbour_rows_clear(canvas, start, label_width, y)
+                            && (start..start + label_width)
+                                .all(|cx| canvas.get(cx, y) == ' ' || own(cx, y));
+                        clear.then_some((y, start))
+                    });
+                if let Some((y, start)) = clear_row {
+                    label_y = y;
+                    label_start_x = start;
+                }
+            }
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
                 if x_pos < canvas.width
@@ -1176,6 +1205,19 @@ fn overlaps_reserved_subgraph_cells(graph: &Graph, start_x: usize, y: usize, wid
     })
 }
 
+/// Whether the rows just above and below the `width` cells from `start_x` on
+/// row `y` hold no text: stacked labels read as one, and the line checks read
+/// through a label to the row past it.
+fn label_neighbour_rows_clear(canvas: &Canvas, start_x: usize, width: usize, y: usize) -> bool {
+    [y.checked_sub(1), Some(y + 1)]
+        .into_iter()
+        .flatten()
+        .all(|row| {
+            (start_x.saturating_sub(1)..start_x + width + 1)
+                .all(|x| !is_textual(canvas.get(x, row)))
+        })
+}
+
 /// Whether a line other than `owner_id`'s already holds one of the `width`
 /// cells from `start_x` on row `y`.
 fn cells_held_by_another_line(
@@ -1287,6 +1329,7 @@ pub(super) fn draw_convergent_edge_label(
     config: &Config,
     edge_idx: usize,
     edge: &crate::graph::Edge,
+    graph: &Graph,
 ) -> Option<EdgeLabelPlacement> {
     let kind_style = edge_label_style(style, edge);
     let style = &kind_style;
@@ -1353,6 +1396,39 @@ pub(super) fn draw_convergent_edge_label(
                             .all(|x| canvas.get(x, y) == ' ')
                 }) {
                     label_y = y;
+                }
+            }
+            // A label over a frame's wall breaks the frame (gen_a_165's "ILM
+            // rollover" on Data Nodes' left wall). It goes beside the stem on the
+            // other side, or further down the stem, clear of frames, boxes and
+            // other lines.
+            if overlaps_reserved_subgraph_cells(graph, label_start_x, label_y, label_width) {
+                let nodes: Vec<&Node> = graph.nodes.iter().collect();
+                let sides = [
+                    src_x.saturating_add(2),
+                    src_x.saturating_sub(label_width.saturating_add(1)),
+                ];
+                // The row just below the source box first after its own, then on
+                // down the stem.
+                let clear_slot = std::iter::once(label_y)
+                    .chain(
+                        (stem_start_y..canvas.height)
+                            .filter(|&y| y != label_y)
+                            .take_while(|&y| canvas::is_vertical(canvas.get(src_x, y), style)),
+                    )
+                    .find_map(|y| {
+                        sides.into_iter().find_map(|start| {
+                            let clear = start + label_width <= canvas.width
+                                && !overlaps_reserved_subgraph_cells(graph, start, y, label_width)
+                                && !overlaps_node(&nodes, start, y, label_width)
+                                && label_neighbour_rows_clear(canvas, start, label_width, y)
+                                && (start..start + label_width).all(|x| canvas.get(x, y) == ' ');
+                            clear.then_some((y, start))
+                        })
+                    });
+                if let Some((y, start)) = clear_slot {
+                    label_y = y;
+                    label_start_x = start;
                 }
             }
 
