@@ -424,6 +424,41 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 break;
             };
 
+            // In BT, an outside node that follows the frame, its one edge coming
+            // from a member it sits below, stays below that member: left
+            // behind, the shifted member would land on or past it and the flip
+            // would leave it under it (gen_a_228's Offer under Interview
+            // Loop). TD/LR passes after this one already part such a node.
+            let followers: Vec<String> = input
+                .graph
+                .nodes
+                .iter()
+                .filter(|_| input.graph.direction == Direction::BT)
+                .filter(|node| input.graph.get_node_subgraph(&node.id).is_none())
+                .filter(|node| {
+                    let Some(rect) = placement.node_rects.get(&node.id) else {
+                        return false;
+                    };
+                    let sources = input
+                        .graph
+                        .edges
+                        .iter()
+                        .filter(|edge| edge.from == node.id || edge.to == node.id)
+                        .map(|edge| {
+                            (edge.to == node.id
+                                && input.graph.is_node_in_subgraph_tree(&edge.from, &sg_id))
+                            .then(|| placement.node_rects.get(&edge.from))
+                            .flatten()
+                        })
+                        .collect::<Vec<_>>();
+                    // A target several members feed keeps the corridor beside the
+                    // frames its fan-in is planned for (subgraph_complex_bt).
+                    matches!(sources.as_slice(), [Some(source)]
+                        if source.y < rect.y && source.y + delta >= rect.y)
+                })
+                .map(|node| node.id.clone())
+                .collect();
+
             // Shift every node in the subgraph tree down: a frame holding only
             // nested frames has no direct members to move.
             shift_nodes_in_subgraph_tree_y_signed(
@@ -433,6 +468,14 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 &sg_id,
                 delta as isize,
             );
+            for id in followers {
+                if let Some(point) = placement.positions.get_mut(&id) {
+                    point.y += delta;
+                }
+                if let Some(rect) = placement.node_rects.get_mut(&id) {
+                    rect.y += delta;
+                }
+            }
         }
     }
 

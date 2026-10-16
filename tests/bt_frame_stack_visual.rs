@@ -266,3 +266,35 @@ fn a_bt_frame_a_back_edge_reaches_stands_right_of_its_rank_peer() {
         "c is not below Hub:\n{frame}"
     );
 }
+
+/// gen_a_228: Offer follows Interview Loop, so in BT it sits above it. The
+/// Candidate Pipeline frame was moved down past it while stacking the
+/// frames, which left Offer below Interview Loop with a line looping out of
+/// the frame's top to reach it.
+#[test]
+fn an_outside_node_following_a_moved_frame_stays_after_its_source() {
+    let frame = render(
+        "graph BT
+    subgraph Hiring [Hiring Plan]
+        Headcount[Headcount Approved]
+        JD[Write Job Description]
+        Post[Post Job]
+        Headcount --> JD --> Post
+    end
+    subgraph Pipeline [Candidate Pipeline]
+        Sourced[Sourced]
+        Phone[Phone Screen]
+        Loop[Interview Loop]
+        Sourced --> Phone --> Loop
+    end
+    Post --> Sourced
+    Referral[Referrals] --> Phone
+    Loop --> Offer([Offer])
+",
+        BaseStyle::Unicode,
+    );
+    assert!(
+        row_of(&frame, "Offer") < row_of(&frame, "Interview Loop"),
+        "Offer is not above Interview Loop:\n{frame}"
+    );
+}
