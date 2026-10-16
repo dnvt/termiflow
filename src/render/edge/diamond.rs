@@ -15,14 +15,17 @@ use crate::style::{StyleChars, BOX_HEIGHT};
 use super::super::canvas::Canvas;
 use super::super::fallback_route::{FallbackAxis, FallbackRoutePlan};
 use super::super::semantic::CellOwnerKind;
-use super::super::topology::{canonical_routing_glyph, canvas_connections};
+use super::super::topology::{
+    canonical_routing_glyph, canvas_connections, char_connects_down, char_connects_left,
+    char_connects_right, char_connects_up,
+};
 use super::edge_primitives::{
     adjusted_edge_entry_point, edge_entry_candidates, edge_exit_point, hits_foreign_subgraph_border,
 };
 use super::{set_route_char, set_route_edge_char, style_for_edge_kind, RouteOwner};
 
 const STRATEGY: &str = "diamond-shortcut-scene-reservation";
-const DETOUR_STRATEGY: &str = "blocked-edge-outside-detour";
+pub(crate) const DETOUR_STRATEGY: &str = "blocked-edge-outside-detour";
 
 #[derive(Debug, Clone)]
 struct DiamondScene {
@@ -96,45 +99,171 @@ pub(crate) fn plan_diamond_scenes(
 /// run through another node's box, where the generic fan-in and fan-out
 /// passes would draw it hidden under that box.
 ///
-/// Edges in `claimed` already have an owner. An edge whose detour cannot be
-/// planned is left to the generic passes, as before.
+/// Edges in `claimed` already have an owner, and edges in `dropped` lost
+/// their detour to a line it was in the way of. An edge whose detour cannot
+/// be planned is left to the generic passes, as before.
+///
+/// A source's blocked edges to different targets are detoured together or
+/// not at all: a detour leaves on the source's stem, which a sibling still
+/// drawn through a box would join to that box.
 pub(crate) fn plan_blocked_edge_detours(
     graph: &Graph,
     canvas: &mut Canvas,
     style: &StyleChars,
     claimed: &HashSet<usize>,
+    dropped: &HashSet<usize>,
 ) -> HashSet<usize> {
-    let coords = OrientedCoords::new(graph.direction);
+    let blocked: Vec<usize> = (0..graph.edges.len())
+        .filter(|index| {
+            !claimed.contains(index) && generic_route_is_blocked(graph, canvas, claimed, *index)
+        })
+        .collect();
+    let mut sources: Vec<&str> = Vec::new();
+    for &index in &blocked {
+        let source = graph.edges[index].from.as_str();
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
     let mut planned = HashSet::new();
-    for (index, edge) in graph.edges.iter().enumerate() {
-        if claimed.contains(&index) || !edge_path_is_blocked(graph, canvas, index) {
-            continue;
-        }
-        let (Some(source), Some(target)) = (graph.get_node(&edge.from), graph.get_node(&edge.to))
-        else {
-            continue;
+    for source in sources {
+        let group: Vec<usize> = blocked
+            .iter()
+            .copied()
+            .filter(|&index| graph.edges[index].from == source)
+            .collect();
+        let before = canvas.clone();
+        let (lowered, left): (Vec<usize>, Vec<usize>) = group.iter().partition(|&&index| {
+            !dropped.contains(&index)
+                && plan_blocked_edge_detour(graph, canvas, style, claimed, index)
+        });
+        // A blocked edge left behind to a target a detour already reaches
+        // shares that detour's picture; one to another target does not.
+        let reached = |index: &usize| {
+            lowered
+                .iter()
+                .any(|&other| graph.edges[other].to == graph.edges[*index].to)
         };
-        // Cycle routes leave and enter on the sides of nodes on a back edge,
-        // where an outside lane alongside them would be cut.
-        if span_has_back_edge_node(graph, source, target, &coords) {
-            continue;
-        }
-        if lower_blocked_edge_detour(graph, canvas, style, claimed, index) {
-            planned.insert(index);
-            continue;
-        }
-        // An LR/RL canvas sized tightly around the boxes has no outside lane
-        // left; grow it by the lane only when the detour then fits.
-        let mut grown = canvas.clone();
-        ensure_detour_lane_capacity(&mut grown, graph, &coords);
-        if (grown.width, grown.height) != (canvas.width, canvas.height)
-            && lower_blocked_edge_detour(graph, &mut grown, style, claimed, index)
-        {
-            *canvas = grown;
-            planned.insert(index);
+        if left.iter().all(reached) {
+            planned.extend(lowered);
+        } else {
+            *canvas = before;
         }
     }
     planned
+}
+
+/// Reserve an outside detour for the blocked edge at `index`, growing an
+/// LR/RL canvas by the lane when that is what it takes.
+fn plan_blocked_edge_detour(
+    graph: &Graph,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    claimed: &HashSet<usize>,
+    index: usize,
+) -> bool {
+    let coords = OrientedCoords::new(graph.direction);
+    let edge = &graph.edges[index];
+    let (Some(source), Some(target)) = (graph.get_node(&edge.from), graph.get_node(&edge.to))
+    else {
+        return false;
+    };
+    // Cycle routes leave and enter on the sides of nodes on a back edge,
+    // where an outside lane alongside them would be cut.
+    if span_has_back_edge_node(graph, source, target, &coords) {
+        return false;
+    }
+    if lower_blocked_edge_detour(graph, canvas, style, claimed, index) {
+        return true;
+    }
+    // An LR/RL canvas sized tightly around the boxes has no outside lane
+    // left; grow it by the lane only when the detour then fits.
+    let mut grown = canvas.clone();
+    ensure_detour_lane_capacity(&mut grown, graph, &coords);
+    if (grown.width, grown.height) != (canvas.width, canvas.height)
+        && lower_blocked_edge_detour(graph, &mut grown, style, claimed, index)
+    {
+        *canvas = grown;
+        return true;
+    }
+    false
+}
+
+/// The detoured edges among `planned` that were in another line's way on
+/// the finished canvas: one held a cell a later line of another edge needed,
+/// or left a plain line touching its target where the edge would have
+/// arrived, which then reads as leaving the target.
+///
+/// A later line out of the same source or into the same target joins the
+/// detour as a shared trunk or bus instead.
+pub(crate) fn detours_in_the_way(
+    graph: &Graph,
+    canvas: &Canvas,
+    planned: &HashSet<usize>,
+) -> HashSet<usize> {
+    planned
+        .iter()
+        .copied()
+        .filter(|&index| {
+            let edge = &graph.edges[index];
+            let owner_id = detour_owner_id(edge);
+            let cut = canvas
+                .refused_route_writes()
+                .iter()
+                .filter(|(holder, _, _, _)| *holder == owner_id)
+                .any(|(_, _, _, writer)| {
+                    let (from, to) = writer_ends(graph, writer.as_deref());
+                    from != Some(edge.from.as_str()) && to != Some(edge.to.as_str())
+                });
+            if cut {
+                return true;
+            }
+            let Some(target) = graph.get_node(&edge.to) else {
+                return false;
+            };
+            let (x, y) = adjusted_edge_entry_point(target, graph.direction, graph);
+            let glyph = canvas.get(x, y);
+            let owned = canvas
+                .get_meta(x, y)
+                .and_then(|meta| meta.owner_id.as_deref())
+                == Some(owner_id.as_str());
+            let toward_target = match graph.direction {
+                Direction::TD | Direction::TB => char_connects_down(glyph),
+                Direction::BT => char_connects_up(glyph),
+                Direction::LR => char_connects_right(glyph),
+                Direction::RL => char_connects_left(glyph),
+            };
+            !owned && toward_target && !super::super::canvas::is_arrow(glyph)
+        })
+        .collect()
+}
+
+/// The source and target a route owner id names, where it names them.
+fn writer_ends<'a>(
+    graph: &'a Graph,
+    writer: Option<&'a str>,
+) -> (Option<&'a str>, Option<&'a str>) {
+    let Some(writer) = writer else {
+        return (None, None);
+    };
+    if let Some(source) = writer.strip_prefix("fanout:") {
+        return (Some(source), None);
+    }
+    if let Some(target) = writer.strip_prefix("fanin:") {
+        return (None, Some(target));
+    }
+    writer
+        .strip_prefix("edge:")
+        .and_then(|rest| rest.split_once(':'))
+        .and_then(|(index, _)| index.parse::<usize>().ok())
+        .and_then(|index| graph.edges.get(index))
+        .map_or((None, None), |edge| {
+            (Some(edge.from.as_str()), Some(edge.to.as_str()))
+        })
+}
+
+fn detour_owner_id(edge: &crate::graph::Edge) -> String {
+    format!("scene:{DETOUR_STRATEGY}:{}->{}", edge.from, edge.to)
 }
 
 /// Lower the blocked edge at `index` along the first outside lane that
@@ -152,8 +281,8 @@ fn lower_blocked_edge_detour(
     else {
         return false;
     };
-    let owner_id = format!("scene:{DETOUR_STRATEGY}:{}->{}", edge.from, edge.to);
-    for lane in shortcut_lane_candidates(graph, canvas, &coords) {
+    let owner_id = detour_owner_id(edge);
+    for lane in detour_lane_candidates(graph, canvas, &coords, source, target) {
         // A detour that could only arrive on the target's own stem would
         // share it with another edge, and one crossing a gap where a generic
         // bus gathers into the target would merge with that bus, so either
@@ -179,9 +308,19 @@ fn lower_blocked_edge_detour(
                     edge.kind,
                 )
             }
-            .and_then(|()| validate_plan_cells(&plan, graph, canvas))
-            .and_then(|()| corners_clear_of_boxes(&plan, graph, source, target));
-            if built.is_err() || plan.validation_error(canvas.width, canvas.height).is_some() {
+            .and_then(|()| detour_frame_crossings(&plan, graph, canvas, source, target))
+            .and_then(|crossings| {
+                corners_clear_of_boxes(&plan, graph, source, target).map(|()| crossings)
+            });
+            let Ok(crossings) = built else {
+                continue;
+            };
+            // The line replaces the wall where it crosses, as at a portal.
+            for (frame, side, x, y, glyph) in crossings {
+                plan.claim_boundary(frame, side, x, y, glyph);
+                plan.push_paint(x, y, glyph);
+            }
+            if plan.validation_error(canvas.width, canvas.height).is_some() {
                 continue;
             }
             let owner = RouteOwner {
@@ -205,9 +344,180 @@ fn ensure_detour_lane_capacity(canvas: &mut Canvas, graph: &Graph, coords: &Orie
         .nodes
         .iter()
         .map(|node| node_spans(node, coords).1 .1)
+        .chain(
+            graph
+                .subgraphs
+                .iter()
+                .filter(|sg| sg.bounds.is_valid())
+                .map(|sg| frame_spans(&sg.bounds, coords).1 .1),
+        )
         .max()
         .unwrap_or(0);
     canvas.ensure_height(far_side.saturating_add(3));
+}
+
+/// The outside lanes a detour from `source` to `target` may take: those of
+/// `shortcut_lane_candidates`, kept also clear of every frame along the way
+/// that holds neither end, so the detour crosses only the walls of the
+/// frames it leaves or enters.
+fn detour_lane_candidates(
+    graph: &Graph,
+    canvas: &Canvas,
+    coords: &OrientedCoords,
+    source: &Node,
+    target: &Node,
+) -> Vec<usize> {
+    let (source_primary, _) = node_spans(source, coords);
+    let (target_primary, _) = node_spans(target, coords);
+    let low = source_primary.0.min(target_primary.0);
+    let high = source_primary.1.max(target_primary.1);
+    let foreign: Vec<(usize, usize)> = graph
+        .subgraphs
+        .iter()
+        .filter(|sg| sg.bounds.is_valid())
+        .filter(|sg| {
+            !graph.is_node_in_subgraph_tree(&source.id, &sg.id)
+                && !graph.is_node_in_subgraph_tree(&target.id, &sg.id)
+        })
+        .map(|sg| frame_spans(&sg.bounds, coords))
+        .filter(|(primary, _)| primary.1 >= low && primary.0 <= high)
+        .map(|(_, secondary)| secondary)
+        .collect();
+    if foreign.is_empty() {
+        return shortcut_lane_candidates(graph, canvas, coords);
+    }
+    let limit = match coords.secondary {
+        crate::orientation::Axis::Horizontal => canvas.width,
+        crate::orientation::Axis::Vertical => canvas.height,
+    };
+    let intervals: Vec<(usize, usize)> = graph
+        .nodes
+        .iter()
+        .map(|node| node_spans(node, coords).1)
+        .chain(foreign)
+        .collect();
+    let (Some(minimum), Some(maximum)) = (
+        intervals.iter().map(|(start, _)| *start).min(),
+        intervals.iter().map(|(_, end)| *end).max(),
+    ) else {
+        return Vec::new();
+    };
+    // A blank line between the lane and a frame's border keeps the two apart.
+    let mut candidates = vec![maximum.saturating_add(2), maximum.saturating_add(1)];
+    candidates.extend(
+        [minimum.checked_sub(2), minimum.checked_sub(1)]
+            .into_iter()
+            .flatten(),
+    );
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            *candidate < limit
+                && intervals
+                    .iter()
+                    .all(|(start, end)| *candidate < *start || *candidate > *end)
+        })
+        .collect()
+}
+
+/// A frame's (primary, secondary) inclusive spans, border included.
+fn frame_spans(
+    bounds: &crate::graph::Rectangle,
+    coords: &OrientedCoords,
+) -> ((usize, usize), (usize, usize)) {
+    let x = (bounds.x, bounds.x + bounds.width.saturating_sub(1));
+    let y = (bounds.y, bounds.y + bounds.height.saturating_sub(1));
+    match coords.primary {
+        crate::orientation::Axis::Horizontal => (x, y),
+        crate::orientation::Axis::Vertical => (y, x),
+    }
+}
+
+/// Check a detour's cells as `validate_plan_cells` does, except that a
+/// straight run may cross the wall of a frame holding exactly one of its
+/// ends at a right angle.  Returns those crossings for the plan to claim, so
+/// the border restore leaves them open.
+#[allow(clippy::type_complexity)]
+fn detour_frame_crossings(
+    plan: &FallbackRoutePlan,
+    graph: &Graph,
+    canvas: &Canvas,
+    source: &Node,
+    target: &Node,
+) -> Result<Vec<(String, &'static str, usize, usize, char)>, String> {
+    let mut runs = std::collections::BTreeMap::new();
+    for segment in &plan.segments {
+        let (from, to) = (segment.from, segment.to);
+        match segment.axis {
+            FallbackAxis::Horizontal => {
+                for x in from.x.min(to.x)..=from.x.max(to.x) {
+                    runs.insert((x, from.y), segment);
+                }
+            }
+            FallbackAxis::Vertical => {
+                for y in from.y.min(to.y)..=from.y.max(to.y) {
+                    runs.insert((from.x, y), segment);
+                }
+            }
+        }
+    }
+    let turns: BTreeSet<(usize, usize)> = plan
+        .corners
+        .iter()
+        .map(|corner| (corner.point.x, corner.point.y))
+        .chain(
+            plan.paints
+                .iter()
+                .map(|paint| (paint.point.x, paint.point.y)),
+        )
+        .collect();
+    let wall_crossing = |x: usize, y: usize| {
+        let segment = runs.get(&(x, y)).filter(|_| !turns.contains(&(x, y)))?;
+        graph
+            .subgraphs
+            .iter()
+            .filter(|sg| sg.bounds.is_valid())
+            .filter(|sg| {
+                graph.is_node_in_subgraph_tree(&source.id, &sg.id)
+                    != graph.is_node_in_subgraph_tree(&target.id, &sg.id)
+            })
+            .find_map(|sg| {
+                let bounds = &sg.bounds;
+                let (left, top) = (bounds.x, bounds.y);
+                let right = left + bounds.width.saturating_sub(1);
+                let bottom = top + bounds.height.saturating_sub(1);
+                let side = match segment.axis {
+                    FallbackAxis::Horizontal if y > top && y < bottom => (x == left)
+                        .then_some("left")
+                        .or((x == right).then_some("right")),
+                    FallbackAxis::Vertical if x > left && x < right => (y == top)
+                        .then_some("top")
+                        .or((y == bottom).then_some("bottom")),
+                    _ => None,
+                }?;
+                Some((sg.id.clone(), side, x, y, segment.glyph))
+            })
+    };
+    let mut crossings = Vec::new();
+    for (x, y) in plan.planned_cells() {
+        if canvas.fallback_route_claims_cell(x, y) {
+            return Err(format!("existing fallback reservation blocks ({x},{y})"));
+        }
+        if graph.nodes.iter().any(|node| node_contains(node, x, y)) {
+            return Err(format!("node keepout blocks planned cell at ({x},{y})"));
+        }
+        if canvas.get(x, y) == ' ' {
+            continue;
+        }
+        let border = canvas
+            .get_meta(x, y)
+            .is_some_and(|meta| meta.owner_kind == CellOwnerKind::SubgraphBorder);
+        match wall_crossing(x, y).filter(|_| border) {
+            Some(crossing) => crossings.push(crossing),
+            None => return Err(format!("existing canvas content blocks ({x},{y})")),
+        }
+    }
+    Ok(crossings)
 }
 
 /// A detour corner right beside a box other than its own endpoints would
@@ -288,10 +598,13 @@ fn target_gap_has_generic_bus(graph: &Graph, claimed: &HashSet<usize>, index: us
         })
 }
 
-/// Turn a detour corner into a tee where a route drawn after it continues
-/// through the same cell, such as the source's other stem.
+/// Turn a detour corner, or a cell of its run a later route of the same
+/// source or target was refused, into a tee where that route continues
+/// through the cell, such as the source's other stem or a branch of its bus.
 pub(crate) fn settle_blocked_edge_detour_joins(canvas: &mut Canvas, style: &StyleChars) {
-    for (x, y) in canvas.fallback_route_corner_points(DETOUR_STRATEGY) {
+    let mut points = canvas.fallback_route_corner_points(DETOUR_STRATEGY);
+    points.extend(canvas.fallback_route_refused_points(DETOUR_STRATEGY));
+    for (x, y) in points {
         let connections = canvas_connections(canvas, x, y);
         if connections.arm_count() < 3 {
             continue;
@@ -318,11 +631,7 @@ pub(crate) fn edge_path_is_blocked(graph: &Graph, canvas: &Canvas, index: usize)
     else {
         return false;
     };
-    if !eligible_node(graph, source)
-        || !eligible_node(graph, target)
-        || !canvas.is_visible(source)
-        || !canvas.is_visible(target)
-    {
+    if !canvas.is_visible(source) || !canvas.is_visible(target) {
         return false;
     }
     let coords = OrientedCoords::new(graph.direction);
@@ -341,6 +650,57 @@ pub(crate) fn edge_path_is_blocked(graph: &Graph, canvas: &Canvas, index: usize)
     if line < target_secondary.0 || line > target_secondary.1 {
         return false;
     }
+    line_crosses_a_box(graph, canvas, source, target, (low, high), line)
+}
+
+/// Whether the generic passes would draw the blocked edge at `index` through
+/// another node's box.  A target that other generic edges also feed gathers
+/// them on the sources' lines, where the edge is blocked; any other target is
+/// reached by a branch along its own entry line, which may pass the box.
+fn generic_route_is_blocked(
+    graph: &Graph,
+    canvas: &Canvas,
+    claimed: &HashSet<usize>,
+    index: usize,
+) -> bool {
+    if !edge_path_is_blocked(graph, canvas, index) {
+        return false;
+    }
+    let edge = &graph.edges[index];
+    let fan_in = graph.edges.iter().enumerate().any(|(other, other_edge)| {
+        other != index
+            && !claimed.contains(&other)
+            && !other_edge.is_back_edge
+            && other_edge.from != other_edge.to
+            && other_edge.to == edge.to
+    });
+    if fan_in {
+        return true;
+    }
+    let (Some(source), Some(target)) = (graph.get_node(&edge.from), graph.get_node(&edge.to))
+    else {
+        return false;
+    };
+    let coords = OrientedCoords::new(graph.direction);
+    let start = edge_exit_point(source, graph.direction);
+    let end = adjusted_edge_entry_point(target, graph.direction, graph);
+    let a = coords.primary_coord(start.0, start.1);
+    let b = coords.primary_coord(end.0, end.1);
+    let line = coords.secondary_coord(end.0, end.1);
+    line_crosses_a_box(graph, canvas, source, target, (a.min(b), a.max(b)), line)
+}
+
+/// Whether a node other than `source` and `target`, strictly between
+/// `primary` along the flow, covers secondary `line`.
+fn line_crosses_a_box(
+    graph: &Graph,
+    canvas: &Canvas,
+    source: &Node,
+    target: &Node,
+    (low, high): (usize, usize),
+    line: usize,
+) -> bool {
+    let coords = OrientedCoords::new(graph.direction);
     graph.nodes.iter().any(|node| {
         if node.id == source.id || node.id == target.id || !canvas.is_visible(node) {
             return false;

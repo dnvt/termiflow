@@ -30,6 +30,7 @@ use crate::style::StyleChars;
 
 pub(super) use super::canvas;
 use super::canvas::Canvas;
+use super::fallback_route::FallbackAxis;
 use super::provenance::edge_owner_id;
 use super::semantic::{CellOwnerKind, CellRole};
 pub(super) use boundary_fan_in::plan_boundary_fan_in_scene;
@@ -47,8 +48,9 @@ pub(super) use database_fan_in::{
 };
 pub(super) use dedicated_fan_in::route_dedicated_fan_in_edges;
 pub(super) use dense_crossing::plan_dense_crossing_scenes;
+pub(super) use diamond::DETOUR_STRATEGY;
 pub(super) use diamond::{
-    edge_path_is_blocked, plan_blocked_edge_detours, plan_diamond_scenes,
+    detours_in_the_way, edge_path_is_blocked, plan_blocked_edge_detours, plan_diamond_scenes,
     settle_blocked_edge_detour_joins,
 };
 pub use edge_primitives::edge_exit_point;
@@ -84,6 +86,7 @@ fn set_route_char(
     owner: Option<RouteOwner<'_>>,
 ) {
     if canvas.fallback_route_cell_owned_by_other(x, y, owner.map(|route| route.id)) {
+        canvas.note_refused_route_write(x, y, owner.map(|route| route.id));
         return;
     }
     if let Some(owner) = owner {
@@ -101,6 +104,7 @@ fn set_route_endpoint_char(
     owner: RouteOwner<'_>,
 ) {
     if canvas.fallback_route_cell_owned_by_other(x, y, Some(owner.id)) {
+        canvas.note_refused_route_write(x, y, Some(owner.id));
         return;
     }
     canvas.set_owned_with_role(
@@ -122,7 +126,21 @@ fn set_route_edge_char(
     style: &StyleChars,
     owner: Option<RouteOwner<'_>>,
 ) {
-    if canvas.fallback_route_cell_owned_by_other(x, y, owner.map(|route| route.id)) {
+    // A blocked edge's outside detour is reserved before the generic passes
+    // run; a straight line drawn later may still cross its straight run.
+    let crossed_run = if canvas::is_vertical(ch, style) {
+        Some(FallbackAxis::Horizontal)
+    } else if canvas::is_horizontal(ch, style) {
+        Some(FallbackAxis::Vertical)
+    } else {
+        None
+    };
+    if canvas.fallback_route_cell_owned_by_other(x, y, owner.map(|route| route.id))
+        && !crossed_run.is_some_and(|run| {
+            canvas.share_fallback_route_crossing(x, y, run, diamond::DETOUR_STRATEGY)
+        })
+    {
+        canvas.note_refused_route_write(x, y, owner.map(|route| route.id));
         return;
     }
     if let Some(owner) = owner {

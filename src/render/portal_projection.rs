@@ -5,6 +5,7 @@ use crate::layout_snapshot::LayoutSnapshot;
 use crate::portals::{PortalSlots, TitleGutter};
 use crate::style::{vertical_portal_seam, StyleChars, BOX_HEIGHT};
 
+use super::edge::DETOUR_STRATEGY;
 use super::provenance::edge_owner_id;
 use super::{canvas, semantic, topology, Canvas};
 
@@ -304,6 +305,20 @@ pub(super) fn carve_subgraph_portals_on_canvas(
     }
 }
 
+/// The glyph beside a portal slot at `(x, y)` as the slot sees it: a blocked
+/// edge's detour turning there without claiming the slot's border cell
+/// `border` does not reach the slot, though ASCII draws its turn as a `+`
+/// that looks as if it does.
+fn beside_slot(canvas: &Canvas, x: usize, y: usize, border: (usize, usize)) -> char {
+    if canvas.fallback_route_strategy_claims_cell(DETOUR_STRATEGY, x, y)
+        && !canvas.fallback_route_claims_cell(border.0, border.1)
+    {
+        ' '
+    } else {
+        canvas.get(x, y)
+    }
+}
+
 pub(super) fn reinforce_subgraph_portals(
     canvas: &mut Canvas,
     graph: &Graph,
@@ -365,9 +380,13 @@ pub(super) fn reinforce_subgraph_portals(
                 for x in top_slots {
                     let px = clamp_horizontal(bounds, x);
                     let ty = top_y;
-                    let above = if ty > 0 { canvas.get(px, ty - 1) } else { ' ' };
+                    let above = if ty > 0 {
+                        beside_slot(canvas, px, ty - 1, (px, ty))
+                    } else {
+                        ' '
+                    };
                     let below = if ty + 1 < canvas.height {
-                        canvas.get(px, ty + 1)
+                        beside_slot(canvas, px, ty + 1, (px, ty))
                     } else {
                         ' '
                     };
@@ -396,12 +415,12 @@ pub(super) fn reinforce_subgraph_portals(
                 for x in bottom_slots {
                     let px = clamp_horizontal(bounds, x);
                     let above = if bottom_y > 0 {
-                        canvas.get(px, bottom_y - 1)
+                        beside_slot(canvas, px, bottom_y - 1, (px, bottom_y))
                     } else {
                         ' '
                     };
                     let below = if bottom_y + 1 < canvas.height {
-                        canvas.get(px, bottom_y + 1)
+                        beside_slot(canvas, px, bottom_y + 1, (px, bottom_y))
                     } else {
                         ' '
                     };
@@ -461,12 +480,12 @@ pub(super) fn reinforce_subgraph_portals(
                     if top_y < canvas.height && !is_textual(existing) && !canvas::is_arrow(existing)
                     {
                         let above = if top_y > 0 {
-                            canvas.get(px, top_y - 1)
+                            beside_slot(canvas, px, top_y - 1, (px, top_y))
                         } else {
                             ' '
                         };
                         let below = if top_y + 1 < canvas.height {
-                            canvas.get(px, top_y + 1)
+                            beside_slot(canvas, px, top_y + 1, (px, top_y))
                         } else {
                             ' '
                         };
@@ -492,12 +511,12 @@ pub(super) fn reinforce_subgraph_portals(
                         && !canvas::is_arrow(existing)
                     {
                         let above = if bottom_y > 0 {
-                            canvas.get(px, bottom_y - 1)
+                            beside_slot(canvas, px, bottom_y - 1, (px, bottom_y))
                         } else {
                             ' '
                         };
                         let below = if bottom_y + 1 < canvas.height {
-                            canvas.get(px, bottom_y + 1)
+                            beside_slot(canvas, px, bottom_y + 1, (px, bottom_y))
                         } else {
                             ' '
                         };
@@ -521,12 +540,12 @@ pub(super) fn reinforce_subgraph_portals(
                     if left_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing)
                     {
                         let left = if left_x > 0 {
-                            canvas.get(left_x - 1, py)
+                            beside_slot(canvas, left_x - 1, py, (left_x, py))
                         } else {
                             ' '
                         };
                         let right = if left_x + 1 < canvas.width {
-                            canvas.get(left_x + 1, py)
+                            beside_slot(canvas, left_x + 1, py, (left_x, py))
                         } else {
                             ' '
                         };
@@ -548,12 +567,12 @@ pub(super) fn reinforce_subgraph_portals(
                         && !canvas::is_arrow(existing)
                     {
                         let left = if right_x > 0 {
-                            canvas.get(right_x - 1, py)
+                            beside_slot(canvas, right_x - 1, py, (right_x, py))
                         } else {
                             ' '
                         };
                         let right = if right_x + 1 < canvas.width {
-                            canvas.get(right_x + 1, py)
+                            beside_slot(canvas, right_x + 1, py, (right_x, py))
                         } else {
                             ' '
                         };
@@ -1134,11 +1153,15 @@ pub(super) fn finalize_dedicated_portal_markers(
     // or when route cells sit on both sides of it (a turn not drawn yet). A
     // horizontal run passing along the next row with nothing beyond the
     // border does not cross.
+    // A reserved route turning beside the border without claiming its cell
+    // does not reach it.
     let reaches_vertically = |x: usize, y: usize, canvas: &Canvas| {
-        let route_above = y
-            .checked_sub(1)
-            .is_some_and(|above| is_route_neighbor(x, above, canvas));
-        let route_below = y + 1 < canvas.height && is_route_neighbor(x, y + 1, canvas);
+        let route_above = y.checked_sub(1).is_some_and(|above| {
+            is_route_neighbor(x, above, canvas) && beside_slot(canvas, x, above, (x, y)) != ' '
+        });
+        let route_below = y + 1 < canvas.height
+            && is_route_neighbor(x, y + 1, canvas)
+            && beside_slot(canvas, x, y + 1, (x, y)) != ' ';
         let up = route_above
             && (topology::char_connects_down(canvas.get(x, y - 1))
                 || canvas::is_arrow(canvas.get(x, y - 1)));

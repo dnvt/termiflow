@@ -5224,6 +5224,100 @@ fn topology_trace_reads_through_a_label_holding_glyph_letters() {
     }
 }
 
+/// A blocked edge's outside detour is dropped where it would cut another
+/// edge's line or join it to the wrong box; each case names an edge the
+/// detour would cut, or a pair it would falsely join.
+#[test]
+fn blocked_edge_detours_leave_other_lines_alone() {
+    // gen_c_145: r3 -> o3's detour took the row m2 -> o4 turns on.
+    let cut = "graph TD
+    E1[e1] --> r1
+    E2[e2] --> m1
+    subgraph R [Root]
+        r1[r1] --> r2[r2]
+        r1 --> r3[r3]
+        subgraph M [Mid]
+            m1[m1] --> m2[m2]
+            m1 --> m3[m3]
+            subgraph L [Leaf]
+                l1[l1] --> l2[l2]
+                l1 --> l3[l3]
+            end
+        end
+    end
+    r2 --> m2
+    m3 --> l1
+    E3[e3] --> l1
+    l2 --> O1[o1]
+    l3 --> O2[o2]
+    r3 --> O3[o3]
+    m2 --> O4[o4]
+    O1 --> O5[o5]
+";
+    // gen_a_203: Vite -> Asset Manifest's detour left the line below the
+    // manifest, joined to Vite's bus, touching it without a head.
+    let entry = "graph BT
+    subgraph Frontend [Frontend Build]
+        TS[TypeScript]
+        CSS[PostCSS]
+        Bundler[Vite]
+        TS --> Bundler
+        CSS --> Bundler
+    end
+    subgraph Output
+        JS[/Hashed JS/]
+        Styles[/Hashed CSS/]
+        Manifest[(Asset Manifest)]
+    end
+    Bundler --> JS
+    Bundler --> Styles
+    Bundler --> Manifest
+    Manifest --> Server[SSR Server]
+";
+    // gen_a_086: Rails -> Redis's detour shared Rails' stem with
+    // Rails -> Postgres, still drawn through Sidekiq.
+    let sibling = "graph TD
+    subgraph Web [Web Tier]
+        Next[Next.js]
+    end
+    subgraph Api [API Tier]
+        Rails[Rails API]
+        Sidekiq[Sidekiq]
+    end
+    subgraph Stores [Data Stores]
+        PG[(Postgres)]
+        Redis[(Redis)]
+        S3[(S3)]
+    end
+    Next --> Rails
+    Rails --> PG
+    Rails --> Redis
+    Redis --> Sidekiq
+    Sidekiq --> PG
+    Sidekiq --> S3
+";
+    // gen_d_117: duplicates of a detoured edge keep that detour.
+    let duplicates = "graph TD\nA --> B --> C --> D\nA --> D\nA --> D\nA -.-> D\n";
+    for (input, from, to, joined) in [
+        (cut, "m2", "O4", true),
+        (entry, "Manifest", "JS", false),
+        (sibling, "Sidekiq", "Redis", false),
+        (duplicates, "C", "B", false),
+    ] {
+        let (graph, frame, _) =
+            boundary_crossing_connectivity_errors(input, BaseStyle::Unicode, false)
+                .expect("render");
+        let grid = ConnectivityGrid::new(&frame);
+        let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+        let reached = topology_reached_nodes(&graph, &grid, origin, from, !joined);
+        assert_eq!(
+            reached.contains(to),
+            joined,
+            "{from} -> {to} should be joined: {joined}\n{frame}"
+        );
+    }
+}
+
 #[test]
 #[ignore = "exploration tool: run over a corpus directory"]
 fn topology_audit() {

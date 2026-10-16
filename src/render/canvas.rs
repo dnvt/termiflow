@@ -289,6 +289,9 @@ pub struct Canvas {
     fallback_route_plans: Vec<FallbackRoutePlan>,
     fallback_route_evidence: Vec<FallbackRoutePlan>,
     fallback_route_rejections: Vec<FallbackRouteRejection>,
+    /// Reserved routes, by owner id, that refused a route write to a cell
+    /// they hold, with that cell and the writer.
+    refused_route_writes: Vec<(String, usize, usize, Option<String>)>,
     /// Subgraph titles the final title pass slid off a line crossing their
     /// band: subgraph id -> new start column of the formatted title.
     moved_titles: HashMap<String, usize>,
@@ -310,6 +313,7 @@ impl Canvas {
             fallback_route_plans: Vec::new(),
             fallback_route_evidence: Vec::new(),
             fallback_route_rejections: Vec::new(),
+            refused_route_writes: Vec::new(),
             moved_titles: HashMap::new(),
         }
     }
@@ -737,6 +741,95 @@ impl Canvas {
         self.fallback_route_plans.push(plan);
     }
 
+    /// Note that a route write at `(x, y)` by `writer` was refused because
+    /// another reserved route holds the cell.
+    pub(crate) fn note_refused_route_write(&mut self, x: usize, y: usize, writer: Option<&str>) {
+        let holders: Vec<(String, usize, usize, Option<String>)> = self
+            .fallback_route_plans
+            .iter()
+            .filter(|plan| {
+                plan.claims_cell(x, y)
+                    && !writer.is_some_and(|owner| {
+                        owner == plan.owner_id
+                            || plan.covered_edge_ids.iter().any(|edge_id| edge_id == owner)
+                    })
+            })
+            .map(|plan| (plan.owner_id.clone(), x, y, writer.map(str::to_owned)))
+            .collect();
+        self.refused_route_writes.extend(holders);
+    }
+
+    /// The reserved routes, by owner id, that refused a route write to a cell
+    /// they hold, with that cell and the writer.
+    pub(crate) fn refused_route_writes(&self) -> &[(String, usize, usize, Option<String>)] {
+        &self.refused_route_writes
+    }
+
+    /// Let a line cross the straight run of a reserved `strategy` route at
+    /// `(x, y)` at a right angle: when that route alone holds the cell, and
+    /// holds it only as part of a straight run along `run`, the cell is
+    /// recorded as shared with the crossing line and true is returned.
+    pub(crate) fn share_fallback_route_crossing(
+        &mut self,
+        x: usize,
+        y: usize,
+        run: super::fallback_route::FallbackAxis,
+        strategy: &str,
+    ) -> bool {
+        let mut holders = self
+            .fallback_route_plans
+            .iter()
+            .enumerate()
+            .filter(|(_, plan)| plan.claims_cell(x, y));
+        let (Some((index, plan)), None) = (holders.next(), holders.next()) else {
+            return false;
+        };
+        let on_run = plan.segments.iter().any(|segment| {
+            segment.axis == run
+                && match run {
+                    super::fallback_route::FallbackAxis::Horizontal => {
+                        segment.from.y == y
+                            && x > segment.from.x.min(segment.to.x)
+                            && x < segment.from.x.max(segment.to.x)
+                    }
+                    super::fallback_route::FallbackAxis::Vertical => {
+                        segment.from.x == x
+                            && y > segment.from.y.min(segment.to.y)
+                            && y < segment.from.y.max(segment.to.y)
+                    }
+                }
+        });
+        let turns = plan
+            .corners
+            .iter()
+            .map(|corner| corner.point)
+            .chain(plan.paints.iter().map(|paint| paint.point))
+            .any(|point| point.x == x && point.y == y)
+            || plan
+                .boundary_claims
+                .iter()
+                .any(|claim| claim.x == x && claim.y == y);
+        if plan.strategy != strategy || !on_run || turns {
+            return false;
+        }
+        self.fallback_route_plans[index].allow_shared_cell(x, y);
+        true
+    }
+
+    /// The cells of every reserved fallback route with `strategy` that
+    /// refused a later route write.
+    pub(crate) fn fallback_route_refused_points(&self, strategy: &str) -> Vec<(usize, usize)> {
+        self.refused_route_writes
+            .iter()
+            .filter(|(holder, _, _, _)| {
+                self.fallback_route_plans
+                    .iter()
+                    .any(|plan| plan.owner_id == *holder && plan.strategy == strategy)
+            })
+            .map(|&(_, x, y, _)| (x, y))
+            .collect()
+    }
+
     /// The corner cells of every reserved fallback route with `strategy`.
     pub(crate) fn fallback_route_corner_points(&self, strategy: &str) -> Vec<(usize, usize)> {
         self.fallback_route_plans
@@ -804,6 +897,18 @@ impl Canvas {
         self.fallback_route_plans
             .iter()
             .any(|plan| plan.claims_cell(x, y))
+    }
+
+    /// Whether a reserved fallback route with `strategy` holds `(x, y)`.
+    pub(crate) fn fallback_route_strategy_claims_cell(
+        &self,
+        strategy: &str,
+        x: usize,
+        y: usize,
+    ) -> bool {
+        self.fallback_route_plans
+            .iter()
+            .any(|plan| plan.strategy == strategy && plan.claims_cell(x, y))
     }
 
     /// Return whether a later route writer would trespass on a previously

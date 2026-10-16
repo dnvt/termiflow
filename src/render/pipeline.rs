@@ -7,16 +7,16 @@ use super::canvas::{self, Canvas};
 use super::critic::{self, analyze, emit_debug_report};
 use super::cycle::{self, route_cycle_edge_on_lane};
 use super::edge::{
-    database_terminal_target_id, edge_path_is_blocked, plan_blocked_edge_detours,
-    plan_boundary_fan_in_scene, plan_bt_multi_entry_scene, plan_bt_parallel_scene,
-    plan_bt_parallel_sibling_scene, plan_bt_sibling_scene, plan_bt_sibling_target_scene,
-    plan_dense_crossing_scenes, plan_diamond_scenes, plan_lr_rl_sibling_chain_scene,
-    plan_lr_rl_sibling_target_scene, plan_sibling_subgraph_fan_in_scene,
-    plan_td_sibling_target_scene, repair_database_source_border, route_convergent_edges,
-    route_database_intermediate_scene, route_dedicated_fan_in_edges, route_divergent_edges,
-    route_fan_in_identity_edges, route_vertical_branch_rejoin_identity_edges,
-    route_vertical_fan_in_edges, route_wide_terminal_fan_in_edges,
-    settle_blocked_edge_detour_joins,
+    database_terminal_target_id, detours_in_the_way, edge_path_is_blocked,
+    plan_blocked_edge_detours, plan_boundary_fan_in_scene, plan_bt_multi_entry_scene,
+    plan_bt_parallel_scene, plan_bt_parallel_sibling_scene, plan_bt_sibling_scene,
+    plan_bt_sibling_target_scene, plan_dense_crossing_scenes, plan_diamond_scenes,
+    plan_lr_rl_sibling_chain_scene, plan_lr_rl_sibling_target_scene,
+    plan_sibling_subgraph_fan_in_scene, plan_td_sibling_target_scene,
+    repair_database_source_border, route_convergent_edges, route_database_intermediate_scene,
+    route_dedicated_fan_in_edges, route_divergent_edges, route_fan_in_identity_edges,
+    route_vertical_branch_rejoin_identity_edges, route_vertical_fan_in_edges,
+    route_wide_terminal_fan_in_edges, settle_blocked_edge_detour_joins,
 };
 use super::labels::{
     draw_convergent_edge_label, draw_cycle_edge_label, draw_edge_label, draw_routed_edge_label,
@@ -58,29 +58,74 @@ pub(super) fn render_with_feedback_with_contract(
     config: &Config,
     endpoint_contract: Option<&crate::layout_render_contract::BtSiblingEndpointContract>,
 ) -> Result<RenderOutcome> {
+    // A blocked edge's outside detour found in another line's way is dropped
+    // and the frame drawn again; each pass drops at least one more.
+    let mut dropped = HashSet::new();
+    let (first, detoured, in_the_way) = render_frame(graph, config, endpoint_contract, &dropped)?;
+    if !detoured {
+        return Ok(first);
+    }
+    let chars = config.composite_style.to_style_chars(BaseStyle::default());
+    if chars.junction_down != chars.corner_dr {
+        let (mut outcome, mut in_the_way) = (first, in_the_way);
+        while !in_the_way.is_empty() {
+            dropped.extend(in_the_way);
+            (outcome, _, in_the_way) = render_frame(graph, config, endpoint_contract, &dropped)?;
+        }
+        return Ok(outcome);
+    }
+    // ASCII draws a tee and a corner both as `+`, which hides whether a
+    // detour is in the way; take the Unicode frames' decision instead.
+    let unicode = Config {
+        composite_style: crate::style::CompositeStyle::default(),
+        ..config.clone()
+    };
+    loop {
+        let (_, _, in_the_way) = render_frame(graph, &unicode, endpoint_contract, &dropped)?;
+        if in_the_way.is_empty() {
+            break;
+        }
+        dropped.extend(in_the_way);
+    }
+    if dropped.is_empty() {
+        return Ok(first);
+    }
+    Ok(render_frame(graph, config, endpoint_contract, &dropped)?.0)
+}
+
+fn render_frame(
+    graph: &Graph,
+    config: &Config,
+    endpoint_contract: Option<&crate::layout_render_contract::BtSiblingEndpointContract>,
+    dropped_detours: &HashSet<usize>,
+) -> Result<(RenderOutcome, bool, HashSet<usize>)> {
     if graph.nodes.is_empty() {
-        return Ok(RenderOutcome {
-            output: String::new(),
-            semantic_frame: SemanticFrame::default(),
-            display_semantic_frame: SemanticFrame::default(),
-            critic_report: critic::CriticReport {
-                score: 0,
-                findings: Vec::new(),
-                notes: vec![
-                    "nodes=0".to_string(),
-                    "edges=0".to_string(),
-                    "subgraphs=0".to_string(),
-                    "frame=0x0".to_string(),
-                    "non_space_cells=0".to_string(),
-                ],
+        return Ok((
+            RenderOutcome {
+                output: String::new(),
+                semantic_frame: SemanticFrame::default(),
+                display_semantic_frame: SemanticFrame::default(),
+                critic_report: critic::CriticReport {
+                    score: 0,
+                    findings: Vec::new(),
+                    notes: vec![
+                        "nodes=0".to_string(),
+                        "edges=0".to_string(),
+                        "subgraphs=0".to_string(),
+                        "frame=0x0".to_string(),
+                        "non_space_cells=0".to_string(),
+                    ],
+                },
+                warnings: Vec::new(),
+                optimized: false,
+                repair_passes: 0,
+                layout_attempts: 0,
+                layout_repairs_applied: 0,
+                portal_trace: super::trace::PortalTrace::default(),
             },
-            warnings: Vec::new(),
-            optimized: false,
-            repair_passes: 0,
-            layout_attempts: 0,
-            layout_repairs_applied: 0,
-            portal_trace: super::trace::PortalTrace::default(),
-        });
+            false,
+            HashSet::new(),
+        ));
     }
 
     let context = crate::runtime::current();
@@ -373,7 +418,8 @@ pub(super) fn render_with_feedback_with_contract(
     // an outside detour before the generic passes can hide it there.
     let detour_claimed: HashSet<usize> =
         planned_scene_edges.union(&routed_edges).copied().collect();
-    let detour_edges = plan_blocked_edge_detours(graph, &mut canvas, &chars, &detour_claimed);
+    let detour_edges =
+        plan_blocked_edge_detours(graph, &mut canvas, &chars, &detour_claimed, dropped_detours);
     planned_scene_edges.extend(detour_edges.iter().copied());
     // A topology match that could not be safely lowered stays fail-closed
     // while its straight path is blocked: the edge remains in the evidence as
@@ -1482,6 +1528,8 @@ pub(super) fn render_with_feedback_with_contract(
     canvas.set_write_stage("wall-stub-trim");
     trim_side_wall_stubs(&mut canvas, graph, &chars, subgraph_chars);
 
+    let in_the_way = detours_in_the_way(graph, &canvas, &detour_edges);
+
     let portal_trace = super::trace::PortalTrace::from_canvas(
         graph,
         &portal_slots,
@@ -1501,18 +1549,22 @@ pub(super) fn render_with_feedback_with_contract(
         pad_string(&canvas.to_string(), config.pad)
     };
 
-    Ok(RenderOutcome {
-        output,
-        semantic_frame,
-        display_semantic_frame,
-        critic_report,
-        warnings: graph.warnings.clone(),
-        optimized: optimize_render,
-        repair_passes: applied_repair_passes,
-        layout_attempts: 1,
-        layout_repairs_applied: 0,
-        portal_trace,
-    })
+    Ok((
+        RenderOutcome {
+            output,
+            semantic_frame,
+            display_semantic_frame,
+            critic_report,
+            warnings: graph.warnings.clone(),
+            optimized: optimize_render,
+            repair_passes: applied_repair_passes,
+            layout_attempts: 1,
+            layout_repairs_applied: 0,
+            portal_trace,
+        },
+        !detour_edges.is_empty(),
+        in_the_way,
+    ))
 }
 
 /// The tees for `node`'s border wherever the line of the edge owned by
