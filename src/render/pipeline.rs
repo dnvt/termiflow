@@ -19,8 +19,8 @@ use super::edge::{
     route_wide_terminal_fan_in_edges, settle_blocked_edge_detour_joins,
 };
 use super::labels::{
-    draw_convergent_edge_label, draw_cycle_edge_label, draw_edge_label, draw_routed_edge_label,
-    format_edge_label_with_limit, pad_string,
+    draw_convergent_edge_label, draw_cycle_edge_label, draw_detour_edge_label, draw_edge_label,
+    draw_routed_edge_label, format_edge_label_with_limit, pad_string,
 };
 use super::outcome::RenderOutcome;
 use super::portal_projection::{
@@ -809,7 +809,7 @@ fn render_frame(
             .then(|| detour_route(graph, &canvas, edge_idx))
             .flatten();
         if let Some(route) = detour.as_ref() {
-            if let Some(placement) = draw_routed_edge_label(
+            if let Some(placement) = draw_detour_edge_label(
                 &mut canvas,
                 route,
                 label,

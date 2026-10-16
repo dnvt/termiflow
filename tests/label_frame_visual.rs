@@ -157,3 +157,41 @@ fn an_lr_label_between_frames_sits_in_their_gap() {
         assert!(frame.contains(label), "{label} is missing:\n{frame}");
     }
 }
+
+/// gen_d_032: long labels on edges between two narrow frames were drawn
+/// across the frames' walls. B -> C's now sits in the gap between the
+/// frames, and A -> D's beside its detour outside them.
+#[test]
+fn long_labels_between_narrow_frames_keep_off_their_walls() {
+    let frame = render(
+        "graph TD
+subgraph left [Left cluster]
+  A --> B
+end
+subgraph right [Right cluster]
+  C --> D
+end
+B -->|cross cluster replication stream with long caption| C
+A -->|secondary cross cluster heartbeat with long caption| D
+",
+    );
+    assert_frames_intact(&frame);
+    let lines: Vec<&str> = frame.lines().collect();
+    let title = lines
+        .iter()
+        .position(|line| line.contains("Right cluster"))
+        .expect("Right cluster");
+    let wall: String = lines[title - 1].chars().take_while(|&c| c != '┓').collect();
+    assert!(
+        wall.contains('│'),
+        "B -> C no longer crosses into Right cluster:\n{frame}"
+    );
+    let beside = frame
+        .lines()
+        .find(|line| line.contains("secondary"))
+        .expect("A -> D label");
+    assert!(
+        beside.contains("│ secondary"),
+        "A -> D's label is not beside its lane:\n{frame}"
+    );
+}

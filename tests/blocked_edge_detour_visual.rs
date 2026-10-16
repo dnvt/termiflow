@@ -328,3 +328,27 @@ fn a_decision_branch_label_rides_its_detour() {
         "yes is not on the lane into Close Ticket:\n{frame}"
     );
 }
+
+/// gen_c_035: every lane inside the frames crossed a title, so Form -> DB
+/// stayed hidden under Gateway. It now runs outside the frames, leaving and
+/// entering them through their sides.
+#[test]
+fn a_detour_with_no_lane_inside_its_frames_runs_outside_them() {
+    let frame = unicode(
+        "graph BT
+    subgraph S1 [Front]
+        f[Form]
+    end
+    subgraph S2 [Back]
+        g[Gateway]
+        subgraph S2a [DB layer]
+            db[(DB)]
+        end
+    end
+    f --> db
+    f --> g
+    g --> db
+",
+    );
+    assert_eq!(arrowheads(&frame), 3, "Form -> DB hidden:\n{frame}");
+}

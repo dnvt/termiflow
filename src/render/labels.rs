@@ -206,13 +206,25 @@ pub(super) fn draw_edge_label(
             // (gen_c_097). It goes instead on the nearest row above where the
             // line runs straight down, clear of boxes and of frame borders and
             // titles, over blanks and the line itself.
+            // So does one that, centred there, would cover a frame's wall or title
+            // (gen_d_032).
             let mut edge_x = edge_x;
             let own = |x: usize, y: usize| {
                 canvas
                     .get_meta(x, y)
                     .is_some_and(|meta| meta.owner_id.as_deref() == Some(owner_id.as_str()))
             };
-            if own(edge_x, label_y) && !canvas::is_vertical(canvas.get(edge_x, label_y), base_style)
+            let on_frame = overlaps_reserved_subgraph_cells(
+                graph,
+                edge_x
+                    .saturating_sub(label_width / 2)
+                    .min(canvas.width.saturating_sub(label_width)),
+                label_y,
+                label_width,
+            );
+            if on_frame
+                || (own(edge_x, label_y)
+                    && !canvas::is_vertical(canvas.get(edge_x, label_y), base_style))
             {
                 let nodes: Vec<&Node> = graph.nodes.iter().collect();
                 let straight = (lower_bound..label_y).rev().find_map(|y| {
@@ -225,6 +237,27 @@ pub(super) fn draw_edge_label(
                         && !overlaps_node(&nodes, start, y, label_width)
                         && (start..start + label_width)
                             .all(|cx| canvas.get(cx, y) == ' ' || own(cx, y));
+                    // Nor right beside a frame border the line crosses into
+                    // the frame's title: with text on both sides of it, the
+                    // crossing would be lost.
+                    let beside_border = [
+                        (y.checked_sub(1), y.checked_sub(2)),
+                        (Some(y + 1), Some(y + 2)),
+                    ]
+                    .into_iter()
+                    .any(|(row, beyond)| {
+                        let (Some(row), Some(beyond)) = (row, beyond) else {
+                            return false;
+                        };
+                        graph.subgraphs.iter().any(|sg| {
+                            let b = &sg.bounds;
+                            b.is_valid()
+                                && (row == b.y || row + 1 == b.y + b.height)
+                                && x > b.x
+                                && x + 1 < b.x + b.width
+                        }) && super::edge::is_subgraph_title_cell(graph, x, beyond)
+                    });
+                    let clear = clear && !beside_border;
                     clear.then_some((x, y))
                 });
                 if let Some((x, y)) = straight {
@@ -2016,4 +2049,74 @@ fn wall_free_run(
         .filter(|&(left, right)| right.saturating_sub(left) >= label_width + 4)
         .max_by_key(|&(left, right)| (right - left, std::cmp::Reverse(left)))
         .unwrap_or((start, end))
+}
+
+/// A detoured edge's label goes on its lane. A horizontal lane takes it as
+/// any routed edge's run does. Beside a vertical lane it goes level with the
+/// lane's middle, on the side away from the boxes first, wherever it covers
+/// no line, text or frame wall; failing that, as on any routed run.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_detour_edge_label(
+    canvas: &mut Canvas,
+    lane: &EdgeRoute,
+    label: &str,
+    style: &StyleChars,
+    graph: &Graph,
+    config: &Config,
+    edge_idx: usize,
+    edge: &crate::graph::Edge,
+) -> Option<EdgeLabelPlacement> {
+    let segment = lane.segments.first()?;
+    if segment.from.x != segment.to.x {
+        return draw_routed_edge_label(canvas, lane, label, style, graph, config, edge_idx, edge);
+    }
+    let display_label = format_edge_label_with_limit(label, config.max_edge_label_width);
+    let width = display_width(&display_label);
+    let x = segment.from.x;
+    let (top, bottom) = (
+        segment.from.y.min(segment.to.y),
+        segment.from.y.max(segment.to.y),
+    );
+    let outer_right = graph.nodes.iter().all(|node| node.x + node.width <= x);
+    let right = x + 2;
+    let left = x.checked_sub(width + 1);
+    let sides: Vec<usize> = if outer_right {
+        [Some(right), left].into_iter().flatten().collect()
+    } else {
+        [left, Some(right)].into_iter().flatten().collect()
+    };
+    let middle = (top + bottom) / 2;
+    let rows = (0..=bottom - top).flat_map(|offset| {
+        [middle.checked_sub(offset), Some(middle + offset)]
+            .into_iter()
+            .flatten()
+            .filter(|&y| y > top && y < bottom)
+    });
+    let mut slot = None;
+    'search: for y in rows {
+        for &start in &sides {
+            let end = start + width;
+            if end > config.spacing.max_canvas_width {
+                continue;
+            }
+            let free = (start..end).all(|cx| cx >= canvas.width || canvas.get(cx, y) == ' ')
+                && !overlaps_reserved_subgraph_cells(graph, start, y, width)
+                && label_neighbour_rows_clear(canvas, start, width, y);
+            if free {
+                slot = Some((start, y));
+                break 'search;
+            }
+        }
+    }
+    let Some((start, y)) = slot else {
+        return draw_routed_edge_label(canvas, lane, label, style, graph, config, edge_idx, edge);
+    };
+    canvas.ensure_width(start + width);
+    let mut cells = Vec::new();
+    let mut cx = start;
+    for c in display_label.chars() {
+        set_label_char(canvas, &mut cells, cx, y, c);
+        cx += display_char_width(c).max(1);
+    }
+    build_label_placement(edge_owner_id(edge_idx, edge), cells)
 }

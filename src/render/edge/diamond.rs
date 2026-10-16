@@ -389,7 +389,8 @@ fn ensure_detour_lane_capacity(canvas: &mut Canvas, graph: &Graph, coords: &Orie
 /// The outside lanes a detour from `source` to `target` may take: those of
 /// `shortcut_lane_candidates`, kept also clear of every frame along the way
 /// that holds neither end, so the detour crosses only the walls of the
-/// frames it leaves or enters.
+/// frames it leaves or enters.  Failing those, lanes outside every frame
+/// along the way, which it then leaves and enters through their sides.
 fn detour_lane_candidates(
     graph: &Graph,
     canvas: &Canvas,
@@ -401,31 +402,50 @@ fn detour_lane_candidates(
     let (target_primary, _) = node_spans(target, coords);
     let low = source_primary.0.min(target_primary.0);
     let high = source_primary.1.max(target_primary.1);
-    let foreign: Vec<(usize, usize)> = graph
+    let along: Vec<(&crate::graph::Subgraph, (usize, usize))> = graph
         .subgraphs
         .iter()
         .filter(|sg| sg.bounds.is_valid())
-        .filter(|sg| {
+        .map(|sg| (sg, frame_spans(&sg.bounds, coords)))
+        .filter(|(_, (primary, _))| primary.1 >= low && primary.0 <= high)
+        .map(|(sg, (_, secondary))| (sg, secondary))
+        .collect();
+    let foreign: Vec<(usize, usize)> = along
+        .iter()
+        .filter(|(sg, _)| {
             !graph.is_node_in_subgraph_tree(&source.id, &sg.id)
                 && !graph.is_node_in_subgraph_tree(&target.id, &sg.id)
         })
-        .map(|sg| frame_spans(&sg.bounds, coords))
-        .filter(|(primary, _)| primary.1 >= low && primary.0 <= high)
-        .map(|(_, secondary)| secondary)
+        .map(|(_, secondary)| *secondary)
         .collect();
-    if foreign.is_empty() {
-        return shortcut_lane_candidates(graph, canvas, coords);
+    let boxes = graph.nodes.iter().map(|node| node_spans(node, coords).1);
+    let mut lanes = if foreign.is_empty() {
+        shortcut_lane_candidates(graph, canvas, coords)
+    } else {
+        lanes_clear_of(canvas, coords, boxes.clone().chain(foreign).collect())
+    };
+    if !along.is_empty() {
+        let outside = boxes.chain(along.iter().map(|(_, secondary)| *secondary));
+        for lane in lanes_clear_of(canvas, coords, outside.collect()) {
+            if !lanes.contains(&lane) {
+                lanes.push(lane);
+            }
+        }
     }
+    lanes
+}
+
+/// The lanes just past `intervals` on either side, a blank line away first,
+/// that fit on the canvas.
+fn lanes_clear_of(
+    canvas: &Canvas,
+    coords: &OrientedCoords,
+    intervals: Vec<(usize, usize)>,
+) -> Vec<usize> {
     let limit = match coords.secondary {
         crate::orientation::Axis::Horizontal => canvas.width,
         crate::orientation::Axis::Vertical => canvas.height,
     };
-    let intervals: Vec<(usize, usize)> = graph
-        .nodes
-        .iter()
-        .map(|node| node_spans(node, coords).1)
-        .chain(foreign)
-        .collect();
     let (Some(minimum), Some(maximum)) = (
         intervals.iter().map(|(start, _)| *start).min(),
         intervals.iter().map(|(_, end)| *end).max(),
