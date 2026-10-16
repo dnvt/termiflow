@@ -672,6 +672,21 @@ pub fn route_divergent_edges(
             kind: CellOwnerKind::EdgeSegment,
             id: route_owner_id.as_str(),
         };
+        // A dotted shaft stays dotted, as on a fan-out branch; it was drawn
+        // plain (`B3 -.-> Drain` out of a frame). A thick one stays plain:
+        // its heavy shaft would read as the wall of a frame (drawn heavy).
+        let dotted = graph.edges.iter().any(|edge| {
+            edge.from == from.id
+                && edge.to == target.id
+                && !edge.is_back_edge
+                && edge.kind == EdgeKind::Dotted
+        });
+        let edge_style = if dotted {
+            style_for_edge_kind(style, EdgeKind::Dotted)
+        } else {
+            *style
+        };
+        let style = &edge_style;
 
         let (mut arrow_x, arrow_y) = adjusted_edge_entry_point(target, direction, graph);
         // Nested boundary chains pick their own portal lanes, so only routes that

@@ -39,3 +39,21 @@ fn an_open_link_into_a_frame_has_no_arrowhead() {
         "an open link drawn as an arrow:\n{frame}"
     );
 }
+
+/// A dotted edge leaving a frame on its own route was drawn with a solid
+/// shaft (gen_a_185's `Dynamo -.->|stream| Indexer`), in TD as in LR.
+#[test]
+fn a_dotted_edge_leaving_a_frame_stays_dotted() {
+    for (direction, dot) in [("TB", '╎'), ("LR", '╌')] {
+        let input = format!(
+            "flowchart {direction}
+    subgraph Backends
+        B3[b3]
+    end
+    B3 -.-> Drain[Draining]
+"
+        );
+        let frame = render(&input);
+        assert!(frame.contains(dot), "a solid shaft:\n{frame}");
+    }
+}
