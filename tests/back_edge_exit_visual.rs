@@ -633,3 +633,20 @@ C -->|give up| D[Reject with a descriptive error message]
         .expect("retry");
     assert_eq!(retry, 0, "retry is not on a lane over the boxes:\n{frame}");
 }
+
+/// gen_d_120: of three stacked back-edge pairs only the top one can go
+/// over the top; the others still cross a box below and keep the default
+/// route, but the top pair keeps its lane.
+#[test]
+fn a_back_edge_over_the_top_stays_when_others_keep_the_default() {
+    let frame = unicode("graph RL\nA --> X\nX --> A\nB --> Y\nY --> B\nC --> Z\nZ --> C\n");
+    let lines: Vec<&str> = frame.lines().collect();
+    let x = lines
+        .iter()
+        .position(|line| line.contains("│  X  │") || line.contains("│  X  ├"))
+        .expect("X");
+    assert!(
+        x >= 3 && lines[0].contains('┌') && lines[x - 1].contains('┴'),
+        "X -> A does not go over the top:\n{frame}"
+    );
+}

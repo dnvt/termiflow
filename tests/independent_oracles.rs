@@ -4444,7 +4444,7 @@ fn connectivity_frame_origin(
                 .filter(|c| c.is_ascii_alphanumeric())
                 .take(3)
                 .collect();
-            (probe.len() == 3).then_some((
+            (!probe.is_empty()).then_some((
                 probe,
                 node.x as isize,
                 node.y as isize,
@@ -5222,6 +5222,20 @@ fn topology_trace_reads_through_a_label_holding_glyph_letters() {
             "an `o` inside a label is text, not an end marker ({direction}):\n{frame}"
         );
     }
+}
+
+/// gen_d_120: a back edge over the top puts a lane above the topmost box; with
+/// single-letter labels the frame origin is still found from the labels, and
+/// X reaches A along it.
+#[test]
+fn a_back_edge_over_the_top_is_traced_with_short_labels() {
+    let input = "graph RL\nA --> X\nX --> A\nB --> Y\nY --> B\nC --> Z\nZ --> C\n";
+    let (graph, frame, _) =
+        boundary_crossing_connectivity_errors(input, BaseStyle::Unicode, false).expect("render");
+    let grid = ConnectivityGrid::new(&frame);
+    let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+    let reached = topology_reached_nodes(&graph, &grid, origin, "X", false);
+    assert!(reached.contains("A"), "X does not reach A:\n{frame}");
 }
 
 /// A blocked edge's outside detour is dropped where it would cut another

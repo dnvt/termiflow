@@ -1388,14 +1388,17 @@ pub fn plan_horizontal_cycle_lanes(
     }
 
     // a layout the gutter cannot fix; extra lanes would only add clutter, so
-    // keep the default geometry for every back edge.
+    // keep the default geometry for every back edge under the boxes. A lane
+    // over the top meets none of those routes and stays.
     let crosses_a_box = back_edges.iter().any(|&(idx, from, to)| {
         lanes
             .get(&idx)
             .is_some_and(|lane| !lane.above && crosses(lane, from, to))
     });
-    if crosses_a_box || unsplittable {
+    if unsplittable {
         lanes.clear();
+    } else if crosses_a_box {
+        lanes.retain(|_, lane| lane.above);
     }
     lanes
 }
