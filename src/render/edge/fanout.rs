@@ -25,6 +25,35 @@ use super::{
     style_for_edge_kind, RouteOwner,
 };
 
+/// Draw the end of the forward edge `from -> to` at its target: an arrowhead,
+/// a circle or cross end marker, or for an open link the plain shaft.
+#[allow(clippy::too_many_arguments)]
+fn set_target_end(
+    canvas: &mut Canvas,
+    coords: &OrientedCoords,
+    style: &StyleChars,
+    graph: &Graph,
+    from: &Node,
+    to: &Node,
+    (x, y): (usize, usize),
+    owner: RouteOwner<'_>,
+) {
+    let kind = graph
+        .edges
+        .iter()
+        .find(|edge| edge.from == from.id && edge.to == to.id && !edge.is_back_edge)
+        .map_or(EdgeKind::Arrow, |edge| edge.kind);
+    match kind {
+        EdgeKind::CircleEnd => set_route_endpoint_char(canvas, x, y, style.circle_end, owner),
+        EdgeKind::CrossEnd => set_route_endpoint_char(canvas, x, y, style.cross_end, owner),
+        EdgeKind::Open => {
+            let shaft = coords.primary_edge_char(&style_for_edge_kind(style, kind));
+            set_route_char(canvas, x, y, shaft, Some(owner));
+        }
+        _ => set_route_char(canvas, x, y, coords.arrow_end(style), Some(owner)),
+    }
+}
+
 pub(super) fn route_fanout_into_subgraph_td(
     from: &Node,
     targets: &[(usize, usize, &Node)],
@@ -226,12 +255,15 @@ pub(super) fn route_fanout_into_subgraph_td(
             );
         }
 
-        set_route_char(
+        set_target_end(
             canvas,
-            arrow_x,
-            arrow_y,
-            coords.arrow_end(style),
-            Some(branch_owner),
+            &coords,
+            style,
+            graph,
+            from,
+            target,
+            (arrow_x, arrow_y),
+            branch_owner,
         );
     }
 }
@@ -693,12 +725,15 @@ pub fn route_divergent_edges(
                     Some(route_owner),
                 )
             {
-                set_route_char(
+                set_target_end(
                     canvas,
-                    cross_arrow_x,
-                    arrow_y,
-                    coords.arrow_end(style),
-                    Some(route_owner),
+                    &coords,
+                    style,
+                    graph,
+                    from,
+                    target,
+                    (cross_arrow_x, arrow_y),
+                    route_owner,
                 );
                 return;
             }
@@ -720,12 +755,15 @@ pub fn route_divergent_edges(
                     Some(&mut arrow_x),
                 ) {
                     BtRouteOutcome::Handled | BtRouteOutcome::Rejected => {
-                        set_route_char(
+                        set_target_end(
                             canvas,
-                            arrow_x,
-                            arrow_y,
-                            coords.arrow_end(style),
-                            Some(route_owner),
+                            &coords,
+                            style,
+                            graph,
+                            from,
+                            target,
+                            (arrow_x, arrow_y),
+                            route_owner,
                         );
                         return;
                     }
@@ -878,12 +916,15 @@ pub fn route_divergent_edges(
                         Some(graph),
                         Some(route_owner),
                     );
-                    set_route_char(
+                    set_target_end(
                         canvas,
-                        arrow_x,
-                        arrow_y,
-                        coords.arrow_end(style),
-                        Some(route_owner),
+                        &coords,
+                        style,
+                        graph,
+                        from,
+                        target,
+                        (arrow_x, arrow_y),
+                        route_owner,
                     );
                     return;
                 }
@@ -1035,12 +1076,15 @@ pub fn route_divergent_edges(
         }
 
         // Arrow at target
-        set_route_char(
+        set_target_end(
             canvas,
-            arrow_x,
-            arrow_y,
-            coords.arrow_end(style),
-            Some(route_owner),
+            &coords,
+            style,
+            graph,
+            from,
+            target,
+            (arrow_x, arrow_y),
+            route_owner,
         );
 
         // If the edge exits a subgraph boundary (TD/TB), stamp a junction on the border
@@ -1333,18 +1377,16 @@ pub fn route_divergent_edges(
             );
         }
 
-        // Tip: use edge-kind-specific character (circle/cross end markers, etc.)
-        let tip = match edge_kind {
-            EdgeKind::CircleEnd => style.circle_end,
-            EdgeKind::CrossEnd => style.cross_end,
-            EdgeKind::Open => coords.primary_edge_char(&branch_style), // no arrowhead
-            _ => coords.arrow_end(style),
-        };
-        if matches!(edge_kind, EdgeKind::CircleEnd | EdgeKind::CrossEnd) {
-            set_route_endpoint_char(canvas, arrow_x, arrow_y, tip, branch_owner);
-        } else {
-            set_route_char(canvas, arrow_x, arrow_y, tip, Some(branch_owner));
-        }
+        set_target_end(
+            canvas,
+            &coords,
+            style,
+            graph,
+            from,
+            target,
+            (arrow_x, arrow_y),
+            branch_owner,
+        );
 
         // A custom branch shaft can otherwise downgrade the shared fan-out
         // junction while overlap resolution sees only the branch style. Restore
