@@ -3369,6 +3369,64 @@ pub(super) fn resolve_subgraph_envelopes(
                 compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
             adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
         }
+
+        // Two frames, neither inside the other, that still overlap: the
+        // follow above moved one toward its feeder before the other grew
+        // around its nested frames (gen_c_094, gen_c_126). Everything from
+        // the right-hand frame on moves right until a blank column parts
+        // their walls, unless a member of the left-hand frame would move too.
+        for _ in 0..8 {
+            let envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            let overlap = envelopes
+                .iter()
+                .flat_map(|(left_id, left)| {
+                    envelopes
+                        .iter()
+                        .map(move |(right_id, right)| (left_id, left, right_id, right))
+                })
+                .filter(|(left_id, left, right_id, right)| {
+                    left_id != right_id
+                        && !input.graph.is_subgraph_ancestor(left_id, right_id)
+                        && !input.graph.is_subgraph_ancestor(right_id, left_id)
+                        && left.outer.x < right.outer.x
+                        && right.outer.x <= left.outer.right()
+                        && rects_overlap_vertically(left.outer, right.outer)
+                })
+                .map(|(left_id, left, _, right)| {
+                    (
+                        left_id.clone(),
+                        right.outer.x,
+                        left.outer.right() + 1 - right.outer.x,
+                    )
+                })
+                .min_by_key(|(left_id, threshold, _)| (*threshold, left_id.clone()));
+            let Some((left_id, threshold, delta)) = overlap else {
+                break;
+            };
+            let left_moves = placement.node_rects.iter().any(|(id, rect)| {
+                rect.x >= threshold && input.graph.is_node_in_subgraph_tree(id, &left_id)
+            });
+            if left_moves {
+                break;
+            }
+            shift_nodes_from_x(
+                &mut placement.positions,
+                &mut placement.node_rects,
+                threshold,
+                delta,
+            );
+            let max_right = placement
+                .node_rects
+                .values()
+                .map(|rect| rect.right())
+                .max()
+                .unwrap_or(placement.canvas.right());
+            placement.canvas.width = placement.canvas.width.max(max_right);
+            subgraph_envelopes =
+                compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+            adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+        }
     }
 
     if is_vertical_flow(input.graph.direction) && !subgraph_envelopes.is_empty() {

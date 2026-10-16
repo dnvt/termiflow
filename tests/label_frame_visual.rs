@@ -230,3 +230,46 @@ B --> C
         );
     }
 }
+
+/// gen_c_094 and gen_c_126: an LR frame on the next layer was moved toward
+/// its feeder before the frame on the layer before grew around its nested
+/// frame, and the two overlapped, one drawn over the other's wall. They now
+/// stand apart.
+#[test]
+fn frames_on_adjacent_layers_do_not_overlap() {
+    let one_way = "graph LR
+    subgraph L1 [Top]
+        subgraph L2a [Branch A]
+            subgraph L3 [Leaf]
+                x[x]
+            end
+        end
+        subgraph L2b [Branch B]
+            y[y]
+        end
+    end
+    x --> y
+    y --> z[Out]
+";
+    let both_ways = "graph LR
+    subgraph R [Root]
+        subgraph A [A]
+            subgraph Aa [Aa]
+                p[p]
+            end
+        end
+        subgraph B [B]
+            subgraph Bb [Bb]
+                q[q]
+            end
+        end
+    end
+    p --> q
+    q --> p
+";
+    for input in [one_way, both_ways] {
+        let frame = render(input);
+        assert_frames_intact(&frame);
+        assert!(!frame.contains("┃┃"), "two walls touch:\n{frame}");
+    }
+}
