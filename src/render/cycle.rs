@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use crate::geom::Rect;
 use crate::graph::{Direction, EdgeKind, Graph, Node};
 use crate::spacing::SpacingConfig;
-use crate::style::StyleChars;
+use crate::style::{StyleChars, BOX_HEIGHT};
 
 use super::canvas::Canvas;
 use super::semantic::{CellOwnerKind, CellRole};
@@ -461,6 +461,30 @@ pub fn route_cycle_edge_on_lane(
             let from_x = lane.map_or(from.x + from.width / 2, |lane| lane.from_x);
             let to_x = lane.map_or(to.x + to.width / 2, |lane| lane.to_x);
 
+            // Over the top: up from the source's top border to the lane, along
+            // it, and down into the target's top with its end marker.
+            if lane.is_some_and(|lane| lane.above) {
+                for y in gutter_y..from.y {
+                    set_cycle_edge_char(canvas, from_x, y, style.back_v, style, owner_id);
+                }
+                for x in from_x.min(to_x)..=from_x.max(to_x) {
+                    set_cycle_edge_char(canvas, x, gutter_y, style.back_h, style, owner_id);
+                }
+                for y in gutter_y..to.y {
+                    set_cycle_edge_char(canvas, to_x, y, style.back_v, style, owner_id);
+                }
+                if let Some(entry_y) = to.y.checked_sub(1) {
+                    let end = cycle_end_char(kind, style.arrow_down, style.back_v, style);
+                    set_cycle_end(canvas, to_x, entry_y, end, kind, owner_id);
+                }
+                if kind == EdgeKind::Bidirectional {
+                    if let Some(exit_y) = from.y.checked_sub(1) {
+                        set_cycle_char(canvas, from_x, exit_y, style.arrow_down, owner_id);
+                    }
+                }
+                return;
+            }
+
             // Vertical line from source box bottom down to gutter
             for y in from.bottom_y()..=gutter_y {
                 set_cycle_edge_char(canvas, from_x, y, style.back_v, style, owner_id);
@@ -585,6 +609,9 @@ pub struct HorizontalCycleLane {
     pub from_x: usize,
     pub to_x: usize,
     pub gutter_y: usize,
+    /// The lane runs above the boxes: the legs leave and enter through
+    /// the ends' top borders.
+    pub above: bool,
 }
 
 /// Plan, for each TD/TB back edge whose run from its source to the right
@@ -791,6 +818,46 @@ pub(crate) fn bt_back_edge_row_blocked(
     boxes.into_iter().any(|(bx, by, _, bh)| {
         (bx, by) != (x, y) && bx >= x + width && by <= row && row < by + bh.max(3)
     })
+}
+
+/// Whether an LR/RL back edge between boxes `from` and `to`, each as
+/// `(x, y, width, height)`, could go over the top in a graph without frames:
+/// a box stands below one of its ends in that end's centre column, where a
+/// route under the boxes would cross it, and none stands above either end.
+pub(crate) fn lr_back_edge_over_the_top(
+    from: (usize, usize, usize, usize),
+    to: (usize, usize, usize, usize),
+    boxes: &[(usize, usize, usize, usize)],
+) -> bool {
+    let column = |(x, _, width, _): (usize, usize, usize, usize)| x + width / 2;
+    let in_column = |end: (usize, usize, usize, usize),
+                     (bx, _, bw, _): (usize, usize, usize, usize)| {
+        (bx..bx + bw).contains(&column(end))
+    };
+    let others = || {
+        boxes
+            .iter()
+            .copied()
+            .filter(move |&other| other != from && other != to)
+    };
+    let below = |end: (usize, usize, usize, usize)| {
+        others().any(|other| in_column(end, other) && other.1 > end.1)
+    };
+    let above = |end: (usize, usize, usize, usize)| {
+        others().any(|other| in_column(end, other) && other.1 < end.1)
+    };
+    (below(from) || below(to)) && !above(from) && !above(to)
+}
+
+/// The rows an LR/RL graph without frames keeps free above its boxes for
+/// `count` back edges over the top: an end marker row, a blank row and a
+/// lane for the first, two more rows for each lane stacked above it.
+pub(crate) fn lr_top_lane_rows(count: usize) -> usize {
+    if count == 0 {
+        0
+    } else {
+        3 + 2 * (count - 1)
+    }
 }
 
 /// In a BT graph without frames, a back edge whose run along its source's
@@ -1186,6 +1253,7 @@ pub fn plan_horizontal_cycle_lanes(
                 from_x: columns.get(&(idx, true)).copied().unwrap_or(center(from)),
                 to_x: columns.get(&(idx, false)).copied().unwrap_or(center(to)),
                 gutter_y,
+                above: false,
             },
         );
     }
@@ -1253,12 +1321,7 @@ pub fn plan_horizontal_cycle_lanes(
         }
     }
 
-    // a layout the gutter cannot fix; extra lanes would only add clutter, so
-    // keep the default geometry for every back edge.
-    let crosses_a_box = back_edges.iter().any(|&(idx, from, to)| {
-        let Some(lane) = lanes.get(&idx) else {
-            return false;
-        };
+    let crosses = |lane: &HorizontalCycleLane, from: &Node, to: &Node| {
         let (left, right) = (lane.from_x.min(lane.to_x), lane.from_x.max(lane.to_x));
         graph
             .nodes
@@ -1273,6 +1336,63 @@ pub fn plan_horizontal_cycle_lanes(
                     || leg(lane.to_x, to.bottom_y())
                     || ((y0..y1).contains(&lane.gutter_y) && x0 <= right && left < x1)
             })
+    };
+
+    // In a graph without frames, a back edge whose lane would still cross a
+    // box goes over the top when nothing stands above either end in its
+    // column: up out of the source, along a lane above every box in its
+    // span, down into the target. The layout keeps those rows free; lanes
+    // whose spans overlap stack two rows apart.
+    if graph.subgraphs.is_empty() {
+        let rect = |node: &Node| (node.x, node.y, node.width, node.height.max(BOX_HEIGHT));
+        let boxes: Vec<(usize, usize, usize, usize)> = graph.nodes.iter().map(rect).collect();
+        let mut over: Vec<(usize, usize)> = Vec::new();
+        let mut ids: Vec<usize> = lanes.keys().copied().collect();
+        ids.sort_unstable();
+        for idx in ids {
+            let Some(&(_, from, to)) = back_edges.iter().find(|(i, _, _)| *i == idx) else {
+                continue;
+            };
+            if !crosses(&lanes[&idx], from, to)
+                || !lr_back_edge_over_the_top(rect(from), rect(to), &boxes)
+            {
+                continue;
+            }
+            let (from_x, to_x) = (center(from), center(to));
+            let (left, right) = (from_x.min(to_x), from_x.max(to_x));
+            let top = graph
+                .nodes
+                .iter()
+                .filter(|node| node.x <= right && left < node.x + node.width)
+                .map(|node| node.y)
+                .min()
+                .unwrap_or(0);
+            let stacked = over
+                .iter()
+                .filter(|&&(l, r)| l <= right && left <= r)
+                .count();
+            let Some(gutter_y) = top.checked_sub(lr_top_lane_rows(stacked + 1)) else {
+                continue;
+            };
+            over.push((left, right));
+            lanes.insert(
+                idx,
+                HorizontalCycleLane {
+                    from_x,
+                    to_x,
+                    gutter_y,
+                    above: true,
+                },
+            );
+        }
+    }
+
+    // a layout the gutter cannot fix; extra lanes would only add clutter, so
+    // keep the default geometry for every back edge.
+    let crosses_a_box = back_edges.iter().any(|&(idx, from, to)| {
+        lanes
+            .get(&idx)
+            .is_some_and(|lane| !lane.above && crosses(lane, from, to))
     });
     if crosses_a_box || unsplittable {
         lanes.clear();

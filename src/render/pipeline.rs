@@ -1091,6 +1091,17 @@ fn render_frame(
             continue;
         }
         let exit = match graph.direction {
+            // A lane over the top leaves through the top border instead.
+            Direction::LR | Direction::RL
+                if cycle_lanes.get(&edge_idx).is_some_and(|lane| lane.above) =>
+            {
+                let x = cycle_lanes[&edge_idx].from_x;
+                let border_y = from.y;
+                (border_y > 0
+                    && canvas::is_horizontal(canvas.get(x, border_y), &chars)
+                    && canvas::is_vertical(canvas.get(x, border_y - 1), &chars))
+                .then_some((x, border_y, chars.junction_up))
+            }
             Direction::LR | Direction::RL => {
                 let x = cycle_lanes
                     .get(&edge_idx)

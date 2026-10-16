@@ -459,6 +459,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     );
     reserve_title_turn_rows(input.graph, &mut placement, &mut subgraph_envelopes);
     reserve_bt_back_edge_exit_rows(input.graph, &mut placement, &mut subgraph_envelopes);
+    reserve_lr_back_edge_top_rows(input.graph, &mut placement);
 
     let routes = route_stage(
         input.graph,
@@ -1038,6 +1039,52 @@ fn reserve_bt_back_edge_exit_rows(
     for envelope in envelopes.values_mut() {
         envelope.outer.y += extra;
         envelope.inner.y += extra;
+    }
+    placement.canvas.height += extra;
+}
+
+/// In an LR/RL graph without frames, a back edge whose route under the boxes
+/// would cross one goes over the top when nothing stands above its ends
+/// (`lr_back_edge_over_the_top`). The rows its lane needs are kept free above
+/// everything.
+fn reserve_lr_back_edge_top_rows(graph: &Graph, placement: &mut placement::Placement) {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) || !graph.subgraphs.is_empty() {
+        return;
+    }
+    let rect = |rect: &crate::geom::Rect| (rect.x, rect.y, rect.width, rect.height.max(3));
+    let boxes: Vec<(usize, usize, usize, usize)> =
+        placement.node_rects.values().map(rect).collect();
+    let over = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.is_back_edge && edge.from != edge.to)
+        .filter(|edge| {
+            match (
+                placement.node_rects.get(&edge.from),
+                placement.node_rects.get(&edge.to),
+            ) {
+                (Some(from), Some(to)) => {
+                    crate::render::cycle::lr_back_edge_over_the_top(rect(from), rect(to), &boxes)
+                }
+                _ => false,
+            }
+        })
+        .count();
+    let top = placement
+        .node_rects
+        .values()
+        .map(|rect| rect.y)
+        .min()
+        .unwrap_or(0);
+    let extra = crate::render::cycle::lr_top_lane_rows(over).saturating_sub(top);
+    if extra == 0 {
+        return;
+    }
+    for (id, rect) in placement.node_rects.iter_mut() {
+        rect.y += extra;
+        if let Some(point) = placement.positions.get_mut(id) {
+            point.y += extra;
+        }
     }
     placement.canvas.height += extra;
 }

@@ -568,3 +568,68 @@ fn a_bt_back_edge_with_a_box_on_its_row_leaves_through_the_top() {
         "B's back edge runs through D:\n{frame}"
     );
 }
+
+fn unicode(input: &str) -> String {
+    termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Unicode))
+        .expect("render")
+        .output
+}
+
+/// gen_a_224: Extend -> Run ran down from Extend through Kill Experiment and
+/// Ship Variant, stacked below it. It now leaves Extend's top, runs over the
+/// boxes and comes down into Run's top.
+#[test]
+fn an_rl_back_edge_with_boxes_below_goes_over_the_top() {
+    let frame = unicode(
+        "graph RL
+    Signal[Market Signal] --> Hyp[Write Hypothesis]
+    Hyp --> Exp[Design A/B Test]
+    Exp --> Run[Run Experiment]
+    Run --> Sig{Statistically significant?}
+    Sig --> Ship[Ship Variant]
+    Sig --> Extend[Extend Duration]
+    Extend --> Run
+    Sig --> Kill[Kill Experiment]
+",
+    );
+    let lines: Vec<&str> = frame.lines().collect();
+    let row = |label: &str| {
+        lines
+            .iter()
+            .position(|line| line.contains(label))
+            .expect(label)
+    };
+    assert!(
+        lines[row("Extend Duration") - 1].contains('┴'),
+        "Extend's back edge does not leave its top:\n{frame}"
+    );
+    assert!(
+        !lines[row("Kill Experiment") - 1].contains('┬')
+            && !lines[row("Kill Experiment") - 1].contains('┴'),
+        "a line still runs through Kill Experiment:\n{frame}"
+    );
+    assert!(
+        lines[row("Run Experiment") - 2].contains('↓'),
+        "the back edge does not come down into Run:\n{frame}"
+    );
+}
+
+/// gen_d_004: the labelled `retry` back edge goes over the top with its
+/// label on the lane, above every box.
+#[test]
+fn a_labelled_back_edge_over_the_top_keeps_its_label_on_the_lane() {
+    let frame = unicode(
+        "graph RL
+A{Is the incoming payload signed by a trusted issuer} -->|yes| B[Accept and forward to processing pipeline]
+A -->|no| C{Should we retry verification with the backup key}
+C -->|retry| A
+C -->|give up| D[Reject with a descriptive error message]
+",
+    );
+    let lines: Vec<&str> = frame.lines().collect();
+    let retry = lines
+        .iter()
+        .position(|line| line.contains("retry ─"))
+        .expect("retry");
+    assert_eq!(retry, 0, "retry is not on a lane over the boxes:\n{frame}");
+}
