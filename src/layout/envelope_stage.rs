@@ -5351,20 +5351,25 @@ fn enforce_horizontal_foreign_node_clearance(
             };
 
             for (node_id, node_rect) in &placement.node_rects {
+                // A final pass for boxes left across a wall moves only those.
+                let wall_feeder = placement.wall_feeders.contains(node_id);
                 if graph.get_node_subgraph(node_id).is_some()
                     || graph.is_node_in_subgraph_tree(node_id, subgraph_id)
+                    || !placement.wall_feeders.is_empty() && !wall_feeder
                     || !rects_overlap_horizontally(*node_rect, reach(envelope.outer))
                     || !rects_overlap_vertically(*node_rect, envelope.outer)
                 {
                     continue;
                 }
                 // In TD/BT a node linked into the frame stays put: moved beside
-                // the frame, its edges would cross the side wall sideways.
+                // the frame, its edges would cross the side wall sideways. Left
+                // across the wall, it moves anyway: the box hid the wall.
                 // A node on a back edge keeps its place too: its cycle route
                 // is planned around where the layout put it.
                 if keep_gap
                     && graph.edges.iter().any(|edge| {
-                        (edge.from == *node_id
+                        (!wall_feeder
+                            && edge.from == *node_id
                             && graph.is_node_in_subgraph_tree(&edge.to, subgraph_id))
                             || (edge.to == *node_id
                                 && graph.is_node_in_subgraph_tree(&edge.from, subgraph_id))
@@ -5440,6 +5445,76 @@ fn enforce_horizontal_foreign_node_clearance(
         );
     }
     moved
+}
+
+/// The envelope passes leave an outside node that feeds a TD/BT frame where
+/// the layout put it, yet later passes can leave its box across the frame's
+/// side wall (gen_a_245's Client over Load Balancing's corner, gen_a_195's
+/// Lease Expiry over Vault's wall). Once the envelopes are final, each such
+/// box moves clear of the wall, or its frame moves past it, as for any other
+/// outside node: a line entering through the wall reads better than a box
+/// drawn across it. Returns the new envelopes when one moved.
+pub(super) fn clear_feeders_off_frame_walls(
+    graph: &Graph,
+    config: &CoarseLayoutConfig,
+    placement: &mut Placement,
+    envelopes: &HashMap<String, SubgraphEnvelope>,
+) -> Option<HashMap<String, SubgraphEnvelope>> {
+    if matches!(graph.direction, Direction::LR | Direction::RL) {
+        return None;
+    }
+    let mut feeders: Vec<String> = Vec::new();
+    for (subgraph_id, envelope) in envelopes {
+        if graph
+            .get_subgraph(subgraph_id)
+            .is_none_or(|subgraph| subgraph.parent_id.is_some())
+        {
+            continue;
+        }
+        let walls = [envelope.outer.x, envelope.outer.right().saturating_sub(1)];
+        for (node_id, rect) in &placement.node_rects {
+            let across_wall = walls
+                .iter()
+                .any(|&wall| rect.x < wall && wall < rect.right());
+            if graph.get_node_subgraph(node_id).is_some()
+                || !across_wall
+                || !rects_overlap_vertically(*rect, envelope.outer)
+            {
+                continue;
+            }
+            let into = |edge: &&crate::graph::Edge| {
+                edge.from == *node_id && graph.is_node_in_subgraph_tree(&edge.to, subgraph_id)
+            };
+            let feeds = graph.edges.iter().any(|edge| into(&edge));
+            let linked = graph.edges.iter().any(|edge| {
+                (edge.from == *node_id || edge.to == *node_id)
+                    && (graph.is_node_in_subgraph_tree(&edge.from, subgraph_id)
+                        || graph.is_node_in_subgraph_tree(&edge.to, subgraph_id))
+            });
+            // Fed from inside, or on a back edge, the node keeps its place
+            // (see `enforce_horizontal_foreign_node_clearance`).
+            let held = graph.edges.iter().any(|edge| {
+                (edge.to == *node_id && graph.is_node_in_subgraph_tree(&edge.from, subgraph_id))
+                    || (edge.is_back_edge && (edge.from == *node_id || edge.to == *node_id))
+            });
+            if (feeds || !linked) && !held && !feeders.contains(node_id) {
+                feeders.push(node_id.clone());
+            }
+        }
+    }
+    if feeders.is_empty() {
+        return None;
+    }
+    feeders.sort();
+    placement.wall_feeders = feeders;
+    let moved = enforce_horizontal_foreign_node_clearance(graph, placement, config, true);
+    placement.wall_feeders.clear();
+    if !moved {
+        return None;
+    }
+    let mut envelopes = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
+    adjust_portal_slots_for_title(&mut envelopes, graph);
+    Some(envelopes)
 }
 
 /// Move nodes that overlap an earlier node along the cross (non-rank) axis

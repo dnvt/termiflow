@@ -46,6 +46,9 @@ pub(super) struct Placement {
     /// Whole-rank TD shift request sets already seen to make no progress in
     /// the current envelope pass; its later loop stops on them.
     pub(super) futile_td_requests: Vec<Vec<(usize, usize)>>,
+    /// Outside nodes left across the side wall of a frame they feed once the
+    /// envelopes are final; the clearance pass then moves only these.
+    pub(super) wall_feeders: Vec<String>,
 }
 
 pub(super) fn gap_for_axis(axis: Axis, cfg: &CoarseLayoutConfig) -> usize {
@@ -1283,6 +1286,7 @@ pub(super) fn place_nodes(
         canvas,
         ranks,
         futile_td_requests: Vec::new(),
+        wall_feeders: Vec::new(),
     }
 }
 

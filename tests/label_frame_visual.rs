@@ -89,3 +89,47 @@ fn a_td_fan_in_label_keeps_off_a_frame_wall() {
         "a label is split by a frame wall:\n{frame}"
     );
 }
+
+/// gen_a_245: Client feeds Backend Pool inside Load Balancing and was left
+/// across the frame's left wall. It now stands beside the frame, its line
+/// entering through the wall.
+#[test]
+fn a_box_feeding_a_frame_stands_clear_of_its_wall() {
+    let input = "flowchart TB
+    subgraph LB [Load Balancing]
+        HC[Health Checks]
+        Pool[Backend Pool]
+        HC --> Pool
+    end
+    subgraph Backends
+        B1[backend-1]
+        B2[backend-2]
+        B3[backend-3]
+    end
+    Pool --> B1
+    Pool --> B2
+    Pool --> B3
+    B3 --x Drain[Draining]
+    Client([Client]) --> Pool
+";
+    assert_frames_intact(&render(input));
+}
+
+/// gen_a_195: Lease Expiry feeds Dynamic DB Creds inside HashiCorp Vault and
+/// was left across the frame's right wall.
+#[test]
+fn a_box_feeding_a_frame_from_the_right_stands_clear_of_its_wall() {
+    let input = "flowchart TB
+    subgraph Vault [HashiCorp Vault]
+        AuthM[Kubernetes Auth]
+        Policy[Policy Check]
+        Dyn[Dynamic DB Creds]
+        AuthM --> Policy --> Dyn
+    end
+    Pod[App Pod] --> AuthM
+    Dyn --> Pod
+    Dyn --> DB[(Postgres)]
+    Lease[Lease Expiry] -.-> Dyn
+";
+    assert_frames_intact(&render(input));
+}

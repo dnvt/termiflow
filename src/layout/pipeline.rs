@@ -1,4 +1,6 @@
-use super::envelope_stage::{finalize_bt_parallel_first_rail, resolve_subgraph_envelopes};
+use super::envelope_stage::{
+    clear_feeders_off_frame_walls, finalize_bt_parallel_first_rail, resolve_subgraph_envelopes,
+};
 use super::normalization::normalize_orientation_and_gutters;
 use super::routing_stage::route_stage;
 use super::*;
@@ -441,6 +443,11 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     clear_frame_border_centerlines(input.graph, &mut placement, &config);
     let mut subgraph_envelopes =
         resolve_subgraph_envelopes(&input, &config, &mut placement, debug_timing);
+    if let Some(envelopes) =
+        clear_feeders_off_frame_walls(input.graph, &config, &mut placement, &subgraph_envelopes)
+    {
+        subgraph_envelopes = envelopes;
+    }
     // H154 is the final fixed-envelope owner for the exact direct three-rail
     // BT scene. It runs once after the second bounded envelope resolution so a
     // relative lane preference cannot be consumed twice by the layout loop.
