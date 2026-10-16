@@ -114,3 +114,97 @@ fn a_skip_edge_drops_beside_the_box_on_the_rank_it_skips() {
         "the decision's line is not beside Hand off to Agent:\n{frame}"
     );
 }
+
+/// The index of the first row holding `text`.
+fn row_of(frame: &str, text: &str) -> usize {
+    frame
+        .lines()
+        .position(|line| line.contains(text))
+        .unwrap_or_else(|| panic!("no {text}:\n{frame}"))
+}
+
+/// gen_a_045: Dec -> Block ("yes") shares its stem with the branch to Manual
+/// Review, and "yes" was drawn on that branch's turn. It now sits on its own
+/// run toward Block, below Manual Review.
+#[test]
+fn a_td_branch_label_stays_on_its_own_branch() {
+    let input = "flowchart TB
+    Txn[Card Transaction] --> Rules[Rules Engine]
+    Txn --> Model[Fraud Model]
+    Rules --> Score[Risk Score]
+    Model --> Score
+    Score --> Dec{Score above 0.8?}
+    Dec -->|yes| Block[Block and Notify]
+    Dec -->|borderline| Review[Manual Review]
+    Dec -->|no| Allow[Approve]
+    Review --> Allow
+    Review --> Block
+";
+    let frame = render(input);
+    assert!(
+        row_of(&frame, "yes") > row_of(&frame, "Manual Review"),
+        "yes is on the branch to Manual Review:\n{frame}"
+    );
+}
+
+/// gen_a_073: Underwriting -> Adverse Action ("decline") passes the tee where
+/// the branch to Manual Underwriter leaves, and "decline" was drawn on that
+/// branch's turn. It now sits on its own run, above Manual Underwriter.
+#[test]
+fn a_bt_branch_label_stays_on_its_own_branch() {
+    let input = "graph BT
+    Apply[Loan Application] --> KYC[KYC Check]
+    KYC --> Credit[Credit Bureau Pull]
+    Credit --> Underwrite{Underwriting}
+    Underwrite -->|approve| Terms[Generate Terms]
+    Underwrite -->|refer| Manual[Manual Underwriter]
+    Underwrite -->|decline| Adverse[Adverse Action Notice]
+    Manual --> Terms
+    Manual --> Adverse
+    Terms --> Fund[(Disburse Funds)]
+";
+    let frame = render(input);
+    assert!(
+        row_of(&frame, "decline") < row_of(&frame, "Manual Underwriter"),
+        "decline is on the branch to Manual Underwriter:\n{frame}"
+    );
+}
+
+/// gen_a_011 (TD) and gen_a_043 (BT): the run toward the target is too short
+/// for the label, which was drawn over the other branch's turn. It now sits
+/// beside its own stem, off every horizontal run.
+#[test]
+fn a_branch_label_without_room_on_its_run_sits_beside_its_stem() {
+    let td = "graph TD
+    Cart[Checkout Cart] --> Pay{Payment Method}
+    Pay -->|card| Stripe[Stripe Charge]
+    Pay -->|wallet| PayPal[PayPal Redirect]
+    Stripe --> Auth3DS{3DS Required?}
+    Auth3DS -->|yes| Challenge[3DS Challenge]
+    Auth3DS -->|no| Capture[Capture Funds]
+    Challenge --> Capture
+    PayPal --> Capture
+    Capture --> Receipt[/Send Receipt/]
+    Capture --> Ledger[(Ledger)]
+";
+    let bt = "graph BT
+    Customer((Customer)) --> Ticket[Open Ticket]
+    Ticket --> L1[Tier 1 Support]
+    L1 --> Solved1{Solved?}
+    Solved1 -->|yes| Close[Close Ticket]
+    Solved1 -->|no| L2[Tier 2 Support]
+    L2 --> Solved2{Solved?}
+    Solved2 -->|yes| Close
+    Solved2 -->|no| Eng[Engineering Escalation]
+    Eng --> Close
+    Close --> CSAT[/CSAT Survey/]
+";
+    for (input, label) in [(td, "no"), (bt, "yes")] {
+        let frame = render(input);
+        let on_a_run = frame
+            .lines()
+            .filter(|line| line.contains(label))
+            .any(|line| line.contains('─'));
+        assert!(!on_a_run, "{label} is on another branch's run:\n{frame}");
+    }
+}

@@ -1176,6 +1176,103 @@ fn overlaps_reserved_subgraph_cells(graph: &Graph, start_x: usize, y: usize, wid
     })
 }
 
+/// Whether a line other than `owner_id`'s already holds one of the `width`
+/// cells from `start_x` on row `y`.
+fn cells_held_by_another_line(
+    canvas: &Canvas,
+    start_x: usize,
+    width: usize,
+    y: usize,
+    owner_id: &str,
+) -> bool {
+    (start_x..start_x + width).any(|x| {
+        canvas.get(x, y) != ' '
+            && canvas
+                .get_meta(x, y)
+                .is_none_or(|meta| meta.owner_id.as_deref() != Some(owner_id))
+    })
+}
+
+/// The row where a convergent edge's stem turns toward its target. Walking
+/// the source's stem from `start_y` (upward when `up`), the first row whose
+/// sideways run toward the target meets a line ending in an arrowhead at the
+/// target box. Tees where branches to other targets leave the stem are
+/// passed. `None` when the stem has no such run.
+fn convergent_turn_row(
+    canvas: &Canvas,
+    src_x: usize,
+    start_y: usize,
+    up: bool,
+    to: &Node,
+) -> Option<usize> {
+    use super::topology::{
+        char_connects_down, char_connects_left, char_connects_right, char_connects_up,
+    };
+    let target_x = super::cycle::center_x(to);
+    if target_x == src_x {
+        return None;
+    }
+    let left = target_x < src_x;
+    let next_y = |y: usize| {
+        if up {
+            y.checked_sub(1)
+        } else {
+            Some(y + 1).filter(|&y| y < canvas.height)
+        }
+    };
+    let next_x = |x: usize| {
+        if left {
+            x.checked_sub(1)
+        } else {
+            Some(x + 1).filter(|&x| x < canvas.width)
+        }
+    };
+    // Both cells agree they join: a corner or tee with blank beyond it does not.
+    let joins_v = |x: usize, y: usize| {
+        next_y(y).is_some_and(|n| {
+            let (here, there) = (canvas.get(x, y), canvas.get(x, n));
+            if up {
+                char_connects_up(here) && char_connects_down(there)
+            } else {
+                char_connects_down(here) && char_connects_up(there)
+            }
+        })
+    };
+    let joins_h = |x: usize, y: usize| {
+        next_x(x).is_some_and(|n| {
+            let (here, there) = (canvas.get(x, y), canvas.get(n, y));
+            if left {
+                char_connects_left(here) && char_connects_right(there)
+            } else {
+                char_connects_right(here) && char_connects_left(there)
+            }
+        })
+    };
+    let reaches_target = |x: usize, mut y: usize| {
+        while joins_v(x, y) {
+            y = next_y(y).expect("joined");
+        }
+        canvas::is_arrow(canvas.get(x, y))
+            && next_y(y).is_some_and(|n| {
+                (to.x..to.x + to.width).contains(&x) && (to.y..to.bottom_y()).contains(&n)
+            })
+    };
+    let mut y = start_y;
+    loop {
+        let mut x = src_x;
+        while joins_h(x, y) {
+            x = next_x(x).expect("joined");
+            if joins_v(x, y) && reaches_target(x, y) {
+                return Some(y);
+            }
+        }
+        if !joins_v(src_x, y) {
+            return None;
+        }
+        y = next_y(y)?;
+    }
+}
+
 /// Draw an edge label for convergent edges (multiple sources to one target).
 /// Labels are placed on the branch's outer side before the merge point so they
 /// do not crowd the shared junction corridor.
@@ -1209,12 +1306,55 @@ pub(super) fn draw_convergent_edge_label(
             let target_x = center_x(to);
             let stem_start_y = from.bottom_y();
             // Place label just below the source box on the vertical stem
-            let label_y = stem_start_y + 1;
+            let mut label_y = stem_start_y + 1;
 
             // Move the label away from the shared merge corridor when the source
             // approaches the target from the left or right.
-            let label_start_x =
+            let mut label_start_x =
                 convergent_vertical_label_start(src_x, target_x, label_width, canvas.width);
+            // When another line already runs there (a branch to another target,
+            // gen_a_045), the label goes where the source's stem turns toward
+            // its target, on a plain stretch of that run, as in BT.
+            let turn_y = if cells_held_by_another_line(
+                canvas,
+                label_start_x,
+                label_width,
+                label_y,
+                &owner_id,
+            ) {
+                convergent_turn_row(canvas, src_x, stem_start_y, false, to)
+                    .filter(|&turn_y| turn_y > label_y)
+            } else {
+                None
+            };
+            if let Some(turn_y) = turn_y {
+                let (run_start, run_end) = if src_x <= target_x {
+                    (src_x + 1, target_x)
+                } else {
+                    (target_x + 1, src_x)
+                };
+                let preferred = run_start + run_end.saturating_sub(run_start + label_width) / 2;
+                if let Some(start) = nearest_routed_label_slot(
+                    canvas,
+                    run_start,
+                    run_end,
+                    preferred,
+                    label_width,
+                    turn_y,
+                    style,
+                ) {
+                    label_y = turn_y;
+                    label_start_x = start;
+                } else if let Some(y) = (label_y + 1..turn_y).find(|&y| {
+                    // A run too short for the label (gen_a_011): beside the
+                    // stem on a free row above the turn.
+                    canvas::is_vertical(canvas.get(src_x, y), style)
+                        && (label_start_x..label_start_x + label_width)
+                            .all(|x| canvas.get(x, y) == ' ')
+                }) {
+                    label_y = y;
+                }
+            }
 
             let mut x_pos = label_start_x;
             for c in display_label.chars() {
@@ -1239,6 +1379,11 @@ pub(super) fn draw_convergent_edge_label(
             let mut turn_y = stem_start_y;
             while turn_y > 0 && canvas::is_vertical(canvas.get(src_x, turn_y), style) {
                 turn_y -= 1;
+            }
+            // Past tees where other branches leave the stem (gen_a_073), up to
+            // the run that reaches the target.
+            if let Some(traced) = convergent_turn_row(canvas, src_x, stem_start_y, true, to) {
+                turn_y = traced;
             }
             // A real turn: a corner or tee leading sideways, below the target
             // (not its arrowhead or border, where a straight stem ends).
@@ -1265,6 +1410,23 @@ pub(super) fn draw_convergent_edge_label(
                 ) {
                     label_y = turn_y;
                     label_start_x = start;
+                } else if cells_held_by_another_line(
+                    canvas,
+                    label_start_x,
+                    label_width,
+                    label_y,
+                    &owner_id,
+                ) {
+                    // The run is too short for the label and another branch
+                    // crosses the row above the source (gen_a_043): beside the
+                    // stem on a free row below the turn.
+                    if let Some(y) = (turn_y + 1..label_y).rev().find(|&y| {
+                        canvas::is_vertical(canvas.get(src_x, y), style)
+                            && (label_start_x..label_start_x + label_width)
+                                .all(|x| canvas.get(x, y) == ' ')
+                    }) {
+                        label_y = y;
+                    }
                 }
             }
             let mut x_pos = label_start_x;
