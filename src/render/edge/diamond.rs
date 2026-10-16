@@ -190,9 +190,10 @@ fn plan_blocked_edge_detour(
 }
 
 /// The detoured edges among `planned` that were in another line's way on
-/// the finished canvas: one held a cell a later line of another edge needed,
-/// or left a plain line touching its target where the edge would have
-/// arrived, which then reads as leaving the target.
+/// the finished canvas: one held a cell a later line of another edge needed
+/// or another edge's label was written across, or left a plain line touching
+/// its target where the edge would have arrived, which then reads as leaving
+/// the target.
 ///
 /// A later line out of the same source or into the same target joins the
 /// detour as a shared trunk or bus instead.
@@ -215,7 +216,17 @@ pub(crate) fn detours_in_the_way(
                     let (from, to) = writer_ends(graph, writer.as_deref());
                     from != Some(edge.from.as_str()) && to != Some(edge.to.as_str())
                 });
-            if cut {
+            // Another edge's label written across the detour cuts it too.
+            let own_label = crate::render::provenance::edge_owner_id(index, edge);
+            let labelled_over = canvas.fallback_route_plan(&owner_id).is_some_and(|plan| {
+                plan.planned_cells().into_iter().any(|(x, y)| {
+                    canvas.get_meta(x, y).is_some_and(|meta| {
+                        meta.owner_kind == CellOwnerKind::EdgeLabel
+                            && meta.owner_id.as_deref() != Some(own_label.as_str())
+                    })
+                })
+            });
+            if cut || labelled_over {
                 return true;
             }
             let Some(target) = graph.get_node(&edge.to) else {
@@ -260,6 +271,25 @@ fn writer_ends<'a>(
         .map_or((None, None), |edge| {
             (Some(edge.from.as_str()), Some(edge.to.as_str()))
         })
+}
+
+/// The lane of the detour reserved for the edge at `index`, its longest
+/// run, where its label goes.
+pub(crate) fn detour_route(
+    graph: &Graph,
+    canvas: &Canvas,
+    index: usize,
+) -> Option<crate::geom::EdgeRoute> {
+    let plan = canvas.fallback_route_plan(&detour_owner_id(graph.edges.get(index)?))?;
+    let lane = plan.segments.iter().max_by_key(|segment| {
+        segment.from.x.abs_diff(segment.to.x) + segment.from.y.abs_diff(segment.to.y)
+    })?;
+    let mut route = crate::geom::EdgeRoute::new();
+    route.push_segment(
+        crate::geom::Point::new(lane.from.x, lane.from.y),
+        crate::geom::Point::new(lane.to.x, lane.to.y),
+    );
+    Some(route)
 }
 
 fn detour_owner_id(edge: &crate::graph::Edge) -> String {
@@ -605,7 +635,17 @@ pub(crate) fn settle_blocked_edge_detour_joins(canvas: &mut Canvas, style: &Styl
     let mut points = canvas.fallback_route_corner_points(DETOUR_STRATEGY);
     points.extend(canvas.fallback_route_refused_points(DETOUR_STRATEGY));
     for (x, y) in points {
-        let connections = canvas_connections(canvas, x, y);
+        let mut connections = canvas_connections(canvas, x, y);
+        // A straight run keeps both its ends, one of which may meet a box
+        // border not drawn yet.
+        let glyph = canvas.get(x, y);
+        if super::super::canvas::is_vertical(glyph, style) {
+            connections.up = true;
+            connections.down = true;
+        } else if super::super::canvas::is_horizontal(glyph, style) {
+            connections.left = true;
+            connections.right = true;
+        }
         if connections.arm_count() < 3 {
             continue;
         }
@@ -616,15 +656,15 @@ pub(crate) fn settle_blocked_edge_detour_joins(canvas: &mut Canvas, style: &Styl
     }
 }
 
-/// Whether the plain edge at `index` would be drawn straight through another
-/// node: the line it leaves on runs straight into the target's side, and some
-/// node other than its endpoints lies between them along the flow and covers
-/// that line.
+/// Whether the forward edge at `index`, labelled or not, would be drawn
+/// straight through another node: the line it leaves on runs straight into
+/// the target's side, and some node other than its endpoints lies between
+/// them along the flow and covers that line.
 pub(crate) fn edge_path_is_blocked(graph: &Graph, canvas: &Canvas, index: usize) -> bool {
     let Some(edge) = graph.edges.get(index) else {
         return false;
     };
-    if !eligible_edge(edge) || edge.from == edge.to {
+    if edge.is_back_edge || edge.kind == EdgeKind::Bidirectional || edge.from == edge.to {
         return false;
     }
     let (Some(source), Some(target)) = (graph.get_node(&edge.from), graph.get_node(&edge.to))

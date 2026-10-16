@@ -50,8 +50,8 @@ pub(super) use dedicated_fan_in::route_dedicated_fan_in_edges;
 pub(super) use dense_crossing::plan_dense_crossing_scenes;
 pub(super) use diamond::DETOUR_STRATEGY;
 pub(super) use diamond::{
-    detours_in_the_way, edge_path_is_blocked, plan_blocked_edge_detours, plan_diamond_scenes,
-    settle_blocked_edge_detour_joins,
+    detour_route, detours_in_the_way, edge_path_is_blocked, plan_blocked_edge_detours,
+    plan_diamond_scenes, settle_blocked_edge_detour_joins,
 };
 pub use edge_primitives::edge_exit_point;
 pub(super) use edge_primitives::{edge_entry_candidates, is_subgraph_title_cell};

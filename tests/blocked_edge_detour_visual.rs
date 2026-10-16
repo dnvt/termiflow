@@ -222,3 +222,109 @@ fn an_ascii_wall_under_a_detour_turn_stays_whole() {
         "Feature Engineering's bottom wall is broken:\n{frame}"
     );
 }
+
+/// A labelled skip-rank edge takes the detour too, its label on the lane.
+#[test]
+fn a_labelled_skip_rank_edge_detours_with_its_label_on_the_lane() {
+    let frame = unicode("graph LR\nA-->B\nB-->C\nC-->D\nA-->|skip| D\n");
+    assert_eq!(arrowheads(&frame), 4, "A->D hidden:\n{frame}");
+    let label = frame
+        .lines()
+        .find(|line| line.contains("skip"))
+        .expect("label");
+    assert!(
+        label.contains("└─") && label.contains("─┘"),
+        "the label is off its lane:\n{frame}"
+    );
+}
+
+/// gen_d_023: A -> C's detour would run where A -> B's long label is drawn,
+/// which cuts it, so it keeps its old route and its label stays between A
+/// and C.
+#[test]
+fn a_detour_another_label_would_cut_is_dropped() {
+    let frame = termiflow::render_with_feedback(
+        "graph BT
+A -->|this edge label is long enough that it should wrap onto two lines| B
+B -->|another long wrapped edge label for the second hop| C
+A -->|skip| C
+",
+        RenderOptions::new()
+            .with_style(BaseStyle::Unicode)
+            .with_wrap_labels(true)
+            .with_max_label_lines(2),
+    )
+    .expect("render")
+    .output;
+    let lines: Vec<&str> = frame.lines().collect();
+    let skip = lines
+        .iter()
+        .position(|line| line.contains("skip"))
+        .expect("skip");
+    let a = lines
+        .iter()
+        .position(|line| line.contains("│  A  │"))
+        .expect("A");
+    assert!(skip < a, "skip is not between A and C:\n{frame}");
+}
+
+/// gen_a_013: Paid -> Refunded leaves Paid on a detour; Paid -> Shipped
+/// meets that detour's first run and joins it with a tee.
+#[test]
+fn a_sibling_line_joins_a_detour_with_a_tee() {
+    let frame = unicode(
+        "graph BT
+    Idle((Idle)) -->|order placed| Pending[Pending]
+    Pending -->|payment ok| Paid[Paid]
+    Pending -->|timeout| Cancelled[Cancelled]
+    Paid -->|picked| Shipped[Shipped]
+    Shipped -->|delivered| Delivered(((Delivered)))
+    Shipped -->|lost| Refund[Refunded]
+    Paid -->|customer cancels| Refund
+",
+    );
+    let lines: Vec<&str> = frame.lines().collect();
+    let label = lines
+        .iter()
+        .position(|line| line.contains("customer cancels"))
+        .expect("detour label");
+    assert!(
+        lines[label + 1].contains('┤'),
+        "Paid -> Shipped stops at the detour:\n{frame}"
+    );
+}
+
+/// gen_a_043: Solved? -> Close Ticket ran up through Tier 2 Support and the
+/// second Solved?, its `yes` drawn beside the stem. It now detours, its
+/// label on the lane that reaches Close Ticket.
+#[test]
+fn a_decision_branch_label_rides_its_detour() {
+    let frame = unicode(
+        "graph BT
+    Customer((Customer)) --> Ticket[Open Ticket]
+    Ticket --> L1[Tier 1 Support]
+    L1 --> Solved1{Solved?}
+    Solved1 -->|yes| Close[Close Ticket]
+    Solved1 -->|no| L2[Tier 2 Support]
+    L2 --> Solved2{Solved?}
+    Solved2 -->|yes| Close
+    Solved2 -->|no| Eng[Engineering Escalation]
+    Eng --> Close
+    Close --> CSAT[/CSAT Survey/]
+",
+    );
+    let end_column = |needle: &str, corner: char| {
+        let line = frame
+            .lines()
+            .find(|line| line.contains(needle))
+            .expect(needle);
+        let trimmed = line.trim_end();
+        assert!(trimmed.ends_with(corner), "{needle} row:\n{frame}");
+        trimmed.chars().count()
+    };
+    assert_eq!(
+        end_column("─ yes ─", '┘'),
+        end_column("Close Ticket", '┐'),
+        "yes is not on the lane into Close Ticket:\n{frame}"
+    );
+}

@@ -7,7 +7,7 @@ use super::canvas::{self, Canvas};
 use super::critic::{self, analyze, emit_debug_report};
 use super::cycle::{self, route_cycle_edge_on_lane};
 use super::edge::{
-    database_terminal_target_id, detours_in_the_way, edge_path_is_blocked,
+    database_terminal_target_id, detour_route, detours_in_the_way, edge_path_is_blocked,
     plan_blocked_edge_detours, plan_boundary_fan_in_scene, plan_bt_multi_entry_scene,
     plan_bt_parallel_scene, plan_bt_parallel_sibling_scene, plan_bt_sibling_scene,
     plan_bt_sibling_target_scene, plan_dense_crossing_scenes, plan_diamond_scenes,
@@ -800,6 +800,27 @@ fn render_frame(
             continue;
         };
         if !canvas.is_visible(from) || !canvas.is_visible(to) {
+            continue;
+        }
+
+        // A detoured edge's label goes on its detour.
+        let detour = detour_edges
+            .contains(&edge_idx)
+            .then(|| detour_route(graph, &canvas, edge_idx))
+            .flatten();
+        if let Some(route) = detour.as_ref() {
+            if let Some(placement) = draw_routed_edge_label(
+                &mut canvas,
+                route,
+                label,
+                &chars,
+                graph,
+                config,
+                edge_idx,
+                edge,
+            ) {
+                edge_label_placements.push(placement);
+            }
             continue;
         }
 

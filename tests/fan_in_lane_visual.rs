@@ -170,9 +170,10 @@ fn a_bt_branch_label_stays_on_its_own_branch() {
     );
 }
 
-/// gen_a_011 (TD) and gen_a_043 (BT): the run toward the target is too short
-/// for the label, which was drawn over the other branch's turn. It now sits
-/// beside its own stem, off every horizontal run.
+/// gen_a_011: the run toward the target is too short for the label, which
+/// was drawn over the other branch's turn. It now sits beside its own stem,
+/// off every horizontal run. (gen_a_043's `yes` now has a detour of its own;
+/// see `blocked_edge_detour_visual`.)
 #[test]
 fn a_branch_label_without_room_on_its_run_sits_beside_its_stem() {
     let td = "graph TD
@@ -187,24 +188,10 @@ fn a_branch_label_without_room_on_its_run_sits_beside_its_stem() {
     Capture --> Receipt[/Send Receipt/]
     Capture --> Ledger[(Ledger)]
 ";
-    let bt = "graph BT
-    Customer((Customer)) --> Ticket[Open Ticket]
-    Ticket --> L1[Tier 1 Support]
-    L1 --> Solved1{Solved?}
-    Solved1 -->|yes| Close[Close Ticket]
-    Solved1 -->|no| L2[Tier 2 Support]
-    L2 --> Solved2{Solved?}
-    Solved2 -->|yes| Close
-    Solved2 -->|no| Eng[Engineering Escalation]
-    Eng --> Close
-    Close --> CSAT[/CSAT Survey/]
-";
-    for (input, label) in [(td, "no"), (bt, "yes")] {
-        let frame = render(input);
-        let on_a_run = frame
-            .lines()
-            .filter(|line| line.contains(label))
-            .any(|line| line.contains('─'));
-        assert!(!on_a_run, "{label} is on another branch's run:\n{frame}");
-    }
+    let frame = render(td);
+    let on_a_run = frame
+        .lines()
+        .filter(|line| line.contains("no"))
+        .any(|line| line.contains('─'));
+    assert!(!on_a_run, "no is on another branch's run:\n{frame}");
 }

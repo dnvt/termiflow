@@ -830,6 +830,13 @@ impl Canvas {
             .collect()
     }
 
+    /// The reserved fallback route owned by `owner_id`.
+    pub(crate) fn fallback_route_plan(&self, owner_id: &str) -> Option<&FallbackRoutePlan> {
+        self.fallback_route_plans
+            .iter()
+            .find(|plan| plan.owner_id == owner_id)
+    }
+
     /// The corner cells of every reserved fallback route with `strategy`.
     pub(crate) fn fallback_route_corner_points(&self, strategy: &str) -> Vec<(usize, usize)> {
         self.fallback_route_plans
