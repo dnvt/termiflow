@@ -194,7 +194,7 @@ pub(super) fn annotate_subgraph_region(
             return;
         };
         let title_y = subgraph_title_y(bounds, direction);
-        for (i, _) in title_fmt.chars().enumerate() {
+        for i in 0..crate::graph::title_cells(&title_fmt).len() {
             let x = start_x + i;
             if x < canvas.width {
                 canvas.set_meta_only(

@@ -103,7 +103,10 @@ pub fn draw_subgraph(
         let title_fmt = crate::graph::subgraph_title_text(t);
         if let Some(start_x) = crate::graph::subgraph_title_start_x(x, width, t, direction) {
             let title_y = subgraph_title_y(rect, direction);
-            for (i, c) in title_fmt.chars().enumerate() {
+            for (i, c) in crate::graph::title_cells(&title_fmt)
+                .into_iter()
+                .enumerate()
+            {
                 if start_x + i < canvas.width {
                     canvas.set(start_x + i, title_y, c);
                 }

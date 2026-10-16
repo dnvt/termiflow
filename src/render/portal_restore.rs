@@ -424,7 +424,8 @@ pub(super) fn draw_subgraph_title(
     // A line crossing the title row in the wrapper cell after the title
     // would touch the last letter; move the title one cell left, into the
     // free cell before it, so a blank stays between text and line.
-    let trailing_x = start_x + title_fmt.chars().count().saturating_sub(1);
+    let cells = crate::graph::title_cells(&title_fmt);
+    let trailing_x = start_x + cells.len().saturating_sub(1);
     let shift_left = title_gutter.leading_extra_padding == 0
         && title_gutter.trailing_extra_padding == 0
         && holds_route(canvas, trailing_x)
@@ -434,7 +435,7 @@ pub(super) fn draw_subgraph_title(
     if shift_left {
         // The cell the title leaves behind is its old first wrapper space.
         let start_x = start_x - 1;
-        for (i, c) in title_fmt.chars().enumerate() {
+        for (i, &c) in cells.iter().enumerate() {
             let x = start_x + i;
             if x < canvas.width && !holds_route(canvas, x) {
                 canvas.set(x, title_y, c);
@@ -448,7 +449,7 @@ pub(super) fn draw_subgraph_title(
     // nearest first, to a stretch of the row clear of lines with a blank cell
     // on each side. (The gap in the line stays: closing it can complete a path
     // that other routing left ambiguous.) When none fits, write it in place.
-    let width = title_fmt.chars().count();
+    let width = cells.len();
     let border_y = if title_y == rect.y + 1 {
         Some((rect.y, rect.y.checked_sub(1), title_y + 1))
     } else if title_y + 2 == rect.y + rect.height {
@@ -532,7 +533,7 @@ pub(super) fn draw_subgraph_title(
                     canvas.set(x, title_y, ' ');
                 }
             }
-            for (i, c) in title_fmt.chars().enumerate() {
+            for (i, &c) in cells.iter().enumerate() {
                 canvas.set(start + i, title_y, c);
             }
             canvas.record_moved_title(subgraph_id, start);
@@ -563,7 +564,7 @@ pub(super) fn draw_subgraph_title(
         title_gutter.leading_extra_padding,
         title_gutter.trailing_extra_padding,
     );
-    for (i, c) in title_fmt.chars().enumerate() {
+    for (i, &c) in cells.iter().enumerate() {
         if start_x + i < canvas.width {
             let x = start_x + i;
             // Extra topology-owned gutter cells are part of the title

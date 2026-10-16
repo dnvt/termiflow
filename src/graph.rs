@@ -197,9 +197,20 @@ pub fn subgraph_title_text_with_padding_sides(
     format!("{leading}{title}{trailing}")
 }
 
+/// The cells a title token takes on its row: a wide character is followed
+/// by a `'\0'` cell, which printing the row skips.
+pub fn title_cells(text: &str) -> Vec<char> {
+    text.chars()
+        .flat_map(|c| {
+            let padding = crate::style::display_char_width(c).saturating_sub(1);
+            std::iter::once(c).chain(std::iter::repeat_n('\0', padding))
+        })
+        .collect()
+}
+
 /// Display width of the rendered subgraph title token.
 pub fn subgraph_title_len(title: &str) -> usize {
-    subgraph_title_text(title).chars().count()
+    title_cells(&subgraph_title_text(title)).len()
 }
 
 /// Display width of a title token with additional wrapper padding.
@@ -213,9 +224,12 @@ pub fn subgraph_title_len_with_padding_sides(
     leading_extra_padding: usize,
     trailing_extra_padding: usize,
 ) -> usize {
-    subgraph_title_text_with_padding_sides(title, leading_extra_padding, trailing_extra_padding)
-        .chars()
-        .count()
+    title_cells(&subgraph_title_text_with_padding_sides(
+        title,
+        leading_extra_padding,
+        trailing_extra_padding,
+    ))
+    .len()
 }
 
 /// Interior row that carries the subgraph title for the given orientation.

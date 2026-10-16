@@ -195,3 +195,38 @@ A -->|secondary cross cluster heartbeat with long caption| D
         "A -> D's label is not beside its lane:\n{frame}"
     );
 }
+
+/// gen_d_051: a frame title in wide (CJK) characters was written one cell
+/// per character, so its row came out shorter on screen than the frame and
+/// its right wall stood out of line. Every row of a frame now has the same
+/// display width.
+#[test]
+fn a_wide_character_title_keeps_its_frame_square() {
+    let frame = render(
+        "graph BT
+subgraph g1 [処理グループ]
+  A[受信] --> B[解析]
+end
+subgraph g2 [保存グループ]
+  C[書き込み] --> D[確認]
+end
+B --> C
+",
+    );
+    let lines: Vec<&str> = frame.lines().collect();
+    for title in ["処理グループ", "保存グループ"] {
+        let row = lines
+            .iter()
+            .position(|line| line.contains(title))
+            .expect(title);
+        let wall = |line: &str| {
+            let end = line.rfind('┃').expect("right wall") + '┃'.len_utf8();
+            termiflow::display_width(&line[..end])
+        };
+        assert_eq!(
+            wall(lines[row]),
+            wall(lines[row - 1]),
+            "{title}'s row is out of line with its frame:\n{frame}"
+        );
+    }
+}
