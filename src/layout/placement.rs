@@ -502,6 +502,20 @@ impl LayoutSpacingPolicy {
                     .map(|&idx| graph.nodes[idx].id.as_str())
                     .collect();
                 let next_layer_ids = &next_layer_ids;
+                // The first and last layers a frame's members sit on.
+                let frame_layers = |id: &str| {
+                    let mut span: Option<(usize, usize)> = None;
+                    for (at, members) in layers.iter().enumerate() {
+                        if members
+                            .iter()
+                            .any(|&idx| graph.is_node_in_subgraph_tree(&graph.nodes[idx].id, id))
+                        {
+                            span = Some(span.map_or((at, at), |(first, _)| (first, at)));
+                        }
+                    }
+                    span
+                };
+                let frame_layers = &frame_layers;
                 let reserved = layer
                     .iter()
                     .flat_map(|&idx| {
@@ -523,10 +537,17 @@ impl LayoutSpacingPolicy {
                                 let (exits, entries) =
                                     graph.edge_boundary_crossings(&edge.from, &edge.to);
                                 let adjacent = next_layer_ids.contains(edge.to.as_str());
-                                // Between sibling frames the frames' own separation
-                                // already widens the gap.
+                                // Between sibling frames that share a layer, the frames'
+                                // own separation already widens the gap. Frames on layers
+                                // apart get no separation, and the gap between them holds
+                                // both walls (gen_c_118).
                                 let one_sided = exits.is_empty() != entries.is_empty();
-                                let crossed = if adjacent && one_sided {
+                                let layers_apart = || {
+                                    let last = exits.iter().filter_map(|id| frame_layers(id)).map(|(_, hi)| hi).max();
+                                    let first = entries.iter().filter_map(|id| frame_layers(id)).map(|(lo, _)| lo).min();
+                                    matches!((last, first), (Some(last), Some(first)) if last < first)
+                                };
+                                let crossed = if adjacent && (one_sided || layers_apart()) {
                                     exits.len() + entries.len()
                                 } else {
                                     0

@@ -133,3 +133,27 @@ fn a_box_feeding_a_frame_from_the_right_stands_clear_of_its_wall() {
 ";
     assert_frames_intact(&render(input));
 }
+
+/// gen_c_118: a1 -> b2 runs from one frame into the next, on the next layer,
+/// and "cross1" was drawn over both walls: the gap between the frames had no
+/// room for it. The gap now holds the label.
+#[test]
+fn an_lr_label_between_frames_sits_in_their_gap() {
+    let input = "graph LR
+    subgraph A [A]
+        a1[a1]
+        a2[a2]
+    end
+    subgraph B [B]
+        b1[b1]
+        b2[b2]
+    end
+    a1 -->|cross1| b2
+    a2 -->|cross2| b1
+";
+    let frame = render(input);
+    assert_frames_intact(&frame);
+    for label in ["cross1", "cross2"] {
+        assert!(frame.contains(label), "{label} is missing:\n{frame}");
+    }
+}
