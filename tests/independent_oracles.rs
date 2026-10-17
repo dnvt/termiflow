@@ -5064,11 +5064,17 @@ fn topology_reached_nodes(
             let back = route_identity_opposite(step);
             let next_mask = grid.mask(nx, ny);
             // A letter that doubles as a glyph (`o`, `x`) followed by more text
-            // starts a label written flush against the shaft.
+            // starts a label written flush against the shaft; one with a letter
+            // beside it across a vertical shaft ends or sits inside a label
+            // centred on it ("no").
             let after = grid.get(nx + dx, ny + dy);
+            let beside = dy != 0
+                && (grid.get(nx - 1, ny).is_ascii_alphabetic()
+                    || grid.get(nx + 1, ny).is_ascii_alphabetic());
             let in_word = grid.get(nx, ny).is_ascii_alphabetic()
-                && after != ' '
-                && (connectivity_mask(after) == 0 || after.is_ascii_alphabetic());
+                && ((after != ' '
+                    && (connectivity_mask(after) == 0 || after.is_ascii_alphabetic()))
+                    || beside);
             if in_word {
                 if let Some(resume) = topology_label_skip(graph, grid, (nx, ny), step) {
                     queue.push_back((resume.0, resume.1, step));
@@ -5222,6 +5228,23 @@ fn topology_trace_reads_through_a_label_holding_glyph_letters() {
             "an `o` inside a label is text, not an end marker ({direction}):\n{frame}"
         );
     }
+}
+
+/// A label centred on a vertical shaft can end on the shaft with an `o`
+/// ("no"); that `o` is text, not a circle end marker.
+#[test]
+fn topology_trace_reads_through_a_label_ending_in_o_on_a_vertical_shaft() {
+    let input = "graph TD\n    A[Source] -->|no| B[Target]\n";
+    let (graph, frame, _) =
+        boundary_crossing_connectivity_errors(input, BaseStyle::Unicode, false).expect("render");
+    assert!(frame.contains("│\n     no\n      ↓"), "{frame}");
+    let grid = ConnectivityGrid::new(&frame);
+    let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+    let reached = topology_reached_nodes(&graph, &grid, origin, "A", false);
+    assert!(
+        reached.contains("B"),
+        "A -> B must trace through the label:\n{frame}"
+    );
 }
 
 /// gen_d_120: a back edge over the top puts a lane above the topmost box; with
