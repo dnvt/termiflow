@@ -260,3 +260,89 @@ fn a_fan_out_into_other_frames_keeps_its_bus_off_their_walls() {
         );
     }
 }
+
+/// BT: a fan-in from outside a frame into one of its members merges below
+/// the frame's bottom wall, where one trunk then crosses it, instead of on
+/// the wall, which hid the merge and left the sources' lines ending there.
+#[test]
+fn a_bt_fan_in_into_a_frame_merges_below_its_wall() {
+    let input = "graph BT\n  subgraph App [Application]\n    API[REST API]\n    Worker[Background Worker]\n  end\n  API --> PG[(Postgres)]\n  UI[Web UI] --> API\n  Mobile[Mobile App] --> API\n";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        for optimized in [false, true] {
+            let frame = termiflow::render_with_feedback(
+                input,
+                RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimized),
+            )
+            .expect("render")
+            .output;
+            let lines: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+            let label_y = lines
+                .iter()
+                .position(|line| line.iter().collect::<String>().contains("Mobile App"))
+                .unwrap_or_else(|| panic!("Mobile App is missing:\n{frame}"));
+            let (corners, tee, vertical) = match style {
+                BaseStyle::Ascii => (('+', '+'), '+', '|'),
+                _ => (('┌', '┐'), '┴', '│'),
+            };
+            // The merge runs on the row right above the sources' tops.
+            let bus = &lines[label_y - 2];
+            let left = bus.iter().position(|&c| c == corners.0);
+            let right = left
+                .map(|left| {
+                    left + bus[left..]
+                        .iter()
+                        .take_while(|&&c| matches!(c, '-' | '+' | '─' | '┌' | '┐' | '┴'))
+                        .count()
+                        - 1
+                })
+                .filter(|&right| right > left.unwrap_or(right) && bus[right] == corners.1);
+            let (Some(left), Some(right)) = (left, right) else {
+                panic!("no merge below the frame ({style:?} optimized={optimized}):\n{frame}");
+            };
+            assert!(
+                bus[left + 1..right].contains(&tee),
+                "the merge has its trunk ({style:?} optimized={optimized}):\n{frame}"
+            );
+            let wall = &lines[label_y - 3];
+            let wall = &wall[left.min(wall.len())..(right + 1).min(wall.len())];
+            assert_eq!(
+                wall.iter().filter(|&&c| c == vertical).count(),
+                1,
+                "one trunk crosses the wall above the merge ({style:?} optimized={optimized}):\n{frame}"
+            );
+        }
+    }
+}
+
+/// Guard: a BT fan-in whose wide source spans the trunk, right under the
+/// frame, keeps merging where it did: a merge on that source's exit row
+/// would send its line straight up the trunk and leave its branch hanging
+/// (gen_a_168).
+#[test]
+fn a_bt_fan_in_from_a_source_under_the_trunk_keeps_its_branches() {
+    let input = "graph BT\n  subgraph Cache [Multi-tier Cache]\n    L1[In-process LRU]\n    L2[(Redis)]\n    L1 --> L2\n  end\n  Req([Request]) --> L1\n  Pub[Invalidation Pub/Sub] -.-> L1\n";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        for optimized in [false, true] {
+            let frame = termiflow::render_with_feedback(
+                input,
+                RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimized),
+            )
+            .expect("render")
+            .output;
+            let lines: Vec<&str> = frame.lines().collect();
+            let label_y = lines
+                .iter()
+                .position(|line| line.contains("Invalidation"))
+                .unwrap_or_else(|| panic!("Pub is missing:\n{frame}"));
+            let exits = lines[label_y - 2].trim_start();
+            assert!(
+                !exits.starts_with(['─', '-']),
+                "no branch hangs loose above the sources ({style:?} optimized={optimized}):\n{frame}"
+            );
+        }
+    }
+}

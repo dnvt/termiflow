@@ -1825,6 +1825,39 @@ pub fn route_convergent_edges(
                     merge_primary = above;
                 }
             }
+            // A target inside a frame none of the sources share is entered
+            // through one portal; merge outside that frame, on the row below
+            // its bottom border, instead of on the border, where it is hidden.
+            // With no blank row between a source and the frame, that is the
+            // source exit row itself, unless that source's box spans the
+            // trunk: its line would rise straight up the trunk there, leaving
+            // its branch nowhere to start.
+            let spans_trunk =
+                |source: &&Node| source.x <= arrow_x && arrow_x < source.x + source.width;
+            let entered_bottom = graph
+                .node_subgraph_chain(&to.id)
+                .into_iter()
+                .filter(|sg_id| {
+                    !visible_sources
+                        .iter()
+                        .any(|source| graph.is_node_in_subgraph_tree(&source.id, sg_id))
+                })
+                .filter_map(|sg_id| graph.get_subgraph(sg_id))
+                .filter(|sg| sg.bounds.is_valid())
+                .map(|sg| sg.bounds.y + sg.bounds.height.saturating_sub(1))
+                .max();
+            if let Some(bottom) = entered_bottom {
+                let crowded = visible_sources.iter().any(|source| {
+                    spans_trunk(source)
+                        && coords.primary_coord(
+                            edge_exit_point(source, direction).0,
+                            edge_exit_point(source, direction).1,
+                        ) == bottom + 1
+                });
+                if merge_primary <= bottom && bottom < min_exit && !crowded {
+                    merge_primary = bottom + 1;
+                }
+            }
         }
     }
 
