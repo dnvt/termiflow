@@ -172,8 +172,9 @@ fn a_fan_out_branch_clear_of_the_box_keeps_its_row() {
 }
 
 /// gen_a_066: Feature Jobs -> Trainer used to leave Feature Engineering
-/// through its bottom wall. Its detour now turns right above that wall, and
-/// in ASCII, where the turn is a `+`, the wall below it stays whole.
+/// through its bottom wall. Its detour now crosses that wall and turns below
+/// it, and in ASCII, where every turn is a `+`, the wall stays whole but for
+/// that crossing.
 #[test]
 fn an_ascii_wall_under_a_detour_turn_stays_whole() {
     let frame = termiflow::render_with_feedback(
@@ -209,16 +210,20 @@ fn an_ascii_wall_under_a_detour_turn_stays_whole() {
         .collect::<String>()
         .find("|  Feature Engineering")
         .expect("left wall");
-    let bottom = lines
-        .iter()
-        .skip(title + 1)
-        .find(|line| line.get(wall) == Some(&'+') && line.get(wall + 1) == Some(&'-'))
+    let row = (title + 1..lines.len())
+        .find(|&y| lines[y].get(wall) == Some(&'+') && lines[y].get(wall + 1) == Some(&'-'))
         .expect("bottom wall");
+    let bottom = &lines[row];
     let right = (wall + 1..bottom.len())
         .find(|&x| bottom[x] == '+')
         .expect("bottom-right corner");
+    let crossing = |x: usize| {
+        bottom[x] == '|'
+            && lines[row - 1].get(x) == Some(&'|')
+            && matches!(lines[row + 1].get(x), Some('|' | '+'))
+    };
     assert!(
-        bottom[wall..=right].iter().all(|&c| c == '+' || c == '-'),
+        (wall..=right).all(|x| bottom[x] == '-' || x == wall || x == right || crossing(x)),
         "Feature Engineering's bottom wall is broken:\n{frame}"
     );
 }
@@ -541,4 +546,194 @@ F --> C
         .expect("head row");
     let under_d = heads.chars().skip(left).take(width).filter(|c| *c == '↑');
     assert_eq!(under_d.count(), 2, "D lost a head:\n{frame}");
+}
+
+/// gen_a_007: Mgr -> Rej was gathered into Rejected along Mgr's own row,
+/// through the Finance diamond.  Its detour leaves on the run Mgr's fan-out
+/// shares, which is now that fan-out's own line rather than a stray one the
+/// detour seemed to cut, so it is kept, its label with it.
+#[test]
+fn a_detour_leaving_on_a_fan_out_run_is_kept() {
+    let input = "flowchart LR
+    Req[Expense Request] --> Mgr{Manager Approves?}
+    Mgr -- no --> Rej[Rejected]
+    Mgr -- yes --> Amt{Over 5000 USD?}
+    Amt -- yes --> Fin{Finance Approves?}
+    Amt -- no --> Pay[Reimburse]
+    Fin -- yes --> Pay
+    Fin -- no --> Rej
+    Pay --> Notify([Notify Employee])
+    Rej --> Notify
+";
+    let frame = unicode(input);
+    assert!(
+        frame.contains("<  Finance Approves?  >"),
+        "a line runs through Finance Approves?:\n{frame}"
+    );
+    let below = frame
+        .lines()
+        .skip_while(|line| !line.contains("Rejected"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        below.contains("─ no ─"),
+        "Mgr -> Rej has no lane below:\n{frame}"
+    );
+    // In ASCII the turn under the "yes" label is a `+` like any tee; the
+    // line above the label must not grow an arm toward it.
+    let ascii =
+        termiflow::render_with_feedback(input, RenderOptions::new().with_style(BaseStyle::Ascii))
+            .expect("render")
+            .output;
+    let reimburse = ascii
+        .lines()
+        .find(|line| line.contains("Reimburse  +-+"))
+        .expect("Reimburse row");
+    assert!(
+        reimburse.contains("+----->+  Reimburse"),
+        "the arrow into Reimburse grew a stray `+`:\n{ascii}"
+    );
+}
+
+/// gen_a_082: Ok -> Release ran along Schedule Shipment's top border; its
+/// detour now keeps a blank row between its lane and Order Complete, and the
+/// "yes" label nudged off its turn stays whole beside Schedule Shipment.
+#[test]
+fn a_detour_lane_keeps_a_blank_row_off_the_boxes_it_passes() {
+    let frame = unicode(
+        "flowchart LR
+    Order[Create Order] --> Reserve[Reserve Inventory]
+    Reserve --> Charge[Charge Payment]
+    Charge --> Ok{Charge succeeded?}
+    Ok -->|yes| Ship[Schedule Shipment]
+    Ok -->|no| Release[Release Inventory]
+    Release --> CancelO[Cancel Order]
+    Ship --> ShipOk{Carrier accepted?}
+    ShipOk -->|no| Refund[Refund Payment]
+    Refund --> Release
+    ShipOk -->|yes| Complete(((Order Complete)))
+",
+    );
+    let lines: Vec<&str> = frame.lines().collect();
+    let lane = lines
+        .iter()
+        .rposition(|line| line.contains("─ no ─"))
+        .unwrap_or_else(|| panic!("Ok -> Release has no lane below:\n{frame}"));
+    assert!(
+        !lines[lane - 1].contains('╰'),
+        "the lane runs right under Order Complete:\n{frame}"
+    );
+    assert!(
+        !frame.contains("┐yes"),
+        "the yes label is wedged against its branch's turn:\n{frame}"
+    );
+    assert_eq!(
+        frame.matches("yes").count(),
+        2,
+        "a yes label is cut:\n{frame}"
+    );
+}
+
+/// gen_c_092: the skip detour left a's line one cell out, right inside the
+/// First frame's wall; it now turns past the wall, in the gap between the
+/// frames, and no leg runs beside a wall.
+#[test]
+fn a_detour_leg_turns_past_a_frame_wall_it_would_run_beside() {
+    let frame = unicode(
+        "graph RL
+    subgraph A [First]
+        a[a]
+    end
+    subgraph B [Second]
+        b[b]
+    end
+    subgraph C [Third]
+        c[c]
+    end
+    a --> b --> c
+    a -->|skip| c
+",
+    );
+    assert!(
+        frame.contains(" skip "),
+        "the skip edge is not drawn:\n{frame}"
+    );
+    assert!(
+        !frame.contains("┃│") && !frame.contains("│┃"),
+        "a detour leg runs beside a frame wall:\n{frame}"
+    );
+}
+
+/// gen_c_069: cn -> O ran under Parent node; with no lane taking it one
+/// cell out of cn's frame, its detour now turns further along cn's line,
+/// past the wall, and O shows both its heads.
+#[test]
+fn a_detour_turns_further_along_its_line_when_it_must() {
+    let frame = unicode(
+        "graph TD
+    subgraph P [Parent]
+        pn[Parent node]
+        subgraph C [Child]
+            cn[Child node]
+        end
+    end
+    E[Entry] --> cn
+    cn --> pn
+    cn --> O[Outside]
+    pn --> O
+",
+    );
+    assert_eq!(arrowheads(&frame), 4, "cn -> O hidden:\n{frame}");
+}
+
+/// gen_a_177: the only leg left for Auth -> Txn Svc ran down between Core
+/// Domain's and Accounts' walls with a single blank on either side, which
+/// reads as a third wall (`| | |` in ASCII); it is not taken, and the edge
+/// keeps its generic route.
+#[test]
+fn a_detour_leg_stays_out_of_a_corridor_between_walls() {
+    let frame = unicode(
+        "flowchart LR
+    subgraph Users [User Plane]
+        Web[Web]
+        iOS[iOS]
+        Android[Android]
+    end
+    subgraph Edge
+        GW[API Gateway]
+        Auth[OIDC Auth]
+        GW --> Auth
+    end
+    subgraph Core [Core Domain]
+        subgraph Accounts [Accounts]
+            AccSvc[Account Svc]
+            AccDB[(Accounts DB)]
+            AccSvc --> AccDB
+        end
+        subgraph Txns [Transactions]
+            TxSvc[Txn Svc]
+            TxDB[(Txn DB)]
+            TxSvc --> TxDB
+        end
+        AccSvc --> TxSvc
+    end
+    subgraph Async [Async]
+        Bus[[Event Bus]]
+        Statements[Statement Gen]
+        Alerts[Alerts]
+        Bus --> Statements
+        Bus --> Alerts
+    end
+    Web & iOS & Android --> GW
+    Auth --> AccSvc
+    Auth --> TxSvc
+    TxSvc ==> Bus
+    Statements --> PDF[/PDF Storage/]
+    Alerts --> Push[Push Service]
+",
+    );
+    assert!(
+        !frame.contains("┃ │ ┃"),
+        "a detour leg runs between two walls:\n{frame}"
+    );
 }

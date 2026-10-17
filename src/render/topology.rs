@@ -111,7 +111,9 @@ fn frame_connects_up(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     match above.owner_kind {
         CellOwnerKind::EdgeLabel => {
             if y >= 2 {
-                return char_connects_down(frame.get(x, y - 2).map(|cell| cell.ch).unwrap_or(' '));
+                return char_connects_down(frame.get(x, y - 2).map(|cell| cell.ch).unwrap_or(' '))
+                    && !(is_ascii_plain_h(frame.glyph(x, y))
+                        && ascii_corner_is_complete(frame, x, y - 2, (0, 1)));
             }
             return false;
         }
@@ -139,7 +141,9 @@ fn frame_connects_down(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     match below.owner_kind {
         CellOwnerKind::EdgeLabel => {
             if y + 2 < frame.height {
-                return char_connects_up(frame.get(x, y + 2).map(|cell| cell.ch).unwrap_or(' '));
+                return char_connects_up(frame.get(x, y + 2).map(|cell| cell.ch).unwrap_or(' '))
+                    && !(is_ascii_plain_h(frame.glyph(x, y))
+                        && ascii_corner_is_complete(frame, x, y + 2, (0, -1)));
             }
             return false;
         }
@@ -167,7 +171,9 @@ fn frame_connects_left(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     match left.owner_kind {
         CellOwnerKind::EdgeLabel => {
             if x >= 2 {
-                return char_connects_right(frame.get(x - 2, y).map(|cell| cell.ch).unwrap_or(' '));
+                return char_connects_right(frame.get(x - 2, y).map(|cell| cell.ch).unwrap_or(' '))
+                    && !(is_ascii_plain_v(frame.glyph(x, y))
+                        && ascii_corner_is_complete(frame, x - 2, y, (1, 0)));
             }
             return false;
         }
@@ -195,7 +201,9 @@ fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     match right.owner_kind {
         CellOwnerKind::EdgeLabel => {
             if x + 2 < frame.width {
-                return char_connects_left(frame.get(x + 2, y).map(|cell| cell.ch).unwrap_or(' '));
+                return char_connects_left(frame.get(x + 2, y).map(|cell| cell.ch).unwrap_or(' '))
+                    && !(is_ascii_plain_v(frame.glyph(x, y))
+                        && ascii_corner_is_complete(frame, x + 2, y, (-1, 0)));
             }
             return false;
         }
@@ -294,7 +302,9 @@ fn canvas_connects_up(canvas: &Canvas, x: usize, y: usize) -> bool {
     match canvas.get_meta(x, y - 1).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
             if y >= 2 {
-                return char_connects_down(canvas.get(x, y - 2));
+                return char_connects_down(canvas.get(x, y - 2))
+                    && !(is_ascii_plain_h(canvas.get(x, y))
+                        && ascii_corner_is_complete(canvas, x, y - 2, (0, 1)));
             }
             return false;
         }
@@ -319,7 +329,9 @@ fn canvas_connects_down(canvas: &Canvas, x: usize, y: usize) -> bool {
     match canvas.get_meta(x, y + 1).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
             if y + 2 < canvas.height {
-                return char_connects_up(canvas.get(x, y + 2));
+                return char_connects_up(canvas.get(x, y + 2))
+                    && !(is_ascii_plain_h(canvas.get(x, y))
+                        && ascii_corner_is_complete(canvas, x, y + 2, (0, -1)));
             }
             return false;
         }
@@ -344,7 +356,9 @@ fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
     match canvas.get_meta(x - 1, y).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
             if x >= 2 {
-                return char_connects_right(canvas.get(x - 2, y));
+                return char_connects_right(canvas.get(x - 2, y))
+                    && !(is_ascii_plain_v(canvas.get(x, y))
+                        && ascii_corner_is_complete(canvas, x - 2, y, (1, 0)));
             }
             return false;
         }
@@ -369,7 +383,9 @@ fn canvas_connects_right(canvas: &Canvas, x: usize, y: usize) -> bool {
     match canvas.get_meta(x + 1, y).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
             if x + 2 < canvas.width {
-                return char_connects_left(canvas.get(x + 2, y));
+                return char_connects_left(canvas.get(x + 2, y))
+                    && !(is_ascii_plain_v(canvas.get(x, y))
+                        && ascii_corner_is_complete(canvas, x + 2, y, (-1, 0)));
             }
             return false;
         }

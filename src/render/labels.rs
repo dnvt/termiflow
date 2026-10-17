@@ -437,24 +437,14 @@ pub(super) fn draw_edge_label(
                     }
                 }
             } else if let Some(label_row) = outside_row {
-                let label_x = stem_start_x + span_width / 2;
-                let max_label_start = canvas.width.saturating_sub(label_width);
-                let mut label_start_x =
-                    label_x.saturating_sub(label_width / 2).min(max_label_start);
-                label_start_x = adjust_horizontal_label_slot(
-                    label_start_x,
-                    0,
-                    canvas.width,
+                let (label_row, label_start_x) = outside_label_slot(
+                    canvas,
+                    edge_y,
                     label_row,
+                    stem_start_x + span_width / 2,
                     label_width,
                     &[from, to],
                     graph,
-                );
-                label_start_x = keep_label_off_routes(
-                    canvas,
-                    label_start_x,
-                    label_row,
-                    label_width,
                     base_style,
                 );
 
@@ -579,24 +569,14 @@ pub(super) fn draw_edge_label(
                     }
                 }
             } else if let Some(label_row) = outside_row {
-                let label_x = gap_start_x + span_width / 2;
-                let max_label_start = canvas.width.saturating_sub(label_width);
-                let mut label_start_x =
-                    label_x.saturating_sub(label_width / 2).min(max_label_start);
-                label_start_x = adjust_horizontal_label_slot(
-                    label_start_x,
-                    0,
-                    canvas.width,
+                let (label_row, label_start_x) = outside_label_slot(
+                    canvas,
+                    edge_y,
                     label_row,
+                    gap_start_x + span_width / 2,
                     label_width,
                     &[from, to],
                     graph,
-                );
-                label_start_x = keep_label_off_routes(
-                    canvas,
-                    label_start_x,
-                    label_row,
-                    label_width,
                     base_style,
                 );
 
@@ -1183,17 +1163,68 @@ fn pick_outside_horizontal_label_row(
         }
     }
 
-    candidates.into_iter().find(|row| {
-        let intersects_node = nodes.iter().any(|node| {
-            *row >= node.y
-                && *row < node.bottom_y()
-                && label_start_x < node.x + node.width
-                && label_start_x + label_width > node.x
-        });
-        let occupied =
-            (label_start_x..label_start_x + label_width).any(|x| canvas.get(x, *row) != ' ');
-        !intersects_node && !occupied && !is_reserved_subgraph_label_row(graph, *row)
+    candidates.into_iter().find(|&row| {
+        outside_label_row_is_free(canvas, row, label_start_x, label_width, nodes, graph)
     })
+}
+
+/// Whether a label at `label_start_x` on `row` would sit on blank cells, off
+/// every box and off a frame's title or bottom row.
+fn outside_label_row_is_free(
+    canvas: &Canvas,
+    row: usize,
+    label_start_x: usize,
+    label_width: usize,
+    nodes: &[&Node],
+    graph: &Graph,
+) -> bool {
+    let intersects_node = nodes.iter().any(|node| {
+        row >= node.y
+            && row < node.bottom_y()
+            && label_start_x < node.x + node.width
+            && label_start_x + label_width > node.x
+    });
+    let occupied = (label_start_x..label_start_x + label_width).any(|x| canvas.get(x, row) != ' ');
+    !intersects_node && !occupied && !is_reserved_subgraph_label_row(graph, row)
+}
+
+/// The row and start of a label beside the horizontal run on `edge_y`: on
+/// `label_row`, nudged off any route beside it, or, when no slot there is,
+/// on the row as far on the other side of the run if one there is.
+#[allow(clippy::too_many_arguments)]
+fn outside_label_slot(
+    canvas: &Canvas,
+    edge_y: usize,
+    label_row: usize,
+    label_x: usize,
+    label_width: usize,
+    nodes: &[&Node],
+    graph: &Graph,
+    style: &StyleChars,
+) -> (usize, usize) {
+    let max_label_start = canvas.width.saturating_sub(label_width);
+    let centred = label_x.saturating_sub(label_width / 2).min(max_label_start);
+    let slot = |row: usize| {
+        let start =
+            adjust_horizontal_label_slot(centred, 0, canvas.width, row, label_width, nodes, graph);
+        keep_label_off_routes(canvas, start, row, label_width, style, nodes)
+    };
+    let start = match slot(label_row) {
+        Ok(start) => return (label_row, start),
+        Err(start) => start,
+    };
+    let mirror = if label_row < edge_y {
+        Some(edge_y + (edge_y - label_row))
+    } else {
+        edge_y.checked_sub(label_row - edge_y)
+    };
+    mirror
+        .filter(|&row| {
+            row < canvas.height
+                && outside_label_row_is_free(canvas, row, centred, label_width, nodes, graph)
+        })
+        .and_then(|row| slot(row).ok().map(|start| (row, start)))
+        .unwrap_or((label_row, start))
 }
 
 fn is_reserved_subgraph_label_row(graph: &Graph, y: usize) -> bool {
@@ -1763,14 +1794,17 @@ fn source_fans_out(graph: &Graph, node: &Node) -> bool {
 
 /// Nudge an outside-row label so neither neighbour cell is a route glyph: a
 /// label glued to a vertical bus makes the topology stabilizer grow a tee arm
-/// toward the text (`├no`). Keeps the original slot when no nearby slot fits.
+/// toward the text (`├no`). A nudged slot stays off the edge's own boxes,
+/// which are drawn later over any text there. Returns the original slot as
+/// an error when no nearby slot fits.
 fn keep_label_off_routes(
     canvas: &Canvas,
     start_x: usize,
     y: usize,
     width: usize,
     style: &StyleChars,
-) -> usize {
+    nodes: &[&Node],
+) -> Result<usize, usize> {
     let is_route = |x: usize| {
         let ch = canvas.get(x, y);
         ch != ' '
@@ -1782,19 +1816,20 @@ fn keep_label_off_routes(
             && (start..start + width).all(|x| canvas.get(x, y) == ' ')
             && (start == 0 || !is_route(start - 1))
             && !is_route(start + width)
+            && !overlaps_node(nodes, start, y, width)
     };
     if fits(start_x) || !(start_x..start_x + width).all(|x| canvas.get(x, y) == ' ') {
-        return start_x;
+        return Ok(start_x);
     }
     for delta in 1..=2 {
         if fits(start_x + delta) {
-            return start_x + delta;
+            return Ok(start_x + delta);
         }
         if start_x >= delta && fits(start_x - delta) {
-            return start_x - delta;
+            return Ok(start_x - delta);
         }
     }
-    start_x
+    Err(start_x)
 }
 
 /// Draw a back edge's label on the longest straight horizontal run of its

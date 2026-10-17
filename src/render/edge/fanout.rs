@@ -852,7 +852,7 @@ pub fn route_divergent_edges(
                         canvas,
                         style,
                         Some(graph),
-                        None,
+                        Some(route_owner),
                     );
 
                     // Turn onto the vertical spine at the source row.

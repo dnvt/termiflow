@@ -182,18 +182,22 @@ fn plan_blocked_edge_detour(
     }
     // An LR/RL canvas sized tightly around the boxes has no outside lane
     // left; grow it by the lane only when the detour then fits.  A lane
-    // right beside a frame's wall reads as a second wall, notably in ASCII,
-    // where both are drawn alike, so it is taken only when no other fits.
+    // right beside a box or a frame's wall reads as a second border, notably
+    // in ASCII, where all are drawn alike, so it is taken only when no
+    // clearer lane fits, one beside a wall last.
     let mut grown = canvas.clone();
     ensure_detour_lane_capacity(&mut grown, graph, &coords);
     let grows = (grown.width, grown.height) != (canvas.width, canvas.height);
-    for beside_wall in [false, true] {
-        if lower_blocked_edge_detour(graph, canvas, style, claimed, index, beside_wall) {
+    for clearance in [
+        LaneClearance::Clear,
+        LaneClearance::BesideBox,
+        LaneClearance::BesideWall,
+    ] {
+        if lower_blocked_edge_detour(graph, canvas, style, claimed, index, clearance) {
             return true;
         }
         let mut trial = grown.clone();
-        if grows && lower_blocked_edge_detour(graph, &mut trial, style, claimed, index, beside_wall)
-        {
+        if grows && lower_blocked_edge_detour(graph, &mut trial, style, claimed, index, clearance) {
             *canvas = trial;
             return true;
         }
@@ -315,14 +319,16 @@ fn detour_owner_id(edge: &crate::graph::Edge) -> String {
 }
 
 /// Lower the blocked edge at `index` along the first outside lane that
-/// takes it, returning whether one did.
+/// takes it, returning whether one did.  A detour turns off its source's
+/// stem one cell out; only when no lane takes it there does it turn further
+/// along the stem, past a frame wall its leg would otherwise run beside.
 fn lower_blocked_edge_detour(
     graph: &Graph,
     canvas: &mut Canvas,
     style: &StyleChars,
     claimed: &HashSet<usize>,
     index: usize,
-    beside_wall: bool,
+    clearance: LaneClearance,
 ) -> bool {
     let coords = OrientedCoords::new(graph.direction);
     let edge = &graph.edges[index];
@@ -332,7 +338,8 @@ fn lower_blocked_edge_detour(
     };
     let owner_id = detour_owner_id(edge);
     let clean_only = only_blocked_before_its_turn(graph, canvas, index);
-    for lane in detour_lane_candidates(graph, canvas, &coords, source, target, beside_wall) {
+    let mut routes = Vec::new();
+    for lane in detour_lane_candidates(graph, canvas, &coords, source, target, clearance) {
         // A detour that could only arrive on the target's own stem would
         // share it with another edge, and one crossing a gap where a generic
         // bus gathers into the target would merge with that bus, so either
@@ -342,49 +349,75 @@ fn lower_blocked_edge_detour(
         let side_only = entry == adjusted_edge_entry_point(target, graph.direction, graph)
             || target_gap_has_generic_bus(graph, claimed, index);
         let entries: &[bool] = if side_only { &[true] } else { &[false, true] };
-        for &side_entry in entries {
-            let mut plan = FallbackRoutePlan::new(&owner_id, DETOUR_STRATEGY);
-            plan.set_scene_coverage([crate::render::provenance::edge_owner_id(index, edge)]);
-            let built = if side_entry {
-                append_side_entry_detour(&mut plan, source, target, lane, &coords, style, edge.kind)
-            } else {
-                append_shortcut_path(
-                    &mut plan,
-                    source,
-                    entry,
-                    lane,
-                    graph.direction,
-                    style,
-                    edge.kind,
-                )
-            }
-            .and_then(|()| detour_frame_crossings(&plan, graph, canvas, source, target))
-            .and_then(|crossings| {
-                corners_clear_of_boxes(&plan, graph, source, target).map(|()| crossings)
-            });
-            let Ok(crossings) = built else {
-                continue;
-            };
-            if clean_only && !crossings.is_empty() {
-                continue;
-            }
-            // The line replaces the wall where it crosses, as at a portal.
-            for (frame, side, x, y, glyph) in crossings {
-                plan.claim_boundary(frame, side, x, y, glyph);
-                plan.push_paint(x, y, glyph);
-            }
-            if plan.validation_error(canvas.width, canvas.height).is_some() {
-                continue;
-            }
-            let owner = RouteOwner {
-                kind: CellOwnerKind::EdgeSegment,
-                id: owner_id.as_str(),
-            };
-            canvas.set_write_stage("edge-route-plan");
-            return lower_plan(plan, canvas, style, owner);
-        }
+        routes.extend(entries.iter().map(|&side_entry| (lane, entry, side_entry)));
     }
-    false
+    let build = |(lane, entry, side_entry): (usize, (usize, usize), bool), turn_after: usize| {
+        let mut plan = FallbackRoutePlan::new(&owner_id, DETOUR_STRATEGY);
+        plan.set_scene_coverage([crate::render::provenance::edge_owner_id(index, edge)]);
+        let crossings = if side_entry {
+            append_side_entry_detour(
+                &mut plan, source, target, lane, turn_after, &coords, style, edge.kind,
+            )
+        } else {
+            append_shortcut_path(
+                &mut plan,
+                source,
+                entry,
+                lane,
+                turn_after,
+                graph.direction,
+                style,
+                edge.kind,
+            )
+        }
+        .and_then(|()| detour_frame_crossings(&plan, graph, canvas, source, target))
+        .and_then(|crossings| {
+            corners_clear_of_boxes(&plan, graph, source, target).map(|()| crossings)
+        })
+        .and_then(|crossings| legs_clear_of_walls(&plan, graph, &coords).map(|()| crossings))
+        .ok()?;
+        if clearance != LaneClearance::BesideWall
+            && lane_runs_beside_a_box(&plan, graph, &coords, lane)
+                != (clearance == LaneClearance::BesideBox)
+        {
+            return None;
+        }
+        if clean_only && !crossings.is_empty() {
+            return None;
+        }
+        // The line replaces the wall where it crosses, as at a portal.
+        for (frame, side, x, y, glyph) in crossings {
+            plan.claim_boundary(frame, side, x, y, glyph);
+            plan.push_paint(x, y, glyph);
+        }
+        plan.validation_error(canvas.width, canvas.height)
+            .is_none()
+            .then_some(plan)
+    };
+    let start = edge_exit_point(source, graph.direction);
+    let start_primary = coords.primary_coord(start.0, start.1);
+    let (target_primary, _) = node_spans(target, &coords);
+    let reach = target_primary
+        .0
+        .abs_diff(start_primary)
+        .max(target_primary.1.abs_diff(start_primary));
+    let plan = routes
+        .iter()
+        .find_map(|&route| build(route, 1))
+        .or_else(|| {
+            routes
+                .iter()
+                .find_map(|&route| (2..reach).find_map(|turn_after| build(route, turn_after)))
+        });
+    let Some(plan) = plan else {
+        return false;
+    };
+    let owner = RouteOwner {
+        kind: CellOwnerKind::EdgeSegment,
+        id: owner_id.as_str(),
+    };
+    canvas.set_write_stage("edge-route-plan");
+    lower_plan(plan, canvas, style, owner)
 }
 
 /// Grow an LR/RL canvas so both outside lanes below the boxes fit.  Width is
@@ -414,15 +447,15 @@ fn ensure_detour_lane_capacity(canvas: &mut Canvas, graph: &Graph, coords: &Orie
 /// that holds neither end, so the detour crosses only the walls of the
 /// frames it leaves or enters.  Failing those, lanes outside every frame
 /// along the way, which it then leaves and enters through their sides.
-/// Only the lanes right beside the wall of a frame along the way, or only
-/// the others, as `beside_wall` asks.
+/// Only the lanes right beside the wall of a frame along the way when
+/// `clearance` asks for those, or only the others.
 fn detour_lane_candidates(
     graph: &Graph,
     canvas: &Canvas,
     coords: &OrientedCoords,
     source: &Node,
     target: &Node,
-    beside_wall: bool,
+    clearance: LaneClearance,
 ) -> Vec<usize> {
     let (source_primary, _) = node_spans(source, coords);
     let (target_primary, _) = node_spans(target, coords);
@@ -462,9 +495,102 @@ fn detour_lane_candidates(
         along
             .iter()
             .any(|(_, (start, end))| lane.abs_diff(*start) <= 1 || lane.abs_diff(*end) <= 1)
-            == beside_wall
+            == (clearance == LaneClearance::BesideWall)
     });
     lanes
+}
+
+/// How near a detour's lane runs to what it passes along the way.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LaneClearance {
+    /// A blank line away from every box and frame wall.
+    Clear,
+    /// Right beside a box, but not a frame's wall.
+    BesideBox,
+    /// Right beside a frame's wall.
+    BesideWall,
+}
+
+/// Whether the detour in `plan` runs along `lane` right beside a box, where
+/// the lane reads as a second border.
+fn lane_runs_beside_a_box(
+    plan: &FallbackRoutePlan,
+    graph: &Graph,
+    coords: &OrientedCoords,
+    lane: usize,
+) -> bool {
+    let run_axis = match coords.primary {
+        crate::orientation::Axis::Horizontal => FallbackAxis::Horizontal,
+        crate::orientation::Axis::Vertical => FallbackAxis::Vertical,
+    };
+    plan.segments
+        .iter()
+        .filter(|segment| {
+            segment.axis == run_axis
+                && coords.secondary_coord(segment.from.x, segment.from.y) == lane
+        })
+        .any(|segment| {
+            let ends = [
+                coords.primary_coord(segment.from.x, segment.from.y),
+                coords.primary_coord(segment.to.x, segment.to.y),
+            ];
+            let (low, high) = (ends[0].min(ends[1]), ends[0].max(ends[1]));
+            graph.nodes.iter().any(|node| {
+                let (primary, secondary) = node_spans(node, coords);
+                primary.1 >= low
+                    && primary.0 <= high
+                    && (lane + 1 == secondary.0 || lane == secondary.1 + 1)
+            })
+        })
+}
+
+/// A detour leg running right beside a frame's wall reads as a second wall,
+/// and leaves no room to tell which side of it the line is on; one with a
+/// single blank between it and a wall on either side reads as a third (in
+/// ASCII `| | |`).
+fn legs_clear_of_walls(
+    plan: &FallbackRoutePlan,
+    graph: &Graph,
+    coords: &OrientedCoords,
+) -> Result<(), String> {
+    let leg_axis = match coords.secondary {
+        crate::orientation::Axis::Horizontal => FallbackAxis::Horizontal,
+        crate::orientation::Axis::Vertical => FallbackAxis::Vertical,
+    };
+    for segment in plan
+        .segments
+        .iter()
+        .filter(|segment| segment.axis == leg_axis)
+    {
+        let primary = coords.primary_coord(segment.from.x, segment.from.y);
+        let ends = [
+            coords.secondary_coord(segment.from.x, segment.from.y),
+            coords.secondary_coord(segment.to.x, segment.to.y),
+        ];
+        let (low, high) = (ends[0].min(ends[1]), ends[0].max(ends[1]));
+        let walls: Vec<usize> = graph
+            .subgraphs
+            .iter()
+            .filter(|sg| sg.bounds.is_valid())
+            .map(|sg| frame_spans(&sg.bounds, coords))
+            .filter(|(_, span)| low < span.1 && high > span.0)
+            .flat_map(|(walls, _)| [walls.0, walls.1])
+            .collect();
+        let nearest = |before: bool| {
+            walls
+                .iter()
+                .filter(|&&wall| (wall < primary) == before && wall != primary)
+                .map(|wall| wall.abs_diff(primary))
+                .min()
+        };
+        let (before, after) = (nearest(true), nearest(false));
+        if before == Some(1) || after == Some(1) || (before == Some(2) && after == Some(2)) {
+            return Err(format!(
+                "detour leg at {primary} runs beside a frame's wall"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The lanes just past `intervals` on either side, a blank line away first,
@@ -999,6 +1125,7 @@ fn build_plan(
         source,
         shortcut_entry,
         lane,
+        1,
         graph.direction,
         style,
         kind_of(scene.direct_index),
@@ -1155,11 +1282,13 @@ fn append_standard_path(
 
 /// An outside detour that leaves `source` on its flow side, runs along `lane`
 /// and enters `target` on the side facing the lane with its own end glyph.
+#[allow(clippy::too_many_arguments)]
 fn append_side_entry_detour(
     plan: &mut FallbackRoutePlan,
     source: &Node,
     target: &Node,
     lane: usize,
+    turn_after: usize,
     coords: &OrientedCoords,
     style: &StyleChars,
     kind: EdgeKind,
@@ -1200,7 +1329,7 @@ fn append_side_entry_detour(
     };
     let end = point(entry_primary, end_secondary);
     let start = edge_exit_point(source, coords.direction);
-    let start_turn = coords.advance(start.0, start.1, 1);
+    let start_turn = coords.advance(start.0, start.1, turn_after);
     if !flow_before(
         coords.direction,
         coords.primary_coord(start_turn.0, start_turn.1),
@@ -1234,11 +1363,13 @@ fn append_side_entry_detour(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_shortcut_path(
     plan: &mut FallbackRoutePlan,
     source: &Node,
     end: (usize, usize),
     lane: usize,
+    turn_after: usize,
     direction: Direction,
     style: &StyleChars,
     kind: EdgeKind,
@@ -1250,7 +1381,7 @@ fn append_shortcut_path(
     let start = edge_exit_point(source, direction);
     ensure_flow(&coords, start, end)?;
 
-    let start_turn = coords.advance(start.0, start.1, 1);
+    let start_turn = coords.advance(start.0, start.1, turn_after);
     let end_turn = coords.retreat(end.0, end.1, 1);
     if !flow_before(
         direction,
