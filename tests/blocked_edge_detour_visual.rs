@@ -352,3 +352,193 @@ fn a_detour_with_no_lane_inside_its_frames_runs_outside_them() {
     );
     assert_eq!(arrowheads(&frame), 3, "Form -> DB hidden:\n{frame}");
 }
+
+/// gen_a_211: Level -> Allow is gathered along Level's line through the
+/// boxes below it but has no detour; Level -> Block keeps its own.
+#[test]
+fn a_fan_in_edge_without_a_detour_leaves_its_siblings_detoured() {
+    let frame = unicode(
+        "graph TD
+    Login[Login Attempt] --> Risk[Risk Engine]
+    Risk --> Level{Risk level}
+    Level --> Allow[Allow]
+    Level --> StepUp[Step-up MFA]
+    Level --> Block[Block and Alert]
+    StepUp --> MFAok{MFA passed?}
+    MFAok --> Allow
+    MFAok --> Block
+",
+    );
+    let block = frame
+        .lines()
+        .find(|line| line.contains("Block and Alert"))
+        .expect("Block row");
+    assert!(block.contains('←'), "Level -> Block hidden:\n{frame}");
+}
+
+/// gen_c_092: the skip lane under the frames it passes keeps a blank row
+/// between it and their bottom walls, rather than reading as a second wall.
+#[test]
+fn a_detour_lane_keeps_off_frame_walls() {
+    let frame = unicode(
+        "graph RL
+    subgraph A [First]
+        a[a]
+    end
+    subgraph B [Second]
+        b[b]
+    end
+    subgraph C [Third]
+        c[c]
+    end
+    a --> b --> c
+    a -->|skip| c
+",
+    );
+    let lines: Vec<&str> = frame.lines().collect();
+    let bottom = lines
+        .iter()
+        .rposition(|line| line.contains('┗'))
+        .expect("frame bottom");
+    assert!(
+        lines.iter().any(|line| line.contains(" skip ")),
+        "no skip lane:\n{frame}"
+    );
+    assert!(
+        !lines[bottom + 1].contains('─'),
+        "the skip lane runs right under the frames' bottom walls:\n{frame}"
+    );
+}
+
+/// gen_a_070: Score -> Archive is gathered into Archive down Score's own
+/// line, through Email Drip and Engaged?, before it turns; it now detours
+/// down the right side, clear of other lines, its label beside it.
+#[test]
+fn a_fan_in_edge_blocked_before_its_turn_detours() {
+    let frame = unicode(
+        "flowchart TB
+    Lead[Inbound Lead] --> Enrich[Clearbit Enrich]
+    Enrich --> Score{Lead score}
+    Score -->|hot| SDR[Assign SDR]
+    Score -->|warm| Drip[Email Drip]
+    Score -->|cold| Archive[Archive]
+    Drip --> Engaged{Engaged?}
+    Engaged -->|yes| SDR
+    Engaged -->|no| Archive
+    SDR --> Demo[Book Demo]
+",
+    );
+    let archive = frame
+        .lines()
+        .find(|line| line.contains("Archive"))
+        .expect("Archive row");
+    assert!(archive.contains("│←┘"), "Score -> Archive hidden:\n{frame}");
+    assert!(
+        frame.contains("│ cold"),
+        "cold is not on its lane:\n{frame}"
+    );
+}
+
+/// gen_a_179: State -> SIS, blocked on a line into SIS, takes the lane under
+/// the schools before Portal -> SIS, which is blocked only before its turn,
+/// can; the reverse left State's line through High School.
+#[test]
+fn an_edge_blocked_into_its_target_takes_its_lane_first() {
+    let frame = unicode(
+        "graph RL
+    subgraph School [School District]
+        subgraph Schools
+            HS[High School]
+            MS[Middle School]
+            ES[Elementary]
+        end
+        SIS[(Student Info System)]
+        LMS[LMS]
+    end
+    HS & MS & ES --> SIS
+    SIS --> LMS
+    Parents((Parents)) --> Portal[Parent Portal]
+    Portal --> SIS
+    State[State Reporting] --> SIS
+",
+    );
+    let high_school = frame
+        .lines()
+        .find(|line| line.contains("High School"))
+        .expect("High School row");
+    assert!(
+        high_school.contains("High School  │"),
+        "a line runs through High School:\n{frame}"
+    );
+}
+
+/// gen_a_056: Guest -> ISP is blocked only before its turn; its detours
+/// would cross the Printers and Corporate WiFi stems or HQ Office's wall,
+/// so none is taken.
+#[test]
+fn a_detour_for_an_edge_blocked_before_its_turn_crosses_no_line_or_wall() {
+    let frame = unicode(
+        "graph TD
+    subgraph Office [HQ Office]
+        WiFi[Corporate WiFi]
+        Guest[Guest WiFi]
+        Printer[Printers]
+    end
+    subgraph Remote
+        VPN[VPN Client]
+    end
+    WiFi --> Core[Core Switch]
+    Printer --> Core
+    VPN --> Concentrator[VPN Concentrator]
+    Concentrator --> Core
+    Guest --> ISP((ISP))
+    Core --> FW[Firewall]
+    FW --> ISP
+",
+    );
+    let inside: Vec<&str> = frame
+        .lines()
+        .take_while(|line| !line.contains('┗'))
+        .collect();
+    assert!(
+        inside.iter().all(|line| !line.contains('┼')),
+        "a detour crosses the stems inside HQ Office:\n{frame}"
+    );
+    let wall = inside[0].chars().position(|c| c == '┏').expect("HQ Office");
+    assert!(
+        inside[1..]
+            .iter()
+            .all(|line| line.chars().nth(wall) == Some('┃')),
+        "a detour crosses HQ Office's left wall:\n{frame}"
+    );
+}
+
+/// gen_d_150: A -> H is blocked only before its turn; its detour would cross
+/// E's trunk, and D's fan-in would then lose its second head to a merged
+/// bus, so it is not taken.
+#[test]
+fn a_crossed_detour_for_an_edge_blocked_before_its_turn_is_dropped() {
+    let frame = unicode(
+        "%% termiflow: spacing=spacious
+graph BT
+A --> B --> C --> D
+E --> F --> G --> H
+A --> H
+E --> D
+B --> G
+F --> C
+",
+    );
+    let lines: Vec<&str> = frame.lines().collect();
+    let d = lines
+        .iter()
+        .find(|line| line.contains("│  D  │"))
+        .expect("D row");
+    let (left, width) = (d.chars().position(|c| c == '│').expect("D"), 7);
+    let heads = lines
+        .iter()
+        .find(|line| line.contains('↑'))
+        .expect("head row");
+    let under_d = heads.chars().skip(left).take(width).filter(|c| *c == '↑');
+    assert_eq!(under_d.count(), 2, "D lost a head:\n{frame}");
+}

@@ -103,9 +103,12 @@ pub(crate) fn plan_diamond_scenes(
 /// their detour to a line it was in the way of. An edge whose detour cannot
 /// be planned is left to the generic passes, as before.
 ///
-/// A source's blocked edges to different targets are detoured together or
-/// not at all: a detour leaves on the source's stem, which a sibling still
-/// drawn through a box would join to that box.
+/// A source's edges blocked on a line into their targets are detoured
+/// together or not at all: a detour leaves on the source's stem, which a
+/// sibling still drawn through a box would join to that box.  An edge a
+/// fan-in gathers along a blocked line, before it turns toward its target,
+/// is detoured where it can be; one that cannot be is left to the generic
+/// passes without taking its siblings' detours with it.
 pub(crate) fn plan_blocked_edge_detours(
     graph: &Graph,
     canvas: &mut Canvas,
@@ -144,7 +147,11 @@ pub(crate) fn plan_blocked_edge_detours(
                 .iter()
                 .any(|&other| graph.edges[other].to == graph.edges[*index].to)
         };
-        if left.iter().all(reached) {
+        if left
+            .iter()
+            .filter(|&&index| !only_blocked_before_its_turn(graph, canvas, index))
+            .all(reached)
+        {
             planned.extend(lowered);
         } else {
             *canvas = before;
@@ -173,18 +180,23 @@ fn plan_blocked_edge_detour(
     if span_has_back_edge_node(graph, source, target, &coords) {
         return false;
     }
-    if lower_blocked_edge_detour(graph, canvas, style, claimed, index) {
-        return true;
-    }
     // An LR/RL canvas sized tightly around the boxes has no outside lane
-    // left; grow it by the lane only when the detour then fits.
+    // left; grow it by the lane only when the detour then fits.  A lane
+    // right beside a frame's wall reads as a second wall, notably in ASCII,
+    // where both are drawn alike, so it is taken only when no other fits.
     let mut grown = canvas.clone();
     ensure_detour_lane_capacity(&mut grown, graph, &coords);
-    if (grown.width, grown.height) != (canvas.width, canvas.height)
-        && lower_blocked_edge_detour(graph, &mut grown, style, claimed, index)
-    {
-        *canvas = grown;
-        return true;
+    let grows = (grown.width, grown.height) != (canvas.width, canvas.height);
+    for beside_wall in [false, true] {
+        if lower_blocked_edge_detour(graph, canvas, style, claimed, index, beside_wall) {
+            return true;
+        }
+        let mut trial = grown.clone();
+        if grows && lower_blocked_edge_detour(graph, &mut trial, style, claimed, index, beside_wall)
+        {
+            *canvas = trial;
+            return true;
+        }
     }
     false
 }
@@ -226,7 +238,13 @@ pub(crate) fn detours_in_the_way(
                     })
                 })
             });
-            if cut || labelled_over {
+            // A detour taken only because the edge was blocked before its turn
+            // stays only while no other line crosses it.
+            let crossed = only_blocked_before_its_turn(graph, canvas, index)
+                && canvas
+                    .fallback_route_plan(&owner_id)
+                    .is_some_and(|plan| !plan.shared_cells.is_empty());
+            if cut || labelled_over || crossed {
                 return true;
             }
             let Some(target) = graph.get_node(&edge.to) else {
@@ -304,6 +322,7 @@ fn lower_blocked_edge_detour(
     style: &StyleChars,
     claimed: &HashSet<usize>,
     index: usize,
+    beside_wall: bool,
 ) -> bool {
     let coords = OrientedCoords::new(graph.direction);
     let edge = &graph.edges[index];
@@ -312,7 +331,8 @@ fn lower_blocked_edge_detour(
         return false;
     };
     let owner_id = detour_owner_id(edge);
-    for lane in detour_lane_candidates(graph, canvas, &coords, source, target) {
+    let clean_only = only_blocked_before_its_turn(graph, canvas, index);
+    for lane in detour_lane_candidates(graph, canvas, &coords, source, target, beside_wall) {
         // A detour that could only arrive on the target's own stem would
         // share it with another edge, and one crossing a gap where a generic
         // bus gathers into the target would merge with that bus, so either
@@ -345,6 +365,9 @@ fn lower_blocked_edge_detour(
             let Ok(crossings) = built else {
                 continue;
             };
+            if clean_only && !crossings.is_empty() {
+                continue;
+            }
             // The line replaces the wall where it crosses, as at a portal.
             for (frame, side, x, y, glyph) in crossings {
                 plan.claim_boundary(frame, side, x, y, glyph);
@@ -391,12 +414,15 @@ fn ensure_detour_lane_capacity(canvas: &mut Canvas, graph: &Graph, coords: &Orie
 /// that holds neither end, so the detour crosses only the walls of the
 /// frames it leaves or enters.  Failing those, lanes outside every frame
 /// along the way, which it then leaves and enters through their sides.
+/// Only the lanes right beside the wall of a frame along the way, or only
+/// the others, as `beside_wall` asks.
 fn detour_lane_candidates(
     graph: &Graph,
     canvas: &Canvas,
     coords: &OrientedCoords,
     source: &Node,
     target: &Node,
+    beside_wall: bool,
 ) -> Vec<usize> {
     let (source_primary, _) = node_spans(source, coords);
     let (target_primary, _) = node_spans(target, coords);
@@ -432,6 +458,12 @@ fn detour_lane_candidates(
             }
         }
     }
+    lanes.retain(|lane| {
+        along
+            .iter()
+            .any(|(_, (start, end))| lane.abs_diff(*start) <= 1 || lane.abs_diff(*end) <= 1)
+            == beside_wall
+    });
     lanes
 }
 
@@ -570,6 +602,14 @@ fn detour_frame_crossings(
     Ok(crossings)
 }
 
+/// Whether the edge at `index` is blocked only on the line a fan-in gathers
+/// it along, before it turns toward its target.  Drawn generically it is
+/// short, if hidden, so a detour for it must be clean: clear of frame walls
+/// and of other lines.
+fn only_blocked_before_its_turn(graph: &Graph, canvas: &Canvas, index: usize) -> bool {
+    !edge_path_is_blocked(graph, canvas, index)
+}
+
 /// A detour corner right beside a box other than its own endpoints would
 /// read as a port on that box, notably in ASCII where every corner is `+`.
 fn corners_clear_of_boxes(
@@ -681,6 +721,18 @@ pub(crate) fn settle_blocked_edge_detour_joins(canvas: &mut Canvas, style: &Styl
 /// the target's side, and some node other than its endpoints lies between
 /// them along the flow and covers that line.
 pub(crate) fn edge_path_is_blocked(graph: &Graph, canvas: &Canvas, index: usize) -> bool {
+    source_line_crosses_a_box(graph, canvas, index, true)
+}
+
+/// Whether the forward edge at `index` leaves on a line that runs through
+/// another node between its ends along the flow; with `into_target`, only
+/// when that line also runs straight into the target's side.
+fn source_line_crosses_a_box(
+    graph: &Graph,
+    canvas: &Canvas,
+    index: usize,
+    into_target: bool,
+) -> bool {
     let Some(edge) = graph.edges.get(index) else {
         return false;
     };
@@ -707,7 +759,7 @@ pub(crate) fn edge_path_is_blocked(graph: &Graph, canvas: &Canvas, index: usize)
     };
     let line = coords.secondary_coord(start.0, start.1);
     let (_, target_secondary) = node_spans(target, &coords);
-    if line < target_secondary.0 || line > target_secondary.1 {
+    if into_target && (line < target_secondary.0 || line > target_secondary.1) {
         return false;
     }
     line_crosses_a_box(graph, canvas, source, target, (low, high), line)
@@ -715,7 +767,8 @@ pub(crate) fn edge_path_is_blocked(graph: &Graph, canvas: &Canvas, index: usize)
 
 /// Whether the generic passes would draw the blocked edge at `index` through
 /// another node's box.  A target that other generic edges also feed gathers
-/// them on the sources' lines, where the edge is blocked; any other target is
+/// them on the sources' lines, turning only just before the target, so the
+/// edge is blocked wherever its own line crosses a box; any other target is
 /// reached by a branch along its own entry line, which may pass the box.
 fn generic_route_is_blocked(
     graph: &Graph,
@@ -723,9 +776,6 @@ fn generic_route_is_blocked(
     claimed: &HashSet<usize>,
     index: usize,
 ) -> bool {
-    if !edge_path_is_blocked(graph, canvas, index) {
-        return false;
-    }
     let edge = &graph.edges[index];
     let fan_in = graph.edges.iter().enumerate().any(|(other, other_edge)| {
         other != index
@@ -735,7 +785,10 @@ fn generic_route_is_blocked(
             && other_edge.to == edge.to
     });
     if fan_in {
-        return true;
+        return source_line_crosses_a_box(graph, canvas, index, false);
+    }
+    if !edge_path_is_blocked(graph, canvas, index) {
+        return false;
     }
     let (Some(source), Some(target)) = (graph.get_node(&edge.from), graph.get_node(&edge.to))
     else {
