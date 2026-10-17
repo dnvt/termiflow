@@ -3751,14 +3751,16 @@ fn mixed_edge_kind_fanout_preserves_source_enclosure_and_edge_identity() {
                 .lines()
                 .find(|line| line.contains("Hub"))
                 .expect("Hub row in mixed edge-kind fanout frame");
+            // RL: the shared line leaves Hub through a port on its left wall,
+            // as a single-kind fan-out does; the right wall stays whole.
             let expected_hub = match style {
-                BaseStyle::Ascii => "|  Hub  |",
-                BaseStyle::Unicode => "│  Hub  │",
+                BaseStyle::Ascii => "+  Hub  |",
+                BaseStyle::Unicode => "┤  Hub  │",
                 _ => unreachable!("oracle only covers ASCII and Unicode styles"),
             };
             assert!(
                 hub_line.contains(expected_hub),
-                "mixed edge-kind fanout must retain a complete Hub enclosure for {style:?} optimized={optimized}:\n{}",
+                "mixed edge-kind fanout must leave Hub through a port and keep its other wall for {style:?} optimized={optimized}:\n{}",
                 first.output
             );
 

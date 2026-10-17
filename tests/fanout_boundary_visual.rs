@@ -178,3 +178,39 @@ fn a_near_miss_fan_out_drop_meets_the_stem() {
         );
     }
 }
+
+/// gen_a_227's REST Client, gen_c_136's c: an LR/RL source fanning out to
+/// edges of different kinds kept a plain wall where its shared line leaves
+/// (`│──────┤`), so the line read as stopping short of the box; it now gets
+/// the port a single-kind fan-out gets.
+#[test]
+fn a_mixed_kind_fan_out_leaves_its_source_through_a_port() {
+    for (direction, ports) in [("LR", ['├', '+']), ("RL", ['┤', '+'])] {
+        let input = format!(
+            "flowchart {direction}
+    A[REST] --> B[Backend]
+    A -.-> C[Room]
+"
+        );
+        for (style, port) in [BaseStyle::Unicode, BaseStyle::Ascii]
+            .into_iter()
+            .zip(ports)
+        {
+            let frame =
+                termiflow::render_with_feedback(&input, RenderOptions::new().with_style(style))
+                    .expect("render")
+                    .output;
+            let row = frame
+                .lines()
+                .find(|line| line.contains("REST"))
+                .expect("source row");
+            let (before, after) = row.split_once("REST").expect("source label");
+            let exit_side = if direction == "LR" {
+                after.trim_start().chars().next()
+            } else {
+                before.trim_end().chars().last()
+            };
+            assert_eq!(exit_side, Some(port), "{direction} {style:?}:\n{frame}");
+        }
+    }
+}

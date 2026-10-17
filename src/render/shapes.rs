@@ -143,7 +143,7 @@ pub fn draw_node(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_node_with_terminal_entry_policy(
+pub(crate) fn draw_node_with_terminal_entry_policy(
     canvas: &mut Canvas,
     x: usize,
     y: usize,
@@ -233,98 +233,6 @@ fn draw_node_with_terminal_entry_policy(
             direction,
             false,
         ),
-    }
-}
-
-/// Draw a node while preserving its horizontal source wall for a generic
-/// multi-edge fanout.
-///
-/// `draw_boxlike` normally replaces a side wall with a junction when a route
-/// is immediately outside the node. That is useful for a single visible port,
-/// but it conflates the enclosure with the shared collector used by a
-/// multi-edge fanout. The route remains connected through the adjacent cell;
-/// restoring the shape-owned wall keeps the node boundary independently
-/// legible.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_node_with_fanout_policy(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    label_lines: &[String],
-    shape: NodeShape,
-    style: &StyleChars,
-    direction: Direction,
-    preserve_horizontal_side_wall: bool,
-    preserve_database_terminal_entry_wall: bool,
-) {
-    draw_node_with_terminal_entry_policy(
-        canvas,
-        x,
-        y,
-        width,
-        height,
-        label_lines,
-        shape,
-        style,
-        direction,
-        preserve_database_terminal_entry_wall,
-    );
-
-    if !preserve_horizontal_side_wall || !matches!(direction, Direction::LR | Direction::RL) {
-        return;
-    }
-
-    let Some((left_side, right_side)) = fanout_side_walls(shape, style) else {
-        return;
-    };
-    let center_y = y + height.max(3) / 2;
-    let (side_x, side_char) = match direction {
-        Direction::LR => (x + width.saturating_sub(1), right_side),
-        Direction::RL => (x, left_side),
-        Direction::TD | Direction::TB | Direction::BT => return,
-    };
-    if side_x < canvas.width && center_y < canvas.height {
-        canvas.set(side_x, center_y, side_char);
-    }
-}
-
-pub(crate) fn supports_horizontal_fanout_wall(shape: NodeShape) -> bool {
-    matches!(
-        shape,
-        NodeShape::Rectangle
-            | NodeShape::Rounded
-            | NodeShape::Stadium
-            | NodeShape::Hexagon
-            | NodeShape::Database
-            | NodeShape::Subroutine
-            | NodeShape::Parallelogram
-            | NodeShape::ParallelogramAlt
-            | NodeShape::Trapezoid
-            | NodeShape::TrapezoidAlt
-    )
-}
-
-fn fanout_side_walls(shape: NodeShape, style: &StyleChars) -> Option<(char, char)> {
-    match shape {
-        NodeShape::Rectangle
-        | NodeShape::Rounded
-        | NodeShape::Database
-        | NodeShape::Parallelogram
-        | NodeShape::ParallelogramAlt
-        | NodeShape::Trapezoid
-        | NodeShape::TrapezoidAlt => Some((style.v, style.v)),
-        NodeShape::Stadium => Some(('(', ')')),
-        NodeShape::Hexagon => Some(('<', '>')),
-        NodeShape::Subroutine => {
-            let double_vertical = if style.tl == '┌' { '║' } else { '|' };
-            Some((double_vertical, double_vertical))
-        }
-        NodeShape::Diamond
-        | NodeShape::Circle
-        | NodeShape::DoubleCircle
-        | NodeShape::Asymmetric => None,
     }
 }
 
@@ -1188,59 +1096,6 @@ mod tests {
         assert_eq!(rows[0].chars().next(), Some('┌'));
         assert_eq!(rows[0].chars().last(), Some('┐'));
         assert_eq!(rows[1].chars().last(), Some('│'));
-    }
-
-    #[test]
-    fn fanout_source_policy_preserves_horizontal_side_wall_in_both_directions_and_styles() {
-        for style in [&ASCII_CHARS, &UNICODE_CHARS] {
-            for direction in [Direction::LR, Direction::RL] {
-                let mut preserved = mk_canvas(20, 5);
-                let (outside_x, node_x, wall_x, expected_wall, expected_junction) = match direction
-                {
-                    Direction::LR => (12, 4, 11, style.v, style.junction_right),
-                    Direction::RL => (3, 4, 4, style.v, style.junction_left),
-                    Direction::TD | Direction::TB | Direction::BT => unreachable!(),
-                };
-                preserved.set(outside_x, 2, style.edge_h);
-                draw_node_with_fanout_policy(
-                    &mut preserved,
-                    node_x,
-                    1,
-                    8,
-                    3,
-                    &lines("Hub"),
-                    NodeShape::Rectangle,
-                    style,
-                    direction,
-                    true,
-                    false,
-                );
-                assert_eq!(
-                    preserved.get(wall_x, 2),
-                    expected_wall,
-                    "fanout source wall was not preserved for {style:?} {direction:?}"
-                );
-
-                let mut ordinary = mk_canvas(20, 5);
-                ordinary.set(outside_x, 2, style.edge_h);
-                draw_node(
-                    &mut ordinary,
-                    node_x,
-                    1,
-                    8,
-                    3,
-                    &lines("Hub"),
-                    NodeShape::Rectangle,
-                    style,
-                    direction,
-                );
-                assert_eq!(
-                    ordinary.get(wall_x, 2),
-                    expected_junction,
-                    "ordinary source port changed for {style:?} {direction:?}"
-                );
-            }
-        }
     }
 
     #[test]

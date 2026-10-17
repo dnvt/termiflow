@@ -735,44 +735,6 @@ fn render_frame(
 
     ensure_vertical_edge_label_width(&mut canvas, graph, config);
 
-    // Generic horizontal fanout routes share a collector immediately outside
-    // the source. Keep the source's shape-owned wall distinct from that
-    // collector; single-edge ports and planned/dense routes retain their
-    // existing junction ownership.
-    let horizontal_fanout_sources: HashSet<&str> =
-        if matches!(graph.direction, Direction::LR | Direction::RL) {
-            source_ids
-                .iter()
-                .copied()
-                .filter(|source_id| {
-                    edges_by_source.get(*source_id).is_some_and(|targets| {
-                        let mut edge_kinds = Vec::new();
-                        let unprocessed_count = targets
-                            .iter()
-                            .filter(|target| {
-                                !processed_edges.contains(&(*source_id, target.id.as_str()))
-                            })
-                            .filter_map(|target| {
-                                graph.edges.iter().find(|edge| {
-                                    !edge.is_back_edge
-                                        && edge.from == **source_id
-                                        && edge.to == target.id
-                                })
-                            })
-                            .inspect(|edge| {
-                                if !edge_kinds.contains(&edge.kind) {
-                                    edge_kinds.push(edge.kind);
-                                }
-                            })
-                            .count();
-                        unprocessed_count >= 2 && edge_kinds.len() >= 2
-                    })
-                })
-                .collect()
-        } else {
-            HashSet::new()
-        };
-
     // Draw edge labels (route-aware for precomputed paths, heuristic for fallback paths)
     canvas.set_write_stage("edge-label");
     let mut edge_label_placements = Vec::new();
@@ -913,7 +875,7 @@ fn render_frame(
         } else {
             &node.label_lines
         };
-        shapes::draw_node_with_fanout_policy(
+        shapes::draw_node_with_terminal_entry_policy(
             &mut canvas,
             node.x,
             node.y,
@@ -923,7 +885,6 @@ fn render_frame(
             node.shape,
             &chars,
             graph.direction,
-            horizontal_fanout_sources.contains(node.id.as_str()),
             database_terminal_target == Some(node.id.as_str()),
         );
         annotate_node_region(&mut canvas, node, &chars);
@@ -942,11 +903,6 @@ fn render_frame(
             continue;
         };
         if !canvas.is_visible(from) {
-            continue;
-        }
-        if horizontal_fanout_sources.contains(from.id.as_str())
-            && shapes::supports_horizontal_fanout_wall(from.shape)
-        {
             continue;
         }
         // Diamond points and asymmetric Flag contours are shape-owned, not
