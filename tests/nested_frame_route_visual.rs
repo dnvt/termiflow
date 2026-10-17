@@ -436,3 +436,97 @@ fn a_td_fan_in_from_nested_depths_merges_below_the_frames() {
         "three branches reach the merge bar below the frames:\n{frame}"
     );
 }
+
+/// A BT nested frame carries its title over its bottom wall; a parent box at
+/// the rank of the nested frame's boxes was laid on that wall, which ran
+/// through the box's top border (gen_c_027). It now sits below the wall.
+#[test]
+fn a_parent_box_under_a_bt_nested_frame_clears_its_bottom_wall() {
+    let input = "graph BT
+    Src[Source] --> P1
+    Src --> C1
+    Src --> C2
+    subgraph Par [Parent]
+        P1[Parent node]
+        subgraph Ch [Child]
+            C1[Child one]
+            C2[Child two]
+        end
+    end
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        for optimized in [false, true] {
+            let frame = termiflow::render_with_feedback(
+                input,
+                RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimized),
+            )
+            .expect("render")
+            .output;
+            let lines: Vec<&str> = frame.lines().collect();
+            let row_of = |text: &str| {
+                lines
+                    .iter()
+                    .position(|line| line.contains(text))
+                    .expect(text)
+            };
+            let child_wall = row_of("  Child  ") + 1;
+            let parent_top = row_of("Parent node") - 1;
+            assert!(
+                child_wall < parent_top,
+                "Parent node's top border must sit below Child's bottom wall \
+                 ({style:?}, optimized={optimized}):\n{frame}"
+            );
+        }
+    }
+}
+
+/// Rows open under a frame only for a box under the frame's own columns: a
+/// parent box beside a nested frame keeps its place in the frame's rows.
+#[test]
+fn a_parent_box_beside_a_nested_frame_keeps_its_rows() {
+    let input = "graph LR
+    O1[Ext A] --> K
+    O2[Ext B] --> K
+    subgraph P [Parent]
+        Q[Peer]
+        subgraph I [Key]
+            K[(Vault)]
+        end
+        Q --> K
+    end
+    K --> O3[Ext C]
+    K --> Q
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        for optimized in [false, true] {
+            let frame = termiflow::render_with_feedback(
+                input,
+                RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimized),
+            )
+            .expect("render")
+            .output;
+            let lines: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+            let row_of = |text: &str| {
+                lines
+                    .iter()
+                    .position(|line| line.iter().collect::<String>().contains(text))
+                    .expect(text)
+            };
+            let title = row_of("  Key  ");
+            let text: String = lines[title].iter().collect();
+            let wall = text[..text.find("  Key  ").unwrap()].chars().count() - 1;
+            let key_bottom = (title + 1..lines.len())
+                .find(|&row| matches!(lines[row][wall], '┗' | '+'))
+                .expect("Key's bottom wall");
+            assert!(
+                row_of("Peer") <= key_bottom,
+                "Peer sits beside Key, not under it, and keeps its rows \
+                 ({style:?}, optimized={optimized}):\n{frame}"
+            );
+        }
+    }
+}

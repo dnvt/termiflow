@@ -4924,6 +4924,12 @@ pub(super) fn resolve_subgraph_envelopes(
         adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
     }
 
+    if open_rows_under_frames_for_foreign_boxes(input.graph, config, placement) {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
     // Earlier passes move nodes independently (envelope eviction, recentring,
     // corridor reservation) and can stack two boxes on the same cells, which
     // hides one node entirely. Separate any remaining collision last.
@@ -4939,6 +4945,58 @@ pub(super) fn resolve_subgraph_envelopes(
     }
 
     subgraph_envelopes
+}
+
+/// A box outside a frame, left below the frame's boxes but still within its
+/// rows and columns, sits on its wall or title (gen_c_027's Parent node on
+/// the nested Child frame's bottom wall in BT): open rows under the frame.
+fn open_rows_under_frames_for_foreign_boxes(
+    graph: &Graph,
+    config: &CoarseLayoutConfig,
+    placement: &mut Placement,
+) -> bool {
+    let mut moved = false;
+    for _ in 0..8 {
+        let envelopes = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
+        let mut open: Option<(usize, usize)> = None;
+        for subgraph in &graph.subgraphs {
+            let Some(env) = envelopes.get(&subgraph.id) else {
+                continue;
+            };
+            let members_bottom = placement
+                .node_rects
+                .iter()
+                .filter(|(id, _)| graph.is_node_in_subgraph_tree(id, &subgraph.id))
+                .map(|(_, rect)| rect.bottom())
+                .max();
+            for rect in placement.node_rects.values() {
+                if !rects_overlap_horizontally(*rect, env.outer)
+                    || !rects_overlap_vertically(*rect, env.outer)
+                    || members_bottom.is_none_or(|bottom| rect.y < bottom)
+                {
+                    continue;
+                }
+                let delta = env.outer.bottom() + 1 - rect.y;
+                if open.is_none_or(|(row, _)| rect.y < row) {
+                    open = Some((rect.y, delta));
+                }
+            }
+        }
+        let Some((row, delta)) = open else {
+            break;
+        };
+        moved = true;
+        for (id, rect) in placement.node_rects.iter_mut() {
+            if rect.y >= row {
+                rect.y += delta;
+                if let Some(position) = placement.positions.get_mut(id) {
+                    position.y += delta;
+                }
+            }
+        }
+        placement.canvas.height += delta;
+    }
+    moved
 }
 
 /// BT stacking can leave a tall empty band between a top-level frame and the
