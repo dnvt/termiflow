@@ -424,40 +424,71 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
                 break;
             };
 
-            // In BT, an outside node that follows the frame, its one edge coming
-            // from a member it sits below, stays below that member: left
-            // behind, the shifted member would land on or past it and the flip
-            // would leave it under it (gen_a_228's Offer under Interview
-            // Loop). TD/LR passes after this one already part such a node.
-            let followers: Vec<String> = input
-                .graph
-                .nodes
-                .iter()
-                .filter(|_| input.graph.direction == Direction::BT)
-                .filter(|node| input.graph.get_node_subgraph(&node.id).is_none())
-                .filter(|node| {
-                    let Some(rect) = placement.node_rects.get(&node.id) else {
-                        return false;
-                    };
-                    let sources = input
+            // In BT, an outside node that follows the frame, fed only by one of
+            // its members or by such a node, stays past it: left behind, the
+            // shifted member would land on or past it and the flip would leave
+            // it under it (gen_a_228's Offer under Interview Loop, gen_a_248's
+            // Controller under Planning and the actuators under Controller). A
+            // node outside any frame or in one enclosing this one moves alone
+            // without splitting its own frame. A target several members feed
+            // keeps the corridor beside the frames its fan-in is planned for
+            // (subgraph_complex_bt). TD/LR passes after this one already part
+            // such a node.
+            let encloses_frame = |own: &str| {
+                let mut current = input
+                    .graph
+                    .get_subgraph(&sg_id)
+                    .and_then(|subgraph| subgraph.parent_id.as_deref());
+                while let Some(id) = current {
+                    if id == own {
+                        return true;
+                    }
+                    current = input
+                        .graph
+                        .get_subgraph(id)
+                        .and_then(|subgraph| subgraph.parent_id.as_deref());
+                }
+                false
+            };
+            let mut followers: Vec<String> = Vec::new();
+            let mut grew = input.graph.direction == Direction::BT;
+            while grew {
+                let before = followers.len();
+                for node in &input.graph.nodes {
+                    if followers.contains(&node.id)
+                        || input.graph.is_node_in_subgraph_tree(&node.id, &sg_id)
+                        || !input
+                            .graph
+                            .get_node_subgraph(&node.id)
+                            .is_none_or(encloses_frame)
+                    {
+                        continue;
+                    }
+                    let mut incoming = input
                         .graph
                         .edges
                         .iter()
-                        .filter(|edge| edge.from == node.id || edge.to == node.id)
-                        .map(|edge| {
-                            (edge.to == node.id
-                                && input.graph.is_node_in_subgraph_tree(&edge.from, &sg_id))
-                            .then(|| placement.node_rects.get(&edge.from))
-                            .flatten()
-                        })
-                        .collect::<Vec<_>>();
-                    // A target several members feed keeps the corridor beside the
-                    // frames its fan-in is planned for (subgraph_complex_bt).
-                    matches!(sources.as_slice(), [Some(source)]
-                        if source.y < rect.y && source.y + delta >= rect.y)
-                })
-                .map(|node| node.id.clone())
-                .collect();
+                        .filter(|edge| !edge.is_back_edge && edge.to == node.id);
+                    let (Some(edge), None) = (incoming.next(), incoming.next()) else {
+                        continue;
+                    };
+                    let carried = input.graph.is_node_in_subgraph_tree(&edge.from, &sg_id)
+                        || followers.contains(&edge.from);
+                    let overtaken = match (
+                        placement.node_rects.get(&edge.from),
+                        placement.node_rects.get(&node.id),
+                    ) {
+                        (Some(source), Some(rect)) => {
+                            source.y < rect.y && source.y + delta >= rect.y
+                        }
+                        _ => false,
+                    };
+                    if carried && overtaken {
+                        followers.push(node.id.clone());
+                    }
+                }
+                grew = followers.len() > before;
+            }
 
             // Shift every node in the subgraph tree down: a frame holding only
             // nested frames has no direct members to move.

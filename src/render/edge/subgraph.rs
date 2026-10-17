@@ -2810,6 +2810,8 @@ struct BtSiblingRoutePlanContext<'a> {
     owner_id: String,
     edge_from_id: &'a str,
     edge_to_id: &'a str,
+    /// The caller can move the arrowhead along the target's entry edge.
+    movable_arrow: bool,
 }
 
 fn build_bt_sibling_route_plan(
@@ -2826,6 +2828,7 @@ fn build_bt_sibling_route_plan(
         owner_id,
         edge_from_id,
         edge_to_id,
+        movable_arrow,
     } = context;
     let source_top_y = source_sg.bounds.y;
     let target_bottom_y = target_sg
@@ -2845,11 +2848,26 @@ fn build_bt_sibling_route_plan(
     // bridge clears both the lower node branch and the title band; ordinary
     // sibling corridors retain their established one-row policy.
     let exact_mixed_scene = graph.bt_sibling_target_entry_scene().is_some();
+    // The row over the title where a lane off the arrow turns back to it.
+    // Without one, a lane enters straight: under the arrow, or, when the
+    // caller can move the arrow, anywhere on the target's flat entry edge if
+    // that is the target's only way in (gen_a_118's Reward Model, centred
+    // under Training Stages' title, had no line at all).
     let inside_y = bt_title_safe_entry_y_with_margin(target_sg, usize::from(exact_mixed_scene) + 1)
-        .ok_or_else(|| "target has no BT title-safe row".to_owned())?;
-    if arrow_y >= inside_y {
-        return Err("target arrow is not above the BT title-safe attachment row".to_owned());
-    }
+        .filter(|&inside_y| arrow_y < inside_y);
+    let takes_lane = |lane: usize| {
+        graph.get_node(edge_to_id).is_some_and(|node| {
+            node.shape.has_flat_vertical_entry()
+                && lane >= node.x + 2
+                && lane + 3 <= node.x + node.width
+                && graph
+                    .edges
+                    .iter()
+                    .filter(|edge| !edge.is_back_edge && edge.to == node.id)
+                    .count()
+                    == 1
+        })
+    };
 
     let mut candidates = bt_sibling_target_lane_candidates(
         &target_sg.bounds,
@@ -2943,6 +2961,35 @@ fn build_bt_sibling_route_plan(
             plan.push_horizontal(corridor_y, source_lane, target_lane, style.edge_h);
             plan.push_corner(target_lane, corridor_y, end_corner);
         }
+        let Some(inside_y) = inside_y else {
+            if target_lane != arrow_x && !(movable_arrow && takes_lane(target_lane)) {
+                rejections.push(format!(
+                    "x={target_lane}: target arrow is not above the BT title-safe attachment row"
+                ));
+                continue;
+            }
+            plan.set_arrow_attachment(target_lane, arrow_y);
+            plan.push_vertical(target_lane, corridor_y, arrow_y, style.edge_v);
+            if let Some(reason) = plan.validation_error(canvas.width, canvas.height) {
+                rejections.push(format!("x={target_lane}: {reason}"));
+                continue;
+            }
+            if let Some(reason) = plan.planned_cells().into_iter().find_map(|(x, y)| {
+                bt_sibling_plan_blocker(
+                    &plan,
+                    x,
+                    y,
+                    (stem_start_x, stem_start_y),
+                    (target_lane, arrow_y),
+                    canvas,
+                    graph,
+                )
+            }) {
+                rejections.push(format!("x={target_lane}: {reason}"));
+                continue;
+            }
+            return Ok(plan);
+        };
         plan.push_vertical(target_lane, corridor_y, inside_y, style.edge_v);
 
         if target_lane != arrow_x {
@@ -3271,7 +3318,7 @@ pub(super) fn route_cross_subgraph_bt(
     style: &StyleChars,
     graph: &Graph,
     owner: Option<RouteOwner<'_>>,
-    straight_arrow_x: Option<&mut usize>,
+    mut straight_arrow_x: Option<&mut usize>,
 ) -> BtRouteOutcome {
     let coords = OrientedCoords::new(Direction::BT);
     let from_sg = graph.get_node_subgraph(&from.id);
@@ -3343,9 +3390,16 @@ pub(super) fn route_cross_subgraph_bt(
                             owner_id,
                             edge_from_id: &from.id,
                             edge_to_id: &to.id,
+                            movable_arrow: straight_arrow_x.is_some(),
                         }) {
                             Ok(plan) => {
+                                let planned_arrow_x = plan.arrow_attachment.map(|arrow| arrow.x);
                                 if lower_bt_fallback_plan(plan, canvas, style, graph, owner) {
+                                    if let (Some(final_arrow_x), Some(planned_x)) =
+                                        (straight_arrow_x.as_deref_mut(), planned_arrow_x)
+                                    {
+                                        *final_arrow_x = planned_x;
+                                    }
                                     return BtRouteOutcome::Handled;
                                 }
                                 if sibling_parallel_edges == 2

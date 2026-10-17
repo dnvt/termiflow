@@ -298,3 +298,150 @@ fn an_outside_node_following_a_moved_frame_stays_after_its_source() {
         "Offer is not above Interview Loop:\n{frame}"
     );
 }
+
+/// gen_a_248: Controller, a box of the enclosing frame, follows Planning and
+/// the actuators follow Controller, so in BT both sit above Motion Planner.
+/// Stacking the nested frames moved Planning past them: Controller landed on
+/// Planning's bottom wall and the actuators' line ran back down to it.
+#[test]
+fn a_chain_following_a_moved_nested_frame_stays_after_it() {
+    let input = "graph BT
+    subgraph Vehicle [Vehicle Stack]
+        subgraph Perception
+            Lidar[Lidar] --> Fusion[Sensor Fusion]
+            Cam[Cameras] --> Fusion
+        end
+        subgraph Planning
+            Predict[Prediction] --> Plan[Motion Planner]
+        end
+        Control[Controller]
+        Fusion --> Predict
+        Plan --> Control
+    end
+    Map[(HD Map)] --> Plan
+    Control --> Actuators[Steering and Brakes]
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        let frame = render(input, style);
+        assert!(
+            row_of(&frame, "Controller") < row_of(&frame, "Motion Planner"),
+            "Controller is not above Motion Planner ({style:?}):\n{frame}"
+        );
+        assert!(
+            row_of(&frame, "Steering and Brakes") < row_of(&frame, "Controller"),
+            "the actuators are not above Controller ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_c_119: Loop follows c around a cycle through three frames, so in BT it
+/// sits above c's frame; it was left on b's frame, its line to c running off
+/// the top of the drawing.
+#[test]
+fn a_node_closing_a_cycle_through_stacked_frames_follows_the_last_one() {
+    let input = "graph BT
+    subgraph A [A]
+        a[a]
+    end
+    subgraph B [B]
+        b[b]
+    end
+    subgraph C [C]
+        c[c]
+    end
+    a --> b --> c --> O((Loop)) --> a
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        let frame = render(input, style);
+        assert!(
+            row_of(&frame, "Loop") < row_of(&frame, "  c  "),
+            "Loop is not above c ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_a_118: Eval follows Policy Optimization, Ship follows Eval and Release
+/// follows Ship. Each is fed once, so the whole chain keeps its order when
+/// the Training Stages frame moves past it while stacking the frames.
+#[test]
+fn a_chain_of_nodes_following_a_moved_frame_keeps_its_order() {
+    let input = "graph BT
+    subgraph Data [Training Data]
+        Prefs[(Preference Pairs)]
+        SFTData[(SFT Data)]
+    end
+    subgraph Stages [Training Stages]
+        SFT[Supervised Fine-tune]
+        RM[Reward Model]
+        PPO[Policy Optimization]
+        SFT --> PPO
+        RM --> PPO
+    end
+    SFTData --> SFT
+    Prefs --> RM
+    PPO --> Eval[Eval Suite]
+    Eval --> Ship{Ship?}
+    Ship --> Release[[Release Model]]
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        let frame = render(input, style);
+        let rows = [
+            "Release Model",
+            "Ship?",
+            "Eval Suite",
+            "Policy Optimization",
+        ]
+        .map(|label| row_of(&frame, label));
+        assert!(
+            rows.windows(2).all(|pair| pair[0] < pair[1]),
+            "Release, Ship, Eval and Policy Optimization are not stacked in flow \
+             order ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_a_118: each data store feeds the stage above it, whose box sits over
+/// the Training Stages title. With no row above the title to turn on, the
+/// router drew only the arrowheads; each line now enters past the title,
+/// straight up to its arrow.
+#[test]
+fn lines_between_stacked_frames_cross_both_walls_past_the_title() {
+    let input = "graph BT
+    subgraph Data [Training Data]
+        Prefs[(Preference Pairs)]
+        SFTData[(SFT Data)]
+    end
+    subgraph Stages [Training Stages]
+        SFT[Supervised Fine-tune]
+        RM[Reward Model]
+        PPO[Policy Optimization]
+        SFT --> PPO
+        RM --> PPO
+    end
+    SFTData --> SFT
+    Prefs --> RM
+    PPO --> Eval[Eval Suite]
+    Eval --> Ship{Ship?}
+    Ship --> Release[[Release Model]]
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        let frame = render(input, style);
+        let lines: Vec<&str> = frame.lines().collect();
+        let stages_wall = lines[row_of(&frame, "Training Stages") + 1];
+        let data_wall = lines[row_of(&frame, "Training Stages") + 1..]
+            .iter()
+            .find(|line| line.starts_with('┏') || line.starts_with('+'))
+            .unwrap_or_else(|| panic!("no Training Data top wall:\n{frame}"));
+        for wall in [stages_wall, data_wall] {
+            let crossings = wall
+                .chars()
+                .skip(1)
+                .filter(|c| matches!(c, '│' | '|'))
+                .count();
+            assert_eq!(
+                crossings, 2,
+                "both lines cross each frame wall ({style:?}):\n{frame}"
+            );
+        }
+    }
+}
