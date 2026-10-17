@@ -445,3 +445,46 @@ fn lines_between_stacked_frames_cross_both_walls_past_the_title() {
         }
     }
 }
+
+/// gen_a_163: KVM's fan-out climbs one row between Hypervisor and Virtual
+/// Machines, turning under the upper frame's bottom wall. The wall was
+/// redrawn over that crossing, cutting both lines off; the line now runs
+/// from the turn through the wall and past the title into the frame's bus.
+#[test]
+fn a_line_turning_right_under_a_bt_frame_still_crosses_its_wall() {
+    let input = "graph BT
+    subgraph Hardware
+        CPU[CPU]
+        GPU[GPU]
+        NIC[NIC]
+    end
+    subgraph Hypervisor
+        KVM[KVM]
+    end
+    subgraph Guests [Virtual Machines]
+        VM1[VM: web]
+        VM2[VM: ml]
+    end
+    CPU & GPU & NIC --> KVM
+    KVM --> VM1
+    KVM --> VM2
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        let frame = render(input, style);
+        let lines: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+        let title = row_of(&frame, "Virtual Machines");
+        let wall = &lines[title + 1];
+        let crossings: Vec<usize> = (1..wall.len())
+            .filter(|&x| matches!(wall[x], '│' | '|'))
+            .collect();
+        let [x] = crossings[..] else {
+            panic!("one line crosses Virtual Machines' bottom wall ({style:?}):\n{frame}");
+        };
+        assert!(
+            matches!(lines[title][x], '│' | '|')
+                && matches!(lines[title - 1][x], '┬' | '+')
+                && matches!(lines[title + 2][x], '┘' | '+'),
+            "the line runs from its turn under the wall to the bus ({style:?}):\n{frame}"
+        );
+    }
+}

@@ -216,10 +216,13 @@ pub(super) fn restore_subgraph_borders(
                 && bottom_y + 1 < canvas.height
                 && routed_crossing_owner(canvas, graph, &subgraph.id, x, bottom_y).is_some_and(
                     |edge_id| {
+                        // Below the wall the line may already turn, when the
+                        // gap under the frame is one row (gen_a_163).
+                        let below = canvas.get(x, bottom_y + 1);
                         routed_owner_is(canvas, x, bottom_y - 1, edge_id)
                             && routed_owner_is(canvas, x, bottom_y + 1, edge_id)
                             && is_verticalish(canvas.get(x, bottom_y - 1))
-                            && is_verticalish(canvas.get(x, bottom_y + 1))
+                            && (is_verticalish(below) || topology::char_connects_up(below))
                             && (!edge_id.starts_with("fanout:")
                                 || fanout_trunk_is_clear(canvas, chars, x, bottom_y))
                     },
