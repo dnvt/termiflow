@@ -2366,6 +2366,21 @@ pub(super) fn route_cross_subgraph_td(
         );
     }
 
+    // A line turning right under its source seems to start beside a diamond,
+    // whose point carries no port marker (see the source-junction stamp),
+    // and leaves no room for a branch label: leave it on a one-cell stem
+    // first (gen_a_111's PII exposed?), unless that puts the turn on the
+    // target frame's wall or title.
+    let turn_y = cursor_y + 1;
+    if from_sg.is_none()
+        && portal_x != cursor_x
+        && turn_y < portal_y
+        && (turn_y < sg.bounds.y || turn_y >= td_title_safe_entry_y(sg))
+    {
+        set_route_edge_char(canvas, cursor_x, cursor_y, style.edge_v, style, owner);
+        cursor_y += 1;
+    }
+
     // Turn horizontally just outside the source border if needed.
     if portal_x != cursor_x {
         let start_corner = if portal_x > cursor_x {
