@@ -2913,6 +2913,43 @@ fn is_leaf_subgraph(graph: &Graph, subgraph_id: &str) -> bool {
         .is_some_and(|sg| sg.child_ids.is_empty() && sg.parent_id.is_none())
 }
 
+/// Whether the line of `edge`, leaving `subgraph_id` for open space, turns
+/// right outside the frame's wall, which then needs a row of its own between
+/// the wall and the target's head (on the wall the turn is hidden): the bus
+/// of a source fanning out from inside the frame only to targets out there,
+/// none of which another edge feeds (the fan-out draws that bus), or the
+/// turn joining a fan-in from elsewhere.  (Two rows, for a stem between
+/// wall and bus, pushed a box into a frame stacked below it: gen_a_106.)
+fn turns_outside_frame(graph: &Graph, edge: &crate::graph::Edge, subgraph_id: &str) -> bool {
+    let forward = |other: &&crate::graph::Edge| !other.is_back_edge;
+    let fed_once = |target: &str| {
+        graph
+            .edges
+            .iter()
+            .filter(forward)
+            .filter(|other| other.to == target)
+            .count()
+            == 1
+    };
+    let targets: Vec<&str> = graph
+        .edges
+        .iter()
+        .filter(forward)
+        .filter(|other| other.from == edge.from)
+        .map(|other| other.to.as_str())
+        .collect();
+    let fans_out = targets.len() > 1
+        && targets
+            .iter()
+            .all(|target| !graph.is_node_in_subgraph_tree(target, subgraph_id) && fed_once(target));
+    let joins_from_elsewhere = graph.edges.iter().filter(forward).any(|other| {
+        other.to == edge.to
+            && other.from != edge.from
+            && !graph.is_node_in_subgraph_tree(&other.from, subgraph_id)
+    });
+    fans_out || joins_from_elsewhere
+}
+
 /// Whether `node` has an edge back into `subgraph_id`: it sits between members
 /// of that subgraph in the flow, so it cannot be moved below the frame
 /// without its edges running back up into it.
@@ -3879,10 +3916,11 @@ pub(super) fn resolve_subgraph_envelopes(
                     let extra_nested_exit_row = enter_subgraphs.is_empty()
                         && exit_subgraphs.len() > 1
                         && input.graph.get_node_subgraph(&edge.to).is_none();
+                    let turns = turns_outside_frame(input.graph, edge, subgraph_id);
                     let required_target_y = env
                         .outer
                         .bottom()
-                        .saturating_add(if extra_nested_exit_row { 2 } else { 1 })
+                        .saturating_add(if extra_nested_exit_row || turns { 2 } else { 1 })
                         // A labelled edge needs its own row between the border and
                         // the target arrow; on the border the label would overwrite it.
                         .saturating_add(usize::from(edge.label.is_some()));
@@ -4591,10 +4629,11 @@ pub(super) fn resolve_subgraph_envelopes(
                     let extra_nested_exit_row = enter_subgraphs.is_empty()
                         && exit_subgraphs.len() > 1
                         && input.graph.get_node_subgraph(&edge.to).is_none();
+                    let turns = turns_outside_frame(input.graph, edge, subgraph_id);
                     let required_target_y = env
                         .outer
                         .bottom()
-                        .saturating_add(if extra_nested_exit_row { 2 } else { 1 })
+                        .saturating_add(if extra_nested_exit_row || turns { 2 } else { 1 })
                         // A labelled edge needs its own row between the border and
                         // the target arrow; on the border the label would overwrite it.
                         .saturating_add(usize::from(edge.label.is_some()));

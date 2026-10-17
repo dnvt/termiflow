@@ -550,6 +550,68 @@ pub fn route_divergent_edges(
         }
     }
 
+    // Likewise in TD/BT for frames the source leaves that hold none of the
+    // targets: the bus runs outside the outermost of them, a blank row clear
+    // of its wall where the targets leave room, instead of along the wall
+    // (which hides it) or right inside it.  Only for targets in open space
+    // (or in frames the source is in too): a branch into another frame turns
+    // up to its own portal, which a bus beside that frame's wall would cut.
+    if matches!(direction, Direction::TD | Direction::TB | Direction::BT)
+        && target_positions.len() > 1
+        && target_positions.iter().all(|(_, _, target)| {
+            graph
+                .get_node_subgraph(&target.id)
+                .is_none_or(|sg| graph.is_node_in_subgraph_tree(&from.id, sg))
+        })
+    {
+        let left: Vec<&crate::graph::Subgraph> = graph
+            .subgraphs
+            .iter()
+            .filter(|sg| sg.bounds.is_valid())
+            .filter(|sg| graph.is_node_in_subgraph_tree(&from.id, &sg.id))
+            .filter(|sg| {
+                target_positions
+                    .iter()
+                    .all(|(_, _, target)| !graph.is_node_in_subgraph_tree(&target.id, &sg.id))
+            })
+            .collect();
+        let arrows = target_positions
+            .iter()
+            .map(|(_, _, target)| adjusted_edge_entry_point(target, direction, graph).1);
+        // A labelled branch keeps a row between the bus and its head for the
+        // label.
+        let label_room = usize::from(target_positions.iter().any(|(_, _, target)| {
+            graph.edges.iter().any(|edge| {
+                !edge.is_back_edge
+                    && edge.from == from.id
+                    && edge.to == target.id
+                    && edge.label.is_some()
+            })
+        }));
+        let clear = if direction == Direction::BT {
+            let nearest_arrow = arrows.max().unwrap_or(0);
+            left.iter().map(|sg| sg.bounds.y).min().and_then(|wall| {
+                [wall.checked_sub(2), wall.checked_sub(1)]
+                    .into_iter()
+                    .flatten()
+                    .find(|&clear| clear < junction_y && clear > nearest_arrow + label_room)
+            })
+        } else {
+            let nearest_arrow = arrows.min().unwrap_or(usize::MAX);
+            left.iter()
+                .map(|sg| sg.bounds.y + sg.bounds.height.saturating_sub(1))
+                .max()
+                .and_then(|wall| {
+                    [wall + 2, wall + 1]
+                        .into_iter()
+                        .find(|&clear| clear > junction_y && clear + label_room < nearest_arrow)
+                })
+        };
+        if let Some(clear) = clear {
+            coords.set_primary(&mut junction_x, &mut junction_y, clear);
+        }
+    }
+
     // Labeled horizontal fan-out: each branch label is drawn on its branch run
     // (bus -> arrow). Move the bus toward the source until the shortest run
     // fits the widest branch label with a shaft cell on each side, so labels
