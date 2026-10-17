@@ -5460,16 +5460,29 @@ fn enforce_horizontal_foreign_node_clearance(
                 }
                 // In TD/BT a node linked into the frame stays put: moved beside
                 // the frame, its edges would cross the side wall sideways. Left
-                // across the wall, it moves anyway: the box hid the wall.
+                // across the wall, it moves anyway: the box hid the wall. Fed
+                // by one of the frame's boxes and feeding another, it moves
+                // too: left in the frame's rows it reads as one of its boxes
+                // (gen_a_111's PII exposed? inside Response Team).
                 // A node on a back edge keeps its place too: its cycle route
                 // is planned around where the layout put it.
+                let into_frame = |edge: &crate::graph::Edge| {
+                    edge.from == *node_id && graph.is_node_in_subgraph_tree(&edge.to, subgraph_id)
+                };
+                let out_of_frame = |edge: &crate::graph::Edge| {
+                    edge.to == *node_id && graph.is_node_in_subgraph_tree(&edge.from, subgraph_id)
+                };
+                let between = graph
+                    .edges
+                    .iter()
+                    .any(|edge| !edge.is_back_edge && into_frame(edge))
+                    && graph
+                        .edges
+                        .iter()
+                        .any(|edge| !edge.is_back_edge && out_of_frame(edge));
                 if keep_gap
                     && graph.edges.iter().any(|edge| {
-                        (!wall_feeder
-                            && edge.from == *node_id
-                            && graph.is_node_in_subgraph_tree(&edge.to, subgraph_id))
-                            || (edge.to == *node_id
-                                && graph.is_node_in_subgraph_tree(&edge.from, subgraph_id))
+                        (!between && ((!wall_feeder && into_frame(edge)) || out_of_frame(edge)))
                             || (edge.is_back_edge && (edge.from == *node_id || edge.to == *node_id))
                     })
                 {

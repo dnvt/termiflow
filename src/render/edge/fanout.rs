@@ -1166,12 +1166,15 @@ pub fn route_divergent_edges(
 
         // If the edge exits a subgraph boundary (TD/TB), stamp a junction on the border
         // so the vertical line visually pierces the container instead of leaving a gap.
+        // A target beside the frame is reached through a side wall: no stamp.
         if matches!(direction, Direction::TD | Direction::TB) {
             if let Some(from_sg) = graph.get_node_subgraph(&from.id) {
                 if graph.get_node_subgraph(&target.id) != Some(from_sg) {
                     if let Some(sg) = graph.get_subgraph(from_sg) {
                         let border_y = sg.bounds.y + sg.bounds.height.saturating_sub(1);
-                        if arrow_x < canvas.width && border_y < canvas.height {
+                        let below =
+                            sg.bounds.x < arrow_x && arrow_x + 1 < sg.bounds.x + sg.bounds.width;
+                        if below && arrow_x < canvas.width && border_y < canvas.height {
                             set_route_edge_char(
                                 canvas,
                                 arrow_x,
