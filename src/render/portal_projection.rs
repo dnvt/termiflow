@@ -1073,6 +1073,145 @@ pub(super) fn trim_side_wall_stubs(
     }
 }
 
+/// A thick or dotted line keeps its stroke where it crosses a frame's wall.
+/// The portal passes open the wall with a plain line, which reads as a thin
+/// edge joining the styled one there (`━━─━━`, `==-==`).  A crossing of two
+/// walls stacked together, or of a wall and the title row beside it, is one
+/// plain run; a line turning right after the wall ends the run at its corner.
+pub(super) fn keep_line_strokes_across_frame_walls(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    chars: &StyleChars,
+) {
+    use crate::graph::EdgeKind;
+    let strokes = [EdgeKind::Thick, EdgeKind::Dotted]
+        .map(|kind| super::edge::style_for_edge_kind(chars, kind));
+    let frames: Vec<(usize, usize, usize, usize, usize)> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.bounds.is_valid())
+        .map(|subgraph| {
+            let bounds = &subgraph.bounds;
+            (
+                bounds.x,
+                bounds.x + bounds.width.saturating_sub(1),
+                bounds.y,
+                bounds.y + bounds.height.saturating_sub(1),
+                subgraph_title_y(bounds, graph.direction),
+            )
+        })
+        .collect();
+    // A cell where a line across `axis` passes a frame's wall or title row.
+    let on_frame = |x: usize, y: usize, axis: PortalAxis| {
+        frames
+            .iter()
+            .any(|&(left, right, top, bottom, title)| match axis {
+                PortalAxis::Horizontal => (x == left || x == right) && y > top && y < bottom,
+                PortalAxis::Vertical => {
+                    (y == top || y == bottom || y == title) && x > left && x < right
+                }
+            })
+    };
+    let not_frame = |canvas: &Canvas, x: usize, y: usize| {
+        canvas.get_meta(x, y).is_some_and(|meta| {
+            !matches!(
+                meta.owner_kind,
+                semantic::CellOwnerKind::SubgraphBorder | semantic::CellOwnerKind::SubgraphTitle
+            )
+        })
+    };
+    let mut restyled = Vec::new();
+    for &(left, right, top, bottom, _) in &frames {
+        let walls = (top + 1..bottom)
+            .flat_map(|y| [(left, y), (right, y)])
+            .map(|cell| (cell, PortalAxis::Horizontal))
+            .chain(
+                (left + 1..right)
+                    .flat_map(|x| [(x, top), (x, bottom)])
+                    .map(|cell| (cell, PortalAxis::Vertical)),
+            );
+        for ((x, y), axis) in walls {
+            let (plain, styled) = match axis {
+                PortalAxis::Horizontal => (chars.edge_h, strokes.map(|style| style.edge_h)),
+                PortalAxis::Vertical => (chars.edge_v, strokes.map(|style| style.edge_v)),
+            };
+            if canvas.get(x, y) != plain {
+                continue;
+            }
+            let step = |(x, y): (usize, usize), ahead: bool| match (axis, ahead) {
+                (PortalAxis::Horizontal, false) => Some((x.checked_sub(1)?, y)),
+                (PortalAxis::Horizontal, true) => Some((x + 1, y)),
+                (PortalAxis::Vertical, false) => Some((x, y.checked_sub(1)?)),
+                (PortalAxis::Vertical, true) => Some((x, y + 1)),
+            };
+            // The plain run through the wall, and the cells just past it.
+            let walk = |ahead: bool| {
+                let mut run = Vec::new();
+                let mut at = step((x, y), ahead);
+                while let Some((cx, cy)) =
+                    at.filter(|&(cx, cy)| canvas.get(cx, cy) == plain && on_frame(cx, cy, axis))
+                {
+                    run.push((cx, cy));
+                    at = step((cx, cy), ahead);
+                }
+                (run, at)
+            };
+            let (before_run, before) = walk(false);
+            let (after_run, after) = walk(true);
+            let carries = |end: Option<(usize, usize)>, glyph: char| {
+                end.is_some_and(|(ex, ey)| canvas.get(ex, ey) == glyph && not_frame(canvas, ex, ey))
+            };
+            // A corner, junction or head the line turns or ends at.
+            let joins = |end: Option<(usize, usize)>, toward_back: bool| {
+                end.is_some_and(|(ex, ey)| {
+                    let cell = canvas.get(ex, ey);
+                    let toward = match (axis, toward_back) {
+                        (PortalAxis::Horizontal, true) => topology::char_connects_left(cell),
+                        (PortalAxis::Horizontal, false) => topology::char_connects_right(cell),
+                        (PortalAxis::Vertical, true) => topology::char_connects_up(cell),
+                        (PortalAxis::Vertical, false) => topology::char_connects_down(cell),
+                    };
+                    not_frame(canvas, ex, ey)
+                        && !canvas::is_horizontal(cell, chars)
+                        && !canvas::is_vertical(cell, chars)
+                        && (toward || canvas::is_arrow(cell))
+                })
+            };
+            let Some(glyph) = styled.into_iter().find(|&glyph| {
+                glyph != plain
+                    && ((carries(before, glyph) && (carries(after, glyph) || joins(after, true)))
+                        || (carries(after, glyph) && joins(before, false)))
+            }) else {
+                continue;
+            };
+            restyled.extend(
+                before_run
+                    .into_iter()
+                    .chain([(x, y)])
+                    .chain(after_run)
+                    .map(|cell| (cell, glyph)),
+            );
+        }
+    }
+    for ((x, y), glyph) in restyled {
+        let Some(meta) = canvas.get_meta(x, y).cloned() else {
+            continue;
+        };
+        match meta.owner_id.as_deref() {
+            Some(owner) => canvas.set_owned_with_role(
+                x,
+                y,
+                glyph,
+                meta.owner_kind,
+                owner,
+                meta.role,
+                meta.z_index,
+            ),
+            None => canvas.set(x, y, glyph),
+        }
+    }
+}
+
 pub(super) fn finalize_dedicated_portal_markers(
     canvas: &mut Canvas,
     graph: &Graph,
