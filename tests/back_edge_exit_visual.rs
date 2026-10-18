@@ -687,3 +687,90 @@ D --> A
         "C -> B runs under the inner frames:\n{frame}"
     );
 }
+
+/// gen_d_120: three RL pairs stacked with one blank row between them, each
+/// closing a cycle. Y -> B could neither go over the top (X and A stand
+/// above) nor under (Z stands under Y in its leg's column), so its leg ran
+/// into Z and joined Z -> C's lane. Rows now open under Y and B for a lane
+/// of its own.
+#[test]
+fn a_back_edge_blocked_below_gets_rows_for_its_lane() {
+    let input = "graph RL
+A --> X
+X --> A
+B --> Y
+Y --> B
+C --> Z
+Z --> C
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    let rows: Vec<&str> = frame.lines().collect();
+    let y_row = rows
+        .iter()
+        .position(|row| row.contains("  Y  "))
+        .expect("Y");
+    let z_row = rows
+        .iter()
+        .position(|row| row.contains("  Z  "))
+        .expect("Z");
+    let lane = (y_row + 2..z_row - 1).find(|&row| rows[row].contains('└'));
+    assert!(
+        lane.is_some_and(|row| rows[row].contains('┘')),
+        "Y -> B has a lane of its own between Y and Z:\n{frame}"
+    );
+}
+
+/// Rows open only for a box in one of a back edge's own leg columns: gen_a_139's
+/// Attempts left? -> Charge Card lane passes under Extend Period, which stays
+/// level with the row it hangs off.
+#[test]
+fn a_box_between_a_back_edge_s_legs_keeps_its_row() {
+    let input = "graph RL
+    Sub[Subscription Renewal] --> Charge[Charge Card]
+    Charge --> Ok{Succeeded?}
+    Ok -->|yes| Extend[Extend Period]
+    Ok -->|no| Dunning[Dunning Email]
+    Dunning --> Wait[Wait 3 days]
+    Wait --> Attempts{Attempts left?}
+    Attempts -->|yes| Charge
+    Attempts -->|no| Suspend[Suspend Account]
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    let row = |text: &str| {
+        frame
+            .lines()
+            .position(|line| line.contains(text))
+            .expect(text)
+    };
+    assert_eq!(
+        row("Extend Period") - row("Dunning Email"),
+        4,
+        "Extend Period keeps its row:\n{frame}"
+    );
+}
+
+/// A box only blocks a back edge's lane when it stands above the lane row:
+/// a TD cycle's ranks, spaced further apart, stay put.
+#[test]
+fn a_td_cycle_opens_no_lane_rows() {
+    let input = "graph TD
+    A[Start] --> B[Process]
+    B --> C[Check]
+    C --> A
+    C --> D[Done]
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    let row = |text: &str| {
+        frame
+            .lines()
+            .position(|line| line.contains(text))
+            .expect(text)
+    };
+    assert_eq!(row("Done") - row("Check"), 5, "ranks stay put:\n{frame}");
+}

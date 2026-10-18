@@ -534,6 +534,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     reserve_title_turn_rows(input.graph, &mut placement, &mut subgraph_envelopes);
     reserve_bt_back_edge_exit_rows(input.graph, &mut placement, &mut subgraph_envelopes);
     reserve_lr_back_edge_top_rows(input.graph, &mut placement);
+    reserve_lr_back_edge_lane_rows(input.graph, &config, &mut placement);
 
     let routes = route_stage(
         input.graph,
@@ -1161,6 +1162,62 @@ fn reserve_lr_back_edge_top_rows(graph: &Graph, placement: &mut placement::Place
         }
     }
     placement.canvas.height += extra;
+}
+
+/// In an LR/RL graph without frames, a back edge that cannot go over the top
+/// runs on a lane `min_vertical_spacing` rows under its lower end; a box
+/// standing above that lane in one of its ends' columns is crossed by that
+/// end's leg (gen_d_120: Y -> B into Z, with X and A above). Open rows from
+/// that box down so the lane passes clear, with a blank row before the box.
+fn reserve_lr_back_edge_lane_rows(
+    graph: &Graph,
+    config: &CoarseLayoutConfig,
+    placement: &mut placement::Placement,
+) {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) || !graph.subgraphs.is_empty() {
+        return;
+    }
+    let rect = |rect: &crate::geom::Rect| (rect.x, rect.y, rect.width, rect.height.max(3));
+    for edge in graph.edges.iter().filter(|edge| edge.is_back_edge) {
+        let boxes: Vec<(usize, usize, usize, usize)> =
+            placement.node_rects.values().map(rect).collect();
+        let (Some(&from), Some(&to)) = (
+            placement.node_rects.get(&edge.from),
+            placement.node_rects.get(&edge.to),
+        ) else {
+            continue;
+        };
+        if crate::render::cycle::lr_back_edge_over_the_top(rect(&from), rect(&to), &boxes) {
+            continue;
+        }
+        let center = |rect: &crate::geom::Rect| rect.x + rect.width / 2;
+        let legs = [center(&from), center(&to)];
+        let ends_top = from.y.max(to.y);
+        let lane = from.bottom().max(to.bottom()) + config.min_vertical_spacing.max(2);
+        let Some(top) = placement
+            .node_rects
+            .values()
+            .filter(|rect| rect.y > ends_top)
+            .filter(|rect| {
+                legs.iter()
+                    .any(|&leg| (rect.x..rect.x + rect.width).contains(&leg))
+            })
+            .map(|rect| rect.y)
+            .min()
+        else {
+            continue;
+        };
+        let extra = (lane + 2).saturating_sub(top);
+        for (id, rect) in placement.node_rects.iter_mut() {
+            if rect.y >= top {
+                rect.y += extra;
+                if let Some(point) = placement.positions.get_mut(id) {
+                    point.y += extra;
+                }
+            }
+        }
+        placement.canvas.height += extra;
+    }
 }
 
 /// A fan-in source's line drops straight down its centre column to the
