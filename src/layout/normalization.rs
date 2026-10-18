@@ -99,6 +99,9 @@ pub(super) fn normalize_orientation_and_gutters(
             let mut cleared_frames: HashSet<String> = HashSet::new();
             // Outside nodes to stand left of a frame they overlap: (node, at x).
             let mut left_inserts: HashMap<String, usize> = HashMap::new();
+            // Outside nodes woven between a frame's members, to drop under it:
+            // (node, to y).
+            let mut drops: HashMap<String, usize> = HashMap::new();
 
             for (subgraph_id, env) in &envelopes {
                 for edge in graph.edges.iter().filter(|edge| !edge.is_back_edge) {
@@ -198,6 +201,31 @@ pub(super) fn normalize_orientation_and_gutters(
                                 .or_insert(env.outer.x);
                             continue;
                         }
+                        // A node fed from the frame and feeding back into it moved
+                        // past the right wall sends both its lines across the whole
+                        // frame (gen_c_054: a -> b -> c with a and c framed). It drops
+                        // under the frame instead, in its own rank's column, where
+                        // each line crosses the bottom wall once.
+                        let crosses = |id: &str, out: bool| {
+                            graph.edges.iter().any(|other| {
+                                let (near, far) = if out {
+                                    (&other.from, &other.to)
+                                } else {
+                                    (&other.to, &other.from)
+                                };
+                                !other.is_back_edge
+                                    && near == id
+                                    && graph.is_node_in_subgraph_tree(far, subgraph_id)
+                            })
+                        };
+                        if crosses(&external_node_id, true) && crosses(&external_node_id, false) {
+                            let below = env.outer.bottom() + 1;
+                            drops
+                                .entry(external_node_id)
+                                .and_modify(|y: &mut usize| *y = (*y).max(below))
+                                .or_insert(below);
+                            continue;
+                        }
                         if overlaps_right_wall {
                             let required_external_x = env.outer.right().saturating_add(2);
                             let delta_x = required_external_x - external_rect.x;
@@ -262,6 +290,17 @@ pub(super) fn normalize_orientation_and_gutters(
                 }
             }
 
+            if !drops.is_empty() {
+                for (id, y) in drops {
+                    if let Some(rect) = placement.node_rects.get_mut(&id) {
+                        rect.y = y;
+                    }
+                    if let Some(position) = placement.positions.get_mut(&id) {
+                        position.y = y;
+                    }
+                }
+                continue;
+            }
             if required_env_shift.is_none()
                 && external_node_shifts.is_empty()
                 && left_inserts.is_empty()

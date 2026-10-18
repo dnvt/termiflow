@@ -3356,7 +3356,10 @@ pub(super) fn resolve_subgraph_envelopes(
                             }
                         }
                     } else {
-                        let overlaps_right_wall = external_rect.x < env.outer.right();
+                        // A node under the frame (dropped there by normalization)
+                        // does not meet its right wall.
+                        let overlaps_right_wall = external_rect.x < env.outer.right()
+                            && rects_overlap_vertically(external_rect, env.outer);
                         if overlaps_right_wall {
                             let required_external_x = env.outer.right().saturating_add(2);
                             let external_node_id = if from_inside_tree {

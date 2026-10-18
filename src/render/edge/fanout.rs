@@ -1309,7 +1309,8 @@ pub fn route_divergent_edges(
     // A source beyond every target (a subgraph can push its exit past them)
     // still reaches the span: it extends to the source, which turns into it
     // on a corner.  Only across blank cells, so it never runs along another
-    // route sharing that line.
+    // route sharing that line, or across a frame's wall: targets dropped under
+    // the source's frame take the bus through it (gen_c_122).
     let extension = if src_secondary < first_secondary {
         Some(src_secondary..first_secondary)
     } else if src_secondary > last_secondary {
@@ -1321,6 +1322,9 @@ pub fn route_divergent_edges(
         extension.all(|pos| {
             let (x, y) = coords.with_secondary(junction_x, junction_y, pos);
             canvas.get(x, y) == ' '
+                || canvas
+                    .get_meta(x, y)
+                    .is_some_and(|meta| meta.owner_kind == CellOwnerKind::SubgraphBorder)
         })
     });
     let (span_start, span_end) = if source_beyond_targets {
