@@ -4930,6 +4930,12 @@ pub(super) fn resolve_subgraph_envelopes(
         adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
     }
 
+    if open_a_row_between_touching_frames(input.graph, config, placement) {
+        subgraph_envelopes =
+            compute_envelopes(input.graph, &placement.node_rects, config.subgraph_gutter);
+        adjust_portal_slots_for_title(&mut subgraph_envelopes, input.graph);
+    }
+
     // Earlier passes move nodes independently (envelope eviction, recentring,
     // corridor reservation) and can stack two boxes on the same cells, which
     // hides one node entirely. Separate any remaining collision last.
@@ -4945,6 +4951,48 @@ pub(super) fn resolve_subgraph_envelopes(
     }
 
     subgraph_envelopes
+}
+
+/// A frame starting on the row right after another one ends sits wall on
+/// wall with it, leaving no row for a line between them to turn on
+/// (gen_a_145: SBOM's line into Attestation stopped at Build's bottom wall):
+/// open a row there. In TD the envelopes hold the walls; a BT envelope
+/// reaches one row past its drawn frame.
+fn open_a_row_between_touching_frames(
+    graph: &Graph,
+    config: &CoarseLayoutConfig,
+    placement: &mut Placement,
+) -> bool {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) {
+        return false;
+    }
+    let mut moved = false;
+    for _ in 0..8 {
+        let envelopes = compute_envelopes(graph, &placement.node_rects, config.subgraph_gutter);
+        let row = envelopes
+            .values()
+            .flat_map(|upper| {
+                envelopes
+                    .values()
+                    .filter(move |lower| lower.outer.y == upper.outer.bottom())
+                    .map(|lower| lower.outer.y)
+            })
+            .min();
+        let Some(row) = row else {
+            break;
+        };
+        moved = true;
+        for (id, rect) in placement.node_rects.iter_mut() {
+            if rect.y >= row {
+                rect.y += 1;
+                if let Some(position) = placement.positions.get_mut(id) {
+                    position.y += 1;
+                }
+            }
+        }
+        placement.canvas.height += 1;
+    }
+    moved
 }
 
 /// A box outside a frame, left below the frame's boxes but still within its

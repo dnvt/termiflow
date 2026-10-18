@@ -621,3 +621,81 @@ fn parallel_lr_frames_fed_by_one_node_stack() {
         assert!(!line.contains('━'), "line on a frame border:\n{frame}");
     }
 }
+
+/// The first row at or after `from` holding `wall`.
+fn first_row_with(frame: &str, from: usize, wall: char) -> usize {
+    frame
+        .lines()
+        .enumerate()
+        .skip(from)
+        .find(|(_, line)| line.contains(wall))
+        .map(|(index, _)| index)
+        .unwrap_or_else(|| panic!("no {wall} from row {from}:\n{frame}"))
+}
+
+/// gen_a_145: Hermetic Build, lowered to clear Upstream, came to rest with
+/// its bottom wall right on Attestation's top wall, so SBOM's line into
+/// Attestation had no row to jog to its entry and stopped at the wall. A row
+/// now opens between the frames.
+#[test]
+fn td_frames_stacked_wall_on_wall_get_a_row_between_them() {
+    let input = "flowchart TB
+    subgraph Upstream
+        Mirror[Package Mirror]
+    end
+    subgraph Build [Hermetic Build]
+        Fetch[Fetch Pinned Deps]
+        Compile[Compile]
+        SBOM[Generate SBOM]
+        Fetch --> Compile --> SBOM
+    end
+    subgraph Attest [Attestation]
+        Sign[Sigstore Sign]
+        Prov[SLSA Provenance]
+    end
+    Mirror --> Fetch
+    SBOM --> Sign
+    Compile --> Prov
+    Sign & Prov --> Registry[(OCI Registry)]
+";
+    let frame = render(input);
+    let build_bottom = first_row_with(&frame, row_of(&frame, "Generate SBOM"), '┗');
+    let attest_top = row_of(&frame, "Attestation") - 1;
+    assert_eq!(
+        attest_top,
+        build_bottom + 2,
+        "one row between Hermetic Build and Attestation:\n{frame}"
+    );
+}
+
+/// In BT a frame's envelope reaches one row past its drawn walls: frames
+/// whose envelopes touch already have a row between their walls and keep
+/// just that one (gen_a_083's AZ b over AZ a and AZ c).
+#[test]
+fn bt_frames_one_row_apart_stay_one_row_apart() {
+    let input = "graph BT
+    subgraph Region [AWS Region]
+        subgraph AZ1 [AZ a]
+            EC2a[EC2 a]
+        end
+        subgraph AZ2 [AZ b]
+            EC2b[EC2 b]
+        end
+        subgraph AZ3 [AZ c]
+            EC2c[EC2 c]
+        end
+    end
+    ASG[Auto Scaling Group] --> EC2a
+    ASG --> EC2b
+    ASG --> EC2c
+    CW[CloudWatch Alarm] --> ASG
+";
+    let frame = render(input);
+    let az_b_bottom = row_of(&frame, "AZ b") + 1;
+    let az_a_top = first_row_with(&frame, az_b_bottom, '┏');
+    assert_eq!(
+        az_a_top,
+        az_b_bottom + 2,
+        "one row between AZ b and the frames below it:\n{frame}"
+    );
+}
