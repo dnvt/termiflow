@@ -388,3 +388,50 @@ fn a_second_fan_in_out_of_a_frame_leaves_no_stray_wall_crossings() {
         );
     }
 }
+
+/// gen_a_038: Grafana's line leaves Observability through its top wall at
+/// Alertmanager's column, turning on the first row inside. The run up from
+/// Grafana was drawn into the turn cell, so the corner merged into a tee
+/// whose arm poked through the wall above it. The turn is now a corner and
+/// the wall has one crossing. (ASCII draws both as `+` and still shows a
+/// crossing above the turn.)
+#[test]
+fn a_bt_line_turning_under_a_top_wall_leaves_a_corner_not_a_tee() {
+    let input = "graph BT
+    subgraph Obs [Observability]
+        Prom[Prometheus]
+        Loki[Loki]
+        Tempo[Tempo]
+        Graf[Grafana]
+        Prom --> Graf
+        Loki --> Graf
+        Tempo --> Graf
+    end
+    Apps[Applications] -->|metrics| Prom
+    Apps -->|logs| Loki
+    Apps -->|traces| Tempo
+    Graf --> AM[Alertmanager]
+    AM --> Pager>Pager]
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    let rows: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+    let wall = rows
+        .iter()
+        .position(|row| row.first() == Some(&'┏'))
+        .expect("Observability's top wall");
+    let crossings: Vec<usize> = (1..rows[wall].len() - 1)
+        .filter(|&x| rows[wall][x] == '│')
+        .collect();
+    assert_eq!(
+        crossings.len(),
+        1,
+        "one line leaves through the top wall:\n{frame}"
+    );
+    let inside: String = rows[wall + 1].iter().collect();
+    assert!(
+        inside.contains("└───┐") || inside.contains("┌───┘"),
+        "the turn under the wall is two corners, no tee:\n{frame}"
+    );
+}

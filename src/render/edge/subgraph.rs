@@ -3937,12 +3937,15 @@ pub(super) fn route_cross_subgraph_bt(
         }
     }
 
-    // Walk up from the source exit to the row just inside the subgraph top border.
+    // Walk up from the source exit to the row just inside the subgraph top
+    // border, stopping under it when the lane changes there: the turn's corner
+    // merged into the run would read as a tee up to the border (gen_a_038).
+    let walk_end_y = inside_y + usize::from(portal_x != stem_start_x);
     draw_line_primary(
         stem_start_x,
         stem_start_y,
         stem_start_x,
-        inside_y,
+        walk_end_y,
         &coords,
         canvas,
         style,
