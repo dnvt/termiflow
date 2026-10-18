@@ -650,3 +650,40 @@ fn a_back_edge_over_the_top_stays_when_others_keep_the_default() {
         "X -> A does not go over the top:\n{frame}"
     );
 }
+
+/// gen_d_155: of two RL back edges between stacked boxes in nested frames,
+/// D -> A has no lane that clears C below it, and every planned lane was
+/// then dropped, C -> B's too. C -> B keeps its lane now: down out of C,
+/// through Inner two's bottom wall, under both frames and up into B.
+#[test]
+fn a_back_edge_keeps_its_lane_when_another_has_none() {
+    let input = "graph RL
+subgraph o [Outer]
+  subgraph i1 [Inner one]
+    A
+    B
+  end
+  subgraph i2 [Inner two]
+    C
+    D
+  end
+end
+A --> D
+B --> C
+C --> B
+D --> A
+";
+    let frame = termiflow::render_with_feedback(input, termiflow::RenderOptions::new())
+        .expect("render")
+        .output;
+    let rows: Vec<&str> = frame.lines().collect();
+    let walls = rows
+        .iter()
+        .position(|row| row.contains("┗━") && row.matches('┛').count() == 2)
+        .unwrap_or_else(|| panic!("no inner bottom walls:\n{frame}"));
+    let lane = &rows[walls + 2];
+    assert!(
+        lane.contains('└') && lane.contains('┘') && lane.contains('─'),
+        "C -> B runs under the inner frames:\n{frame}"
+    );
+}
