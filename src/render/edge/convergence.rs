@@ -440,7 +440,8 @@ fn sample_bottom_border_fill(
             continue;
         }
         let ch = canvas.get(x, bottom_y);
-        if ch != ' ' {
+        // Another fan-in out of this frame may already cross the border.
+        if ch != ' ' && !super::super::topology::char_connects_up(ch) {
             return ch;
         }
     }

@@ -346,3 +346,45 @@ fn a_bt_fan_in_from_a_source_under_the_trunk_keeps_its_branches() {
         }
     }
 }
+
+/// gen_a_080: two fan-ins leave User Devices, each through its own crossing
+/// of the bottom wall. The second one restored the wall under each source
+/// with a fill sampled from the wall, which by then held the first one's
+/// crossing: the wall got two crossings no line passes through.
+#[test]
+fn a_second_fan_in_out_of_a_frame_leaves_no_stray_wall_crossings() {
+    let input = "flowchart TB
+    subgraph Users [User Devices]
+        Laptop[Laptops]
+        Phones[Phones]
+    end
+    subgraph ZT [Zero Trust Gateway]
+        IdCheck[Identity Check]
+        Posture[Device Posture]
+    end
+    Laptop & Phones --> IdCheck
+    Laptop & Phones --> Posture
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        let rows: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+        let title = rows
+            .iter()
+            .position(|row| row.iter().collect::<String>().contains("User Devices"))
+            .expect("User Devices title");
+        let wall = (title..rows.len())
+            .find(|&y| matches!(rows[y].iter().find(|c| **c != ' '), Some('┗' | '+')))
+            .expect("User Devices bottom wall");
+        let line = |c: Option<&char>| matches!(c, Some('│' | '|' | '┼' | '+'));
+        let stray: Vec<usize> = (1..rows[wall].len() - 1)
+            .filter(|&x| matches!(rows[wall][x], '│' | '|'))
+            .filter(|&x| !line(rows[wall - 1].get(x)) || !line(rows[wall + 1].get(x)))
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "every crossing of the bottom wall carries a line ({style:?}): columns {stray:?}\n{frame}"
+        );
+    }
+}
