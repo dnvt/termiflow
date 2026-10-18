@@ -130,3 +130,133 @@ fn a_labelled_line_keeps_its_label_off_the_turn_below_a_title() {
         "no turn under the title:\n{frame}"
     );
 }
+
+/// Columns where a line crosses the wall next to `title` and carries on past
+/// the title row, but the title row hides it under text.
+fn lines_hidden_under_title(frame: &str, title: &str) -> Vec<usize> {
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    let at = rows
+        .iter()
+        .position(|row| row.iter().collect::<String>().contains(title))
+        .unwrap_or_else(|| panic!("no title {title}:\n{frame}"));
+    let line = |c: char| matches!(c, '│' | '|');
+    (0..rows[at].len())
+        .filter(|&x| {
+            rows[at - 1].get(x).copied().is_some_and(line)
+                && rows[at + 1]
+                    .get(x)
+                    .is_some_and(|&c| line(c) || matches!(c, '↓' | 'v'))
+                && !line(rows[at][x])
+        })
+        .collect()
+}
+
+fn render_styles(input: &str) -> Vec<(BaseStyle, String)> {
+    [BaseStyle::Unicode, BaseStyle::Ascii]
+        .into_iter()
+        .map(|style| {
+            let frame =
+                termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+                    .expect("render")
+                    .output;
+            (style, frame)
+        })
+        .collect()
+}
+
+/// gen_a_080: two lines enter Zero Trust Gateway, one under its title. No
+/// stretch of the title row held the title with two blanks to each line, so
+/// it stayed over the first line; it now moves between them with one.
+#[test]
+fn a_title_moves_between_two_entry_lines_with_one_blank_each_side() {
+    let input = "flowchart TB
+    subgraph Users [User Devices]
+        Laptop[Laptops]
+        Phones[Phones]
+    end
+    subgraph ZT [Zero Trust Gateway]
+        IdCheck[Identity Check]
+        Posture[Device Posture]
+        Policy{Policy Engine}
+        IdCheck --> Policy
+        Posture --> Policy
+    end
+    subgraph Apps [Internal Apps]
+        Wiki[Wiki]
+        Admin[Admin Panel]
+    end
+    Laptop & Phones --> IdCheck
+    Laptop & Phones --> Posture
+    Policy -->|allow| Wiki
+    Policy -->|allow admins| Admin
+";
+    for (style, frame) in render_styles(input) {
+        assert_eq!(
+            lines_hidden_under_title(&frame, "Zero Trust Gateway"),
+            Vec::<usize>::new(),
+            "no line hides under the title ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_a_160: SLO Engine's title moves off the fan-in entering under it. A
+/// title with room for two blanks to the line keeps them.
+#[test]
+fn a_moved_title_keeps_two_blanks_to_a_line_where_it_has_room() {
+    let input = "flowchart TB
+    subgraph Inputs
+        Logs[(App Logs)]
+        Traces[(Traces)]
+    end
+    subgraph SLO [SLO Engine]
+        SLI[Compute SLIs]
+        Budget[Error Budget]
+        Burn{Burn rate high?}
+        SLI --> Budget --> Burn
+    end
+    Logs --> SLI
+    Traces --> SLI
+    Burn --> Page>Page On-call]
+    Burn --> Ticket[Low-priority Ticket]
+    Budget --> Freeze[Feature Freeze Policy]
+";
+    for (style, frame) in render_styles(input) {
+        let row = title_row(&frame, "SLO Engine");
+        assert!(
+            row.contains("│  SLO Engine") || row.contains("|  SLO Engine"),
+            "two blanks between the line and the title ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_a_241: the line into Databases runs under the space between "2:" and
+/// "Stateful", where it still shows. With no room for two blanks to the
+/// lines, the title stays put rather than sit beside a line like a label.
+#[test]
+fn a_line_under_a_space_in_a_title_leaves_it_in_place() {
+    let input = "graph TD
+    Assess[Cloud Readiness Assessment] --> Wave{Migration wave}
+    subgraph W1 [Wave 1: Stateless]
+        Web[Web Apps]
+        Batch[Batch Jobs]
+    end
+    subgraph W2 [Wave 2: Stateful]
+        DBs[(Databases)]
+        Files[(File Shares)]
+    end
+    Wave --> Web
+    Wave --> Batch
+    Wave --> DBs
+    Wave --> Files
+    Web & Batch --> Validate[Validate in Cloud]
+    DBs & Files --> Validate
+    Validate --> Decom[Decommission On-prem]
+";
+    for (style, frame) in render_styles(input) {
+        let row = title_row(&frame, "Wave 2: Stateful");
+        assert!(
+            row.contains("┃  Wave 2: Stateful") || row.contains("|  Wave 2: Stateful"),
+            "the title stays at the frame's wall ({style:?}):\n{frame}"
+        );
+    }
+}

@@ -507,27 +507,37 @@ pub(super) fn draw_subgraph_title(
             || passes_through(canvas, x)
             || one_route_through(canvas, x).is_some()
     };
-    let clear_at = |canvas: &Canvas, start: usize| {
+    // A blank cell beyond the title's own wrapper spaces where one fits.
+    let clear_at = |canvas: &Canvas, start: usize, margin: usize| {
         start > rect.x
             && start + width < rect.x + rect.width
-            && (start.saturating_sub(1)..=start + width).all(|x| !crossed(canvas, x))
+            && (start.saturating_sub(margin)..start + width + margin).all(|x| !crossed(canvas, x))
             && (start..start + width)
                 .all(|x| canvas.get(x, title_y) == ' ' || x < start_x + width && x >= start_x)
     };
+    let under_title = |canvas: &Canvas, x: usize| {
+        passes_through(canvas, x)
+            || one_route_through(canvas, x).is_some()
+            || holds_route(canvas, x)
+                && matches!(canvas.get(x, title_y), '│' | '┃' | '║' | '╎' | '|' | ':')
+    };
     if title_gutter.leading_extra_padding == 0
         && title_gutter.trailing_extra_padding == 0
-        && (start_x..start_x + width).any(|x| {
-            passes_through(canvas, x)
-                || one_route_through(canvas, x).is_some()
-                || holds_route(canvas, x)
-                    && matches!(canvas.get(x, title_y), '│' | '┃' | '║' | '╎' | '|' | ':')
-        })
+        && (start_x..start_x + width).any(|x| under_title(canvas, x))
     {
-        let slot = (1..rect.width).find_map(|distance| {
-            [start_x.checked_sub(distance), Some(start_x + distance)]
-                .into_iter()
-                .flatten()
-                .find(|&start| clear_at(canvas, start))
+        // A line under a letter is lost to it, unlike one under a space
+        // between words: only then may the title come within its wrapper
+        // space of a line (gen_a_080, between two entry lines; not gen_a_241).
+        let on_letter =
+            (start_x..start_x + width).any(|x| cells[x - start_x] != ' ' && under_title(canvas, x));
+        let margins: &[usize] = if on_letter { &[1, 0] } else { &[1] };
+        let slot = margins.iter().find_map(|&margin| {
+            (1..rect.width).find_map(|distance| {
+                [start_x.checked_sub(distance), Some(start_x + distance)]
+                    .into_iter()
+                    .flatten()
+                    .find(|&start| clear_at(canvas, start, margin))
+            })
         });
         if let Some(start) = slot {
             // Lift the title drawn earlier, leaving any route cell in place.
