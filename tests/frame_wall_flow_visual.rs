@@ -389,15 +389,7 @@ fn a_second_fan_in_out_of_a_frame_leaves_no_stray_wall_crossings() {
     }
 }
 
-/// gen_a_038: Grafana's line leaves Observability through its top wall at
-/// Alertmanager's column, turning on the first row inside. The run up from
-/// Grafana was drawn into the turn cell, so the corner merged into a tee
-/// whose arm poked through the wall above it. The turn is now a corner and
-/// the wall has one crossing. (ASCII draws both as `+` and still shows a
-/// crossing above the turn.)
-#[test]
-fn a_bt_line_turning_under_a_top_wall_leaves_a_corner_not_a_tee() {
-    let input = "graph BT
+const OBSERVABILITY: &str = "graph BT
     subgraph Obs [Observability]
         Prom[Prometheus]
         Loki[Loki]
@@ -413,7 +405,16 @@ fn a_bt_line_turning_under_a_top_wall_leaves_a_corner_not_a_tee() {
     Graf --> AM[Alertmanager]
     AM --> Pager>Pager]
 ";
-    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+
+/// gen_a_038: Grafana's line leaves Observability through its top wall at
+/// Alertmanager's column, turning on the first row inside. The run up from
+/// Grafana was drawn into the turn cell, so the corner merged into a tee
+/// whose arm poked through the wall above it. The turn is now a corner and
+/// the wall has one crossing. (ASCII draws both as `+` and still shows a
+/// crossing above the turn.)
+#[test]
+fn a_bt_line_turning_under_a_top_wall_leaves_a_corner_not_a_tee() {
+    let frame = termiflow::render_with_feedback(OBSERVABILITY, RenderOptions::new())
         .expect("render")
         .output;
     let rows: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
@@ -433,5 +434,58 @@ fn a_bt_line_turning_under_a_top_wall_leaves_a_corner_not_a_tee() {
     assert!(
         inside.contains("└───┐") || inside.contains("┌───┘"),
         "the turn under the wall is two corners, no tee:\n{frame}"
+    );
+}
+
+/// gen_a_038: Applications fans out into Observability through its bottom
+/// wall and joins the bus under the three stores. The "metrics" label was
+/// written over the bus where the trunk joins it, cutting the trunk off
+/// from all three branches; the label now sits clear of the join.
+#[test]
+fn a_branch_label_on_a_bt_bus_leaves_the_trunk_joined() {
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame =
+            termiflow::render_with_feedback(OBSERVABILITY, RenderOptions::new().with_style(style))
+                .expect("render")
+                .output;
+        let rows: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+        let title = rows
+            .iter()
+            .position(|row| row.iter().collect::<String>().contains("Observability"))
+            .expect("Observability's title");
+        let wall = &rows[title + 1];
+        let crossings: Vec<usize> = (1..wall.len() - 1)
+            .filter(|&x| matches!(wall[x], '│' | '|'))
+            .collect();
+        let [x] = crossings[..] else {
+            panic!("the trunk crosses the bottom wall once ({style:?}):\n{frame}");
+        };
+        assert!(
+            matches!(rows[title][x], '│' | '|') && matches!(rows[title - 1][x], '┬' | '+'),
+            "the trunk runs past the title into a join on the bus ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_d_063: Run fans out to Fail and Pass over a bus too short for the
+/// "成功 ✅ ok" label, which already hides the junction under Run. Moving it
+/// off the junction would only hide Pass's corner instead, so it stays.
+#[test]
+fn a_label_too_wide_for_its_bus_keeps_off_a_branch_corner() {
+    let input = "graph BT
+A[Start] -->|開始 🚀| B[Run]
+B -->|エラー ⚠️ error| C[Fail]
+B -->|成功 ✅ ok| D[Pass]
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    let bus = frame
+        .lines()
+        .find(|line| line.contains("成功"))
+        .unwrap_or_else(|| panic!("no bus label:\n{frame}"));
+    assert!(
+        bus.contains('└') && bus.contains('┘'),
+        "both branch corners stay visible:\n{frame}"
     );
 }

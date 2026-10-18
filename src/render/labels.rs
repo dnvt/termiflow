@@ -313,8 +313,14 @@ pub(super) fn draw_edge_label(
                 label_y = lower_bound.min(stem_start_y);
             }
 
-            let mut label_start_x =
-                pick_bt_vertical_label_start(canvas, &[from, to], edge_x, label_y, label_width);
+            let mut label_start_x = pick_bt_vertical_label_start(
+                canvas,
+                base_style,
+                &[from, to],
+                edge_x,
+                label_y,
+                label_width,
+            );
             // A label over a frame's border or wall breaks the frame (gen_c_031's
             // "result" on System's top border). It goes instead on the nearest
             // row further along the line clear of frames, boxes and other lines.
@@ -330,8 +336,14 @@ pub(super) fn draw_edge_label(
                         let x = (0..canvas.width).find(|&x| {
                             own(x, y) && canvas::is_vertical(canvas.get(x, y), base_style)
                         })?;
-                        let start =
-                            pick_bt_vertical_label_start(canvas, &[from, to], x, y, label_width);
+                        let start = pick_bt_vertical_label_start(
+                            canvas,
+                            base_style,
+                            &[from, to],
+                            x,
+                            y,
+                            label_width,
+                        );
                         let clear = !overlaps_reserved_subgraph_cells(graph, start, y, label_width)
                             && !overlaps_node(&nodes, start, y, label_width)
                             && label_neighbour_rows_clear(canvas, start, label_width, y)
@@ -1047,6 +1059,7 @@ fn overlaps_node(nodes: &[&Node], x: usize, y: usize, width: usize) -> bool {
 
 fn pick_bt_vertical_label_start(
     canvas: &Canvas,
+    style: &StyleChars,
     nodes: &[&Node],
     edge_x: usize,
     y: usize,
@@ -1086,8 +1099,15 @@ fn pick_bt_vertical_label_start(
         let occupied = (start..start + width)
             .filter(|x| canvas.get(*x, y) != ' ')
             .count();
+        // A label over another line's junction or corner cuts its branches
+        // off (gen_a_038: "metrics" over the trunk joining the bus).
+        let breaks_line = (start..start + width).any(|x| {
+            let cell = canvas.get(x, y);
+            canvas::is_junction(cell, style) || canvas::is_corner(cell, style)
+        });
         let distance = start.abs_diff(centered);
         let score = usize::from(covers_edge) * 1000
+            + usize::from(breaks_line) * 1000
             + usize::from(overlaps) * 100
             + occupied * 10
             + distance;
