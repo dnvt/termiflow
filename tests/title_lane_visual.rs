@@ -318,3 +318,71 @@ fn a_fan_in_past_a_title_s_text_keeps_straight() {
         "the trunk passes the title one blank after it:\n{frame}"
     );
 }
+
+/// gen_c_129: a and b fan into d1 under Target's title, which is padded off
+/// a sibling frame's lane and never slides. The trunk steps past it.
+#[test]
+fn a_fan_in_steps_past_a_padded_title() {
+    let input = "graph TD
+    subgraph A [A]
+        a[a]
+    end
+    subgraph B [B]
+        b[b]
+    end
+    subgraph C [C]
+        c[c]
+    end
+    subgraph D [Target]
+        d1[d1] --> d2[d2]
+    end
+    a --> d1
+    b --> d1
+    c --> d2
+    d2 --> X[Out]
+";
+    for (style, frame) in render_styles(input) {
+        assert_eq!(
+            lines_hidden_under_title(&frame, "Target"),
+            Vec::<usize>::new(),
+            "no line hides under the title ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// A fan-in with a source in the target's own frame starts its trunk under
+/// the title: it has no title to step past, and Internal Network's top wall
+/// keeps just the two lines entering it (gen_a_116).
+#[test]
+fn a_fan_in_from_inside_the_frame_does_not_step_past_its_title() {
+    let input = "graph TD
+    subgraph Pub [Public Internet]
+        Users((Users))
+    end
+    subgraph DMZ
+        Proxy[Reverse Proxy]
+        Bastion[Bastion Host]
+    end
+    subgraph Internal [Internal Network]
+        AppSrv[App Servers]
+        DBSrv[(DB Servers)]
+        AppSrv --> DBSrv
+    end
+    Users --> Proxy
+    Proxy --> AppSrv
+    Admin[Admin Laptop] --> Bastion
+    Bastion -.-> AppSrv
+    Bastion -.-> DBSrv
+";
+    let frame = render(input);
+    let rows: Vec<&str> = frame.lines().collect();
+    let title = rows
+        .iter()
+        .position(|row| row.contains("Internal Network"))
+        .expect("title");
+    assert_eq!(
+        rows[title - 1].matches('│').count(),
+        2,
+        "two lines cross Internal Network's top wall:\n{frame}"
+    );
+}

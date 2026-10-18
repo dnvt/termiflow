@@ -301,50 +301,17 @@ fn route_convergent_from_subgraph_td(
         }
     }
 
-    // A trunk dropping into the target's frame through its title text is
-    // hidden by it (gen_a_116's fan-in into App Servers under "Internal
-    // Network"): on the row above that frame, step to the nearest column
-    // clear of the title, cross the wall there and turn back to the arrow on
-    // the row under the title.
-    if let Some((entry_x, jog_y, under_y)) = title_safe_frame_entry(graph, target, cursor_x) {
-        let corner_ends = |from_x: usize, to_x: usize, y: usize, canvas: &mut Canvas| {
-            let (first, last) = if to_x > from_x {
-                (style.corner_ul, style.corner_dr)
-            } else {
-                (style.corner_ur, style.corner_dl)
-            };
-            set_route_edge_char(canvas, from_x, y, first, style, Some(fanin_owner));
-            for x in from_x.min(to_x) + 1..from_x.max(to_x) {
-                set_route_edge_char(canvas, x, y, style.edge_h, style, Some(fanin_owner));
-            }
-            set_route_edge_char(canvas, to_x, y, last, style, Some(fanin_owner));
-        };
-        draw_line_primary(
-            cursor_x,
-            cursor_y,
-            cursor_x,
-            jog_y - 1,
-            &coords,
-            canvas,
-            style,
-            Some(graph),
-            Some(fanin_owner),
-        );
-        corner_ends(cursor_x, entry_x, jog_y, canvas);
-        draw_line_primary(
-            entry_x,
-            jog_y + 1,
-            entry_x,
-            under_y - 1,
-            &coords,
-            canvas,
-            style,
-            Some(graph),
-            Some(fanin_owner),
-        );
-        corner_ends(entry_x, arrow_x, under_y, canvas);
-        cursor_x = arrow_x;
-        cursor_y = under_y + 1;
+    if let Some(next) = step_past_title(
+        canvas,
+        style,
+        graph,
+        fanin_owner,
+        &coords,
+        target,
+        (cursor_x, cursor_y),
+        arrow_x,
+    ) {
+        (cursor_x, cursor_y) = next;
     }
 
     let turn_y = if cursor_x != arrow_x && arrow_y > cursor_y {
@@ -468,6 +435,67 @@ fn route_convergent_from_subgraph_td(
     );
 }
 
+/// A TD trunk at `cursor` dropping into the target's frame through its title
+/// text is hidden by it (gen_a_116's fan-in into App Servers under "Internal
+/// Network"): on the row above that frame, step to the nearest column clear
+/// of the title, cross the wall there and turn back to the arrow on the row
+/// under the title. Returns where the trunk carries on to the arrow.
+#[allow(clippy::too_many_arguments)]
+fn step_past_title(
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+    owner: RouteOwner<'_>,
+    coords: &OrientedCoords,
+    target: &Node,
+    (cursor_x, cursor_y): (usize, usize),
+    arrow_x: usize,
+) -> Option<(usize, usize)> {
+    let (entry_x, jog_y, under_y) = title_safe_frame_entry(graph, target, cursor_x)?;
+    // A trunk starting inside the frame (a source in it too) has no title
+    // to pass.
+    if jog_y <= cursor_y {
+        return None;
+    }
+    let corner_ends = |from_x: usize, to_x: usize, y: usize, canvas: &mut Canvas| {
+        let (first, last) = if to_x > from_x {
+            (style.corner_ul, style.corner_dr)
+        } else {
+            (style.corner_ur, style.corner_dl)
+        };
+        set_route_edge_char(canvas, from_x, y, first, style, Some(owner));
+        for x in from_x.min(to_x) + 1..from_x.max(to_x) {
+            set_route_edge_char(canvas, x, y, style.edge_h, style, Some(owner));
+        }
+        set_route_edge_char(canvas, to_x, y, last, style, Some(owner));
+    };
+    draw_line_primary(
+        cursor_x,
+        cursor_y,
+        cursor_x,
+        jog_y - 1,
+        coords,
+        canvas,
+        style,
+        Some(graph),
+        Some(owner),
+    );
+    corner_ends(cursor_x, entry_x, jog_y, canvas);
+    draw_line_primary(
+        entry_x,
+        jog_y + 1,
+        entry_x,
+        under_y - 1,
+        coords,
+        canvas,
+        style,
+        Some(graph),
+        Some(owner),
+    );
+    corner_ends(entry_x, arrow_x, under_y, canvas);
+    Some((arrow_x, under_y + 1))
+}
+
 /// Where a TD trunk dropping at `cursor_x` would cross the title text of a
 /// frame the target is in: the nearest column clear of that title, the row
 /// above the frame to step over on, and the row under the title to turn back
@@ -484,13 +512,16 @@ fn title_safe_frame_entry(
         .filter_map(|sg_id| graph.get_subgraph(sg_id))
         .find(|frame| is_subgraph_title_text_cell(graph, cursor_x, frame.bounds.y + 1))?;
     // A title with room beside the trunk slides off it once drawn, leaving the
-    // line straight (gen_a_080, gen_a_160).
+    // line straight (gen_a_080, gen_a_160); one padded off a sibling's lane
+    // stays put (gen_c_129's Target).
+    let gutter = crate::portals::td_sibling_title_gutter(graph, &frame.id);
+    let slides = gutter.leading_extra_padding == 0 && gutter.trailing_extra_padding == 0;
     let title_width = crate::graph::title_cells(
         &crate::graph::subgraph_title_text_with_padding_sides(frame.title.as_deref()?, 0, 0),
     )
     .len();
     let right_wall = frame.bounds.x + frame.bounds.width - 1;
-    if cursor_x + title_width < right_wall {
+    if slides && cursor_x + title_width < right_wall {
         return None;
     }
     let jog_y = frame.bounds.y.checked_sub(1)?;
@@ -2184,7 +2215,20 @@ pub fn route_convergent_edges(
         set_route_edge_char(canvas, sx, sy, start_char, style, Some(fanin_owner));
         set_route_edge_char(canvas, ex, ey, end_char, style, Some(fanin_owner));
     }
-    let (final_start_x, final_start_y) = coords.advance(merge_x, merge_y_draw, 1);
+    let (mut final_start_x, mut final_start_y) = coords.advance(merge_x, merge_y_draw, 1);
+    // Through a target frame's title (gen_c_129's fan-in into Target).
+    if let Some(next) = step_past_title(
+        canvas,
+        style,
+        graph,
+        fanin_owner,
+        &coords,
+        to,
+        (final_start_x, final_start_y),
+        arrow_x,
+    ) {
+        (final_start_x, final_start_y) = next;
+    }
     draw_line_primary(
         final_start_x,
         final_start_y,
