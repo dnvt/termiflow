@@ -2351,6 +2351,12 @@ pub(super) fn route_cross_subgraph_td(
                 graph.direction,
             )
             .unwrap_or(portal_x);
+            // A target in a frame enclosing the source's is only left, not
+            // entered: no portal past that frame's title (gen_d_015's B -> C
+            // ran along Inner's bottom wall to clear Outer's title).
+            if enter_subgraphs.is_empty() {
+                portal_x = arrow_x;
+            }
         }
     }
 

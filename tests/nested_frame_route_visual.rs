@@ -530,3 +530,45 @@ fn a_parent_box_beside_a_nested_frame_keeps_its_rows() {
         }
     }
 }
+
+/// gen_c_057: i2 -> o1 only leaves the nested frame; o1's frame already
+/// holds it. The route still planned an entry into the outer frame past its
+/// title, ran along the nested frame's bottom wall to it and came back to
+/// o1's arrow, leaving a second path. It now leaves straight down.
+#[test]
+fn a_line_out_of_a_nested_frame_into_its_parent_leaves_straight() {
+    let input = "graph TD
+    Src[Src] --> i1
+    subgraph Outer [Titled outer]
+        o1[o1]
+        subgraph inner
+            i1[i1] --> i2[i2]
+        end
+        i2 --> o1
+    end
+    o1 --> Dst[Dst]
+";
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        let frame = render(input, style);
+        let lines: Vec<&str> = frame.lines().collect();
+        let i2_row = lines
+            .iter()
+            .position(|line| line.contains("  i2  "))
+            .expect("i2");
+        let wall = lines[i2_row + 2..]
+            .iter()
+            .position(|line| line.contains('┗') || line.matches('+').count() >= 2)
+            .map(|offset| i2_row + 2 + offset)
+            .expect("inner's bottom wall");
+        let o1_row = lines
+            .iter()
+            .position(|line| line.contains("  o1  "))
+            .expect("o1");
+        for line in &lines[wall + 1..o1_row - 1] {
+            assert!(
+                !line.contains('─') && !line.contains("--"),
+                "no line runs sideways between inner and o1 ({style:?}):\n{frame}"
+            );
+        }
+    }
+}
