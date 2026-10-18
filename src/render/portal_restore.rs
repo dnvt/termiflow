@@ -486,19 +486,23 @@ pub(super) fn draw_subgraph_title(
     // edge's line goes through the band, whatever the border cell shows.
     let one_route_through = |canvas: &Canvas, x: usize| {
         border_y.and_then(|(_, outer, inner)| {
-            let run_owner = |y: usize| {
+            // Above a TD frame the run may start at a bus junction pointing down
+            // at the wall (gen_a_246: a fan-in joining right above Core Banking).
+            let run_owner = |y: usize, outside: bool| {
+                let cell = canvas.get(x, y);
                 canvas
                     .get_meta(x, y)
                     .filter(|meta| {
-                        matches!(canvas.get(x, y), '│' | '┃' | '║' | '|')
+                        (matches!(cell, '│' | '┃' | '║' | '|')
+                            || outside && topology::char_connects_down(cell))
                             && meta.owner_kind
                                 == crate::render::semantic::CellOwnerKind::EdgeSegment
                     })
                     .and_then(|meta| meta.owner_id.clone())
             };
             let outer = outer.filter(|&outer| outer < canvas.height)?;
-            let owner = run_owner(outer)?;
-            (inner < canvas.height && run_owner(inner).as_ref() == Some(&owner))
+            let owner = run_owner(outer, true)?;
+            (inner < canvas.height && run_owner(inner, false).as_ref() == Some(&owner))
                 .then(|| (canvas.get(x, inner), owner))
         })
     };

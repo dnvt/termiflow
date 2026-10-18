@@ -386,3 +386,35 @@ fn a_fan_in_from_inside_the_frame_does_not_step_past_its_title() {
         "two lines cross Internal Network's top wall:\n{frame}"
     );
 }
+
+/// gen_a_246: the fan-in into Posting Engine joins its bus on the row right
+/// above Core Banking, so the line under the title started at a junction,
+/// not a plain run, and the title never slid off it. It slides now.
+#[test]
+fn a_title_slides_off_a_fan_in_joining_right_above_its_frame() {
+    let input = "graph TD
+    subgraph Bank [Core Banking]
+        Accounts[(Accounts)]
+        Posting[Posting Engine]
+        Posting --> Accounts
+    end
+    subgraph Channels
+        ATM[ATM]
+        Online[Online Banking]
+        Branch[Branch Teller]
+    end
+    ATM --> Switch[Card Switch]
+    Switch --> Posting
+    Online --> Posting
+    Branch --> Posting
+    Posting --> EOD[End of Day Batch]
+    EOD --> GL[(General Ledger)]
+";
+    for (style, frame) in render_styles(input) {
+        assert_eq!(
+            lines_hidden_under_title(&frame, "Core Banking"),
+            Vec::<usize>::new(),
+            "no line hides under the title ({style:?}):\n{frame}"
+        );
+    }
+}
