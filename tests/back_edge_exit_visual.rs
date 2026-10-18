@@ -774,3 +774,91 @@ fn a_td_cycle_opens_no_lane_rows() {
     };
     assert_eq!(row("Done") - row("Check"), 5, "ranks stay put:\n{frame}");
 }
+
+fn row_of(frame: &str, text: &str) -> usize {
+    frame
+        .lines()
+        .position(|row| row.contains(text))
+        .unwrap_or_else(|| panic!("{text}:\n{frame}"))
+}
+
+/// gen_a_009: Tune -> Train's lane runs under the boxes and rose into Train
+/// Model through Validation Set, stacked under it with the same lines in and
+/// out; the two trade places so the leg rises straight into Train Model.
+#[test]
+fn a_back_edge_end_trades_places_with_a_twin_under_it() {
+    let input = "graph RL
+    Data[(Raw Dataset)] --> Prep[Preprocess]
+    Prep --> Split{Train/Val Split}
+    Split --> Train[Train Model]
+    Split --> Val[Validation Set]
+    Train --> Eval[Evaluate]
+    Val --> Eval
+    Eval --> Good{Accuracy OK?}
+    Good -->|no| Tune[Tune Hyperparams]
+    Tune --> Train
+    Good -->|yes| Reg[[Model Registry]]
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        let frame = termiflow::render_with_feedback(input, RenderOptions::new().with_style(style))
+            .expect("render")
+            .output;
+        assert!(
+            row_of(&frame, "Train Model") > row_of(&frame, "Validation Set"),
+            "Train Model sits under Validation Set ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// N -> T's leg drops from N through P, stacked under N with the same line in
+/// from M and none out; N moves under P. P keeps its place under N when it
+/// has another line in (from X).
+#[test]
+fn a_back_edge_end_trades_places_only_with_a_twin() {
+    let base = "graph RL
+A --> T[Target]
+A --> O[Other]
+T --> M
+O --> M
+M --> P
+M --> N
+N --> T
+";
+    for (extra, n_below) in [("", true), ("X --> P\n", false)] {
+        let input = format!("{base}{extra}");
+        let frame = termiflow::render_with_feedback(&input, RenderOptions::new())
+            .expect("render")
+            .output;
+        assert_eq!(
+            row_of(&frame, "  N  ") > row_of(&frame, "  P  "),
+            n_below,
+            "N under P is {n_below} with {extra:?}:\n{frame}"
+        );
+    }
+}
+
+/// gen_a_042: Followers 1 and 2 each send an ack back to Raft Leader and have
+/// the same lines in, so neither trades places with the other; Follower 2
+/// moves under Follower 3, which has no back edge, and its ack stays clear
+/// of the leader's bus.
+#[test]
+fn a_back_edge_end_does_not_trade_places_with_another_back_edge_end() {
+    let input = "flowchart LR
+    Leader[Raft Leader] ==> F1[Follower 1]
+    Leader ==> F2[Follower 2]
+    Leader ==> F3[Follower 3]
+    F1 -.->|ack| Leader
+    F2 -.->|ack| Leader
+    Client([Client]) --> Leader
+    Leader --> Commit{Quorum reached?}
+    Commit -->|yes| Apply[Apply to State Machine]
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    let rows = ["Follower 1", "Follower 3", "Follower 2"].map(|name| row_of(&frame, name));
+    assert!(
+        rows[0] < rows[1] && rows[1] < rows[2],
+        "Followers 1, 3, 2 from the top:\n{frame}"
+    );
+}

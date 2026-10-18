@@ -533,6 +533,7 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     );
     reserve_title_turn_rows(input.graph, &mut placement, &mut subgraph_envelopes);
     reserve_bt_back_edge_exit_rows(input.graph, &mut placement, &mut subgraph_envelopes);
+    sink_lr_back_edge_ends_below_twins(input.graph, &mut placement);
     reserve_lr_back_edge_top_rows(input.graph, &mut placement);
     reserve_lr_back_edge_lane_rows(input.graph, &config, &mut placement);
 
@@ -1116,6 +1117,92 @@ fn reserve_bt_back_edge_exit_rows(
         envelope.inner.y += extra;
     }
     placement.canvas.height += extra;
+}
+
+/// In an LR/RL graph without frames, a back edge's lane runs under the boxes
+/// and its legs drop from its ends' centre columns; a box stacked under an
+/// end in that column hides the leg (gen_a_009: Tune -> Train rises through
+/// Validation Set). When that box has the same lines in and out as the end
+/// and no back edge of its own, the two trade places: no other line changes.
+/// In TD/BT a twin shares its end's rank row, so none stands under it.
+fn sink_lr_back_edge_ends_below_twins(graph: &Graph, placement: &mut placement::Placement) {
+    if !graph.subgraphs.is_empty() {
+        return;
+    }
+    let forward = |id: &str| {
+        let mut ins: Vec<&str> = graph
+            .edges
+            .iter()
+            .filter(|edge| !edge.is_back_edge && edge.to == id)
+            .map(|edge| edge.from.as_str())
+            .collect();
+        let mut outs: Vec<&str> = graph
+            .edges
+            .iter()
+            .filter(|edge| !edge.is_back_edge && edge.from == id)
+            .map(|edge| edge.to.as_str())
+            .collect();
+        ins.sort_unstable();
+        outs.sort_unstable();
+        (ins, outs)
+    };
+    let back_ends: Vec<&str> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.is_back_edge)
+        .flat_map(|edge| [edge.from.as_str(), edge.to.as_str()])
+        .collect();
+    let rect = |rect: &crate::geom::Rect| (rect.x, rect.y, rect.width, rect.height.max(3));
+    let boxes: Vec<(usize, usize, usize, usize)> =
+        placement.node_rects.values().map(rect).collect();
+    let under: Vec<&str> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.is_back_edge)
+        .filter(|edge| {
+            match (
+                placement.node_rects.get(&edge.from),
+                placement.node_rects.get(&edge.to),
+            ) {
+                (Some(from), Some(to)) => {
+                    !crate::render::cycle::lr_back_edge_over_the_top(rect(from), rect(to), &boxes)
+                }
+                _ => false,
+            }
+        })
+        .flat_map(|edge| [edge.from.as_str(), edge.to.as_str()])
+        .collect();
+    for end in &under {
+        let Some(&upper) = placement.node_rects.get(*end) else {
+            continue;
+        };
+        let leg = upper.x + upper.width / 2;
+        let Some((twin, lower)) = placement
+            .node_rects
+            .iter()
+            .filter(|(_, rect)| rect.y > upper.y && (rect.x..rect.x + rect.width).contains(&leg))
+            .min_by_key(|(_, rect)| rect.y)
+            .map(|(id, rect)| (id.clone(), *rect))
+        else {
+            continue;
+        };
+        if back_ends.contains(&twin.as_str()) || forward(&twin) != forward(end) {
+            continue;
+        }
+        let gap = lower.y - upper.bottom();
+        let moves = [
+            (twin, upper.y),
+            (end.to_string(), upper.y + lower.height + gap),
+        ];
+        for (id, y) in moves {
+            if let Some(rect) = placement.node_rects.get_mut(&id) {
+                rect.y = y;
+            }
+            if let Some(point) = placement.positions.get_mut(&id) {
+                point.y = y;
+            }
+        }
+    }
 }
 
 /// In an LR/RL graph without frames, a back edge whose route under the boxes
