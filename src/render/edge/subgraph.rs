@@ -3312,6 +3312,71 @@ pub(super) enum BtRouteOutcome {
     NotApplicable,
 }
 
+/// A BT line out of nested frames to a box right of the outermost one would
+/// climb out through every top wall and come back down (gen_a_183: Freshness
+/// Monitors -> Slack Alert through Lineage Graph). It turns right on the row
+/// above its source instead, crosses the frames' right walls (they count as
+/// lines it may cross) and rises into its target, when that row and the rise
+/// are clear. A source with other lines out keeps its stem for them: this
+/// line leaves its top wall in a column of its own near its right end, so a
+/// line joining that stem cannot be read into its target (dbt Tests -> Slack
+/// Alert).
+#[allow(clippy::too_many_arguments)]
+fn bt_side_exit_plan(
+    from: &Node,
+    exit_subgraphs: &[&str],
+    (stem_x, stem_y): (usize, usize),
+    (arrow_x, arrow_y): (usize, usize),
+    canvas: &Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+    owner_id: String,
+) -> Option<FallbackRoutePlan> {
+    let outer = &graph.get_subgraph(exit_subgraphs.last()?)?.bounds;
+    if arrow_x < outer.x + outer.width {
+        return None;
+    }
+    let shared = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.from == from.id)
+        .count()
+        > 1;
+    let (exit_x, lane_y) = if shared {
+        ((from.x + from.width).checked_sub(3)?, stem_y)
+    } else {
+        (stem_x, stem_y.checked_sub(1)?)
+    };
+    let lane_clear = (exit_x..=arrow_x).all(|x| {
+        canvas.get(x, lane_y) == ' '
+            || super::super::canvas::is_vertical(canvas.get(x, lane_y), style)
+    });
+    if !lane_clear || (arrow_y..lane_y).any(|y| canvas.get(arrow_x, y) != ' ') {
+        return None;
+    }
+    let mut plan = FallbackRoutePlan::new(owner_id, "bt-side-exit-boundary-chain");
+    if shared {
+        plan.push_paint(exit_x, from.y, style.junction_up);
+    } else {
+        plan.push_vertical(stem_x, stem_y, lane_y, style.edge_v);
+    }
+    plan.push_corner(exit_x, lane_y, style.corner_dl);
+    plan.push_horizontal(lane_y, exit_x, arrow_x, style.edge_h);
+    for id in exit_subgraphs {
+        let bounds = &graph.get_subgraph(id)?.bounds;
+        plan.claim_boundary(
+            *id,
+            "right",
+            bounds.x + bounds.width - 1,
+            lane_y,
+            style.edge_h,
+        );
+    }
+    plan.push_corner(arrow_x, lane_y, style.corner_ur);
+    plan.push_vertical(arrow_x, lane_y, arrow_y, style.edge_v);
+    Some(plan)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn route_cross_subgraph_bt(
     from: &Node,
@@ -3827,6 +3892,20 @@ pub(super) fn route_cross_subgraph_bt(
         let owner_id = owner
             .map(|route_owner| route_owner.id.to_owned())
             .unwrap_or_else(|| format!("fallback:{}->{}", from.id, to.id));
+        if let Some(plan) = bt_side_exit_plan(
+            from,
+            &exit_subgraphs,
+            (stem_start_x, stem_start_y),
+            (arrow_x, arrow_y),
+            canvas,
+            style,
+            graph,
+            owner_id.clone(),
+        ) {
+            if lower_bt_fallback_plan(plan, canvas, style, graph, owner) {
+                return BtRouteOutcome::Handled;
+            }
+        }
         let mut plan = FallbackRoutePlan::new(owner_id, "bt-exit-boundary-chain");
         let mut current_x = stem_start_x;
         let mut current_y = stem_start_y;
@@ -4997,9 +5076,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        bt_sibling_plan_blocker, bt_sibling_target_lane_candidates, bt_title_safe_entry_y,
-        bt_title_safe_entry_y_with_margin, nearest_title_safe_x, preferred_portal_x,
-        td_sibling_corridor_row,
+        bt_sibling_plan_blocker, bt_sibling_target_lane_candidates, bt_side_exit_plan,
+        bt_title_safe_entry_y, bt_title_safe_entry_y_with_margin, nearest_title_safe_x,
+        preferred_portal_x, td_sibling_corridor_row,
     };
     use crate::graph::{Direction, Graph, Node, Rectangle, Subgraph};
     use crate::portals::{title_margin_for_direction, title_safe_portal_x, PortalColumnPreference};
@@ -5104,6 +5183,58 @@ mod tests {
         assert!(
             candidates.contains(&14),
             "preferred title-safe lane remains eligible"
+        );
+    }
+
+    /// S sits in Inner inside Outer (right walls at x 31 and 39); its one line
+    /// out turns on row 8, above its stem, toward a target arrow at (50, 5).
+    fn side_exit(
+        arrow_x: usize,
+        blocked: Option<(usize, usize, char)>,
+    ) -> Option<FallbackRoutePlan> {
+        let mut graph = Graph::new();
+        let mut source = Node::new("S", "S");
+        (source.x, source.y, source.width, source.height) = (15, 10, 10, 3);
+        graph.nodes.push(source.clone());
+        graph.edges.push(crate::graph::Edge::new("S", "T"));
+        let mut outer = Subgraph::new("Outer", None);
+        outer.bounds = Rectangle::new(10, 0, 30, 20);
+        let mut inner = Subgraph::new("Inner", None);
+        inner.bounds = Rectangle::new(12, 5, 20, 12);
+        graph.add_subgraph(outer);
+        graph.add_subgraph(inner);
+        let mut canvas = Canvas::new(80, 30);
+        if let Some((x, y, ch)) = blocked {
+            canvas.set(x, y, ch);
+        }
+        bt_side_exit_plan(
+            &source,
+            &["Inner", "Outer"],
+            (20, 9),
+            (arrow_x, 5),
+            &canvas,
+            crate::style::BaseStyle::Unicode.chars(),
+            &graph,
+            "edge:0:S->T".to_owned(),
+        )
+    }
+
+    #[test]
+    fn a_bt_side_exit_runs_only_right_on_a_clear_row_and_rise() {
+        let plan = side_exit(50, None).expect("clear row and rise");
+        assert!(plan.claims_cell(31, 8) && plan.claims_cell(39, 8) && plan.claims_cell(50, 6));
+        assert!(side_exit(5, None).is_none(), "a target left of the frames");
+        assert!(
+            side_exit(50, Some((45, 8, '┐'))).is_none(),
+            "a corner on the row"
+        );
+        assert!(
+            side_exit(50, Some((45, 8, '│'))).is_some(),
+            "a line to cross"
+        );
+        assert!(
+            side_exit(50, Some((50, 6, '│'))).is_none(),
+            "a line in the rise"
         );
     }
 

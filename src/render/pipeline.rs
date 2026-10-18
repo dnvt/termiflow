@@ -1024,6 +1024,24 @@ fn render_frame(
             );
             source_junction_records.push((junction_x, junction_y, format!("junction:{source_id}")));
         }
+        // A BT line that leaves its source's top wall in a column of its own
+        // (a side exit out of nested frames) gets a port of its own too.
+        let side_ports: Vec<usize> = (from.x + 1..(from.x + from.width).saturating_sub(1))
+            .filter(|&x| {
+                canvas.fallback_route_strategy_claims_cell("bt-side-exit-boundary-chain", x, from.y)
+            })
+            .collect();
+        for x in side_ports {
+            let mut port_scene = Scene::new();
+            port_scene.push(SceneIntent::edge_inferred(x, junction_y, junction_char));
+            port_scene.resolve_with_recorder(
+                &mut canvas,
+                &chars,
+                &mut scene_recorder,
+                "source-junction",
+            );
+            source_junction_records.push((x, junction_y, format!("junction:{source_id}")));
+        }
     }
 
     // Back edges leave their source through the cross-axis side (bottom in

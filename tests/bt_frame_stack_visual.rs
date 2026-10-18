@@ -488,3 +488,104 @@ fn a_line_turning_right_under_a_bt_frame_still_crosses_its_wall() {
         );
     }
 }
+
+const CATALOG_AND_QUALITY: &str = "graph BT
+    subgraph Platform [Data Platform]
+        subgraph Catalog [Data Catalog]
+            Meta[(Metadata)]
+            Lineage[Lineage Graph]
+            Meta --> Lineage
+        end
+        subgraph Quality [Data Quality]
+            Tests[dbt Tests]
+            Monitors[Freshness Monitors]
+        end
+        Tests --> Meta
+        Monitors --> Meta
+    end
+    Analyst((Analyst)) --> Lineage
+    Monitors --> Slack>Slack Alert]
+";
+
+/// The junctions on `name`'s top wall, between its corners, and the cells
+/// right above each of them.
+fn top_wall_exits(frame: &str, name: &str) -> Vec<(char, char)> {
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    let text_row = row_of(frame, name);
+    let text: Vec<char> = name.chars().collect();
+    let text_col = rows[text_row]
+        .windows(text.len())
+        .position(|window| window == text.as_slice())
+        .expect("name column");
+    (text_col - 2..text_col + text.len() + 2)
+        .filter(|&x| matches!(rows[text_row - 1][x], '┴' | '+'))
+        .map(|x| (rows[text_row - 1][x], rows[text_row - 2][x]))
+        .collect()
+}
+
+/// gen_a_183: Freshness Monitors -> Slack Alert, with Slack Alert right of
+/// Data Platform and level with it, climbed out through every top wall and
+/// through Lineage Graph, ran along the canvas top row and came back down. It
+/// now turns right above Freshness Monitors and leaves through the frames'
+/// right walls, from a column of its own: on the stem Freshness Monitors
+/// shares with its line to Metadata, dbt Tests' line would read into Slack.
+#[test]
+fn a_bt_line_to_a_box_right_of_its_frames_leaves_through_their_right_walls() {
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        let frame = render(CATALOG_AND_QUALITY, style);
+        let rows: Vec<&str> = frame.lines().collect();
+        assert!(
+            !rows[0].contains(['│', '┘', '|']),
+            "no line runs along the top wall ({style:?}):\n{frame}"
+        );
+        assert!(
+            top_wall_exits(&frame, "Lineage Graph").is_empty(),
+            "no line climbs through Lineage Graph ({style:?}):\n{frame}"
+        );
+        assert_eq!(
+            top_wall_exits(&frame, "Freshness Monitors").len(),
+            2,
+            "Freshness Monitors has a port for each line out ({style:?}):\n{frame}"
+        );
+        // The turn row crosses only the line up from Analyst; the frame walls
+        // it passes are pierced, not crossed.
+        let turn_row = rows[row_of(&frame, "Freshness Monitors") - 2];
+        let (crossing, crossings) = match style {
+            BaseStyle::Ascii => ('+', 3),
+            _ => ('┼', 1),
+        };
+        assert_eq!(
+            turn_row.matches(crossing).count(),
+            crossings,
+            "the line pierces both right walls ({style:?}):\n{frame}"
+        );
+        assert!(
+            rows[row_of(&frame, "Slack Alert") + 2].contains(['↑', '^']),
+            "the line rises into Slack Alert ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// With no other line out, the side exit keeps the source's stem and turns
+/// a row above it.
+#[test]
+fn a_lone_bt_line_out_of_frames_turns_off_its_own_stem() {
+    let input = CATALOG_AND_QUALITY.replace("        Monitors --> Meta\n", "");
+    let frame = render(&input, BaseStyle::Unicode);
+    assert!(
+        top_wall_exits(&frame, "Lineage Graph").is_empty(),
+        "no line climbs through Lineage Graph:\n{frame}"
+    );
+    assert_eq!(
+        top_wall_exits(&frame, "Freshness Monitors"),
+        vec![('┴', '│')],
+        "Freshness Monitors' one line leaves on a stem:\n{frame}"
+    );
+    assert!(
+        frame
+            .lines()
+            .nth(row_of(&frame, "Slack Alert") + 2)
+            .is_some_and(|row| row.contains('↑')),
+        "the line rises into Slack Alert:\n{frame}"
+    );
+}
