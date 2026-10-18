@@ -330,7 +330,7 @@ pub(super) fn draw_line_secondary(
 /// A visible title character (not the padding space around it). A vertical
 /// line may pass through the padding beside a title; skipping that cell would
 /// leave a gap in the line.
-fn is_subgraph_title_text_cell(graph: &Graph, x: usize, y: usize) -> bool {
+pub(super) fn is_subgraph_title_text_cell(graph: &Graph, x: usize, y: usize) -> bool {
     graph.subgraphs.iter().any(|sg| {
         let (Some(title), true) = (sg.title.as_deref(), sg.bounds.is_valid()) else {
             return false;

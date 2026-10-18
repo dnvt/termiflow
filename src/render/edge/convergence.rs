@@ -13,7 +13,7 @@ use super::super::semantic::CellOwnerKind;
 use super::edge_primitives::{
     adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, edge_entry_candidates,
     edge_exit_point, fan_in_source_uses_left_port, get_node_center, hits_foreign_subgraph_border,
-    is_subgraph_title_cell,
+    is_subgraph_title_cell, is_subgraph_title_text_cell,
 };
 use super::subgraph::{preferred_portal_x, smallest_visual_container};
 use super::{edge_route_owner_id, set_route_char, set_route_edge_char, RouteOwner, ROUTE_Z_INDEX};
@@ -301,6 +301,52 @@ fn route_convergent_from_subgraph_td(
         }
     }
 
+    // A trunk dropping into the target's frame through its title text is
+    // hidden by it (gen_a_116's fan-in into App Servers under "Internal
+    // Network"): on the row above that frame, step to the nearest column
+    // clear of the title, cross the wall there and turn back to the arrow on
+    // the row under the title.
+    if let Some((entry_x, jog_y, under_y)) = title_safe_frame_entry(graph, target, cursor_x) {
+        let corner_ends = |from_x: usize, to_x: usize, y: usize, canvas: &mut Canvas| {
+            let (first, last) = if to_x > from_x {
+                (style.corner_ul, style.corner_dr)
+            } else {
+                (style.corner_ur, style.corner_dl)
+            };
+            set_route_edge_char(canvas, from_x, y, first, style, Some(fanin_owner));
+            for x in from_x.min(to_x) + 1..from_x.max(to_x) {
+                set_route_edge_char(canvas, x, y, style.edge_h, style, Some(fanin_owner));
+            }
+            set_route_edge_char(canvas, to_x, y, last, style, Some(fanin_owner));
+        };
+        draw_line_primary(
+            cursor_x,
+            cursor_y,
+            cursor_x,
+            jog_y - 1,
+            &coords,
+            canvas,
+            style,
+            Some(graph),
+            Some(fanin_owner),
+        );
+        corner_ends(cursor_x, entry_x, jog_y, canvas);
+        draw_line_primary(
+            entry_x,
+            jog_y + 1,
+            entry_x,
+            under_y - 1,
+            &coords,
+            canvas,
+            style,
+            Some(graph),
+            Some(fanin_owner),
+        );
+        corner_ends(entry_x, arrow_x, under_y, canvas);
+        cursor_x = arrow_x;
+        cursor_y = under_y + 1;
+    }
+
     let turn_y = if cursor_x != arrow_x && arrow_y > cursor_y {
         arrow_y
             .saturating_sub(1)
@@ -420,6 +466,45 @@ fn route_convergent_from_subgraph_td(
         coords.arrow_end(style),
         Some(fanin_owner),
     );
+}
+
+/// Where a TD trunk dropping at `cursor_x` would cross the title text of a
+/// frame the target is in: the nearest column clear of that title, the row
+/// above the frame to step over on, and the row under the title to turn back
+/// on. None when the trunk misses every such title, or the title has room to
+/// slide off it.
+fn title_safe_frame_entry(
+    graph: &Graph,
+    target: &Node,
+    cursor_x: usize,
+) -> Option<(usize, usize, usize)> {
+    let frame = graph
+        .node_subgraph_chain(&target.id)
+        .into_iter()
+        .filter_map(|sg_id| graph.get_subgraph(sg_id))
+        .find(|frame| is_subgraph_title_text_cell(graph, cursor_x, frame.bounds.y + 1))?;
+    // A title with room beside the trunk slides off it once drawn, leaving the
+    // line straight (gen_a_080, gen_a_160).
+    let title_width = crate::graph::title_cells(
+        &crate::graph::subgraph_title_text_with_padding_sides(frame.title.as_deref()?, 0, 0),
+    )
+    .len();
+    let right_wall = frame.bounds.x + frame.bounds.width - 1;
+    if cursor_x + title_width < right_wall {
+        return None;
+    }
+    let jog_y = frame.bounds.y.checked_sub(1)?;
+    let under_y = frame.bounds.y + 2;
+    let entry_x = crate::portals::title_safe_portal_x(
+        frame.bounds.x,
+        frame.bounds.width,
+        frame.title.as_deref(),
+        cursor_x,
+        graph.direction,
+        crate::portals::title_margin_for_direction(graph.direction),
+        crate::portals::PortalColumnPreference::Nearest,
+    );
+    Some((entry_x, jog_y, under_y))
 }
 
 fn sample_bottom_border_fill(

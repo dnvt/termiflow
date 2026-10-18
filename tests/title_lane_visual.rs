@@ -260,3 +260,61 @@ fn a_line_under_a_space_in_a_title_leaves_it_in_place() {
         );
     }
 }
+
+/// gen_a_116: Reverse Proxy and Bastion Host fan into App Servers, whose
+/// frame title "Internal Network" fills the frame nearly wall to wall, so it
+/// has no room to slide off the trunk dropping through it. The trunk now
+/// steps past the title on the row above the frame and turns back under it.
+#[test]
+fn a_fan_in_steps_past_a_title_with_no_room_to_slide() {
+    let input = "graph TD
+    subgraph Pub [Public Internet]
+        Users((Users))
+    end
+    subgraph DMZ
+        Proxy[Reverse Proxy]
+        Bastion[Bastion Host]
+    end
+    subgraph Internal [Internal Network]
+        AppSrv[App Servers]
+        DBSrv[(DB Servers)]
+        AppSrv --> DBSrv
+    end
+    Users --> Proxy
+    Proxy --> AppSrv
+    Admin[Admin Laptop] --> Bastion
+    Bastion -.-> AppSrv
+    Bastion -.-> DBSrv
+";
+    assert_line_beside_title(&render(input), "Internal Network");
+}
+
+/// gen_a_005: the fan-in into Cleanse drops just past "Transform", through
+/// the title's padding, where the line shows; the title only shifts a cell
+/// left and the trunk stays straight instead of stepping around it.
+#[test]
+fn a_fan_in_past_a_title_s_text_keeps_straight() {
+    let input = "flowchart TB
+    subgraph Extract
+        Src1[(CRM)]
+        Src2[(ERP)]
+        Src3[Clickstream]
+    end
+    subgraph Transform
+        Clean[Cleanse]
+        Join[Join Sources]
+        Agg[Aggregate]
+    end
+    subgraph Load
+        DW[(Warehouse)]
+    end
+    Src1 & Src2 & Src3 --> Clean
+    Clean --> Join --> Agg --> DW
+    DW --> BI[BI Dashboards]
+";
+    let frame = render(input);
+    assert!(
+        frame.contains("┃ Transform │"),
+        "the trunk passes the title one blank after it:\n{frame}"
+    );
+}
