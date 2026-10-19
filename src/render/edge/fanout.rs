@@ -1285,6 +1285,19 @@ pub fn route_divergent_edges(
         );
     }
 
+    // A TD drop into a frame through its title text, where the title has no
+    // room to slide off it, leaves the bus clear of the title instead and
+    // turns back under it (gen_a_060's Events -> HDFS through "Batch
+    // Layer"): (drop column, row under the title).
+    let title_step = |target: &Node, arrow_x: usize| -> Option<(usize, usize)> {
+        if !matches!(direction, Direction::TD | Direction::TB) {
+            return None;
+        }
+        let (entry_x, jog_y, under_y) =
+            super::convergence::title_safe_frame_entry(graph, target, arrow_x)?;
+        (junction_y <= jog_y).then_some((entry_x, under_y))
+    };
+
     // 2. Calculate span on secondary axis
     let src_secondary = coords.secondary_coord(src_x, src_y);
     let target_secondaries: Vec<usize> = target_positions
@@ -1292,7 +1305,10 @@ pub fn route_divergent_edges(
         .map(|(_, _, target)| {
             let (arrow_x, arrow_y) =
                 fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
-            coords.secondary_coord(arrow_x, arrow_y)
+            title_step(target, arrow_x).map_or_else(
+                || coords.secondary_coord(arrow_x, arrow_y),
+                |(entry_x, _)| entry_x,
+            )
         })
         .collect();
     let first_secondary = target_secondaries
@@ -1440,11 +1456,30 @@ pub fn route_divergent_edges(
         let branch_style = style_for_edge_kind(style, edge_kind);
         let (arrow_x, arrow_y) =
             fanout_entry_point(target, src_x, &left_ports, junction_y, direction, graph);
-        let target_secondary = coords.secondary_coord(arrow_x, arrow_y);
+        let step = title_step(target, arrow_x);
+        let target_secondary = step.map_or_else(
+            || coords.secondary_coord(arrow_x, arrow_y),
+            |(entry_x, _)| entry_x,
+        );
 
         // Draw vertical drop from junction+1 to arrow
         let (drop_x, drop_y) = coords.with_secondary(junction_x, junction_y, target_secondary);
-        let (drop_start_x, drop_start_y) = coords.advance(drop_x, drop_y, 1);
+        let (mut drop_start_x, mut drop_start_y) = coords.advance(drop_x, drop_y, 1);
+        if let Some((entry_x, under_y)) = step {
+            draw_line_primary(
+                entry_x,
+                drop_start_y,
+                entry_x,
+                under_y - 1,
+                &coords,
+                canvas,
+                &branch_style,
+                Some(graph),
+                Some(branch_owner),
+            );
+            super::convergence::jog_row(canvas, style, branch_owner, (entry_x, arrow_x), under_y);
+            (drop_start_x, drop_start_y) = (arrow_x, under_y + 1);
+        }
 
         // Only draw if there's actually a drop to draw
         if drop_start_x != arrow_x || drop_start_y != arrow_y {

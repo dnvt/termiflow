@@ -457,18 +457,6 @@ fn step_past_title(
     if jog_y <= cursor_y {
         return None;
     }
-    let corner_ends = |from_x: usize, to_x: usize, y: usize, canvas: &mut Canvas| {
-        let (first, last) = if to_x > from_x {
-            (style.corner_ul, style.corner_dr)
-        } else {
-            (style.corner_ur, style.corner_dl)
-        };
-        set_route_edge_char(canvas, from_x, y, first, style, Some(owner));
-        for x in from_x.min(to_x) + 1..from_x.max(to_x) {
-            set_route_edge_char(canvas, x, y, style.edge_h, style, Some(owner));
-        }
-        set_route_edge_char(canvas, to_x, y, last, style, Some(owner));
-    };
     draw_line_primary(
         cursor_x,
         cursor_y,
@@ -480,7 +468,7 @@ fn step_past_title(
         Some(graph),
         Some(owner),
     );
-    corner_ends(cursor_x, entry_x, jog_y, canvas);
+    jog_row(canvas, style, owner, (cursor_x, entry_x), jog_y);
     draw_line_primary(
         entry_x,
         jog_y + 1,
@@ -492,8 +480,29 @@ fn step_past_title(
         Some(graph),
         Some(owner),
     );
-    corner_ends(entry_x, arrow_x, under_y, canvas);
+    jog_row(canvas, style, owner, (entry_x, arrow_x), under_y);
     Some((arrow_x, under_y + 1))
+}
+
+/// A TD trunk's step sideways along row `y`, from the column it came down to
+/// the one it carries on down from, with a corner at each end.
+pub(super) fn jog_row(
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    owner: RouteOwner<'_>,
+    (from_x, to_x): (usize, usize),
+    y: usize,
+) {
+    let (first, last) = if to_x > from_x {
+        (style.corner_ul, style.corner_dr)
+    } else {
+        (style.corner_ur, style.corner_dl)
+    };
+    set_route_edge_char(canvas, from_x, y, first, style, Some(owner));
+    for x in from_x.min(to_x) + 1..from_x.max(to_x) {
+        set_route_edge_char(canvas, x, y, style.edge_h, style, Some(owner));
+    }
+    set_route_edge_char(canvas, to_x, y, last, style, Some(owner));
 }
 
 /// Where a TD trunk dropping at `cursor_x` would cross the title text of a
@@ -501,7 +510,7 @@ fn step_past_title(
 /// above the frame to step over on, and the row under the title to turn back
 /// on. None when the trunk misses every such title, or the title has room to
 /// slide off it.
-fn title_safe_frame_entry(
+pub(super) fn title_safe_frame_entry(
     graph: &Graph,
     target: &Node,
     cursor_x: usize,

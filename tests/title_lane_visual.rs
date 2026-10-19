@@ -418,3 +418,103 @@ fn a_title_slides_off_a_fan_in_joining_right_above_its_frame() {
         );
     }
 }
+
+/// gen_a_060: Events fans out to HDFS in Batch Layer and Kafka in Speed
+/// Layer; HDFS's drop ran under "Batch Layer", which has no room to slide off
+/// it in the narrow frame. The drop now leaves the bus right of the title and
+/// turns back under it.
+#[test]
+fn a_fan_out_drop_steps_past_a_title_with_no_room_to_slide() {
+    let input = "flowchart TB
+    subgraph Batch [Batch Layer]
+        HDFS[(HDFS)]
+        Spark[Spark Jobs]
+        BatchViews[(Batch Views)]
+        HDFS --> Spark --> BatchViews
+    end
+    subgraph Speed [Speed Layer]
+        Kafka[[Kafka]]
+        Storm[Stream Processor]
+        RTViews[(Realtime Views)]
+        Kafka --> Storm --> RTViews
+    end
+    Events[Event Source] --> HDFS
+    Events --> Kafka
+    BatchViews --> Q[Query Service]
+    RTViews --> Q
+";
+    for (style, frame) in render_styles(input) {
+        assert_eq!(
+            lines_hidden_under_title(&frame, "Batch Layer"),
+            Vec::<usize>::new(),
+            "no line hidden under Batch Layer ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_c_108 (RL): frame titles sit on their top rows there too, but an RL
+/// fan-out enters frames from the side; its drops keep their columns.
+#[test]
+fn an_rl_fan_out_into_frames_keeps_its_drops() {
+    let input = "graph RL
+    S[Scheduler] --> x
+    S --> y
+    S --> z
+    subgraph R [Region]
+        subgraph A [AZ a]
+            subgraph Ah [host a]
+                x[x]
+            end
+        end
+        subgraph B [AZ b]
+            subgraph Bh [host b]
+                y[y]
+            end
+        end
+        subgraph C [AZ c]
+            subgraph Ch [host c]
+                z[z]
+            end
+        end
+    end
+";
+    let frame = render(input);
+    let rows: Vec<&str> = frame.lines().collect();
+    let arrows = rows.iter().filter(|row| row.contains('←')).count();
+    assert_eq!(arrows, 3, "every drop ends in its arrow:\n{frame}");
+    assert!(
+        rows.iter().all(|row| !row.contains("────┐     ┃")),
+        "no drop jogs under a title:\n{frame}"
+    );
+}
+
+/// gen_a_020: Flink Job fans out from inside Stream Processing; its bus sits
+/// under the title already, so no drop steps around the title (none climbs
+/// back up beside Flink Job).
+#[test]
+fn a_fan_out_from_inside_a_frame_takes_no_title_step() {
+    let input = "flowchart TB
+    subgraph Ingest [Ingestion]
+        Sensors[IoT Sensors] --> MQTT[MQTT Broker]
+        MQTT --> Bridge[Kafka Bridge]
+    end
+    subgraph Stream [Stream Processing]
+        Flink[Flink Job]
+        Windows[Windowed Aggregates]
+        Flink --> Windows
+    end
+    subgraph Serve [Serving]
+        TSDB[(TimescaleDB)]
+        Grafana[Grafana]
+    end
+    Bridge --> Flink
+    Windows --> TSDB
+    TSDB --> Grafana
+    Flink --x Anom{{Anomaly Alert}}
+";
+    let frame = render(input);
+    assert!(
+        !frame.contains("││"),
+        "no drop runs back up beside another line:\n{frame}"
+    );
+}
