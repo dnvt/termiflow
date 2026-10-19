@@ -1287,16 +1287,6 @@ fn reserve_lr_back_edge_lane_rows(
         {
             continue;
         }
-        // A target with a loop onto itself keeps its rows: the opened lane's
-        // arrow lands beside that loop's corner and their crossing is redrawn
-        // as a corner, leaving a stub (gen_d_203's Hub).
-        if graph
-            .edges
-            .iter()
-            .any(|other| other.from == other.to && other.from == edge.to)
-        {
-            continue;
-        }
         let ends_top = from.y.max(to.y);
         let lane = from.bottom().max(to.bottom()) + config.min_vertical_spacing.max(2);
         let below: Vec<crate::geom::Rect> = placement

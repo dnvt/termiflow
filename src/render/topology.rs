@@ -312,7 +312,7 @@ fn canvas_connects_up(canvas: &Canvas, x: usize, y: usize) -> bool {
         _ => {}
     }
 
-    char_connects_down(canvas.get(x, y - 1))
+    char_connects_down(route_glyph(canvas, x, y - 1))
 }
 
 fn canvas_connects_down(canvas: &Canvas, x: usize, y: usize) -> bool {
@@ -339,7 +339,7 @@ fn canvas_connects_down(canvas: &Canvas, x: usize, y: usize) -> bool {
         _ => {}
     }
 
-    char_connects_up(canvas.get(x, y + 1))
+    char_connects_up(route_glyph(canvas, x, y + 1))
 }
 
 fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
@@ -366,7 +366,7 @@ fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
         _ => {}
     }
 
-    char_connects_right(canvas.get(x - 1, y))
+    char_connects_right(route_glyph(canvas, x - 1, y))
 }
 
 fn canvas_connects_right(canvas: &Canvas, x: usize, y: usize) -> bool {
@@ -393,7 +393,28 @@ fn canvas_connects_right(canvas: &Canvas, x: usize, y: usize) -> bool {
         _ => {}
     }
 
-    char_connects_left(canvas.get(x + 1, y))
+    char_connects_left(route_glyph(canvas, x + 1, y))
+}
+
+/// The heavy corners stay out of the glyph tables, which would otherwise
+/// read every frame corner as joining the line beside it; a heavy corner a
+/// route owns (the heavy style) reads as its light twin and joins like any
+/// other (gen_d_203: Hub's self-loop corner beside A -> H's crossing).
+fn route_glyph(canvas: &Canvas, x: usize, y: usize) -> char {
+    let ch = canvas.get(x, y);
+    let routed = canvas.get_meta(x, y).is_some_and(|meta| {
+        matches!(
+            meta.owner_kind,
+            CellOwnerKind::EdgeSegment | CellOwnerKind::CycleEdge | CellOwnerKind::Junction
+        )
+    });
+    match ch {
+        '┏' if routed => '┌',
+        '┓' if routed => '┐',
+        '┗' if routed => '└',
+        '┛' if routed => '┘',
+        _ => ch,
+    }
 }
 
 pub fn canonical_routing_glyph(
@@ -633,6 +654,31 @@ mod tests {
 
     fn unicode_chars() -> StyleChars {
         CompositeStyle::default().to_style_chars(BaseStyle::Unicode)
+    }
+
+    /// A heavy corner a route owns joins its two neighbours; a frame's
+    /// heavy corner joins none.
+    #[test]
+    fn heavy_route_corners_join_their_neighbours_and_frame_corners_do_not() {
+        let corner = |ch: char, owner: CellOwnerKind| {
+            let mut canvas = Canvas::new(3, 3);
+            canvas.set_owned(1, 1, ch, owner, "edge:0:A->B", 1);
+            [
+                canvas_connections(&canvas, 1, 0).down,
+                canvas_connections(&canvas, 1, 2).up,
+                canvas_connections(&canvas, 0, 1).right,
+                canvas_connections(&canvas, 2, 1).left,
+            ]
+        };
+        let edge = CellOwnerKind::EdgeSegment;
+        assert_eq!(corner('┏', edge), [false, true, false, true]);
+        assert_eq!(corner('┓', edge), [false, true, true, false]);
+        assert_eq!(corner('┗', edge), [true, false, false, true]);
+        assert_eq!(corner('┛', edge), [true, false, true, false]);
+        assert_eq!(
+            corner('┏', CellOwnerKind::SubgraphBorder),
+            [false, false, false, false]
+        );
     }
 
     #[test]

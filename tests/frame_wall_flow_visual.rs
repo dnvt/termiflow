@@ -489,3 +489,37 @@ B -->|成功 ✅ ok| D[Pass]
         "both branch corners stay visible:\n{frame}"
     );
 }
+
+/// gen_a_233: Distribution's line out of Power Grid turns into a bus right
+/// under the frame's top-right corner. A frame corner joins no line, so the
+/// bus keeps its `┬` there rather than a crossing reaching into the corner.
+#[test]
+fn a_bus_under_a_frame_corner_does_not_join_it() {
+    let input = "graph BT
+    subgraph Grid [Power Grid]
+        Gen[Generation]
+        Trans[Transmission]
+        Dist[Distribution]
+        Gen --> Trans --> Dist
+    end
+    Solar[Rooftop Solar] --> Inverter[Inverter]
+    Inverter --> Meter[Smart Meter]
+    Dist --> Meter
+    Meter --> Home[Home Load]
+    Meter --> Battery[(Home Battery)]
+";
+    let frame = termiflow::render_with_feedback(input, termiflow::RenderOptions::new())
+        .expect("render")
+        .output;
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    let (y, x) = rows
+        .iter()
+        .enumerate()
+        .find_map(|(y, row)| row.iter().position(|&ch| ch == '┓').map(|x| (y, x)))
+        .expect("Power Grid's top-right corner");
+    assert_eq!(
+        rows[y + 1][x],
+        '┬',
+        "the bus under the frame corner keeps its tee:\n{frame}"
+    );
+}

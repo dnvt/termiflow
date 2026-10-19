@@ -994,12 +994,16 @@ H --> A
     );
 }
 
-/// gen_d_203: A -> H's leg drops through D, but H also loops onto itself;
-/// opened rows would land A -> H's arrow beside that loop's corner, where
-/// the crossing is redrawn as a stub. D keeps its place under A.
+/// gen_d_203 (heavy style): rows open under A so A -> H no longer drops
+/// through D, and its lane crosses Hub's self-loop right beside that loop's
+/// corner. Stabilization read the heavy corner as joining nothing and
+/// redrew the crossing as a corner, leaving an arrow under Hub with no line
+/// below it. Every arrow into Hub now has its line.
 #[test]
-fn a_back_edge_into_a_self_looping_box_opens_no_rows() {
-    let input = "flowchart LR
+fn heavy_arrows_into_a_self_looping_box_keep_their_lines() {
+    let input = "%% termiflow: style=heavy
+%% termiflow: spacing=compact
+flowchart LR
 subgraph core [Core]
   H[Hub] --> H
   H --> A & B & C & D
@@ -1012,9 +1016,19 @@ D -.-> H
     let frame = termiflow::render_with_feedback(input, RenderOptions::new())
         .expect("render")
         .output;
-    assert_eq!(
-        row_of(&frame, "  D  ") - row_of(&frame, "  A  "),
-        4,
-        "D stays just under A:\n{frame}"
-    );
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    let arrows = row_of(&frame, "Hub") + 2;
+    let columns: Vec<usize> = (0..rows[arrows].len())
+        .filter(|&x| rows[arrows][x] == '▲')
+        .collect();
+    assert_eq!(columns.len(), 3, "three arrows into Hub:\n{frame}");
+    for x in columns {
+        let end = (arrows + 1..rows.len())
+            .find(|&y| !matches!(rows[y].get(x), Some('┃' | '╎')))
+            .expect("line end");
+        assert!(
+            matches!(rows[end].get(x), Some('┗' | '┣' | '╋' | '┻')),
+            "the arrow at column {x} keeps its line:\n{frame}"
+        );
+    }
 }
