@@ -518,3 +518,159 @@ fn a_fan_out_from_inside_a_frame_takes_no_title_step() {
         "no drop runs back up beside another line:\n{frame}"
     );
 }
+
+/// gen_a_241: Migration wave fans out across Wave 1: Stateless, whose title
+/// has no stretch clear of both its entry lines; the line into Web Apps ran
+/// under the "S". The title now shifts a cell so that line passes through
+/// the space after "Wave 1:", with a blank still before the title.
+#[test]
+fn a_title_with_no_clear_stretch_lets_a_line_through_a_word_gap() {
+    let input = "graph TD
+    Assess[Cloud Readiness Assessment] --> Wave{Migration wave}
+    subgraph W1 [Wave 1: Stateless]
+        Web[Web Apps]
+        Batch[Batch Jobs]
+    end
+    subgraph W2 [Wave 2: Stateful]
+        DBs[(Databases)]
+        Files[(File Shares)]
+    end
+    Wave --> Web
+    Wave --> Batch
+    Wave --> DBs
+    Wave --> Files
+    Web & Batch --> Validate[Validate in Cloud]
+    DBs & Files --> Validate
+    Validate --> Decom[Decommission On-prem]
+";
+    for (style, frame) in render_styles(input) {
+        let line = if style == BaseStyle::Ascii {
+            '|'
+        } else {
+            '│'
+        };
+        assert!(
+            frame.contains(&format!("Wave 1:{line}Stateless")),
+            "the line passes between the title's words ({style:?}):\n{frame}"
+        );
+        assert_eq!(
+            lines_hidden_under_title(&frame, "Stateless"),
+            Vec::<usize>::new(),
+            "no line hidden under the title ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_a_138 (BT): the fan-in from four access points leaves Network Closet
+/// through its bottom wall right under the title's "t". The title moves so
+/// the trunk passes between its words.
+#[test]
+fn a_bt_title_lets_an_exit_trunk_through_a_word_gap() {
+    let input = "graph BT
+    subgraph Floor1 [Floor 1]
+        AP1[Access Point 1]
+        AP2[Access Point 2]
+    end
+    subgraph Floor2 [Floor 2]
+        AP3[Access Point 3]
+        AP4[Access Point 4]
+    end
+    subgraph Closet [Network Closet]
+        PoE[PoE Switch]
+        Ctrl[WLAN Controller]
+        PoE --> Ctrl
+    end
+    AP1 & AP2 --> PoE
+    AP3 & AP4 --> PoE
+    Ctrl --> Uplink((Uplink))
+";
+    for (style, frame) in render_styles(input) {
+        let line = if style == BaseStyle::Ascii {
+            '|'
+        } else {
+            '│'
+        };
+        assert!(
+            frame.contains(&format!("Network{line}Closet")),
+            "the trunk passes between the title's words ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_a_086: a line runs just left of where "Data Stores" could start; the
+/// search for a word gap to let another line through must not reach past
+/// the title's first cell (it used to index before it and abort the render).
+#[test]
+fn a_word_gap_search_beside_a_line_left_of_the_title_renders() {
+    let input = "graph TD
+    subgraph Web [Web Tier]
+        Next[Next.js]
+    end
+    subgraph Api [API Tier]
+        Rails[Rails API]
+        Sidekiq[Sidekiq]
+    end
+    subgraph Stores [Data Stores]
+        PG[(Postgres)]
+        Redis[(Redis)]
+        S3[(S3)]
+    end
+    Next --> Rails
+    Rails --> PG
+    Rails --> Redis
+    Redis --> Sidekiq
+    Sidekiq --> PG
+    Sidekiq --> S3
+";
+    for (style, frame) in render_styles(input) {
+        assert!(
+            frame.contains("Data Stores"),
+            "the frame and its title render ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_d_207 through the library pipeline the audit uses: with a route
+/// through a box somewhere, lines are not reconnected after a title moves,
+/// so the title must not blank the cell where Q1's fan-in passes between
+/// "with" and "lengthy".
+#[test]
+fn a_title_moved_onto_a_word_gap_keeps_the_line_there_without_reconnection() {
+    let input = "%% termiflow: spacing=spacious
+%% termiflow: max_label=20
+flowchart TD
+subgraph o [Outer orchestration boundary for the whole mesh]
+  subgraph l [Left producers with lengthy title]
+    P1[Producer number one]
+    P2[Producer number two]
+    P3[Producer number three]
+  end
+  subgraph r [Right consumers with lengthy title]
+    Q1[Consumer number one]
+    Q2[Consumer number two]
+    Q3[Consumer number three]
+  end
+end
+P1 & P2 & P3 --> Q1 & Q2 & Q3
+Q1 --> P1
+Q3 --> P2
+";
+    let mut graph = termiflow::parse(input, false).expect("parse").graph;
+    let mut config = termiflow::Config::default();
+    config.optimize_render = false;
+    config.composite_style = termiflow::CompositeStyle::from_base(BaseStyle::Unicode);
+    config.spacing = config.spacing.for_direction(graph.direction);
+    termiflow::measure::measure_graph(&mut graph, &config);
+    let (_, outcome) =
+        termiflow::layout_and_render_with_feedback(graph, config).expect("layout and render");
+    let frame = outcome.output;
+    assert!(
+        frame.contains("with│lengthy"),
+        "the fan-in passes between the title's words:\n{frame}"
+    );
+    assert_eq!(
+        lines_hidden_under_title(&frame, "Right consumers"),
+        Vec::<usize>::new(),
+        "no line lost under the title:\n{frame}"
+    );
+}

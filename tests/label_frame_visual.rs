@@ -179,7 +179,7 @@ A -->|secondary cross cluster heartbeat with long caption| D
     let lines: Vec<&str> = frame.lines().collect();
     let title = lines
         .iter()
-        .position(|line| line.contains("Right cluster"))
+        .position(|line| line.contains("Right") && line.contains("cluster"))
         .expect("Right cluster");
     let wall: String = lines[title - 1].chars().take_while(|&c| c != '┓').collect();
     assert!(

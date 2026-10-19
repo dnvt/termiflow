@@ -535,15 +535,45 @@ pub(super) fn draw_subgraph_title(
         let on_letter =
             (start_x..start_x + width).any(|x| cells[x - start_x] != ' ' && under_title(canvas, x));
         let margins: &[usize] = if on_letter { &[1, 0] } else { &[1] };
-        let slot = margins.iter().find_map(|&margin| {
-            (1..rect.width).find_map(|distance| {
-                [start_x.checked_sub(distance), Some(start_x + distance)]
-                    .into_iter()
-                    .flatten()
-                    .find(|&start| clear_at(canvas, start, margin))
+        // Failing a clear stretch, a line under a letter may pass through a
+        // space between two words of the title instead, with a blank cell
+        // still beside each end of it (gen_a_241: "Wave 1:│Stateless").
+        let gap =
+            |x: usize, start: usize| x > start && x + 1 < start + width && cells[x - start] == ' ';
+        let through_spaces = |canvas: &Canvas, start: usize| {
+            start > rect.x
+                && start + width < rect.x + rect.width
+                && (start - 1..start + width + 1)
+                    .filter(|&x| crossed(canvas, x))
+                    .all(|x| gap(x, start))
+                && (start..start + width).all(|x| {
+                    canvas.get(x, title_y) == ' '
+                        || x < start_x + width && x >= start_x
+                        || gap(x, start) && crossed(canvas, x)
+                })
+        };
+        let slot = margins
+            .iter()
+            .find_map(|&margin| {
+                (1..rect.width).find_map(|distance| {
+                    [start_x.checked_sub(distance), Some(start_x + distance)]
+                        .into_iter()
+                        .flatten()
+                        .find(|&start| clear_at(canvas, start, margin))
+                })
             })
-        });
+            .or_else(|| {
+                (1..rect.width).find_map(|distance| {
+                    [start_x.checked_sub(distance), Some(start_x + distance)]
+                        .into_iter()
+                        .flatten()
+                        .find(|&start| on_letter && through_spaces(canvas, start))
+                })
+            });
         if let Some(start) = slot {
+            let passes: Vec<usize> = (start..start + width)
+                .filter(|&x| gap(x, start) && crossed(canvas, x))
+                .collect();
             // Lift the title drawn earlier, leaving any route cell in place.
             for x in start_x..start_x + width {
                 if !holds_route(canvas, x) {
@@ -551,12 +581,15 @@ pub(super) fn draw_subgraph_title(
                 }
             }
             for (i, &c) in cells.iter().enumerate() {
-                canvas.set(start + i, title_y, c);
+                if !passes.contains(&(start + i)) {
+                    canvas.set(start + i, title_y, c);
+                }
             }
             canvas.record_moved_title(subgraph_id, start);
             // Give a line the title sat on back its title-band cells.
             let edge = crate::render::semantic::CellOwnerKind::EdgeSegment;
-            let uncovered = (start_x..start_x + width).filter(|&x| x < start || x >= start + width);
+            let uncovered = (start_x..start_x + width)
+                .filter(|&x| x < start || x >= start + width || passes.contains(&x));
             for x in uncovered.filter(|_| reconnect_lines) {
                 let (Some((run, owner)), Some((border, _, _))) =
                     (one_route_through(canvas, x), border_y)
