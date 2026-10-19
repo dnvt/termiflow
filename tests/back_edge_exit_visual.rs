@@ -862,3 +862,159 @@ fn a_back_edge_end_does_not_trade_places_with_another_back_edge_end() {
         "Followers 1, 3, 2 from the top:\n{frame}"
     );
 }
+
+/// gen_d_155: inside nested frames, D -> A's lane had no row between D and
+/// C (stacked under it, as B under A): its leg ran into C and A's arrow read
+/// as coming out of B. Rows open between the two pairs and both frames grow
+/// with them; the lane runs there, through both inner frames' walls.
+#[test]
+fn a_back_edge_blocked_below_inside_frames_gets_rows_for_its_lane() {
+    let input = "graph RL
+subgraph o [Outer]
+  subgraph i1 [Inner one]
+    A
+    B
+  end
+  subgraph i2 [Inner two]
+    C
+    D
+  end
+end
+A --> D
+B --> C
+C --> B
+D --> A
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    let rows: Vec<&str> = frame.lines().collect();
+    let (d_row, c_row) = (row_of(&frame, "  D  "), row_of(&frame, "  C  "));
+    let lane = (d_row + 2..c_row - 1).find(|&row| rows[row].contains('└'));
+    assert!(
+        lane.is_some_and(|row| rows[row].contains('┘')),
+        "D -> A has a lane of its own between D and C:\n{frame}"
+    );
+    assert_eq!(
+        rows.iter().filter(|row| row.contains('┗')).count(),
+        2,
+        "the inner frames close once, under C and B:\n{frame}"
+    );
+}
+
+/// gen_a_222: Rework Cell is wider than Scrap under it, so its leg drops
+/// past Scrap's side and no rows open; Scrap keeps its place.
+#[test]
+fn a_back_edge_end_with_a_clear_column_opens_no_rows() {
+    let input = "flowchart LR
+    subgraph Prod [Factory Floor]
+        Line1[Assembly Line 1]
+        Line2[Assembly Line 2]
+        QC{QC Station}
+        Line1 --> QC
+        Line2 --> QC
+    end
+    QC --> Pass[Finished Goods]
+    QC --> Rework[Rework Cell]
+    Rework --> QC
+    QC --> Scrap[Scrap]
+    Pass --> Ship[Shipping]
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    assert_eq!(
+        row_of(&frame, "Scrap") - row_of(&frame, "Rework Cell"),
+        4,
+        "Scrap stays just under Rework Cell:\n{frame}"
+    );
+}
+
+/// Opening rows under D -> A moves Inner three (all of whose boxes move)
+/// down whole, grows Inner two (holding the end D, so the lane runs inside
+/// it rather than on its wall) and Outer, and leaves Head (whose box stays)
+/// as it was.
+#[test]
+fn frames_follow_the_rows_opened_under_a_back_edge() {
+    let input = "graph RL
+subgraph o [Outer]
+  subgraph i1 [Inner one]
+    A
+    B
+  end
+  subgraph i2 [Inner two]
+    D
+  end
+  subgraph i3 [Inner three]
+    C
+  end
+end
+subgraph h [Head]
+  H
+end
+A --> D
+B --> C
+C --> B
+D --> A
+H --> A
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    let rows: Vec<Vec<char>> = frame.lines().map(|row| row.chars().collect()).collect();
+    let d_row = row_of(&frame, "  D  ");
+    // Follow D's leg down from under its box to where it turns.
+    let d_col = rows[d_row]
+        .iter()
+        .position(|&ch| ch == 'D')
+        .expect("D column");
+    let lane = (d_row + 2..rows.len())
+        .find(|&row| rows[row][d_col] != '│')
+        .expect("D -> A lane");
+    assert_eq!(
+        rows[lane][d_col], '└',
+        "D -> A's lane turns inside Inner two, off its wall:\n{frame}"
+    );
+    assert!(
+        row_of(&frame, "Inner three") > lane,
+        "Inner three moves down under the lane:\n{frame}"
+    );
+    let h_row = row_of(&frame, "  H  ");
+    let h_col = rows[h_row]
+        .windows(3)
+        .position(|window| window == [' ', 'H', ' '])
+        .expect("H column")
+        + 1;
+    let head_bottom = (h_row..rows.len())
+        .find(|&row| rows[row].get(h_col) == Some(&'━'))
+        .expect("Head's bottom wall");
+    assert!(
+        head_bottom < row_of(&frame, "  C  "),
+        "Head keeps its height:\n{frame}"
+    );
+}
+
+/// gen_d_203: A -> H's leg drops through D, but H also loops onto itself;
+/// opened rows would land A -> H's arrow beside that loop's corner, where
+/// the crossing is redrawn as a stub. D keeps its place under A.
+#[test]
+fn a_back_edge_into_a_self_looping_box_opens_no_rows() {
+    let input = "flowchart LR
+subgraph core [Core]
+  H[Hub] --> H
+  H --> A & B & C & D
+end
+A --> H
+A --> H
+B <--> C
+D -.-> H
+";
+    let frame = termiflow::render_with_feedback(input, RenderOptions::new())
+        .expect("render")
+        .output;
+    assert_eq!(
+        row_of(&frame, "  D  ") - row_of(&frame, "  A  "),
+        4,
+        "D stays just under A:\n{frame}"
+    );
+}

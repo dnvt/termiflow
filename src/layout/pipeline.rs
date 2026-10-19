@@ -535,7 +535,12 @@ pub fn layout(input: LayoutInput, config: CoarseLayoutConfig) -> Result<LayoutOu
     reserve_bt_back_edge_exit_rows(input.graph, &mut placement, &mut subgraph_envelopes);
     sink_lr_back_edge_ends_below_twins(input.graph, &mut placement);
     reserve_lr_back_edge_top_rows(input.graph, &mut placement);
-    reserve_lr_back_edge_lane_rows(input.graph, &config, &mut placement);
+    reserve_lr_back_edge_lane_rows(
+        input.graph,
+        &config,
+        &mut placement,
+        &mut subgraph_envelopes,
+    );
 
     let routes = route_stage(
         input.graph,
@@ -1251,17 +1256,20 @@ fn reserve_lr_back_edge_top_rows(graph: &Graph, placement: &mut placement::Place
     placement.canvas.height += extra;
 }
 
-/// In an LR/RL graph without frames, a back edge that cannot go over the top
-/// runs on a lane `min_vertical_spacing` rows under its lower end; a box
-/// standing above that lane in one of its ends' columns is crossed by that
-/// end's leg (gen_d_120: Y -> B into Z, with X and A above). Open rows from
-/// that box down so the lane passes clear, with a blank row before the box.
+/// In an LR/RL graph, a back edge that cannot go over the top (never, with
+/// frames) runs on a lane `min_vertical_spacing` rows under its lower end; a
+/// box standing above that lane under the whole of one of its ends is crossed
+/// by that end's leg (gen_d_120: Y -> B into Z, with X and A above; gen_d_155:
+/// D -> A into C, inside nested frames). Open rows from that box down so the
+/// lane passes clear, with a blank row before the box; frames spanning those
+/// rows grow and frames below them move down.
 fn reserve_lr_back_edge_lane_rows(
     graph: &Graph,
     config: &CoarseLayoutConfig,
     placement: &mut placement::Placement,
+    envelopes: &mut HashMap<String, SubgraphEnvelope>,
 ) {
-    if !matches!(graph.direction, Direction::LR | Direction::RL) || !graph.subgraphs.is_empty() {
+    if !matches!(graph.direction, Direction::LR | Direction::RL) {
         return;
     }
     let rect = |rect: &crate::geom::Rect| (rect.x, rect.y, rect.width, rect.height.max(3));
@@ -1274,20 +1282,46 @@ fn reserve_lr_back_edge_lane_rows(
         ) else {
             continue;
         };
-        if crate::render::cycle::lr_back_edge_over_the_top(rect(&from), rect(&to), &boxes) {
+        if graph.subgraphs.is_empty()
+            && crate::render::cycle::lr_back_edge_over_the_top(rect(&from), rect(&to), &boxes)
+        {
             continue;
         }
-        let center = |rect: &crate::geom::Rect| rect.x + rect.width / 2;
-        let legs = [center(&from), center(&to)];
+        // A target with a loop onto itself keeps its rows: the opened lane's
+        // arrow lands beside that loop's corner and their crossing is redrawn
+        // as a corner, leaving a stub (gen_d_203's Hub).
+        if graph
+            .edges
+            .iter()
+            .any(|other| other.from == other.to && other.from == edge.to)
+        {
+            continue;
+        }
         let ends_top = from.y.max(to.y);
         let lane = from.bottom().max(to.bottom()) + config.min_vertical_spacing.max(2);
-        let Some(top) = placement
+        let below: Vec<crate::geom::Rect> = placement
             .node_rects
             .values()
             .filter(|rect| rect.y > ends_top)
+            .copied()
+            .collect();
+        let covers =
+            |rect: &crate::geom::Rect, x: usize| (rect.x..rect.x + rect.width).contains(&x);
+        // An end with a column of its bottom wall clear of the boxes below
+        // drops its leg there (gen_a_222's Rework Cell past Scrap).
+        let blocked: Vec<crate::geom::Rect> = [from, to]
+            .into_iter()
+            .filter(|end| {
+                (end.x + 1..end.x + end.width.saturating_sub(1))
+                    .all(|x| below.iter().any(|rect| covers(rect, x)))
+            })
+            .collect();
+        let Some(top) = below
+            .iter()
             .filter(|rect| {
-                legs.iter()
-                    .any(|&leg| (rect.x..rect.x + rect.width).contains(&leg))
+                blocked
+                    .iter()
+                    .any(|end| covers(rect, end.x + end.width / 2))
             })
             .map(|rect| rect.y)
             .min()
@@ -1295,6 +1329,27 @@ fn reserve_lr_back_edge_lane_rows(
             continue;
         };
         let extra = (lane + 2).saturating_sub(top);
+        // A frame moves down with its boxes, grows when only some of them move
+        // or it holds an end (the lane then runs inside it, not on its wall)
+        // and stays otherwise.
+        for (id, envelope) in envelopes.iter_mut() {
+            let (moved, kept): (Vec<bool>, Vec<bool>) = placement
+                .node_rects
+                .iter()
+                .filter(|(node, _)| graph.is_node_in_subgraph_tree(node, id))
+                .map(|(_, rect)| rect.y >= top)
+                .partition(|moved| *moved);
+            if !moved.is_empty() && kept.is_empty() {
+                envelope.outer.y += extra;
+                envelope.inner.y += extra;
+            } else if !moved.is_empty()
+                || graph.is_node_in_subgraph_tree(&edge.from, id)
+                || graph.is_node_in_subgraph_tree(&edge.to, id)
+            {
+                envelope.outer.height += extra;
+                envelope.inner.height += extra;
+            }
+        }
         for (id, rect) in placement.node_rects.iter_mut() {
             if rect.y >= top {
                 rect.y += extra;
@@ -1409,5 +1464,102 @@ fn clear_skip_edge_columns(graph: &Graph, placement: &mut placement::Placement) 
             }
             placement.canvas.width = placement.canvas.width.max(moved.right());
         }
+    }
+}
+
+#[cfg(test)]
+mod lane_row_tests {
+    use super::*;
+    use crate::geom::Rect;
+
+    /// D -> A's lane, with C under the whole of D: rows open from C's top.
+    /// Each frame holds the boxes named in its id.
+    #[test]
+    fn frames_follow_the_rows_opened_under_a_back_edge() {
+        let input = "graph RL
+subgraph Fd [D]
+  D
+end
+subgraph Fa [A]
+  A
+end
+subgraph Fc [C]
+  C
+end
+subgraph Fb [B]
+  B
+end
+subgraph Fs [S]
+  S1
+  S2
+end
+subgraph Fh [H]
+  H
+end
+D --> A
+";
+        let mut graph = crate::parser::parse(input, false).expect("parse").graph;
+        graph.edges[0].is_back_edge = true;
+        let rects = [
+            ("D", Rect::new(5, 5, 7, 3)),
+            ("A", Rect::new(20, 5, 7, 3)),
+            ("C", Rect::new(5, 9, 7, 3)),
+            ("B", Rect::new(20, 9, 7, 3)),
+            ("S1", Rect::new(40, 5, 7, 3)),
+            ("S2", Rect::new(40, 9, 7, 3)),
+            ("H", Rect::new(55, 1, 7, 3)),
+        ];
+        let mut placement = placement::Placement {
+            positions: rects
+                .iter()
+                .map(|(id, rect)| (id.to_string(), Point::new(rect.x, rect.y)))
+                .collect(),
+            node_rects: rects
+                .iter()
+                .map(|(id, rect)| (id.to_string(), *rect))
+                .collect(),
+            canvas: Rect::new(0, 0, 70, 20),
+            ranks: HashMap::new(),
+            futile_td_requests: Vec::new(),
+            wall_feeders: Vec::new(),
+        };
+        let frame = |x: usize, y: usize, height: usize| SubgraphEnvelope {
+            outer: Rect::new(x, y, 11, height),
+            inner: Rect::new(x + 1, y + 1, 9, height - 2),
+            portals: Default::default(),
+        };
+        let mut envelopes: HashMap<String, SubgraphEnvelope> = [
+            ("Fd", frame(3, 3, 7)),
+            ("Fa", frame(18, 3, 7)),
+            ("Fc", frame(3, 8, 5)),
+            ("Fb", frame(18, 8, 5)),
+            ("Fs", frame(38, 3, 10)),
+            ("Fh", frame(53, 0, 5)),
+        ]
+        .into_iter()
+        .map(|(id, envelope)| (id.to_owned(), envelope))
+        .collect();
+        let before = envelopes.clone();
+        reserve_lr_back_edge_lane_rows(
+            &graph,
+            &CoarseLayoutConfig::default(),
+            &mut placement,
+            &mut envelopes,
+        );
+        let extra = placement.node_rects["C"].y - 9;
+        assert!(extra > 0, "rows open under C's top");
+        let now = |id: &str| (envelopes[id].outer.y, envelopes[id].outer.height);
+        let was = |id: &str| (before[id].outer.y, before[id].outer.height);
+        for id in ["Fc", "Fb"] {
+            assert_eq!(
+                now(id),
+                (was(id).0 + extra, was(id).1),
+                "{id} moves down whole"
+            );
+        }
+        for id in ["Fd", "Fa", "Fs"] {
+            assert_eq!(now(id), (was(id).0, was(id).1 + extra), "{id} grows");
+        }
+        assert_eq!(now("Fh"), was("Fh"), "Fh stays");
     }
 }
