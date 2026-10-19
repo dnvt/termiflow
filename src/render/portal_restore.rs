@@ -488,22 +488,34 @@ pub(super) fn draw_subgraph_title(
         border_y.and_then(|(_, outer, inner)| {
             // Above a TD frame the run may start at a bus junction pointing down
             // at the wall (gen_a_246: a fan-in joining right above Core Banking).
+            // Inside, the run may end at once in its arrowhead, right under
+            // the title (gen_a_151: the fan-in into user.events under "Event
+            // Bus"); the cell the title gives back then takes a plain stroke.
+            let arrow = |cell: char| matches!(cell, '↓' | '↑' | 'v' | '^');
             let run_owner = |y: usize, outside: bool| {
                 let cell = canvas.get(x, y);
                 canvas
                     .get_meta(x, y)
                     .filter(|meta| {
-                        (matches!(cell, '│' | '┃' | '║' | '|')
-                            || outside && topology::char_connects_down(cell))
-                            && meta.owner_kind
-                                == crate::render::semantic::CellOwnerKind::EdgeSegment
+                        let edge =
+                            meta.owner_kind == crate::render::semantic::CellOwnerKind::EdgeSegment;
+                        let head =
+                            meta.owner_kind == crate::render::semantic::CellOwnerKind::ArrowHead;
+                        (matches!(cell, '│' | '┃' | '║' | '|') && edge)
+                            || outside && topology::char_connects_down(cell) && edge
+                            || !outside && arrow(cell) && (edge || head)
                     })
                     .and_then(|meta| meta.owner_id.clone())
             };
             let outer = outer.filter(|&outer| outer < canvas.height)?;
             let owner = run_owner(outer, true)?;
+            let run = match canvas.get(x, inner) {
+                'v' | '^' => '|',
+                cell if arrow(cell) => '│',
+                cell => cell,
+            };
             (inner < canvas.height && run_owner(inner, false).as_ref() == Some(&owner))
-                .then(|| (canvas.get(x, inner), owner))
+                .then_some((run, owner))
         })
     };
     let crossed = |canvas: &Canvas, x: usize| {

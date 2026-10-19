@@ -674,3 +674,98 @@ Q3 --> P2
         "no line lost under the title:\n{frame}"
     );
 }
+
+/// The column of `text`'s first character in `row`.
+fn column_of(row: &str, text: &str) -> usize {
+    let cells: Vec<char> = row.chars().collect();
+    let wanted: Vec<char> = text.chars().collect();
+    cells
+        .windows(wanted.len())
+        .position(|window| window == wanted.as_slice())
+        .unwrap_or_else(|| panic!("no {text} in {row}"))
+}
+
+/// gen_a_151: the fan-in into user.events drops under "Event Bus" straight
+/// onto its arrow, right under the title row; with no plain line below the
+/// title, it read as no line at all and the title stayed on it. The title
+/// now slides clear, and the wall above where it lands stays shut even
+/// though its "v" sits under a portal slot.
+#[test]
+fn a_title_slides_off_a_line_ending_in_its_arrow_just_under_it() {
+    let input = "graph TD
+    subgraph Producers
+        Web[Web App]
+        Mobile[Mobile App]
+        Partner[Partner API]
+    end
+    subgraph Bus [Event Bus]
+        Topic1[[user.events]]
+        Topic2[[order.events]]
+    end
+    Web --> Topic1
+    Mobile --> Topic1
+    Web --> Topic2
+    Partner --> Topic2
+    Topic1 --> Lake[(Data Lake)]
+    Topic2 --> Lake
+    Topic2 --> Fraud[Fraud Service]
+";
+    for (style, frame) in render_styles(input) {
+        assert_eq!(
+            lines_hidden_under_title(&frame, "Event Bus"),
+            Vec::<usize>::new(),
+            "no line hidden under Event Bus ({style:?}):\n{frame}"
+        );
+        assert!(
+            style != BaseStyle::Ascii || frame.is_ascii(),
+            "an ASCII render stays ASCII:\n{frame}"
+        );
+        let rows: Vec<&str> = frame.lines().collect();
+        let title = rows
+            .iter()
+            .position(|row| row.contains("Event Bus"))
+            .expect("title row");
+        let start = column_of(rows[title], "Event Bus");
+        let wall: Vec<char> = rows[title - 1].chars().collect();
+        assert!(
+            wall[start..start + "Event Bus".len()]
+                .iter()
+                .all(|&c| matches!(c, '━' | '-')),
+            "the wall above the moved title stays shut ({style:?}):\n{frame}"
+        );
+    }
+}
+
+/// gen_a_026: the "v" of "Continuous Delivery" sat under a portal slot and
+/// was read as an arrow, so the wall above it opened and the bus above grew
+/// a branch into the title. The wall stays shut there.
+#[test]
+fn a_v_in_a_title_does_not_open_the_wall_above_it() {
+    let input = "graph TD
+    subgraph CI [Continuous Integration]
+        Checkout[Checkout] --> Deps[Install Deps]
+        Deps --> Unit[Unit Tests]
+        Deps --> Lint[Lint and Format]
+    end
+    subgraph CD [Continuous Delivery]
+        Stage[Deploy Staging] --> Smoke[Smoke Tests]
+        Smoke --> Gate{Manual Gate}
+        Gate --> Prod[Deploy Prod]
+    end
+    Unit & Lint --> Artifact[[Build Artifact]]
+    Artifact --> Stage
+";
+    for (style, frame) in render_styles(input) {
+        let rows: Vec<&str> = frame.lines().collect();
+        let title = rows
+            .iter()
+            .position(|row| row.contains("Delivery"))
+            .expect("title row");
+        let v = column_of(rows[title], "Delivery") + 4;
+        let above = rows[title - 1].chars().nth(v);
+        assert!(
+            matches!(above, Some('━' | '-')),
+            "the wall above the title's v stays shut ({style:?}):\n{frame}"
+        );
+    }
+}

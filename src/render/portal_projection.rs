@@ -1218,6 +1218,20 @@ pub(super) fn finalize_dedicated_portal_markers(
     slots: &HashMap<String, PortalSlots>,
     chars: &StyleChars,
 ) {
+    // An arrow glyph with no route owner still marks a route, but not a `v`
+    // or `^` in a title or label (gen_a_151: the "v" of "Event Bus", moved
+    // under a portal slot, opened the wall above it).
+    let bare_arrow = |x: usize, y: usize, canvas: &Canvas| {
+        canvas::is_arrow(canvas.get(x, y))
+            && !canvas.get_meta(x, y).is_some_and(|meta| {
+                matches!(
+                    meta.owner_kind,
+                    semantic::CellOwnerKind::SubgraphTitle
+                        | semantic::CellOwnerKind::NodeLabel
+                        | semantic::CellOwnerKind::EdgeLabel
+                )
+            })
+    };
     let is_route_neighbor = |x: usize, y: usize, canvas: &Canvas| {
         canvas.get_meta(x, y).is_some_and(|meta| {
             matches!(
@@ -1228,7 +1242,7 @@ pub(super) fn finalize_dedicated_portal_markers(
                     | semantic::CellOwnerKind::Junction
                     | semantic::CellOwnerKind::PortalOpening
             )
-        }) || canvas::is_arrow(canvas.get(x, y))
+        }) || bare_arrow(x, y, canvas)
     };
 
     let border_cell_is_route = |x: usize, y: usize, canvas: &Canvas| {
