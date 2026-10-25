@@ -5197,6 +5197,49 @@ fn topology_trace_does_not_reach_unconnected_nodes() {
     }
 }
 
+/// gen_a_151: the order topic also feeds the Lake fan-in. Its remaining
+/// branch used to bend on the Event Bus wall, which erased the route to
+/// Fraud Service. That branch must stay separate from the user topic's exit.
+#[test]
+fn a_mixed_fanout_keeps_its_frame_exit_connected_and_independent() {
+    let input = "graph TD
+    subgraph Producers
+        Web[Web App]
+        Mobile[Mobile App]
+        Partner[Partner API]
+    end
+    subgraph Bus [Event Bus]
+        Topic1[[user.events]]
+        Topic2[[order.events]]
+    end
+    Web --> Topic1
+    Mobile --> Topic1
+    Web --> Topic2
+    Partner --> Topic2
+    Topic1 --> Lake[(Data Lake)]
+    Topic2 --> Lake
+    Topic2 --> Fraud[Fraud Service]
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            let order = topology_reached_nodes(&graph, &grid, origin, "Topic2", true);
+            assert!(
+                order.contains("Fraud") && order.contains("Lake"),
+                "order.events reaches both targets ({style:?}, optimized={optimized}): {order:?}\n{frame}"
+            );
+            let user = topology_reached_nodes(&graph, &grid, origin, "Topic1", true);
+            assert!(
+                user.contains("Lake") && !user.contains("Fraud"),
+                "user.events reaches only Lake ({style:?}, optimized={optimized}): {user:?}\n{frame}"
+            );
+        }
+    }
+}
+
 #[test]
 fn topology_trace_reads_through_a_label_word_gap_on_a_vertical_shaft() {
     let input = "graph TD\n    A[Source] -->|ab cd| B[Target]\n";

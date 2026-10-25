@@ -1,6 +1,6 @@
 //! Fan-out routing into a shared subgraph.
 
-use crate::graph::{Direction, EdgeKind, Graph, Node};
+use crate::graph::{Direction, EdgeKind, Graph, Node, NodeShape};
 use crate::orientation::{is_before, OrientedCoords};
 use crate::spacing::SpacingConfig;
 use crate::style::StyleChars;
@@ -12,13 +12,13 @@ use super::super::edge_policy::{
 use super::super::fallback_route::FallbackRoutePlan;
 use super::super::semantic::{CellOwnerKind, CellRole};
 use super::edge_primitives::{
-    adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, edge_exit_point,
-    fan_out_target_uses_left_port, get_node_center, hits_foreign_subgraph_border,
+    adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, edge_entry_candidates,
+    edge_exit_point, fan_out_target_uses_left_port, get_node_center, hits_foreign_subgraph_border,
 };
 use super::subgraph::{
-    route_cross_subgraph_bt, route_cross_subgraph_td, route_divergent_into_subgraph_bt,
-    route_divergent_into_subgraph_horizontal, route_divergent_into_subgraph_td,
-    td_complex_title_portal_entry_x, BtRouteOutcome,
+    lower_td_fallback_plan, route_cross_subgraph_bt, route_cross_subgraph_td,
+    route_divergent_into_subgraph_bt, route_divergent_into_subgraph_horizontal,
+    route_divergent_into_subgraph_td, td_complex_title_portal_entry_x, BtRouteOutcome,
 };
 use super::{
     edge_route_owner_id, set_route_char, set_route_edge_char, set_route_endpoint_char,
@@ -52,6 +52,106 @@ fn set_target_end(
         }
         _ => set_route_char(canvas, x, y, coords.arrow_end(style), Some(owner)),
     }
+}
+
+/// A remaining branch of a fan-in source must not bend along its frame's
+/// bottom wall. If the boxes overlap, give it a separate, clear downward
+/// port instead of joining the already drawn fan-in stem (gen_a_151).
+fn td_independent_frame_exit(
+    from: &Node,
+    target: &Node,
+    junction_y: usize,
+    canvas: &Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+) -> Option<(usize, FallbackRoutePlan)> {
+    if !matches!(graph.direction, Direction::TD | Direction::TB)
+        || !matches!(
+            from.shape,
+            NodeShape::Rectangle | NodeShape::Rounded | NodeShape::Stadium | NodeShape::Subroutine
+        )
+        || !target.shape.has_flat_vertical_entry()
+        || graph
+            .edges
+            .iter()
+            .filter(|edge| !edge.is_back_edge && edge.from == from.id)
+            .count()
+            < 2
+        || graph
+            .edges
+            .iter()
+            .filter(|edge| edge.to == target.id)
+            .count()
+            != 1
+        || graph
+            .edges
+            .iter()
+            .any(|edge| edge.from == from.id && edge.to == target.id && edge.label.is_some())
+    {
+        return None;
+    }
+    let (exits, enters) = graph.edge_boundary_crossings(&from.id, &target.id);
+    let [exit] = exits.as_slice() else {
+        return None;
+    };
+    let bounds = &graph.get_subgraph(exit)?.bounds;
+    let start_y = from.bottom_y();
+    let arrow_y = target.y.checked_sub(1)?;
+    if !enters.is_empty()
+        || junction_y + 1 != bounds.y + bounds.height
+        || start_y <= bounds.y
+        || start_y > junction_y
+        || junction_y >= arrow_y
+    {
+        return None;
+    }
+    let owner_id = edge_route_owner_id(graph, &from.id, &target.id);
+    let (lane, arrow_y) = edge_entry_candidates(target, graph.direction)
+        .into_iter()
+        .find(|&(x, arrow_y)| {
+            x >= from.x + 2
+                && x + 3 <= from.x + from.width
+                && x.abs_diff(from.center_x()) >= 2
+                && x > bounds.x
+                && x + 1 < bounds.x + bounds.width
+                && !canvas.fallback_route_cell_owned_by_other(x, start_y - 1, Some(&owner_id))
+                && (start_y..=arrow_y).all(|y| {
+                    let blocked_node = graph.nodes.iter().any(|node| {
+                        node.id != from.id
+                            && node.id != target.id
+                            && x >= node.x
+                            && x < node.x + node.width
+                            && y >= node.y
+                            && y < node.bottom_y()
+                    });
+                    let blocked_frame = graph.subgraphs.iter().any(|sg| {
+                        let b = &sg.bounds;
+                        sg.id != *exit
+                            && b.contains(x, y)
+                            && (x == b.x
+                                || x + 1 == b.x + b.width
+                                || y == b.y
+                                || y + 1 == b.y + b.height)
+                    });
+                    !blocked_node
+                        && !blocked_frame
+                        && !canvas.fallback_route_cell_owned_by_other(x, y, Some(&owner_id))
+                        && (canvas.get(x, y) == ' '
+                            || (y == junction_y
+                                && canvas.get_meta(x, y).is_some_and(|meta| {
+                                    meta.owner_kind == CellOwnerKind::SubgraphBorder
+                                })
+                                && super::super::canvas::is_horizontal(canvas.get(x, y), style)))
+                })
+        })?;
+    let mut plan = FallbackRoutePlan::new(owner_id, "td-independent-frame-exit");
+    plan.push_vertical(lane, start_y, arrow_y, style.edge_v);
+    plan.push_paint(lane, start_y - 1, style.junction_down);
+    plan.claim_boundary(*exit, "bottom", lane, junction_y, style.edge_v);
+    if plan.validation_error(canvas.width, canvas.height).is_some() {
+        return None;
+    }
+    Some((lane, plan))
 }
 
 pub(super) fn route_fanout_into_subgraph_td(
@@ -810,6 +910,22 @@ pub fn route_divergent_edges(
                     from,
                     target,
                     (cross_arrow_x, arrow_y),
+                    route_owner,
+                );
+                return;
+            }
+            if let Some((lane, plan)) =
+                td_independent_frame_exit(from, target, junction_y, canvas, style, graph)
+            {
+                lower_td_fallback_plan(plan, canvas, style, Some(route_owner));
+                set_target_end(
+                    canvas,
+                    &coords,
+                    style,
+                    graph,
+                    from,
+                    target,
+                    (lane, arrow_y),
                     route_owner,
                 );
                 return;
@@ -2251,12 +2367,169 @@ mod mixed_branch_tests {
 
 #[cfg(test)]
 mod generic_fanout_tests {
-    use super::{push_axis_aligned_plan_segment, route_divergent_edges};
-    use crate::graph::{Direction, Edge, Graph, Node};
+    use super::{push_axis_aligned_plan_segment, route_divergent_edges, td_independent_frame_exit};
+    use crate::graph::{Direction, Edge, Graph, Node, NodeShape, Rectangle, Subgraph};
     use crate::render::canvas::Canvas;
     use crate::render::fallback_route::FallbackRoutePlan;
+    use crate::render::semantic::CellOwnerKind;
     use crate::spacing::SpacingConfig;
     use crate::style::ASCII_CHARS;
+
+    /// Only x=21 overlaps the two flat contours, so a blocked lane cannot
+    /// silently fall back to a different column in the collision controls.
+    fn independent_exit_scene() -> (Graph, Canvas) {
+        let mut graph = Graph::new();
+        let mut source = Node::new("S", "Source");
+        (source.x, source.y, source.width, source.height) = (10, 2, 14, 3);
+        let mut target = Node::new("T", "Target");
+        (target.x, target.y, target.width, target.height) = (20, 9, 9, 3);
+        graph.add_node(source);
+        graph.add_node(target);
+        graph.add_edge(Edge::new("S", "T"));
+        graph.add_edge(Edge::new("S", "Lake"));
+        let mut frame = Subgraph::new("Frame", None);
+        frame.bounds = Rectangle::new(8, 0, 18, 8);
+        graph.add_subgraph(frame);
+        graph.associate_node_with_subgraph("S", "Frame");
+        let mut canvas = Canvas::new(40, 16);
+        for x in 9..25 {
+            canvas.set_owned(x, 7, '-', CellOwnerKind::SubgraphBorder, "Frame", 3);
+        }
+        (graph, canvas)
+    }
+
+    fn independent_exit(graph: &Graph, canvas: &Canvas) -> Option<(usize, FallbackRoutePlan)> {
+        td_independent_frame_exit(
+            graph.get_node("S")?,
+            graph.get_node("T")?,
+            7,
+            canvas,
+            &ASCII_CHARS,
+            graph,
+        )
+    }
+
+    #[test]
+    fn an_independent_exit_claims_only_its_clear_downward_wall_crossing() {
+        let (graph, canvas) = independent_exit_scene();
+        let (lane, plan) = independent_exit(&graph, &canvas).expect("clear drop");
+        assert_eq!(lane, 21);
+        assert_eq!(plan.boundary_claims.len(), 1);
+        assert_eq!(
+            (plan.boundary_claims[0].x, plan.boundary_claims[0].y),
+            (21, 7)
+        );
+        assert!(plan.claims_cell(21, 4) && plan.claims_cell(21, 8));
+
+        let controls: &[(&str, fn(&mut Graph))] = &[
+            ("opposite direction", |g| g.direction = Direction::BT),
+            ("non-flat source", |g| g.nodes[0].shape = NodeShape::Circle),
+            ("non-flat target", |g| g.nodes[1].shape = NodeShape::Diamond),
+            ("one source exit", |g| {
+                g.edges.pop();
+            }),
+            ("shared target entry", |g| {
+                g.edges.push(Edge::new("Other", "T"))
+            }),
+            ("labelled branch", |g| {
+                g.edges[0].label = Some("label".into())
+            }),
+            ("entry left of source contour", |g| {
+                g.nodes[1].x = 10;
+                g.nodes[1].width = 3;
+            }),
+            ("entry right of source contour", |g| {
+                g.nodes[1].x = 24;
+                g.nodes[1].width = 3;
+            }),
+            ("entry on the shared source stem", |g| {
+                g.nodes[1].x = 16;
+                g.nodes[1].width = 3;
+            }),
+            ("wall above source", |g| g.nodes[0].y = 6),
+            ("source outside frame top", |g| {
+                g.subgraphs[0].bounds.y = 5;
+                g.subgraphs[0].bounds.height = 3;
+            }),
+            ("wall below arrow", |g| g.nodes[1].y = 7),
+            ("turn off wall", |g| g.subgraphs[0].bounds.height = 7),
+            ("invalid frame", |g| g.subgraphs[0].bounds.height = 0),
+            ("zero-height frame at the turn", |g| {
+                g.subgraphs[0].bounds.y = 8;
+                g.subgraphs[0].bounds.height = 0;
+            }),
+            ("lane on left frame side", |g| {
+                g.subgraphs[0].bounds.x = 21;
+            }),
+            ("lane on frame side", |g| g.subgraphs[0].bounds.width = 14),
+            ("nested exit", |g| {
+                let mut outer = Subgraph::new("Outer", None);
+                outer.bounds = Rectangle::new(6, 0, 24, 12);
+                g.subgraphs[0].parent_id = Some("Outer".into());
+                g.add_subgraph(outer);
+            }),
+            ("entry into another frame", |g| {
+                let mut target_frame = Subgraph::new("TargetFrame", None);
+                target_frame.bounds = Rectangle::new(0, 0, 40, 16);
+                g.add_subgraph(target_frame);
+                g.associate_node_with_subgraph("T", "TargetFrame");
+            }),
+            ("node in the lane before box painting", |g| {
+                let mut obstacle = Node::new("Obstacle", "Obstacle");
+                (obstacle.x, obstacle.y, obstacle.width, obstacle.height) = (20, 5, 3, 2);
+                g.add_node(obstacle);
+            }),
+            ("unrelated frame in the lane", |g| {
+                let mut obstacle = Subgraph::new("Obstacle", None);
+                obstacle.bounds = Rectangle::new(20, 5, 3, 2);
+                g.add_subgraph(obstacle);
+            }),
+        ];
+        for &(name, change) in controls {
+            let mut changed = graph.clone();
+            change(&mut changed);
+            assert!(independent_exit(&changed, &canvas).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn an_independent_exit_does_not_overwrite_another_route() {
+        let (graph, canvas) = independent_exit_scene();
+        for (x, y, glyph) in [(21, 5, '|'), (21, 7, '-')] {
+            let mut blocked = canvas.clone();
+            blocked.set_owned(x, y, glyph, CellOwnerKind::EdgeSegment, "other", 5);
+            assert!(
+                independent_exit(&graph, &blocked).is_none(),
+                "occupied ({x},{y})"
+            );
+        }
+        let mut stray_wall = canvas.clone();
+        stray_wall.set_owned(21, 5, '-', CellOwnerKind::SubgraphBorder, "Frame", 3);
+        assert!(
+            independent_exit(&graph, &stray_wall).is_none(),
+            "a wall stroke off the crossed border"
+        );
+        let mut broken_wall = canvas.clone();
+        broken_wall.set_owned(21, 7, '|', CellOwnerKind::SubgraphBorder, "Frame", 3);
+        assert!(
+            independent_exit(&graph, &broken_wall).is_none(),
+            "a non-horizontal wall cell"
+        );
+        for y in [4, 5, 8] {
+            let mut reserved = canvas.clone();
+            let mut plan = FallbackRoutePlan::new("other", "reserved-drop");
+            plan.push_paint(21, y, '|');
+            reserved.record_fallback_route_plan(plan);
+            assert!(
+                independent_exit(&graph, &reserved).is_none(),
+                "reserved (21,{y})"
+            );
+        }
+        assert!(
+            independent_exit(&graph, &Canvas::new(20, 16)).is_none(),
+            "out of canvas"
+        );
+    }
 
     #[test]
     fn plan_helper_records_vertical_and_horizontal_segments() {
