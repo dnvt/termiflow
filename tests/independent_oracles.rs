@@ -4943,6 +4943,24 @@ fn topology_reached_nodes(
     source: &str,
     strict_crossings: bool,
 ) -> std::collections::BTreeSet<String> {
+    topology_reached_nodes_with_crossing_policy(
+        graph,
+        grid,
+        origin,
+        source,
+        strict_crossings,
+        false,
+    )
+}
+
+fn topology_reached_nodes_with_crossing_policy(
+    graph: &termiflow::Graph,
+    grid: &ConnectivityGrid,
+    origin: (isize, isize),
+    source: &str,
+    strict_crossings: bool,
+    explicit_only: bool,
+) -> std::collections::BTreeSet<String> {
     let (ox, oy) = origin;
     let rects: Vec<(&str, FrameRect)> = graph
         .nodes
@@ -5034,7 +5052,9 @@ fn topology_reached_nodes(
         }
         let ch = grid.get(x, y);
         let mask = grid.mask(x, y);
-        let straight_only = (strict_crossings && mask == 0b1111) || on_border(x, y);
+        let straight_only = (strict_crossings && mask == 0b1111)
+            || (explicit_only && matches!(ch, 'x' | '✕'))
+            || on_border(x, y);
         let pointing: Option<u8> = match ch {
             '^' | '\u{2191}' | '\u{25b2}' => Some(CONNECTIVITY_UP),
             '>' | '\u{2192}' | '\u{25b6}' => Some(CONNECTIVITY_RIGHT),
@@ -5102,7 +5122,6 @@ fn topology_reached_nodes(
     reached
 }
 
-/// Resume point after an edge label that interrupts a shaft at `start`.
 fn topology_label_skip(
     graph: &termiflow::Graph,
     grid: &ConnectivityGrid,
@@ -5636,4 +5655,143 @@ fn topology_audit() {
         }
     }
     fs::write(&out, rows.join("\n") + "\n").expect("write topology audit");
+}
+
+// This mutation uses the raw frame's display columns, preserving original
+// UTF-8 text rather than treating display-column x as a byte/char index.
+fn replace_s2_raw_display_cell(frame: &str, x: usize, y: usize, replacement: char) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut rows = frame.lines().map(str::to_owned).collect::<Vec<_>>();
+    let row = rows.get_mut(y).expect("raw frame row");
+    let mut display_x = 0;
+    let mut byte_range = None;
+    for (byte, ch) in row.char_indices() {
+        let width = ch.width().unwrap_or(0);
+        if width > 0 && display_x == x {
+            assert_eq!(width, 1, "crossing occupies one display column");
+            byte_range = Some(byte..byte + ch.len_utf8());
+            break;
+        }
+        display_x += width;
+    }
+    row.replace_range(
+        byte_range.expect("raw display cell"),
+        &replacement.to_string(),
+    );
+    let mut changed = rows.join("\n");
+    if frame.ends_with('\n') {
+        changed.push('\n');
+    }
+    changed
+}
+
+#[test]
+fn an_upward_mixed_sibling_return_keeps_explicit_crossings_independent() {
+    let input = "graph TD
+    subgraph Web [Web Tier]
+        Next[Next.js]
+    end
+    subgraph Api [API Tier]
+        Rails[Rails API]
+        Sidekiq[Sidekiq]
+    end
+    subgraph Stores [Data Stores]
+        PG[(Postgres)]
+        Redis[(Redis)]
+        S3[(S3)]
+    end
+    Next --> Rails
+    Rails --> PG
+    Rails --> Redis
+    Redis --> Sidekiq
+    Sidekiq --> PG
+    Sidekiq --> S3
+";
+    let mut failures = Vec::new();
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            let expected = [
+                ("Next", vec!["Rails"]),
+                ("Rails", vec!["PG", "Redis"]),
+                ("Redis", vec!["Sidekiq"]),
+                ("Sidekiq", vec!["PG", "S3"]),
+            ];
+            let first_hop_errors = |candidate: &ConnectivityGrid| {
+                expected
+                    .iter()
+                    .filter_map(|(source, targets)| {
+                        let reached = topology_reached_nodes_with_crossing_policy(
+                            &graph, candidate, origin, source, false, true,
+                        );
+                        let wanted = targets
+                            .iter()
+                            .map(|id| id.to_string())
+                            .collect::<std::collections::BTreeSet<_>>();
+                        (reached != wanted)
+                            .then(|| format!("{source}: expected {wanted:?}, got {reached:?}"))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let errors = first_hop_errors(&grid);
+            if !errors.is_empty() {
+                failures.push(format!(
+                    "explicit-only first hops ({style:?}, optimized={optimized}): {errors:?}\n{frame}"
+                ));
+                continue;
+            }
+
+            let chars = CompositeStyle::from_base(style).to_style_chars(style);
+            let marker = chars.cross_end;
+            let mut crossings = Vec::new();
+            for (y, row) in grid.lines.iter().enumerate() {
+                for x in 0..row.len() {
+                    let (fx, fy) = (x as isize, y as isize);
+                    if grid.get(fx, fy) != marker {
+                        continue;
+                    }
+                    let (gx, gy) = (fx + origin.0, fy + origin.1);
+                    if graph.nodes.iter().any(|n| {
+                        gx >= n.x as isize
+                            && gx < (n.x + n.width) as isize
+                            && gy >= n.y as isize
+                            && gy < n.bottom_y() as isize
+                    }) {
+                        continue;
+                    }
+                    // The label Next.js includes 'x'. A routing marker has
+                    // all four reciprocal arms; text cannot pass this test.
+                    let four_arms = (0..4u8).all(|step| {
+                        let (dx, dy) = connectivity_step(step);
+                        let next_mask = grid.mask(fx + dx, fy + dy);
+                        next_mask & (1 << route_identity_opposite(step)) != 0
+                    });
+                    if four_arms {
+                        crossings.push((x, y));
+                    }
+                }
+            }
+            assert!(
+                !crossings.is_empty(),
+                "expected isolated routing crossings ({style:?}, optimized={optimized})\n{frame}"
+            );
+            for (x, y) in crossings {
+                assert_eq!(grid.get(x as isize, y as isize), marker);
+                let changed = replace_s2_raw_display_cell(&frame, x, y, chars.cross);
+                let changed_grid = ConnectivityGrid::new(&changed);
+                assert_eq!(changed_grid.get(x as isize, y as isize), chars.cross);
+                let errors = first_hop_errors(&changed_grid);
+                assert!(
+                    !errors.is_empty(),
+                    "turning only crossing ({x},{y}) into {:?} did not change any first hop \
+                     ({style:?}, optimized={optimized})\n{changed}",
+                    chars.cross
+                );
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

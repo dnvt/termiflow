@@ -674,6 +674,79 @@ impl Canvas {
             .push((holder.into(), writer.into(), x, y));
     }
 
+    /// Admit an exact writer across one foreign straight reservation. The
+    /// writer's own plan may already be recorded before its cells are painted.
+    pub(crate) fn share_planned_fallback_crossing(
+        &mut self,
+        x: usize,
+        y: usize,
+        run: super::fallback_route::FallbackAxis,
+        writer: &str,
+    ) -> bool {
+        let mut holders = self
+            .fallback_route_plans
+            .iter()
+            .enumerate()
+            .filter(|(_, plan)| {
+                plan.claims_cell(x, y)
+                    && plan.owner_id != writer
+                    && !plan.covered_edge_ids.iter().any(|id| id == writer)
+            });
+        let (Some((index, plan)), None) = (holders.next(), holders.next()) else {
+            return false;
+        };
+        if !self
+            .fallback_crossing_writers
+            .iter()
+            .any(|(holder, expected, cx, cy)| {
+                holder == &plan.owner_id && expected == writer && *cx == x && *cy == y
+            })
+        {
+            return false;
+        }
+        if !self
+            .get_meta(x, y)
+            .filter(|meta| meta.z_index > 0)
+            .and_then(|meta| meta.owner_id.as_deref())
+            .is_some_and(|owner| {
+                owner == plan.owner_id || plan.covered_edge_ids.iter().any(|id| id == owner)
+            })
+        {
+            return false;
+        }
+        let on_run = plan.segments.iter().any(|segment| {
+            segment.axis == run
+                && match run {
+                    super::fallback_route::FallbackAxis::Horizontal => {
+                        segment.from.y == y
+                            && x > segment.from.x.min(segment.to.x)
+                            && x < segment.from.x.max(segment.to.x)
+                    }
+                    super::fallback_route::FallbackAxis::Vertical => {
+                        segment.from.x == x
+                            && y > segment.from.y.min(segment.to.y)
+                            && y < segment.from.y.max(segment.to.y)
+                    }
+                }
+        });
+        let turns = plan
+            .corners
+            .iter()
+            .map(|corner| corner.point)
+            .chain(plan.paints.iter().map(|paint| paint.point))
+            .any(|point| point.x == x && point.y == y)
+            || plan
+                .boundary_claims
+                .iter()
+                .any(|claim| claim.x == x && claim.y == y);
+        if !on_run || turns {
+            return false;
+        }
+        self.fallback_route_plans[index].allow_shared_cell(x, y);
+        true
+    }
+
+    #[cfg(test)]
     pub(crate) fn planned_fallback_crossing_allowed(
         &self,
         x: usize,
