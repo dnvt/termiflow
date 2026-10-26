@@ -5329,12 +5329,19 @@ fn a_mixed_fanout_bypasses_a_later_source_in_its_own_frame() {
             let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
             let rails = topology_reached_nodes(&graph, &grid, origin, "Rails", true);
             let worker = topology_reached_nodes(&graph, &grid, origin, "Sidekiq", true);
+            let web = topology_reached_nodes(&graph, &grid, origin, "Next", true);
+            assert!(
+                web.contains("Rails"),
+                "Next still reaches Rails: {web:?}\n{frame}"
+            );
             assert!(rails.contains("PG") && !rails.contains("S3"),
                 "Rails reaches Postgres without gaining S3 ({style:?}, optimized={optimized}): {rails:?}\n{frame}");
-            // The parent already has an ASCII/optimized '+' ambiguity to
-            // Redis. Do not introduce that path in the other variants.
+            assert!(rails.contains("Redis"),
+                "Rails reaches Redis around Sidekiq ({style:?}, optimized={optimized}): {rails:?}\n{frame}");
+            // The explicit crossing must also remove the parent's
+            // ASCII/optimized '+' ambiguity between Sidekiq and Redis.
             assert!(worker.contains("PG") && worker.contains("S3")
-                && (!worker.contains("Redis") || style == BaseStyle::Ascii && optimized),
+                && !worker.contains("Redis"),
                 "Sidekiq keeps its independent targets ({style:?}, optimized={optimized}): {worker:?}\n{frame}");
         }
     }

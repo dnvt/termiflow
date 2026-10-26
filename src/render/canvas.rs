@@ -284,6 +284,7 @@ pub struct Canvas {
     meta_grid: Vec<Vec<CellMeta>>,
     explicit_crossings_enabled: bool,
     explicit_crossing_cells: Vec<(usize, usize)>,
+    fallback_crossing_writers: Vec<(String, String, usize, usize)>,
     write_stage_grid: Vec<Vec<String>>,
     current_write_stage: String,
     fallback_route_plans: Vec<FallbackRoutePlan>,
@@ -308,6 +309,7 @@ impl Canvas {
             meta_grid: vec![vec![CellMeta::default(); width]; height],
             explicit_crossings_enabled: false,
             explicit_crossing_cells: Vec::new(),
+            fallback_crossing_writers: Vec::new(),
             write_stage_grid: vec![vec!["init".to_owned(); width]; height],
             current_write_stage: "init".to_owned(),
             fallback_route_plans: Vec::new(),
@@ -638,6 +640,57 @@ impl Canvas {
                 self.write_stage_grid[y][x] = self.current_write_stage.clone();
             }
         }
+    }
+
+    /// A validated reserved run admits only a perpendicular interior crossing.
+    /// Keep it separate from a junction and recheck its four arms at finalization.
+    pub(crate) fn set_explicit_route_crossing(
+        &mut self,
+        x: usize,
+        y: usize,
+        s: &StyleChars,
+        owner: &str,
+    ) {
+        self.set_owned_with_role(
+            x,
+            y,
+            s.cross_end,
+            CellOwnerKind::EdgeSegment,
+            owner,
+            CellRole::Junction,
+            5,
+        );
+        self.explicit_crossing_cells.push((x, y));
+    }
+
+    pub(crate) fn allow_fallback_route_crossing(
+        &mut self,
+        holder: &str,
+        writer: &str,
+        x: usize,
+        y: usize,
+    ) {
+        self.fallback_crossing_writers
+            .push((holder.into(), writer.into(), x, y));
+    }
+
+    pub(crate) fn planned_fallback_crossing_allowed(
+        &self,
+        x: usize,
+        y: usize,
+        writer: &str,
+    ) -> bool {
+        self.fallback_crossing_writers
+            .iter()
+            .any(|(holder, expected, cx, cy)| {
+                expected == writer
+                    && *cx == x
+                    && *cy == y
+                    && self
+                        .fallback_route_plans
+                        .iter()
+                        .any(|p| p.owner_id == *holder && p.claims_cell(x, y))
+            })
     }
 
     fn is_interior_crossing(&self, x: usize, y: usize, s: &StyleChars) -> bool {

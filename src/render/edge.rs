@@ -135,7 +135,26 @@ fn set_route_edge_char(
     } else {
         None
     };
-    if canvas.fallback_route_cell_owned_by_other(x, y, owner.map(|route| route.id))
+    let reserved = canvas.fallback_route_cell_owned_by_other(x, y, owner.map(|route| route.id));
+    if reserved
+        && owner.is_some_and(|route| canvas.planned_fallback_crossing_allowed(x, y, route.id))
+        && crossed_run.is_some_and(|run| {
+            let straight = match run {
+                FallbackAxis::Horizontal => canvas::is_horizontal(canvas.get(x, y), style),
+                FallbackAxis::Vertical => canvas::is_vertical(canvas.get(x, y), style),
+            };
+            straight
+                && canvas.get_meta(x, y).is_some_and(|meta| {
+                    meta.owner_kind == CellOwnerKind::EdgeSegment
+                        && matches!(meta.role, CellRole::Horizontal | CellRole::Vertical)
+                })
+                && canvas.share_fallback_route_crossing(x, y, run, fanout::MIXED_SIBLING_DETOUR)
+        })
+    {
+        canvas.set_explicit_route_crossing(x, y, style, owner.unwrap().id);
+        return;
+    }
+    if reserved
         && !crossed_run.is_some_and(|run| {
             canvas.share_fallback_route_crossing(x, y, run, diamond::DETOUR_STRATEGY)
         })

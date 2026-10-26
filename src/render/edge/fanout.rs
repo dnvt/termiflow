@@ -14,6 +14,7 @@ use super::super::semantic::{CellOwnerKind, CellRole};
 use super::edge_primitives::{
     adjusted_edge_entry_point, draw_line_primary, draw_line_secondary, edge_entry_candidates,
     edge_exit_point, fan_out_target_uses_left_port, get_node_center, hits_foreign_subgraph_border,
+    is_subgraph_title_text_cell,
 };
 use super::subgraph::{
     lower_td_fallback_plan, route_cross_subgraph_bt, route_cross_subgraph_td,
@@ -24,6 +25,304 @@ use super::{
     edge_route_owner_id, set_route_char, set_route_edge_char, set_route_endpoint_char,
     style_for_edge_kind, RouteOwner,
 };
+
+pub(super) const MIXED_SIBLING_DETOUR: &str = "td-mixed-sibling-side-exit";
+
+struct MixedSiblingDetour {
+    plan: FallbackRoutePlan,
+    crossing_owner: String,
+    crossing: (usize, usize),
+}
+
+/// The remaining branch of an already separated fan-in source cannot use
+/// its center stem when a peer box lies below it. Leave through the frame's
+/// right wall, then approach the receiver on a title-safe vertical lane.
+fn td_mixed_sibling_detour(
+    from: &Node,
+    target: &Node,
+    canvas: &Canvas,
+    style: &StyleChars,
+    spacing: &SpacingConfig,
+    graph: &Graph,
+) -> Option<MixedSiblingDetour> {
+    if !matches!(graph.direction, Direction::TD | Direction::TB)
+        || from.shape != NodeShape::Rectangle
+        || !target.shape.has_flat_vertical_entry()
+    {
+        return None;
+    }
+    let outgoing: Vec<_> = graph.edges.iter().filter(|e| e.from == from.id).collect();
+    if outgoing.len() != 2
+        || outgoing
+            .iter()
+            .any(|e| e.is_back_edge || e.label.is_some() || e.kind != EdgeKind::Arrow)
+        || graph.edges.iter().filter(|e| e.to == target.id).count() != 1
+    {
+        return None;
+    }
+    let other = outgoing.iter().find(|e| e.to != target.id)?;
+    if !canvas.fallback_route_covers_edge(&edge_route_owner_id(graph, &from.id, &other.to)) {
+        return None;
+    }
+    let incoming: Vec<_> = graph.edges.iter().filter(|e| e.to == other.to).collect();
+    if incoming.len() != 2 {
+        return None;
+    }
+    let peer = graph.get_node(&incoming.iter().find(|e| e.from != from.id)?.from)?;
+    let peer_outgoing: Vec<_> = graph.edges.iter().filter(|e| e.from == peer.id).collect();
+    if peer_outgoing.len() != 2
+        || peer_outgoing
+            .iter()
+            .any(|e| e.is_back_edge || e.label.is_some() || e.kind != EdgeKind::Arrow)
+    {
+        return None;
+    }
+    let crossing_target = graph.get_node(&peer_outgoing.iter().find(|e| e.to != other.to)?.to)?;
+    if !crossing_target.shape.has_flat_vertical_entry()
+        || crossing_target.y <= target.bottom_y() + 1
+        || graph
+            .edges
+            .iter()
+            .filter(|e| e.to == crossing_target.id)
+            .count()
+            != 1
+    {
+        return None;
+    }
+    let (exits, enters) = graph.edge_boundary_crossings(&from.id, &target.id);
+    let ([exit], [entry]) = (exits.as_slice(), enters.as_slice()) else {
+        return None;
+    };
+    let a = graph.get_subgraph(exit)?;
+    let b = graph.get_subgraph(entry)?;
+    let (ab, bb) = (&a.bounds, &b.bounds);
+    if a.parent_id.is_some()
+        || b.parent_id.is_some()
+        || !ab.is_valid()
+        || !bb.is_valid()
+        || graph.get_node_subgraph(&peer.id) != Some(*exit)
+        || graph.get_node_subgraph(&crossing_target.id) != Some(*entry)
+        || from.y <= ab.y
+        || peer.y < from.bottom_y()
+        || peer.bottom_y() >= ab.y + ab.height - 1
+        || !(peer.x..peer.x + peer.width).contains(&from.center_x())
+    {
+        return None;
+    }
+    let turn_y = from.bottom_y();
+    let exit_x = ab.x + ab.width - 1;
+    let outside_x = exit_x + 2;
+    // Keep a blank row between this shoulder and a later fan-out shoulder
+    // immediately above the receiver frame; adjacent ASCII bends fuse.
+    let jog_y = bb.y.checked_sub(3)?;
+    let arrow_y = target.y.checked_sub(1)?;
+    if from.x <= ab.x
+        || from.x + from.width >= exit_x
+        || jog_y < ab.y + ab.height + 1
+        || arrow_y <= bb.y + 2
+        || turn_y >= peer.y
+        || outside_x >= canvas.width
+    {
+        return None;
+    }
+    let owner_id = edge_route_owner_id(graph, &from.id, &target.id);
+    let gutter = crate::portals::td_sibling_title_gutter(graph, &b.id);
+    if canvas
+        .get_meta(from.center_x(), turn_y - 1)
+        .is_some_and(|m| {
+            m.z_index > 0
+                && !(m.owner_kind == CellOwnerKind::NodeBorder
+                    && m.owner_id.as_deref() == Some(&from.id))
+        })
+        || b.title.as_deref().is_some_and(|title| {
+            crate::graph::subgraph_title_span_with_padding_sides(
+                bb.x,
+                bb.width,
+                title,
+                graph.direction,
+                gutter.leading_extra_padding,
+                gutter.trailing_extra_padding,
+            )
+            .is_none()
+        })
+    {
+        return None;
+    }
+    let foreign_route = |x, y| {
+        canvas.get_meta(x, y).is_some_and(|m| {
+            m.z_index > 0
+                && matches!(
+                    m.owner_kind,
+                    CellOwnerKind::EdgeSegment
+                        | CellOwnerKind::ArrowHead
+                        | CellOwnerKind::Junction
+                        | CellOwnerKind::CycleEdge
+                        | CellOwnerKind::PortalOpening
+                )
+        })
+    };
+    for (lane, y) in edge_entry_candidates(target, graph.direction) {
+        if y != arrow_y
+            || lane + 2 >= exit_x
+            || lane <= bb.x + 1
+            || lane + 2 >= bb.x + bb.width
+            || lane <= peer.center_x()
+            || lane + 1 >= crossing_target.center_x()
+        {
+            continue;
+        }
+        let mut plan = FallbackRoutePlan::new(&owner_id, MIXED_SIBLING_DETOUR);
+        plan.set_scene_coverage([owner_id.clone()]);
+        plan.push_horizontal(turn_y, from.center_x(), outside_x, style.edge_h);
+        plan.push_vertical(outside_x, turn_y, jog_y, style.edge_v);
+        plan.push_horizontal(jog_y, outside_x, lane, style.edge_h);
+        plan.push_vertical(lane, jog_y, arrow_y, style.edge_v);
+        plan.push_corner(from.center_x(), turn_y, style.corner_ul);
+        plan.push_corner(outside_x, turn_y, style.corner_dr);
+        plan.push_corner(outside_x, jog_y, style.corner_ur);
+        plan.push_corner(lane, jog_y, style.corner_dl);
+        plan.push_paint(from.center_x(), turn_y - 1, style.junction_down);
+        plan.push_paint(lane, arrow_y, style.arrow_down);
+        plan.claim_boundary(*exit, "right", exit_x, turn_y, style.edge_h);
+        plan.claim_boundary(*entry, "top", lane, bb.y, style.edge_v);
+        if plan.validation_error(canvas.width, canvas.height).is_some()
+            || canvas.fallback_route_cell_owned_by_other(
+                from.center_x(),
+                turn_y - 1,
+                Some(&owner_id),
+            )
+        {
+            continue;
+        }
+        let clear = plan.segments.iter().all(|segment| {
+            let xs = segment.from.x.min(segment.to.x)..=segment.from.x.max(segment.to.x);
+            let ys = segment.from.y.min(segment.to.y)..=segment.from.y.max(segment.to.y);
+            xs.into_iter().all(|x| {
+                ys.clone().all(|y| {
+                    let wall = (x == exit_x && y == turn_y) || (x == lane && y == bb.y);
+                    !graph
+                        .nodes
+                        .iter()
+                        .any(|n| x >= n.x && x < n.x + n.width && y >= n.y && y < n.bottom_y())
+                        && !canvas.fallback_route_cell_owned_by_other(x, y, Some(&owner_id))
+                        && !canvas.get_meta(x, y).is_some_and(|m| {
+                            m.z_index > 0
+                                && matches!(
+                                    m.owner_kind,
+                                    CellOwnerKind::EdgeSegment
+                                        | CellOwnerKind::ArrowHead
+                                        | CellOwnerKind::Junction
+                                        | CellOwnerKind::CycleEdge
+                                        | CellOwnerKind::PortalOpening
+                                        | CellOwnerKind::NodeLabel
+                                        | CellOwnerKind::EdgeLabel
+                                )
+                        })
+                        && ![
+                            (
+                                x - 1,
+                                y,
+                                super::super::topology::char_connects_right(canvas.get(x - 1, y)),
+                            ),
+                            (
+                                x + 1,
+                                y,
+                                super::super::topology::char_connects_left(canvas.get(x + 1, y)),
+                            ),
+                            (
+                                x,
+                                y - 1,
+                                super::super::topology::char_connects_down(canvas.get(x, y - 1)),
+                            ),
+                            (
+                                x,
+                                y + 1,
+                                super::super::topology::char_connects_up(canvas.get(x, y + 1)),
+                            ),
+                        ]
+                        .iter()
+                        .any(|&(nx, ny, aimed)| aimed && foreign_route(nx, ny))
+                        && !graph.subgraphs.iter().any(|sg| {
+                            let r = &sg.bounds;
+                            r.contains(x, y)
+                                && (x == r.x
+                                    || x + 1 == r.x + r.width
+                                    || y == r.y
+                                    || y + 1 == r.y + r.height)
+                                && !((sg.id == *exit && x == exit_x && y == turn_y)
+                                    || (sg.id == *entry && x == lane && y == bb.y))
+                        })
+                        && (canvas.get(x, y) == ' '
+                            || (wall
+                                && canvas.get_meta(x, y).is_some_and(|m| {
+                                    m.owner_kind == CellOwnerKind::SubgraphBorder
+                                })
+                                && if y == turn_y {
+                                    super::super::canvas::is_vertical(canvas.get(x, y), style)
+                                } else {
+                                    super::super::canvas::is_horizontal(canvas.get(x, y), style)
+                                })
+                            || (y == bb.y + 1 && is_subgraph_title_text_cell(graph, x, y)))
+                })
+            })
+        });
+        if !clear {
+            continue;
+        }
+        let mut probe = canvas.clone();
+        lower_td_fallback_plan(
+            plan.clone(),
+            &mut probe,
+            style,
+            Some(RouteOwner {
+                kind: CellOwnerKind::EdgeSegment,
+                id: &owner_id,
+            }),
+        );
+        // The peer is routed later. Prove its actual title/portal policy
+        // crosses this straight run, rather than predicting from its center.
+        // Reversing the peer pair cannot admit another detour: its peer is
+        // above it, so the recursive probe uses the ordinary route policy.
+        let crossing_owner = edge_route_owner_id(graph, &peer.id, &crossing_target.id);
+        let crossing = (lane, bb.y - 1);
+        probe.allow_fallback_route_crossing(&owner_id, &crossing_owner, crossing.0, crossing.1);
+        route_divergent_edges(
+            peer,
+            &[crossing_target],
+            &mut probe,
+            style,
+            spacing,
+            graph.direction,
+            graph,
+        );
+        probe.finalize_explicit_crossings(style);
+        if probe.get(crossing.0, crossing.1) != style.cross_end
+            || probe
+                .refused_route_writes()
+                .iter()
+                .any(|(holder, _, _, _)| holder == &owner_id)
+        {
+            continue;
+        }
+        super::super::portal_restore::draw_subgraph_title(
+            &mut probe,
+            &b.id,
+            bb,
+            b.title.as_deref(),
+            graph.direction,
+            gutter,
+            &std::collections::HashSet::new(),
+        );
+        if probe.get(lane, bb.y + 1) == style.edge_v {
+            return Some(MixedSiblingDetour {
+                plan,
+                crossing_owner,
+                crossing,
+            });
+        }
+    }
+    None
+}
 
 /// Draw the end of the forward edge `from -> to` at its target: an arrowhead,
 /// a circle or cross end marker, or for an open link the plain shaft.
@@ -863,6 +1162,18 @@ pub fn route_divergent_edges(
         }
 
         if matches!(direction, Direction::TD | Direction::TB) {
+            if let Some(detour) =
+                td_mixed_sibling_detour(from, target, canvas, style, spacing, graph)
+            {
+                canvas.allow_fallback_route_crossing(
+                    &detour.plan.owner_id,
+                    &detour.crossing_owner,
+                    detour.crossing.0,
+                    detour.crossing.1,
+                );
+                lower_td_fallback_plan(detour.plan, canvas, style, Some(route_owner));
+                return;
+            }
             let from_sg = graph.get_node_subgraph(&from.id);
             let to_sg = graph.get_node_subgraph(&target.id);
             if from_sg.is_some() && to_sg.is_none() {
@@ -2590,5 +2901,665 @@ mod generic_fanout_tests {
             .expect("generic vertical fanout trace");
         assert_eq!(trace.covered_edge_ids.len(), 3);
         assert!(trace.mismatches.is_empty(), "{:?}", trace.mismatches);
+    }
+
+    fn mixed_sibling_detour_test_graph() -> Graph {
+        let mut graph = Graph::new();
+        graph.direction = Direction::TD;
+        for (id, x, y, width) in [
+            ("S", 5, 16, 15),
+            ("Peer", 10, 29, 13),
+            ("PG", 3, 57, 14),
+            ("T", 16, 43, 3),
+            ("Store", 22, 57, 8),
+        ] {
+            let mut node = Node::new(id, id);
+            (node.x, node.y, node.width, node.height) = (x, y, width, 3);
+            graph.add_node(node);
+        }
+        for (from, to) in [("S", "PG"), ("S", "T"), ("Peer", "PG"), ("Peer", "Store")] {
+            graph.add_edge(Edge::new(from, to));
+        }
+        for (id, title, bounds) in [
+            ("A", "API Tier", Rectangle::new(2, 12, 24, 23)),
+            ("B", "Data Stores", Rectangle::new(0, 39, 32, 24)),
+        ] {
+            let mut frame = Subgraph::new(id, Some(title.into()));
+            frame.bounds = bounds;
+            graph.add_subgraph(frame);
+        }
+        for id in ["S", "Peer"] {
+            graph.associate_node_with_subgraph(id, "A");
+        }
+        for id in ["PG", "T", "Store"] {
+            graph.associate_node_with_subgraph(id, "B");
+        }
+        graph
+    }
+
+    fn mixed_sibling_detour_test_canvas(graph: &Graph, style: &crate::style::StyleChars) -> Canvas {
+        let mut canvas = Canvas::new(36, 66);
+        let owner = super::edge_route_owner_id(graph, "S", "PG");
+        let mut earlier = FallbackRoutePlan::new(&owner, "test-prior-independent-pg");
+        earlier.set_scene_coverage([owner]);
+        earlier.push_vertical(8, 18, 56, style.edge_v);
+        canvas.record_fallback_route_plan(earlier);
+        // Repaint from the mutated graph in topology/geometry controls, so a
+        // stale wall or changed edge index cannot accidentally kill the control.
+        let a = &graph.get_subgraph("A").expect("source frame").bounds;
+        if a.width > 0 {
+            for y in a.y..a.y + a.height {
+                canvas.set_owned(
+                    a.x + a.width - 1,
+                    y,
+                    style.edge_v,
+                    CellOwnerKind::SubgraphBorder,
+                    "A",
+                    3,
+                );
+            }
+        }
+        let b = &graph.get_subgraph("B").expect("target frame").bounds;
+        for x in b.x..b.x + b.width {
+            canvas.set_owned(x, b.y, style.edge_h, CellOwnerKind::SubgraphBorder, "B", 3);
+        }
+        canvas
+    }
+
+    fn mixed_sibling_detour_test_plan(
+        graph: &Graph,
+        canvas: &Canvas,
+        style: &crate::style::StyleChars,
+    ) -> Option<super::MixedSiblingDetour> {
+        super::td_mixed_sibling_detour(
+            graph.get_node("S")?,
+            graph.get_node("T")?,
+            canvas,
+            style,
+            &SpacingConfig::default(),
+            graph,
+        )
+    }
+
+    #[test]
+    fn a_mixed_sibling_detour_has_owned_wall_claims_and_one_future_crossing() {
+        for style in [&crate::style::ASCII_CHARS, &crate::style::UNICODE_CHARS] {
+            for direction in [Direction::TD, Direction::TB] {
+                let mut graph = mixed_sibling_detour_test_graph();
+                graph.direction = direction;
+                let canvas = mixed_sibling_detour_test_canvas(&graph, style);
+                let detour = mixed_sibling_detour_test_plan(&graph, &canvas, style)
+                    .expect("clear right-frame exit with one future crossing");
+                let owner = super::edge_route_owner_id(&graph, "S", "T");
+                let crossing_owner = super::edge_route_owner_id(&graph, "Peer", "Store");
+                assert_eq!(detour.plan.owner_id, owner);
+                assert_eq!(detour.plan.strategy, super::MIXED_SIBLING_DETOUR);
+                assert_eq!(detour.plan.covered_edge_ids, vec![owner.clone()]);
+                assert_eq!(detour.crossing_owner, crossing_owner);
+                assert_eq!(detour.crossing, (17, 38));
+                assert_eq!(detour.plan.boundary_claims.len(), 2);
+                assert!(detour.plan.claims_boundary("A", "right", 25, 19));
+                assert!(detour.plan.claims_boundary("B", "top", 17, 39));
+                assert!(detour.plan.validation_error(36, 66).is_none());
+                for (x, y) in [
+                    (12, 18),
+                    (12, 19),
+                    (25, 19),
+                    (27, 19),
+                    (27, 25),
+                    (27, 36),
+                    (17, 36),
+                    (17, 38),
+                    (17, 39),
+                    (17, 42),
+                ] {
+                    assert!(detour.plan.claims_cell(x, y), "missing ({x},{y})");
+                }
+                assert!(!detour.plan.claims_cell(8, 36), "PG shaft remains separate");
+                assert!(
+                    !detour.plan.claims_cell(16, 29),
+                    "peer box remains untouched"
+                );
+                let mut lowered = canvas.clone();
+                assert!(!lowered.planned_fallback_crossing_allowed(17, 38, &crossing_owner));
+                lowered.allow_fallback_route_crossing(&owner, &crossing_owner, 17, 38);
+                super::lower_td_fallback_plan(
+                    detour.plan,
+                    &mut lowered,
+                    style,
+                    Some(super::RouteOwner {
+                        kind: CellOwnerKind::EdgeSegment,
+                        id: &owner,
+                    }),
+                );
+                assert!(lowered.planned_fallback_crossing_allowed(17, 38, &crossing_owner));
+                assert!(!lowered.planned_fallback_crossing_allowed(17, 37, &crossing_owner));
+                assert!(!lowered.planned_fallback_crossing_allowed(17, 38, "foreign"));
+                assert_eq!(lowered.get(25, 19), style.edge_h);
+                assert_eq!(lowered.get(17, 39), style.edge_v);
+                assert_eq!(lowered.get(12, 18), style.junction_down);
+                assert_eq!(lowered.get(17, 42), style.arrow_down);
+            }
+        }
+    }
+
+    #[test]
+    fn a_mixed_sibling_detour_rejects_unsupported_topology_and_geometry() {
+        let graph = mixed_sibling_detour_test_graph();
+        let controls: &[(&str, fn(&mut Graph))] = &[
+            ("BT", |g| g.direction = Direction::BT),
+            ("LR", |g| g.direction = Direction::LR),
+            ("RL", |g| g.direction = Direction::RL),
+            ("curved source", |g| g.nodes[0].shape = NodeShape::Circle),
+            ("curved target", |g| g.nodes[3].shape = NodeShape::Diamond),
+            ("curved future crossing target", |g| {
+                g.nodes[4].shape = NodeShape::Diamond
+            }),
+            ("only one source exit", |g| {
+                g.edges.remove(1);
+            }),
+            ("third source exit", |g| {
+                g.add_node(Node::new("Extra", "Extra"));
+                g.edges.push(Edge::new("S", "Extra"));
+            }),
+            ("two target entries", |g| {
+                g.edges.push(Edge::new("Other", "T"))
+            }),
+            ("three collector entries", |g| {
+                g.edges.push(Edge::new("Other", "PG"))
+            }),
+            ("only one peer exit", |g| {
+                g.edges.pop();
+            }),
+            ("third peer exit", |g| {
+                g.add_node(Node::new("Extra", "Extra"));
+                g.edges.push(Edge::new("Peer", "Extra"));
+            }),
+            ("two future crossing-target entries", |g| {
+                g.edges.push(Edge::new("Other", "Store"))
+            }),
+            ("source edge label", |g| {
+                g.edges[1].label = Some("label".into())
+            }),
+            ("source back edge", |g| g.edges[1].is_back_edge = true),
+            ("source open edge", |g| {
+                g.edges[1].kind = crate::graph::EdgeKind::Open
+            }),
+            ("peer edge label", |g| {
+                g.edges[3].label = Some("label".into())
+            }),
+            ("peer back edge", |g| g.edges[3].is_back_edge = true),
+            ("peer open edge", |g| {
+                g.edges[3].kind = crate::graph::EdgeKind::Open
+            }),
+            ("peer in target frame", |g| {
+                g.associate_node_with_subgraph("Peer", "B")
+            }),
+            ("future crossing target in source frame", |g| {
+                g.associate_node_with_subgraph("Store", "A")
+            }),
+            ("source touches frame top", |g| g.nodes[0].y = 12),
+            ("source touches frame side", |g| g.nodes[0].x = 2),
+            ("source reaches exit wall", |g| g.nodes[0].width = 21),
+            ("peer overlaps source", |g| g.nodes[1].y = 18),
+            ("peer reaches source bottom wall", |g| g.nodes[1].y = 31),
+            ("no obstructing peer", |g| g.nodes[1].x = 20),
+            ("target lane left of peer center", |g| g.nodes[3].x = 13),
+            ("target lane against exit shoulder", |g| g.nodes[3].x = 22),
+            ("future crossing target lacks horizontal clearance", |g| {
+                g.nodes[4].x = 14
+            }),
+            ("future crossing target too close vertically", |g| {
+                g.nodes[4].y = 47
+            }),
+            ("no gap between frames", |g| g.subgraphs[1].bounds.y = 38),
+            ("target arrow touches title band", |g| g.nodes[3].y = 42),
+            ("invalid source frame", |g| g.subgraphs[0].bounds.width = 0),
+            ("invalid target frame", |g| g.subgraphs[1].bounds.height = 0),
+            ("full title does not fit", |g| {
+                g.subgraphs[1].title =
+                    Some("Data Stores title that cannot fit this frame at all".into())
+            }),
+            ("nested exit", |g| {
+                let mut outer = Subgraph::new("Outer", None);
+                outer.bounds = Rectangle::new(0, 0, 36, 66);
+                g.add_subgraph(outer);
+                g.subgraphs[0].parent_id = Some("Outer".into());
+            }),
+            ("nested entry", |g| {
+                let mut outer = Subgraph::new("Outer", None);
+                outer.bounds = Rectangle::new(0, 0, 36, 66);
+                g.add_subgraph(outer);
+                g.subgraphs[1].parent_id = Some("Outer".into());
+            }),
+            ("foreign node on outside shaft", |g| {
+                let mut node = Node::new("Block", "Block");
+                (node.x, node.y, node.width, node.height) = (26, 25, 3, 3);
+                g.add_node(node);
+            }),
+            ("foreign frame on outside shaft", |g| {
+                let mut frame = Subgraph::new("Block", None);
+                frame.bounds = Rectangle::new(26, 25, 3, 3);
+                g.add_subgraph(frame);
+            }),
+        ];
+        for style in [&crate::style::ASCII_CHARS, &crate::style::UNICODE_CHARS] {
+            for &(name, mutate) in controls {
+                let mut changed = graph.clone();
+                mutate(&mut changed);
+                let canvas = mixed_sibling_detour_test_canvas(&changed, style);
+                assert!(
+                    mixed_sibling_detour_test_plan(&changed, &canvas, style).is_none(),
+                    "{name}"
+                );
+            }
+            let canvas = mixed_sibling_detour_test_canvas(&graph, style);
+            assert!(
+                mixed_sibling_detour_test_plan(&graph, &Canvas::new(36, 66), style).is_none(),
+                "prior independent branch must be reserved"
+            );
+            // Preserve the prior coverage so each clipped-canvas control tests bounds.
+            for (width, height) in [(27, 66), (36, 42)] {
+                let mut clipped = Canvas::new(width, height);
+                let owner = super::edge_route_owner_id(&graph, "S", "PG");
+                let mut prior = FallbackRoutePlan::new(&owner, "test-clipped-prior");
+                prior.set_scene_coverage([owner]);
+                prior.push_vertical(8, 18, 56, style.edge_v);
+                clipped.record_fallback_route_plan(prior);
+                assert!(
+                    mixed_sibling_detour_test_plan(&graph, &clipped, style).is_none(),
+                    "canvas {width}x{height}"
+                );
+            }
+            assert!(
+                mixed_sibling_detour_test_plan(&graph, &canvas, style).is_some(),
+                "negative controls must preserve a live positive fixture"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mixed_sibling_detour_preserves_reserved_owned_and_aimed_cells() {
+        let graph = mixed_sibling_detour_test_graph();
+        for style in [&crate::style::ASCII_CHARS, &crate::style::UNICODE_CHARS] {
+            let canvas = mixed_sibling_detour_test_canvas(&graph, style);
+            for (x, y) in [
+                (12, 18),
+                (12, 19),
+                (25, 19),
+                (27, 25),
+                (17, 38),
+                (17, 39),
+                (17, 41),
+                (17, 42),
+            ] {
+                let mut reserved = canvas.clone();
+                let mut prior = FallbackRoutePlan::new("foreign", "test-reservation");
+                prior.push_paint(x, y, style.edge_v);
+                reserved.record_fallback_route_plan(prior);
+                assert!(
+                    mixed_sibling_detour_test_plan(&graph, &reserved, style).is_none(),
+                    "reserved ({x},{y})"
+                );
+                for (glyph, kind) in [
+                    (' ', CellOwnerKind::EdgeSegment),
+                    (' ', CellOwnerKind::NodeLabel),
+                    (' ', CellOwnerKind::EdgeLabel),
+                    (style.edge_h, CellOwnerKind::EdgeSegment),
+                    ('X', CellOwnerKind::NodeLabel),
+                    ('X', CellOwnerKind::EdgeLabel),
+                ] {
+                    let mut owned = canvas.clone();
+                    owned.set_owned(x, y, glyph, kind, "foreign", 5);
+                    assert!(
+                        mixed_sibling_detour_test_plan(&graph, &owned, style).is_none(),
+                        "owned {kind:?} ({x},{y})"
+                    );
+                }
+            }
+            for (x, y, glyph) in [
+                (11, 19, style.edge_h),
+                (28, 19, style.edge_h),
+                (28, 36, style.edge_h),
+                (16, 36, style.edge_h),
+                (28, 25, style.edge_h),
+                (16, 41, style.edge_h),
+            ] {
+                let mut aimed = canvas.clone();
+                aimed.set_owned(x, y, glyph, CellOwnerKind::EdgeSegment, "foreign", 5);
+                assert!(
+                    mixed_sibling_detour_test_plan(&graph, &aimed, style).is_none(),
+                    "foreign stroke aimed into route from ({x},{y})"
+                );
+            }
+            for (x, y, glyph) in [(25, 19, style.edge_v), (17, 39, style.edge_h)] {
+                // Those are the two legitimate wall orientations. The helper
+                // must reject the opposite orientation at either claimed wall.
+                let mut wrong_wall = canvas.clone();
+                wrong_wall.set_owned(
+                    x,
+                    y,
+                    glyph,
+                    CellOwnerKind::SubgraphBorder,
+                    if x == 25 { "A" } else { "B" },
+                    3,
+                );
+                // Here the changed glyph is the wall's original orientation;
+                // the crossing stays legal. This is a live orientation control.
+                assert!(
+                    mixed_sibling_detour_test_plan(&graph, &wrong_wall, style).is_some(),
+                    "original wall ({x},{y})"
+                );
+                let opposite = if x == 25 { style.edge_h } else { style.edge_v };
+                wrong_wall.set_owned(
+                    x,
+                    y,
+                    opposite,
+                    CellOwnerKind::SubgraphBorder,
+                    if x == 25 { "A" } else { "B" },
+                    3,
+                );
+                assert!(
+                    mixed_sibling_detour_test_plan(&graph, &wrong_wall, style).is_none(),
+                    "wrong wall orientation ({x},{y})"
+                );
+            }
+            let mut stray_wall = canvas.clone();
+            stray_wall.set_owned(
+                27,
+                25,
+                style.edge_h,
+                CellOwnerKind::SubgraphBorder,
+                "Other",
+                3,
+            );
+            assert!(
+                mixed_sibling_detour_test_plan(&graph, &stray_wall, style).is_none(),
+                "unclaimed wall stroke"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mixed_sibling_detour_rejects_when_every_target_port_is_blocked() {
+        let mut graph = mixed_sibling_detour_test_graph();
+        graph.nodes[3].width = 7;
+        for style in [&crate::style::ASCII_CHARS, &crate::style::UNICODE_CHARS] {
+            let canvas = mixed_sibling_detour_test_canvas(&graph, style);
+            assert!(
+                mixed_sibling_detour_test_plan(&graph, &canvas, style).is_some(),
+                "wide receiver is a positive control before all ports are blocked"
+            );
+            let mut blocked = canvas.clone();
+            let target = graph.get_node("T").expect("receiver");
+            let ports = super::edge_entry_candidates(target, graph.direction);
+            assert_eq!(ports.len(), 5);
+            for (x, _) in ports {
+                blocked.set_owned(x, 41, ' ', CellOwnerKind::EdgeSegment, "foreign", 5);
+            }
+            assert!(
+                mixed_sibling_detour_test_plan(&graph, &blocked, style).is_none(),
+                "all five entry candidates must reject, including the last alternative"
+            );
+        }
+    }
+
+    fn mixed_sibling_crossing_scene(
+        style: &crate::style::StyleChars,
+        horizontal_holder: bool,
+    ) -> (Canvas, FallbackRoutePlan) {
+        let mut canvas = Canvas::new(9, 9);
+        let mut plan = FallbackRoutePlan::new("holder", super::MIXED_SIBLING_DETOUR);
+        plan.set_scene_coverage(["holder".to_owned()]);
+        if horizontal_holder {
+            plan.push_horizontal(4, 1, 7, style.edge_h);
+        } else {
+            plan.push_vertical(4, 1, 7, style.edge_v);
+        }
+        for offset in 1..=7 {
+            let (x, y, ch) = if horizontal_holder {
+                (offset, 4, style.edge_h)
+            } else {
+                (4, offset, style.edge_v)
+            };
+            canvas.set_owned(x, y, ch, CellOwnerKind::EdgeSegment, "holder", 5);
+        }
+        (canvas, plan)
+    }
+
+    fn mixed_sibling_crossing_write(
+        canvas: &mut Canvas,
+        style: &crate::style::StyleChars,
+        x: usize,
+        y: usize,
+        ch: char,
+        writer: Option<&str>,
+    ) {
+        super::super::set_route_edge_char(
+            canvas,
+            x,
+            y,
+            ch,
+            style,
+            writer.map(|id| super::super::RouteOwner {
+                kind: CellOwnerKind::EdgeSegment,
+                id,
+            }),
+        );
+    }
+
+    // Bits are up, right, down, left. Inspect the visible neighbor's reciprocal
+    // connection, so an explicit marker cannot make its own arms appear complete.
+    fn mixed_sibling_crossing_arm_mask(canvas: &Canvas) -> u8 {
+        use crate::render::topology::{
+            char_connects_down, char_connects_left, char_connects_right, char_connects_up,
+        };
+        u8::from(char_connects_down(canvas.get(4, 3)))
+            | (u8::from(char_connects_left(canvas.get(5, 4))) << 1)
+            | (u8::from(char_connects_up(canvas.get(4, 5))) << 2)
+            | (u8::from(char_connects_right(canvas.get(3, 4))) << 3)
+    }
+
+    fn mixed_sibling_crossing_marker_mask(ch: char) -> u8 {
+        use crate::render::topology::{
+            char_connects_down, char_connects_left, char_connects_right, char_connects_up,
+        };
+        u8::from(char_connects_up(ch))
+            | (u8::from(char_connects_right(ch)) << 1)
+            | (u8::from(char_connects_down(ch)) << 2)
+            | (u8::from(char_connects_left(ch)) << 3)
+    }
+
+    fn mixed_sibling_crossing_lower(
+        style: &crate::style::StyleChars,
+        horizontal_holder: bool,
+    ) -> Canvas {
+        let (mut canvas, plan) = mixed_sibling_crossing_scene(style, horizontal_holder);
+        canvas.record_fallback_route_plan(plan);
+        canvas.allow_fallback_route_crossing("holder", "writer", 4, 4);
+        for offset in 1..=7 {
+            let (x, y, ch) = if horizontal_holder {
+                (4, offset, style.edge_v)
+            } else {
+                (offset, 4, style.edge_h)
+            };
+            mixed_sibling_crossing_write(&mut canvas, style, x, y, ch, Some("writer"));
+        }
+        canvas
+    }
+
+    #[test]
+    fn a_planned_mixed_sibling_crossing_keeps_both_straight_channels() {
+        use crate::render::semantic::CellRole;
+        for style in [&ASCII_CHARS, &crate::style::UNICODE_CHARS] {
+            for horizontal_holder in [false, true] {
+                let mut canvas = mixed_sibling_crossing_lower(style, horizontal_holder);
+                assert_eq!(canvas.get(4, 4), style.cross_end);
+                canvas.finalize_explicit_crossings(style);
+                assert_eq!(canvas.get(4, 4), style.cross_end);
+                assert_eq!(mixed_sibling_crossing_marker_mask(canvas.get(4, 4)), 0b1111);
+                assert_eq!(mixed_sibling_crossing_arm_mask(&canvas), 0b1111);
+                let meta = canvas.get_meta(4, 4).expect("crossing metadata");
+                assert_eq!(meta.owner_kind, CellOwnerKind::EdgeSegment);
+                assert_eq!(meta.owner_id.as_deref(), Some("writer"));
+                assert_eq!(meta.role, CellRole::Junction);
+                assert!(canvas.refused_route_writes().is_empty());
+                let traces = canvas.fallback_route_traces();
+                let trace = traces
+                    .iter()
+                    .find(|trace| trace.owner_id == "holder")
+                    .unwrap();
+                assert_eq!(trace.shared_cells.len(), 1);
+                assert_eq!((trace.shared_cells[0].x, trace.shared_cells[0].y), (4, 4));
+                assert!(trace.mismatches.is_empty(), "{:?}", trace.mismatches);
+            }
+        }
+    }
+
+    #[test]
+    fn an_unapproved_mixed_sibling_crossing_preserves_the_reserved_cell() {
+        let controls = [
+            "wrong writer",
+            "unlisted cell",
+            "unlisted holder",
+            "parallel stroke",
+            "run endpoint",
+            "corner",
+            "paint",
+            "wall",
+            "multiple holders",
+            "no owner",
+            "incoming arrow",
+            "existing arrow",
+        ];
+        for style in [&ASCII_CHARS, &crate::style::UNICODE_CHARS] {
+            for control in controls {
+                let (mut canvas, mut plan) = mixed_sibling_crossing_scene(style, true);
+                let (mut x, y) = (4, 4);
+                let mut ch = style.edge_v;
+                let mut writer = Some("writer");
+                let mut allowed_holder = "holder";
+                let mut allowed_cell = (4, 4);
+                match control {
+                    "wrong writer" => writer = Some("intruder"),
+                    "unlisted cell" => allowed_cell = (5, 4),
+                    "unlisted holder" => allowed_holder = "unrelated",
+                    "parallel stroke" => ch = style.edge_h,
+                    "run endpoint" => {
+                        x = 1;
+                        allowed_cell = (1, 4);
+                    }
+                    "corner" => {
+                        plan.push_corner(4, 4, style.corner_dl);
+                        canvas.set_owned(
+                            4,
+                            4,
+                            style.corner_dl,
+                            CellOwnerKind::EdgeSegment,
+                            "holder",
+                            5,
+                        );
+                    }
+                    "paint" => plan.push_paint(4, 4, style.edge_h),
+                    "wall" => {
+                        plan.claim_boundary("Frame", "top", 4, 4, style.edge_h);
+                        canvas.set_owned(
+                            4,
+                            4,
+                            style.edge_h,
+                            CellOwnerKind::SubgraphBorder,
+                            "Frame",
+                            5,
+                        );
+                    }
+                    "multiple holders" => {
+                        let mut other = FallbackRoutePlan::new("other", "other-reservation");
+                        other.push_paint(4, 4, style.edge_h);
+                        canvas.record_fallback_route_plan(other);
+                    }
+                    "no owner" => writer = None,
+                    "incoming arrow" => ch = style.arrow_down,
+                    "existing arrow" => canvas.set_owned(
+                        4,
+                        4,
+                        style.arrow_down,
+                        CellOwnerKind::ArrowHead,
+                        "holder",
+                        5,
+                    ),
+                    _ => unreachable!(),
+                }
+                canvas.record_fallback_route_plan(plan);
+                canvas.allow_fallback_route_crossing(
+                    allowed_holder,
+                    "writer",
+                    allowed_cell.0,
+                    allowed_cell.1,
+                );
+                let glyph_before = canvas.get(x, y);
+                let meta_before = canvas.get_meta(x, y).cloned();
+                mixed_sibling_crossing_write(&mut canvas, style, x, y, ch, writer);
+                canvas.finalize_explicit_crossings(style);
+                assert_eq!(canvas.get(x, y), glyph_before, "{control}");
+                assert_eq!(canvas.get_meta(x, y).cloned(), meta_before, "{control}");
+                assert!(
+                    canvas.refused_route_writes().iter().any(|refusal| {
+                        refusal.0 == "holder"
+                            && refusal.1 == x
+                            && refusal.2 == y
+                            && refusal.3.as_deref() == writer
+                    }),
+                    "{control}: missing refusal for {writer:?}"
+                );
+                assert!(
+                    canvas
+                        .fallback_route_traces()
+                        .iter()
+                        .all(|trace| trace.shared_cells.is_empty()),
+                    "{control}: a refused write must not create sharing evidence"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_sibling_crossing_finalization_requires_all_four_visible_arms() {
+        for style in [&ASCII_CHARS, &crate::style::UNICODE_CHARS] {
+            for mask in 0u8..16 {
+                let mut canvas = mixed_sibling_crossing_lower(style, true);
+                for (bit, (x, y)) in [(4, 3), (5, 4), (4, 5), (3, 4)].into_iter().enumerate() {
+                    if mask & (1 << bit) == 0 {
+                        canvas.set(x, y, ' ');
+                    }
+                }
+                assert_eq!(mixed_sibling_crossing_arm_mask(&canvas), mask);
+                canvas.finalize_explicit_crossings(style);
+                let expected = if mask == 0b1111 {
+                    style.cross_end
+                } else {
+                    style.cross
+                };
+                assert_eq!(canvas.get(4, 4), expected, "arm mask {mask:04b}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_mixed_sibling_crossing_next_to_an_arrow_finalizes_as_an_attachment() {
+        for style in [&ASCII_CHARS, &crate::style::UNICODE_CHARS] {
+            let mut canvas = mixed_sibling_crossing_lower(style, true);
+            canvas.set_owned(
+                5,
+                4,
+                style.arrow_right,
+                CellOwnerKind::ArrowHead,
+                "writer",
+                5,
+            );
+            // This arrow has a reciprocal arm but still terminates a route.
+            assert_eq!(mixed_sibling_crossing_arm_mask(&canvas), 0b1111);
+            canvas.finalize_explicit_crossings(style);
+            assert_eq!(canvas.get(4, 4), style.cross);
+        }
     }
 }
