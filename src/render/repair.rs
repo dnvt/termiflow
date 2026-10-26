@@ -515,11 +515,27 @@ fn restore_subgraph_title(
         return false;
     };
     let title_y = subgraph_title_y(&subgraph.bounds, direction);
+    let start_x = canvas.moved_title_start(subgraph_id).unwrap_or(start_x);
 
     let mut changed = false;
     for (idx, ch) in title_fmt.chars().enumerate() {
         let x = start_x + idx;
         if x >= canvas.width || title_y >= canvas.height {
+            continue;
+        }
+        if ch == ' '
+            && canvas.get_meta(x, title_y).is_some_and(|m| {
+                m.z_index > 0
+                    && matches!(
+                        m.owner_kind,
+                        CellOwnerKind::EdgeSegment
+                            | CellOwnerKind::ArrowHead
+                            | CellOwnerKind::Junction
+                            | CellOwnerKind::CycleEdge
+                            | CellOwnerKind::PortalOpening
+                    )
+            })
+        {
             continue;
         }
         if canvas.get(x, title_y) != ch {
@@ -680,6 +696,28 @@ mod tests {
         ));
         let rendered = canvas.to_string_cropped(0);
         assert!(rendered.contains("Flow"));
+    }
+
+    #[test]
+    fn title_repair_uses_its_moved_slot_and_preserves_an_owned_word_gap() {
+        let mut graph = Graph::new();
+        let mut frame = crate::graph::Subgraph::new("sg", Some("Data Stores".into()));
+        frame.bounds = crate::graph::Rectangle::new(0, 0, 32, 5);
+        graph.add_subgraph(frame);
+        let mut canvas = Canvas::new(32, 5);
+        canvas.record_moved_title("sg", 12);
+        canvas.set_owned(17, 1, '|', CellOwnerKind::EdgeSegment, "route", 5);
+        canvas.set_owned(13, 1, '|', CellOwnerKind::EdgeSegment, "bad-letter", 5);
+        assert!(restore_subgraph_title(
+            &graph,
+            &mut canvas,
+            "sg",
+            Direction::TD
+        ));
+        assert_eq!(canvas.get(17, 1), '|');
+        assert_eq!(canvas.get(13, 1), 'D');
+        assert_eq!(canvas.get(3, 1), ' ');
+        assert!(canvas.to_string_cropped(0).contains("Data|Stores"));
     }
 
     #[test]

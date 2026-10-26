@@ -30,7 +30,8 @@ use super::portal_projection::{
     reinforce_subgraph_portals, trim_side_wall_stubs,
 };
 use super::portal_restore::{
-    cleanup_bt_title_rows, draw_subgraph_title, restore_subgraph_borders, route_runs_through_box,
+    cleanup_bt_title_rows, draw_subgraph_title, restore_subgraph_borders,
+    routes_through_foreign_boxes,
 };
 use super::precomputed;
 use super::provenance::{edge_owner_id, refresh_provenance};
@@ -1265,7 +1266,7 @@ fn render_frame(
 
     // Redraw subgraph titles last so portals/edges cannot corrupt the text.
     canvas.set_write_stage("title-redraw");
-    let reconnect_lines = !route_runs_through_box(&canvas, graph);
+    let blocked_routes = routes_through_foreign_boxes(&canvas, graph);
     for subgraph in &graph.subgraphs {
         draw_subgraph_title(
             &mut canvas,
@@ -1274,7 +1275,7 @@ fn render_frame(
             subgraph.title.as_deref(),
             graph.direction,
             td_sibling_title_gutter(graph, &subgraph.id),
-            reconnect_lines,
+            &blocked_routes,
         );
     }
     if graph.direction == Direction::BT {

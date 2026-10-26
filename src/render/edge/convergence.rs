@@ -15,7 +15,7 @@ use super::edge_primitives::{
     edge_exit_point, fan_in_source_uses_left_port, get_node_center, hits_foreign_subgraph_border,
     is_subgraph_title_cell, is_subgraph_title_text_cell,
 };
-use super::subgraph::{preferred_portal_x, smallest_visual_container};
+use super::subgraph::{lower_td_fallback_plan, preferred_portal_x, smallest_visual_container};
 use super::{edge_route_owner_id, set_route_char, set_route_edge_char, RouteOwner, ROUTE_Z_INDEX};
 
 fn strict_simple_subgraph_fanin(sources: &[&Node], target: &Node, graph: &Graph) -> bool {
@@ -700,55 +700,67 @@ fn route_convergent_from_subgraph_bt(
     // columns differ. This keeps all routing chars outside the subgraph border row.
     let (cursor_x, cursor_y) = coords.advance(merge_x, merge_y, 1);
 
-    draw_line_primary(
-        cursor_x,
-        cursor_y,
-        cursor_x,
-        arrow_y,
-        &coords,
+    if let Some(plan) = bt_target_title_step(
+        graph,
         canvas,
         style,
-        Some(graph),
-        Some(fanin_owner),
-    );
-
-    if cursor_x != arrow_x {
-        let start_corner = if arrow_x > cursor_x {
-            style.corner_dl
-        } else {
-            style.corner_dr
-        };
-        set_route_edge_char(
-            canvas,
+        sg,
+        target,
+        (cursor_x, cursor_y),
+        (arrow_x, arrow_y),
+    ) {
+        lower_td_fallback_plan(plan, canvas, style, Some(fanin_owner));
+    } else {
+        draw_line_primary(
+            cursor_x,
+            cursor_y,
             cursor_x,
             arrow_y,
-            start_corner,
-            style,
-            Some(fanin_owner),
-        );
-
-        let (hx0, hx1) = if cursor_x < arrow_x {
-            (cursor_x + 1, arrow_x.saturating_sub(1))
-        } else {
-            (arrow_x + 1, cursor_x.saturating_sub(1))
-        };
-        for x in hx0..=hx1 {
-            set_route_edge_char(canvas, x, arrow_y, style.edge_h, style, Some(fanin_owner));
-        }
-
-        let end_corner = if arrow_x > cursor_x {
-            style.corner_ur
-        } else {
-            style.corner_ul
-        };
-        set_route_edge_char(
+            &coords,
             canvas,
-            arrow_x,
-            arrow_y,
-            end_corner,
             style,
+            Some(graph),
             Some(fanin_owner),
         );
+
+        if cursor_x != arrow_x {
+            let start_corner = if arrow_x > cursor_x {
+                style.corner_dl
+            } else {
+                style.corner_dr
+            };
+            set_route_edge_char(
+                canvas,
+                cursor_x,
+                arrow_y,
+                start_corner,
+                style,
+                Some(fanin_owner),
+            );
+
+            let (hx0, hx1) = if cursor_x < arrow_x {
+                (cursor_x + 1, arrow_x.saturating_sub(1))
+            } else {
+                (arrow_x + 1, cursor_x.saturating_sub(1))
+            };
+            for x in hx0..=hx1 {
+                set_route_edge_char(canvas, x, arrow_y, style.edge_h, style, Some(fanin_owner));
+            }
+
+            let end_corner = if arrow_x > cursor_x {
+                style.corner_ur
+            } else {
+                style.corner_ul
+            };
+            set_route_edge_char(
+                canvas,
+                arrow_x,
+                arrow_y,
+                end_corner,
+                style,
+                Some(fanin_owner),
+            );
+        }
     }
 
     // Clean up the top border: keep only the merged exit portal and restore any
@@ -792,6 +804,204 @@ fn route_convergent_from_subgraph_bt(
         coords.arrow_end(style),
         Some(fanin_owner),
     );
+}
+
+/// Keep an upward merged trunk out of a target frame's single-word title
+/// when neither side has room for the title to slide. Both turns stay in the
+/// empty bands beside the target frame's bottom wall.
+#[allow(clippy::too_many_arguments)]
+fn bt_target_title_step(
+    graph: &Graph,
+    canvas: &Canvas,
+    style: &StyleChars,
+    source_frame: &crate::graph::Subgraph,
+    target: &Node,
+    cursor: (usize, usize),
+    arrow: (usize, usize),
+) -> Option<FallbackRoutePlan> {
+    if graph.direction != Direction::BT
+        || source_frame.parent_id.is_some()
+        || !target.shape.has_flat_vertical_entry()
+        || graph
+            .edges
+            .iter()
+            .any(|e| e.to == target.id && e.label.is_some())
+    {
+        return None;
+    }
+    let frame = graph.get_subgraph(graph.get_node_subgraph(&target.id)?)?;
+    let title = frame.title.as_deref()?;
+    let b = &frame.bounds;
+    if frame.id == source_frame.id
+        || frame.parent_id.is_some()
+        || !b.is_valid()
+        || title.split_whitespace().count() != 1
+    {
+        return None;
+    }
+    let title_y = (b.y + b.height).checked_sub(2)?;
+    let lower = title_y + 2;
+    let upper = title_y.checked_sub(1)?;
+    let (x, y) = cursor;
+    let (arrow_x, arrow_y) = arrow;
+    let title_width = crate::graph::title_cells(
+        &crate::graph::subgraph_title_text_with_padding_sides(title, 0, 0),
+    )
+    .len();
+    if !is_subgraph_title_text_cell(graph, x, title_y)
+        || x <= b.x
+        || x + 1 >= b.x + b.width
+        || x - b.x > title_width
+        || b.x + b.width - x - 2 >= title_width
+        || !(arrow_y < upper && lower < y && y < source_frame.bounds.y + source_frame.bounds.height)
+        || source_frame.bounds.y <= lower
+    {
+        return None;
+    }
+    let lane = crate::portals::title_safe_portal_x(
+        b.x,
+        b.width,
+        Some(title),
+        x,
+        Direction::BT,
+        0,
+        crate::portals::PortalColumnPreference::Nearest,
+    );
+    if lane == x || lane <= b.x || lane + 1 >= b.x + b.width {
+        return None;
+    }
+    let mut plan = FallbackRoutePlan::new(format!("fanin:{}", target.id), "bt-target-title-step");
+    plan.push_vertical(x, y, lower, style.edge_v);
+    plan.push_horizontal(lower, x, lane, style.edge_h);
+    plan.push_vertical(lane, lower, upper, style.edge_v);
+    plan.push_horizontal(upper, lane, arrow_x, style.edge_h);
+    plan.push_vertical(arrow_x, upper, arrow_y, style.edge_v);
+    plan.push_corner(
+        x,
+        lower,
+        if lane > x {
+            style.corner_dl
+        } else {
+            style.corner_dr
+        },
+    );
+    plan.push_corner(
+        lane,
+        lower,
+        if lane > x {
+            style.corner_ur
+        } else {
+            style.corner_ul
+        },
+    );
+    if arrow_x != lane {
+        plan.push_corner(
+            lane,
+            upper,
+            if arrow_x < lane {
+                style.corner_dr
+            } else {
+                style.corner_dl
+            },
+        );
+        plan.push_corner(
+            arrow_x,
+            upper,
+            if arrow_x < lane {
+                style.corner_ul
+            } else {
+                style.corner_ur
+            },
+        );
+    }
+    plan.claim_boundary(
+        &source_frame.id,
+        "top",
+        x,
+        source_frame.bounds.y,
+        style.edge_v,
+    );
+    plan.claim_boundary(&frame.id, "bottom", lane, title_y + 1, style.edge_v);
+    if plan.validation_error(canvas.width, canvas.height).is_some() {
+        return None;
+    }
+    let points = plan.planned_cells();
+    if points.iter().any(|&(cx, cy)| {
+        graph
+            .nodes
+            .iter()
+            .any(|n| cx >= n.x && cx < n.x + n.width && cy >= n.y && cy < n.bottom_y())
+            || canvas.fallback_route_cell_owned_by_other(cx, cy, Some(&plan.owner_id))
+            || graph.subgraphs.iter().any(|sg| {
+                let r = &sg.bounds;
+                r.contains(cx, cy)
+                    && (cx == r.x
+                        || cx + 1 == r.x + r.width
+                        || cy == r.y
+                        || cy + 1 == r.y + r.height)
+                    && !plan
+                        .boundary_claims
+                        .iter()
+                        .any(|c| c.boundary_id == sg.id && c.x == cx && c.y == cy)
+            })
+            || (canvas.get(cx, cy) != ' '
+                && !plan.boundary_claims.iter().any(|c| {
+                    c.x == cx
+                        && c.y == cy
+                        && super::super::canvas::is_horizontal(canvas.get(cx, cy), style)
+                        && canvas
+                            .get_meta(cx, cy)
+                            .is_some_and(|m| m.owner_kind == CellOwnerKind::SubgraphBorder)
+                }))
+    }) {
+        return None;
+    }
+    // A neighbouring foreign stroke aimed at a new leg would become a tee
+    // during stabilization even when the leg's own cells were empty.
+    for &(cx, cy) in &points {
+        let neighbours = [
+            (
+                cx.checked_sub(1),
+                Some(cy),
+                super::super::topology::char_connects_right as fn(char) -> bool,
+            ),
+            (
+                Some(cx + 1),
+                Some(cy),
+                super::super::topology::char_connects_left,
+            ),
+            (
+                Some(cx),
+                cy.checked_sub(1),
+                super::super::topology::char_connects_down,
+            ),
+            (
+                Some(cx),
+                Some(cy + 1),
+                super::super::topology::char_connects_up,
+            ),
+        ];
+        if neighbours.into_iter().any(|(nx, ny, toward)| {
+            nx.zip(ny).is_some_and(|(nx, ny)| {
+                !points.contains(&(nx, ny))
+                    && toward(canvas.get(nx, ny))
+                    && canvas.get_meta(nx, ny).is_some_and(|m| {
+                        m.owner_id.as_deref() != Some(&plan.owner_id)
+                            && matches!(
+                                m.owner_kind,
+                                CellOwnerKind::EdgeSegment
+                                    | CellOwnerKind::ArrowHead
+                                    | CellOwnerKind::Junction
+                                    | CellOwnerKind::CycleEdge
+                                    | CellOwnerKind::PortalOpening
+                            )
+                    })
+            })
+        }) {
+            return None;
+        }
+    }
+    Some(plan)
 }
 
 fn route_convergent_from_subgraph_lr(
@@ -1134,26 +1344,40 @@ fn draw_source_lines_to_merge(
 ) -> (usize, usize) {
     let aligned = align_sources_to_trunk(source_positions, merge_x, direction, graph);
     let source_positions = aligned.as_slice();
+    let bypasses: Vec<_> = source_positions
+        .iter()
+        .map(|&(_, _, source)| {
+            graph.zip(target_id).and_then(|(graph, target_id)| {
+                independent_triangle_leg(graph, canvas, style, source, target_id, merge_x, merge_y)
+            })
+        })
+        .collect();
     let drops: Vec<usize> = source_positions
         .iter()
-        .map(|&(src_x, _, source)| {
-            graph
-                .zip(target_id)
-                .filter(|_| {
-                    matches!(direction, Direction::TD | Direction::TB)
-                        || relaxed_lanes && direction == Direction::BT
-                })
-                .and_then(|(graph, target_id)| {
-                    fan_in_lane_x(
-                        graph,
-                        canvas,
-                        style,
-                        source,
-                        target_id,
-                        src_x,
-                        (merge_x, merge_y),
-                        relaxed_lanes,
-                    )
+        .zip(&bypasses)
+        .map(|(&(src_x, _, source), bypass)| {
+            bypass
+                .as_ref()
+                .map(|(lane, _)| *lane)
+                .or_else(|| {
+                    graph
+                        .zip(target_id)
+                        .filter(|_| {
+                            matches!(direction, Direction::TD | Direction::TB)
+                                || relaxed_lanes && direction == Direction::BT
+                        })
+                        .and_then(|(graph, target_id)| {
+                            fan_in_lane_x(
+                                graph,
+                                canvas,
+                                style,
+                                source,
+                                target_id,
+                                src_x,
+                                (merge_x, merge_y),
+                                relaxed_lanes,
+                            )
+                        })
                 })
                 .unwrap_or(src_x)
         })
@@ -1172,7 +1396,9 @@ fn draw_source_lines_to_merge(
         span_end = span_end.max(merge_secondary);
     }
 
-    for (&(src_x, src_y, source), &drop_x) in source_positions.iter().zip(&drops) {
+    for ((&(src_x, src_y, source), &drop_x), bypass) in
+        source_positions.iter().zip(&drops).zip(bypasses)
+    {
         let owner_id = graph
             .zip(target_id)
             .map(|(graph, target_id)| edge_route_owner_id(graph, &source.id, target_id));
@@ -1182,6 +1408,19 @@ fn draw_source_lines_to_merge(
         });
         let (edge_x, mut edge_y) = edge_exit_point(source, direction);
         let src_secondary = coords.secondary_coord(drop_x, src_y);
+        if let Some((_, plan)) = bypass {
+            lower_td_fallback_plan(plan, canvas, style, owner);
+            let corner = get_convergence_corner(
+                src_secondary,
+                span_start,
+                span_end,
+                direction,
+                style,
+                coords,
+            );
+            set_route_edge_char(canvas, drop_x, merge_y, corner, style, owner);
+            continue;
+        }
         if drop_x != src_x {
             // The jog to the clear drop column, on the row below the source.
             let (low, high) = (drop_x.min(src_x), drop_x.max(src_x));
@@ -1318,6 +1557,206 @@ fn draw_source_lines_to_merge(
     }
 
     (span_start, span_end)
+}
+
+/// A direct leg of a framed S -> M -> T / S -> T triangle must not use S's
+/// shared centre stem when that stem runs through M. A separate bottom port
+/// and a clear lane left of M preserve both the direct leg and the other
+/// sources' isolation from T. Reserve only this source leg; the usual fan-in
+/// still owns the merge and target entry.
+#[allow(clippy::too_many_arguments)]
+fn independent_triangle_leg(
+    graph: &Graph,
+    canvas: &Canvas,
+    style: &StyleChars,
+    source: &Node,
+    target_id: &str,
+    merge_x: usize,
+    merge_y: usize,
+) -> Option<(usize, FallbackRoutePlan)> {
+    if !matches!(graph.direction, Direction::TD | Direction::TB)
+        || !matches!(
+            source.shape,
+            NodeShape::Rectangle | NodeShape::Rounded | NodeShape::Stadium | NodeShape::Subroutine
+        )
+    {
+        return None;
+    }
+    let target = graph.get_node(target_id)?;
+    let outgoing: Vec<_> = graph.edges.iter().filter(|e| e.from == source.id).collect();
+    if outgoing.len() != 2
+        || !outgoing.iter().any(|e| e.to == target_id)
+        || outgoing.iter().any(|e| {
+            e.is_back_edge
+                || e.label.is_some()
+                || !matches!(
+                    e.kind,
+                    crate::graph::EdgeKind::Arrow
+                        | crate::graph::EdgeKind::Dotted
+                        | crate::graph::EdgeKind::Thick
+                )
+        })
+    {
+        return None;
+    }
+    let middle = graph.get_node(&outgoing.iter().find(|e| e.to != target_id)?.to)?;
+    let target_frame = graph.get_node_subgraph(target_id)?;
+    let (exits, enters) = graph.edge_boundary_crossings(&source.id, target_id);
+    let ([exit], [entry]) = (exits.as_slice(), enters.as_slice()) else {
+        return None;
+    };
+    if *entry != target_frame
+        || graph.get_node_subgraph(&middle.id) != Some(target_frame)
+        || !target.shape.has_flat_vertical_entry()
+        || !middle.shape.has_flat_vertical_entry()
+        || !graph.edges.iter().any(|e| {
+            e.from == middle.id && e.to == target_id && !e.is_back_edge && e.label.is_none()
+        })
+        || !(middle.x..middle.x + middle.width).contains(&source.center_x())
+        || middle.y < source.bottom_y()
+        || middle.bottom_y() >= merge_y
+    {
+        return None;
+    }
+    let exit_frame = graph.get_subgraph(exit)?;
+    let entry_frame = graph.get_subgraph(entry)?;
+    if exit_frame.parent_id.is_some() || entry_frame.parent_id.is_some() {
+        return None;
+    }
+    let (a, b) = (&exit_frame.bounds, &entry_frame.bounds);
+    let jog_y = source.bottom_y();
+    let exit_y = (a.y + a.height).checked_sub(1)?;
+    if !a.is_valid()
+        || !b.is_valid()
+        || source.y <= a.y
+        || jog_y >= exit_y
+        || exit_y >= b.y
+        || b.y + 1 >= middle.y
+        || merge_y >= target.y
+    {
+        return None;
+    }
+    let owner_id = edge_route_owner_id(graph, &source.id, target_id);
+    let clear = |x: usize, y: usize| {
+        !graph
+            .nodes
+            .iter()
+            .any(|n| x >= n.x && x < n.x + n.width && y >= n.y && y < n.bottom_y())
+            && !canvas.fallback_route_cell_owned_by_other(x, y, Some(&owner_id))
+            && (canvas.get(x, y) == ' '
+                || (y == b.y + 1 && is_subgraph_title_text_cell(graph, x, y))
+                || ((y == exit_y || y == b.y)
+                    && canvas
+                        .get_meta(x, y)
+                        .is_some_and(|m| m.owner_kind == CellOwnerKind::SubgraphBorder)
+                    && super::super::canvas::is_horizontal(canvas.get(x, y), style)))
+            && !graph.subgraphs.iter().any(|sg| {
+                let r = &sg.bounds;
+                r.contains(x, y)
+                    && (x == r.x
+                        || x + 1 == r.x + r.width
+                        || ((y == r.y || y + 1 == r.y + r.height)
+                            && !((sg.id == *exit && y == exit_y) || (sg.id == *entry && y == b.y))))
+            })
+    };
+    // Leave a blank beside each wall and keep the port two cells from the
+    // shared stem. A leftward jog cannot cross that stem or its fan-in bus.
+    let lane = (a.x.max(b.x).saturating_add(2)..source.x)
+        .rev()
+        .find(|&x| {
+            x + 1 < a.x + a.width
+                && x + 1 < b.x + b.width
+                && (jog_y..merge_y).all(|y| {
+                    clear(x, y)
+                        && [x - 1, x + 1]
+                            .iter()
+                            .all(|&cx| !super::super::canvas::is_vertical(canvas.get(cx, y), style))
+                })
+                && (x.min(merge_x)..=x.max(merge_x)).all(|cx| clear(cx, merge_y))
+        })?;
+    // The new lane may uncover the original title, but only when the whole
+    // title fits beside it and the already-routed application entry.
+    let gutter = crate::portals::td_sibling_title_gutter(graph, &entry_frame.id);
+    if gutter.leading_extra_padding != 0 || gutter.trailing_extra_padding != 0 {
+        return None;
+    }
+    let title = entry_frame.title.as_deref()?;
+    let (original_start, _) = crate::graph::subgraph_title_span_with_padding_sides(
+        b.x,
+        b.width,
+        title,
+        graph.direction,
+        0,
+        0,
+    )?;
+    let title_width = crate::graph::title_cells(
+        &crate::graph::subgraph_title_text_with_padding_sides(title, 0, 0),
+    )
+    .len();
+    let original_cells = crate::graph::title_cells(
+        &crate::graph::subgraph_title_text_with_padding_sides(title, 0, 0),
+    );
+    let margin = usize::from(
+        !lane
+            .checked_sub(original_start)
+            .and_then(|i| original_cells.get(i))
+            .is_some_and(|&c| c != ' '),
+    );
+    let hidden_crossing = |x| {
+        let outer = canvas.get_meta(x, b.y - 1).filter(|m| {
+            m.owner_kind == CellOwnerKind::EdgeSegment
+                && super::super::topology::char_connects_down(canvas.get(x, b.y - 1))
+        });
+        let inner = canvas.get_meta(x, b.y + 2).filter(|m| {
+            matches!(
+                m.owner_kind,
+                CellOwnerKind::EdgeSegment | CellOwnerKind::ArrowHead
+            ) && matches!(canvas.get(x, b.y + 2), '│' | '┃' | '║' | '|' | '↓' | 'v')
+        });
+        outer
+            .zip(inner)
+            .is_some_and(|(a, b)| a.owner_id.is_some() && a.owner_id == b.owner_id)
+    };
+    if !(b.x + 1..b.x + b.width.saturating_sub(title_width)).any(|start| {
+        (start.saturating_sub(margin)..start + title_width + margin).all(|x| {
+            x != lane
+                && !hidden_crossing(x)
+                && canvas.get_meta(x, b.y + 1).is_none_or(|m| {
+                    !matches!(
+                        m.owner_kind,
+                        CellOwnerKind::EdgeSegment
+                            | CellOwnerKind::ArrowHead
+                            | CellOwnerKind::PortalOpening
+                            | CellOwnerKind::Junction
+                            | CellOwnerKind::CycleEdge
+                    )
+                })
+                && (!(start..start + title_width).contains(&x)
+                    || canvas.get(x, b.y + 1) == ' '
+                    || (original_start..original_start + title_width).contains(&x))
+        })
+    }) {
+        return None;
+    }
+    let port = (source.x + 2..source.center_x().saturating_sub(1)).find(|&port| {
+        !canvas.fallback_route_cell_owned_by_other(port, jog_y - 1, Some(&owner_id))
+            && (lane..=port).all(|x| {
+                clear(x, jog_y)
+                    && !super::super::canvas::is_vertical(canvas.get(x, jog_y + 1), style)
+            })
+    })?;
+    let mut plan = FallbackRoutePlan::new(owner_id, "td-independent-triangle-leg");
+    plan.push_paint(port, jog_y - 1, style.junction_down);
+    plan.push_horizontal(jog_y, lane, port, style.edge_h);
+    plan.push_vertical(lane, jog_y, merge_y - 1, style.edge_v);
+    plan.push_corner(port, jog_y, style.corner_ur);
+    plan.push_corner(lane, jog_y, style.corner_dl);
+    plan.claim_boundary(*exit, "bottom", lane, exit_y, style.edge_v);
+    plan.claim_boundary(*entry, "top", lane, b.y, style.edge_v);
+    if plan.validation_error(canvas.width, canvas.height).is_some() {
+        return None;
+    }
+    Some((lane, plan))
 }
 
 /// A fan-in source runs straight along its centre column to the merge row.
@@ -2339,8 +2778,314 @@ fn merge_lane_primary(
 
 #[cfg(test)]
 mod tests {
-    use super::merge_lane_primary;
-    use crate::graph::Direction;
+    use super::{bt_target_title_step, independent_triangle_leg, merge_lane_primary};
+    use crate::graph::{Direction, Edge, Graph, Node, NodeShape, Rectangle, Subgraph};
+    use crate::render::canvas::Canvas;
+    use crate::render::fallback_route::FallbackRoutePlan;
+    use crate::render::semantic::CellOwnerKind;
+    use crate::style::ASCII_CHARS;
+
+    fn bt_title_scene() -> (Graph, Canvas) {
+        let mut graph = Graph::new();
+        graph.direction = Direction::BT;
+        let mut target = Node::new("T", "KVM");
+        (target.x, target.y, target.width, target.height) = (15, 15, 9, 3);
+        graph.add_node(target);
+        graph.add_edge(Edge::new("S", "T"));
+        for (id, title, bounds) in [
+            ("A", "Hardware", Rectangle::new(0, 25, 41, 10)),
+            ("B", "Hypervisor", Rectangle::new(9, 11, 21, 11)),
+        ] {
+            let mut frame = Subgraph::new(id, Some(title.into()));
+            frame.bounds = bounds;
+            graph.add_subgraph(frame);
+        }
+        graph.associate_node_with_subgraph("T", "B");
+        (graph, Canvas::new(44, 37))
+    }
+
+    fn bt_step(graph: &Graph, canvas: &Canvas) -> Option<FallbackRoutePlan> {
+        bt_target_title_step(
+            graph,
+            canvas,
+            &ASCII_CHARS,
+            graph.get_subgraph("A")?,
+            graph.get_node("T")?,
+            (19, 26),
+            (19, 18),
+        )
+    }
+
+    #[test]
+    fn a_bt_title_step_requires_clear_bands_and_only_its_two_frame_pierces() {
+        let (graph, canvas) = bt_title_scene();
+        let plan = bt_step(&graph, &canvas).expect("clear title step");
+        assert_eq!(plan.boundary_claims.len(), 2);
+        assert!(plan.claims_boundary("A", "top", 19, 25));
+        assert!(plan.claims_boundary("B", "bottom", 23, 21));
+        assert!(!plan.claims_cell(19, 20));
+        let aligned = bt_target_title_step(
+            &graph,
+            &canvas,
+            &ASCII_CHARS,
+            graph.get_subgraph("A").unwrap(),
+            graph.get_node("T").unwrap(),
+            (19, 26),
+            (23, 18),
+        )
+        .expect("aligned entry");
+        let mut lowered = canvas.clone();
+        let owner_id = aligned.owner_id.clone();
+        super::lower_td_fallback_plan(
+            aligned,
+            &mut lowered,
+            &ASCII_CHARS,
+            Some(super::RouteOwner {
+                kind: CellOwnerKind::EdgeSegment,
+                id: &owner_id,
+            }),
+        );
+        assert_eq!(
+            lowered.get(23, 19),
+            '|',
+            "aligned entry stays connected vertically"
+        );
+        let controls: &[(&str, fn(&mut Graph))] = &[
+            ("downward", |g| g.direction = Direction::TD),
+            ("nested source", |g| {
+                g.subgraphs[0].parent_id = Some("B".into())
+            }),
+            ("curved target", |g| g.nodes[0].shape = NodeShape::Circle),
+            ("labelled trunk", |g| {
+                g.edges[0].label = Some("label".into())
+            }),
+            ("same frame", |g| g.associate_node_with_subgraph("T", "A")),
+            ("nested target", |g| {
+                g.subgraphs[1].parent_id = Some("A".into())
+            }),
+            ("invalid target frame", |g| g.subgraphs[1].bounds.height = 0),
+            ("word gap title", |g| {
+                g.subgraphs[1].title = Some("Hyper visor".into())
+            }),
+            ("short title can slide", |g| {
+                g.subgraphs[1].title = Some("H".into())
+            }),
+            ("wide frame can slide", |g| g.subgraphs[1].bounds.width = 50),
+            ("no outer jog band", |g| g.subgraphs[0].bounds.y = 18),
+            ("no target jog band", |g| g.subgraphs[1].bounds.height = 10),
+            ("foreign box", |g| {
+                let mut n = Node::new("Other", "Other");
+                (n.x, n.y, n.width, n.height) = (22, 19, 3, 3);
+                g.add_node(n);
+            }),
+            ("foreign frame", |g| {
+                let mut f = Subgraph::new("Other", None);
+                f.bounds = Rectangle::new(22, 19, 3, 3);
+                g.add_subgraph(f);
+            }),
+        ];
+        for (name, mutate) in controls {
+            let mut changed = graph.clone();
+            mutate(&mut changed);
+            assert!(bt_step(&changed, &canvas).is_none(), "{name}");
+        }
+        for (x, y) in [(19, 24), (21, 22), (23, 21), (23, 20), (21, 19), (19, 18)] {
+            let mut occupied = canvas.clone();
+            occupied.set_owned(x, y, '|', CellOwnerKind::EdgeSegment, "other", 5);
+            assert!(bt_step(&graph, &occupied).is_none(), "occupied {x},{y}");
+            let mut reserved = canvas.clone();
+            let mut other = FallbackRoutePlan::new("other", "control");
+            other.push_paint(x, y, '|');
+            reserved.record_fallback_route_plan(other);
+            assert!(bt_step(&graph, &reserved).is_none(), "reserved {x},{y}");
+        }
+        assert!(
+            bt_step(&graph, &Canvas::new(23, 30)).is_none(),
+            "clipped step"
+        );
+        for (x, y, ch) in [(24, 20, '-'), (21, 23, '|')] {
+            let mut near = canvas.clone();
+            near.set_owned(x, y, ch, CellOwnerKind::EdgeSegment, "other", 5);
+            assert!(
+                bt_step(&graph, &near).is_none(),
+                "neighbour aimed into step"
+            );
+        }
+    }
+
+    fn triangle_scene() -> (Graph, Canvas) {
+        let mut graph = Graph::new();
+        for (id, x, y, width) in [("S", 4, 16, 18), ("M", 9, 29, 17), ("T", 3, 35, 16)] {
+            let mut node = Node::new(id, id);
+            (node.x, node.y, node.width, node.height) = (x, y, width, 3);
+            graph.add_node(node);
+        }
+        for (from, to) in [("S", "M"), ("S", "T"), ("M", "T")] {
+            graph.add_edge(Edge::new(from, to));
+        }
+        for (id, bounds, title) in [
+            ("A", Rectangle::new(1, 12, 47, 10), "DMZ"),
+            ("B", Rectangle::new(0, 25, 29, 16), "Internal Network"),
+        ] {
+            let mut frame = Subgraph::new(id, Some(title.into()));
+            frame.bounds = bounds;
+            graph.add_subgraph(frame);
+        }
+        graph.associate_node_with_subgraph("S", "A");
+        graph.associate_node_with_subgraph("M", "B");
+        graph.associate_node_with_subgraph("T", "B");
+        let mut canvas = Canvas::new(50, 44);
+        canvas.set_owned(22, 26, '|', CellOwnerKind::EdgeSegment, "fanin:M", 5);
+        (graph, canvas)
+    }
+
+    fn triangle_leg(graph: &Graph, canvas: &Canvas) -> Option<(usize, FallbackRoutePlan)> {
+        independent_triangle_leg(
+            graph,
+            canvas,
+            &ASCII_CHARS,
+            graph.get_node("S")?,
+            "T",
+            11,
+            33,
+        )
+    }
+
+    #[test]
+    fn an_independent_triangle_leg_requires_a_clear_owned_corridor_and_title_slot() {
+        let (graph, canvas) = triangle_scene();
+        let (lane, plan) = triangle_leg(&graph, &canvas).expect("clear independent leg");
+        assert_eq!(lane, 3);
+        assert_eq!(plan.boundary_claims.len(), 2);
+        assert!(plan.claims_cell(6, 18) && plan.claims_cell(3, 32));
+        assert!(!plan.claims_cell(13, 19) && !plan.claims_cell(3, 33));
+
+        let controls: &[(&str, fn(&mut Graph))] = &[
+            ("upward", |g| g.direction = Direction::BT),
+            ("curved source", |g| g.nodes[0].shape = NodeShape::Circle),
+            ("extra source exit", |g| {
+                g.edges.push(Edge::new("S", "Elsewhere"))
+            }),
+            ("labelled leg", |g| g.edges[1].label = Some("label".into())),
+            ("back edge", |g| g.edges[1].is_back_edge = true),
+            ("undirected leg", |g| {
+                g.edges[1].kind = crate::graph::EdgeKind::Open
+            }),
+            ("missing direct leg", |g| g.edges[1].to = "M".into()),
+            ("missing triangle", |g| {
+                g.edges.pop();
+            }),
+            ("foreign middle frame", |g| {
+                g.associate_node_with_subgraph("M", "A")
+            }),
+            ("curved target", |g| g.nodes[2].shape = NodeShape::Diamond),
+            ("unblocked centre", |g| g.nodes[1].x = 20),
+            ("middle above source", |g| g.nodes[1].y = 15),
+            ("middle on merge", |g| {
+                g.nodes[1].x = 12;
+                g.nodes[1].y = 31;
+            }),
+            ("nested frame", |g| {
+                g.subgraphs[1].parent_id = Some("A".into())
+            }),
+            ("common parent", |g| {
+                let mut outer = Subgraph::new("P", None);
+                outer.bounds = Rectangle::new(0, 0, 50, 44);
+                g.add_subgraph(outer);
+                for frame in &mut g.subgraphs[..2] {
+                    frame.parent_id = Some("P".into());
+                }
+            }),
+            ("invalid frame", |g| g.subgraphs[0].bounds.height = 0),
+            ("source above frame", |g| g.nodes[0].y = 11),
+            ("jog on exit wall", |g| g.subgraphs[0].bounds.height = 8),
+            ("overlapping frames", |g| g.subgraphs[0].bounds.height = 15),
+            ("no title return row", |g| g.nodes[1].y = 26),
+            ("merge on target", |g| g.nodes[2].y = 33),
+            ("no title slot", |g| {
+                g.subgraphs[1].title = Some("A title far too long for this frame".into())
+            }),
+            ("wrapper crossing needs outer margin", |g| {
+                g.subgraphs[1].bounds.x = 1;
+                g.subgraphs[1].bounds.width = 28;
+            }),
+            ("no independent port", |g| g.nodes[0].width = 5),
+            ("unrelated box", |g| {
+                let mut n = Node::new("Other", "Other");
+                (n.x, n.y, n.width, n.height) = (2, 23, 3, 3);
+                g.add_node(n);
+            }),
+            ("unrelated frame", |g| {
+                let mut f = Subgraph::new("Other", None);
+                f.bounds = Rectangle::new(2, 22, 3, 3);
+                g.add_subgraph(f);
+            }),
+        ];
+        for (name, mutate) in controls {
+            let mut changed = graph.clone();
+            mutate(&mut changed);
+            assert!(triangle_leg(&changed, &canvas).is_none(), "{name}");
+        }
+        for (x, y) in [(3, 23), (3, 33), (6, 19)] {
+            let mut occupied = canvas.clone();
+            occupied.set_owned(x, y, '|', CellOwnerKind::EdgeSegment, "other", 5);
+            if x == 6 {
+                for x in 6..12 {
+                    occupied.set_owned(x, y, '|', CellOwnerKind::EdgeSegment, "other", 5);
+                }
+            }
+            assert!(
+                triangle_leg(&graph, &occupied).is_none(),
+                "route at {x},{y}"
+            );
+        }
+        let mut reserved = canvas.clone();
+        let mut other = FallbackRoutePlan::new("other", "control");
+        other.push_paint(3, 23, '|');
+        reserved.record_fallback_route_plan(other);
+        assert!(triangle_leg(&graph, &reserved).is_none(), "reserved lane");
+        let mut hidden = canvas.clone();
+        for y in [24, 27] {
+            hidden.set_owned(10, y, '|', CellOwnerKind::EdgeSegment, "hidden", 5);
+        }
+        assert!(
+            triangle_leg(&graph, &hidden).is_none(),
+            "hidden title crossing"
+        );
+        let mut crowded = canvas.clone();
+        crowded.set_owned(10, 26, '|', CellOwnerKind::EdgeSegment, "other", 5);
+        assert!(
+            triangle_leg(&graph, &crowded).is_none(),
+            "no complete title slot between routes"
+        );
+        let mut ports = canvas.clone();
+        let mut other = FallbackRoutePlan::new("other", "control");
+        other.push_horizontal(18, 6, 11, '-');
+        ports.record_fallback_route_plan(other);
+        assert!(
+            triangle_leg(&graph, &ports).is_none(),
+            "reserved source ports"
+        );
+        let mut reverse_merge = canvas.clone();
+        reverse_merge.set_owned(2, 33, '|', CellOwnerKind::EdgeSegment, "other", 5);
+        assert!(
+            independent_triangle_leg(
+                &graph,
+                &reverse_merge,
+                &ASCII_CHARS,
+                graph.get_node("S").unwrap(),
+                "T",
+                2,
+                33
+            )
+            .is_none(),
+            "reverse merge span also checked"
+        );
+        assert!(
+            triangle_leg(&graph, &Canvas::new(3, 33)).is_none(),
+            "clipped plan"
+        );
+    }
 
     #[test]
     fn horizontal_merge_lanes_prefer_a_two_cell_stride() {

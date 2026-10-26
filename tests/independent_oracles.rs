@@ -5240,6 +5240,48 @@ fn a_mixed_fanout_keeps_its_frame_exit_connected_and_independent() {
     }
 }
 
+/// gen_a_116: the direct Bastion -> database leg must bypass App Servers
+/// on its own port. Sharing the application fan-in gives Proxy a false path.
+#[test]
+fn a_framed_triangle_keeps_its_direct_leg_independent() {
+    let input = "graph TD
+    subgraph Pub [Public Internet]
+        Users((Users))
+    end
+    subgraph DMZ
+        Proxy[Reverse Proxy]
+        Bastion[Bastion Host]
+    end
+    subgraph Internal [Internal Network]
+        AppSrv[App Servers]
+        DBSrv[(DB Servers)]
+        AppSrv --> DBSrv
+    end
+    Users --> Proxy
+    Proxy --> AppSrv
+    Admin[Admin Laptop] --> Bastion
+    Bastion -.-> AppSrv
+    Bastion -.-> DBSrv
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            let bastion = topology_reached_nodes(&graph, &grid, origin, "Bastion", true);
+            let proxy = topology_reached_nodes(&graph, &grid, origin, "Proxy", true);
+            let app = topology_reached_nodes(&graph, &grid, origin, "AppSrv", true);
+            assert!(
+                bastion.contains("AppSrv") && bastion.contains("DBSrv")
+                    && proxy.contains("AppSrv") && !proxy.contains("DBSrv")
+                    && app.contains("DBSrv"),
+                "independent triangle ({style:?}, optimized={optimized}): Bastion={bastion:?}, Proxy={proxy:?}, AppSrv={app:?}\n{frame}"
+            );
+        }
+    }
+}
+
 #[test]
 fn topology_trace_reads_through_a_label_word_gap_on_a_vertical_shaft() {
     let input = "graph TD\n    A[Source] -->|ab cd| B[Target]\n";
@@ -5253,6 +5295,45 @@ fn topology_trace_reads_through_a_label_word_gap_on_a_vertical_shaft() {
         reached.contains("B"),
         "A -> B must trace through the label:\n{frame}"
     );
+}
+
+/// gen_a_163: the upward Hardware fan-in must pass Hypervisor's title.
+#[test]
+fn a_bt_fan_in_crosses_the_target_frame_without_hiding_under_its_title() {
+    let input = "graph BT
+    subgraph Hardware
+        CPU[CPU]
+        GPU[GPU]
+        NIC[NIC]
+    end
+    subgraph Hypervisor
+        KVM[KVM]
+    end
+    subgraph Guests [Virtual Machines]
+        VM1[VM: web]
+        VM2[VM: ml]
+    end
+    CPU & GPU & NIC --> KVM
+    KVM --> VM1
+    KVM --> VM2
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            for (source, targets) in [
+                ("CPU", &["KVM"][..]),
+                ("GPU", &["KVM"][..]),
+                ("NIC", &["KVM"][..]),
+                ("KVM", &["VM1", "VM2"][..]),
+            ] {
+                let reached = topology_reached_nodes(&graph, &grid, origin, source, true);
+                assert!(targets.iter().all(|t| reached.contains(*t)), "{source} reaches {targets:?} ({style:?}, optimized={optimized}): {reached:?}\n{frame}");
+            }
+        }
+    }
 }
 
 #[test]

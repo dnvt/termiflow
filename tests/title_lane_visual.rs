@@ -261,10 +261,8 @@ fn a_line_under_a_space_in_a_title_leaves_it_in_place() {
     }
 }
 
-/// gen_a_116: Reverse Proxy and Bastion Host fan into App Servers, whose
-/// frame title "Internal Network" fills the frame nearly wall to wall, so it
-/// has no room to slide off the trunk dropping through it. The trunk now
-/// steps past the title on the row above the frame and turns back under it.
+/// gen_a_116: the direct database leg bypasses App Servers on an independent
+/// port; Internal Network slides between that leg and the application entry.
 #[test]
 fn a_fan_in_steps_past_a_title_with_no_room_to_slide() {
     let input = "graph TD
@@ -286,7 +284,22 @@ fn a_fan_in_steps_past_a_title_with_no_room_to_slide() {
     Bastion -.-> AppSrv
     Bastion -.-> DBSrv
 ";
-    assert_line_beside_title(&render(input), "Internal Network");
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        for optimized in [false, true] {
+            let frame = termiflow::render_with_feedback(
+                input,
+                RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimized),
+            )
+            .expect("render")
+            .output;
+            assert!(
+                lines_hidden_under_title(&frame, "Internal Network").is_empty(),
+                "all entries survive the title ({style:?}, optimized={optimized}):\n{frame}"
+            );
+        }
+    }
 }
 
 /// gen_a_005: the fan-in into Cleanse drops just past "Transform", through
@@ -622,11 +635,41 @@ fn a_word_gap_search_beside_a_line_left_of_the_title_renders() {
     Sidekiq --> PG
     Sidekiq --> S3
 ";
-    for (style, frame) in render_styles(input) {
-        assert!(
-            frame.contains("Data Stores"),
-            "the frame and its title render ({style:?}):\n{frame}"
-        );
+    for style in [BaseStyle::Unicode, BaseStyle::Ascii] {
+        for optimized in [false, true] {
+            let result = termiflow::render_with_feedback(
+                input,
+                RenderOptions::new()
+                    .with_style(style)
+                    .with_optimize_render(optimized),
+            )
+            .expect("render");
+            let frame = result.output;
+            let line = if style == BaseStyle::Ascii {
+                '|'
+            } else {
+                '│'
+            };
+            let title = format!("Data{line}Stores");
+            assert_eq!(
+                frame.matches(&title).count(),
+                1,
+                "one intact title ({style:?}, optimized={optimized}):\n{frame}"
+            );
+            assert!(
+                lines_hidden_under_title(&frame, &title).is_empty(),
+                "all title crossings survive ({style:?}, optimized={optimized}):\n{frame}"
+            );
+            assert!(
+                !result
+                    .critic_report
+                    .findings
+                    .iter()
+                    .any(|f| f.code == termiflow::FindingCode::SubgraphTitleCorrupted),
+                "word-gap route is valid title content: {:?}",
+                result.critic_report
+            );
+        }
     }
 }
 

@@ -325,11 +325,10 @@ pub(super) fn restore_subgraph_borders(
     }
 }
 
-/// Whether some edge's line runs straight through a box it does not end at,
-/// entering one side and leaving the opposite one. Such a line reads as
-/// touching that box, so reconnecting gaps elsewhere could complete a path
-/// through it.
-pub(super) fn route_runs_through_box(canvas: &Canvas, graph: &Graph) -> bool {
+/// Owners whose lines run straight through a foreign box. Reconnecting their
+/// gaps elsewhere could complete an ambiguous path through that box; unrelated
+/// owners can still reclaim cells uncovered by a moving title.
+pub(super) fn routes_through_foreign_boxes(canvas: &Canvas, graph: &Graph) -> HashSet<String> {
     let route_owner = |x: usize, y: usize| {
         canvas
             .get_meta(x, y)
@@ -352,29 +351,40 @@ pub(super) fn route_runs_through_box(canvas: &Canvas, graph: &Graph) -> bool {
             )
         })
         .collect();
-    let foreign = |owner: Option<String>, node: &str| {
-        owner
-            .and_then(|owner| ends.get(&owner).copied())
+    let foreign = |owner: &str, node: &str| {
+        ends.get(owner)
+            .copied()
             .is_some_and(|(from, to)| from != node && to != node)
     };
-    graph.nodes.iter().any(|node| {
+    let mut blocked = HashSet::new();
+    for node in &graph.nodes {
         let (left, top) = (node.x, node.y);
         let (right, bottom) = (
             node.x + node.width.saturating_sub(1),
             node.y + node.height.max(crate::style::BOX_HEIGHT).saturating_sub(1),
         );
-        let across_rows = top > 0
-            && (left + 1..right).any(|x| {
+        if top > 0 {
+            for x in left + 1..right {
                 let above = route_owner(x, top - 1);
-                above.is_some() && above == route_owner(x, bottom + 1) && foreign(above, &node.id)
-            });
-        let across_columns = left > 0
-            && (top + 1..bottom).any(|y| {
+                if let Some(owner) = above.filter(|owner| {
+                    Some(owner) == route_owner(x, bottom + 1).as_ref() && foreign(owner, &node.id)
+                }) {
+                    blocked.insert(owner);
+                }
+            }
+        }
+        if left > 0 {
+            for y in top + 1..bottom {
                 let before = route_owner(left - 1, y);
-                before.is_some() && before == route_owner(right + 1, y) && foreign(before, &node.id)
-            });
-        across_rows || across_columns
-    })
+                if let Some(owner) = before.filter(|owner| {
+                    Some(owner) == route_owner(right + 1, y).as_ref() && foreign(owner, &node.id)
+                }) {
+                    blocked.insert(owner);
+                }
+            }
+        }
+    }
+    blocked
 }
 
 pub(super) fn draw_subgraph_title(
@@ -384,7 +394,7 @@ pub(super) fn draw_subgraph_title(
     title: Option<&str>,
     direction: Direction,
     title_gutter: TitleGutter,
-    reconnect_lines: bool,
+    blocked_routes: &HashSet<String>,
 ) {
     let Some(t) = title else {
         return;
@@ -548,14 +558,14 @@ pub(super) fn draw_subgraph_title(
             (start_x..start_x + width).any(|x| cells[x - start_x] != ' ' && under_title(canvas, x));
         let margins: &[usize] = if on_letter { &[1, 0] } else { &[1] };
         // Failing a clear stretch, a line under a letter may pass through a
-        // space between two words of the title instead, with a blank cell
-        // still beside each end of it (gen_a_241: "Wave 1:│Stateless").
+        // word gap. The title's own wrappers supply a blank at each end
+        // (gen_a_241: "Wave 1:│Stateless", gen_a_086: "Data│Stores").
         let gap =
             |x: usize, start: usize| x > start && x + 1 < start + width && cells[x - start] == ' ';
         let through_spaces = |canvas: &Canvas, start: usize| {
             start > rect.x
                 && start + width < rect.x + rect.width
-                && (start - 1..start + width + 1)
+                && (start..start + width)
                     .filter(|&x| crossed(canvas, x))
                     .all(|x| gap(x, start))
                 && (start..start + width).all(|x| {
@@ -602,12 +612,15 @@ pub(super) fn draw_subgraph_title(
             let edge = crate::render::semantic::CellOwnerKind::EdgeSegment;
             let uncovered = (start_x..start_x + width)
                 .filter(|&x| x < start || x >= start + width || passes.contains(&x));
-            for x in uncovered.filter(|_| reconnect_lines) {
+            for x in uncovered {
                 let (Some((run, owner)), Some((border, _, _))) =
                     (one_route_through(canvas, x), border_y)
                 else {
                     continue;
                 };
+                if blocked_routes.contains(&owner) {
+                    continue;
+                }
                 if canvas.get(x, title_y) == ' ' {
                     canvas.set_owned(x, title_y, run, edge, &owner, 5);
                 }
@@ -748,5 +761,42 @@ pub(super) fn cleanup_bt_title_rows(
                 canvas.set(x, title_y, ' ');
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod title_reconnection_tests {
+    use super::*;
+    use crate::graph::{Edge, Node, Rectangle};
+
+    #[test]
+    fn a_foreign_box_blocks_only_its_own_route_from_title_reconnection() {
+        let mut graph = Graph::new();
+        let mut middle = Node::new("M", "Middle");
+        (middle.x, middle.y, middle.width, middle.height) = (2, 2, 20, 3);
+        graph.add_node(middle);
+        graph.add_edge(Edge::new("S", "T"));
+        graph.add_edge(Edge::new("S", "M"));
+        let mut canvas = Canvas::new(52, 22);
+        for (x, owner) in [(12, "edge:0:S->T"), (8, "edge:1:S->M")] {
+            for y in [1, 5, 9, 12] {
+                canvas.set_owned(x, y, '|', semantic::CellOwnerKind::EdgeSegment, owner, 5);
+            }
+            canvas.set(x, 10, '-');
+        }
+        let blocked = routes_through_foreign_boxes(&canvas, &graph);
+        assert_eq!(blocked, HashSet::from(["edge:0:S->T".to_owned()]));
+        draw_subgraph_title(
+            &mut canvas,
+            "Frame",
+            &Rectangle::new(0, 10, 50, 10),
+            Some("Internal Network"),
+            Direction::TD,
+            TitleGutter::default(),
+            &blocked,
+        );
+        assert_eq!(canvas.get(8, 11), '|', "unrelated route is restored");
+        assert_eq!(canvas.get(12, 11), ' ', "foreign-box path stays broken");
+        assert_eq!(canvas.get(12, 10), '-');
     }
 }

@@ -701,7 +701,7 @@ fn find_subgraph_title_corruption(
             };
             let is_title_gutter = visible_title_span
                 .is_some_and(|(visible_start, visible_end)| x < visible_start || x > visible_end);
-            let is_owned_route_padding = is_title_gutter
+            let is_owned_route_padding = (is_title_gutter || expected_ch == ' ')
                 && cell.z_index > 0
                 && matches!(
                     cell.owner_kind,
