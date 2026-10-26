@@ -275,7 +275,7 @@ fn validate_record(record: &Value) -> Result<()> {
         if !SELECTOR_FIELDS.contains(&field.as_str()) {
             bail!("unsupported visual history selector field: {field}");
         }
-        if !value.as_str().is_some_and(|value| !value.trim().is_empty()) {
+        if value.as_str().is_none_or(|value| value.trim().is_empty()) {
             bail!("visual history selector field {field} must be a non-empty string");
         }
     }

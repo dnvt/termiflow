@@ -1910,10 +1910,9 @@ fn independent_triangle_leg(
         &crate::graph::subgraph_title_text_with_padding_sides(title, 0, 0),
     );
     let margin = usize::from(
-        !lane
-            .checked_sub(original_start)
+        lane.checked_sub(original_start)
             .and_then(|i| original_cells.get(i))
-            .is_some_and(|&c| c != ' '),
+            .is_none_or(|&c| c == ' '),
     );
     let hidden_crossing = |x| {
         let outer = canvas.get_meta(x, b.y - 1).filter(|m| {

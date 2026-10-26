@@ -2040,7 +2040,7 @@ fn cycle_label_run_is_own(
         let spine = (row > 0 && cycle_cell(row - 1)) || cycle_cell(row + 1);
         !endpoint && !spine && arms(x, row) == 3
     };
-    !(left > 0 && merges(left - 1)) && !merges(right + 1)
+    !(left > 0 && merges(left - 1) || merges(right + 1))
 }
 
 /// Whether a horizontal run lies on a subgraph's top or bottom border row,
