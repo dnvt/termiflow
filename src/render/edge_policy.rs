@@ -186,3 +186,91 @@ pub(super) fn title_safe_td_entry_x(
         .map(|(candidate_x, _)| candidate_x)
         .unwrap_or(arrow_x)
 }
+
+/// Keep a single-target vertical route straight when the source lane already
+/// lies inside the target's flat entry edge. The arrow lands slightly off the
+/// target centre instead of the route jogging one to three cells sideways
+/// just before the arrowhead. `None` keeps the centred entry, as does a
+/// labelled edge: its label is centred on the target and must stay on the
+/// shaft.
+pub(super) fn straight_entry_x(
+    from: &Node,
+    target: &Node,
+    lane_x: usize,
+    arrow_x: usize,
+    arrow_y: usize,
+    graph: &Graph,
+) -> Option<usize> {
+    const MAX_OFFSET: usize = 3;
+    if lane_x == arrow_x
+        || lane_x.abs_diff(target.center_x()) > MAX_OFFSET
+        || !matches!(
+            graph.direction,
+            Direction::TD | Direction::TB | Direction::BT
+        )
+        || !target.shape.has_flat_vertical_entry()
+        || lane_x < target.x + 2
+        || lane_x + 3 > target.x + target.width
+        || graph
+            .edges
+            .iter()
+            .filter(|edge| !edge.is_back_edge && edge.to == target.id)
+            .count()
+            != 1
+        || graph
+            .edges
+            .iter()
+            .filter(|edge| !edge.is_back_edge && edge.from == from.id)
+            .count()
+            != 1
+        || graph
+            .edges
+            .iter()
+            .any(|edge| edge.from == from.id && edge.to == target.id && edge.label.is_some())
+    {
+        return None;
+    }
+
+    let (top, bottom) = if graph.direction == Direction::BT {
+        (arrow_y, from.y)
+    } else {
+        (from.bottom_y(), arrow_y)
+    };
+    let blocked_by_node = graph.nodes.iter().any(|node| {
+        node.id != from.id
+            && node.id != target.id
+            && lane_x >= node.x
+            && lane_x < node.x + node.width
+            && node.y <= bottom
+            && node.bottom_y() > top
+    });
+    let blocked_by_title = (top..=bottom).any(|y| is_subgraph_title_cell(graph, lane_x, y));
+    // A node drawn inside a subgraph it does not belong to already has routes
+    // crossing that container; keep the centred entry there.
+    let misplaced = |node: &Node| {
+        let own = graph.get_node_subgraph(&node.id);
+        graph.subgraphs.iter().any(|sg| {
+            sg.bounds.is_valid()
+                && sg.bounds.contains(node.center_x(), node.center_y())
+                && own.is_none_or(|own_id| {
+                    own_id != sg.id && !graph.is_subgraph_ancestor(&sg.id, own_id)
+                })
+        })
+    };
+    let arrow_on_border = graph.subgraphs.iter().any(|sg| {
+        let b = &sg.bounds;
+        b.is_valid()
+            && lane_x >= b.x
+            && lane_x < b.x + b.width
+            && (arrow_y == b.y || arrow_y + 1 == b.y + b.height)
+    });
+    if blocked_by_node
+        || blocked_by_title
+        || arrow_on_border
+        || misplaced(from)
+        || misplaced(target)
+    {
+        return None;
+    }
+    Some(lane_x)
+}

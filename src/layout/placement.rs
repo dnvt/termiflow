@@ -43,6 +43,12 @@ pub(super) struct Placement {
     pub(super) node_rects: HashMap<String, Rect>,
     pub(super) canvas: Rect,
     pub(super) ranks: HashMap<String, usize>,
+    /// Whole-rank TD shift request sets already seen to make no progress in
+    /// the current envelope pass; its later loop stops on them.
+    pub(super) futile_td_requests: Vec<Vec<(usize, usize)>>,
+    /// Outside nodes left across the side wall of a frame they feed once the
+    /// envelopes are final; the clearance pass then moves only these.
+    pub(super) wall_feeders: Vec<String>,
 }
 
 pub(super) fn gap_for_axis(axis: Axis, cfg: &CoarseLayoutConfig) -> usize {
@@ -228,6 +234,18 @@ impl LayoutSpacingPolicy {
         // When a boundary simultaneously contains fan-out and fan-in (diamond-ish shapes),
         // keep extra rows/cols so merge/junction bars don't collide with boxes.
         if has_fan_out && has_fan_in && !has_labels {
+            spacing = spacing.max(SPACING_FANIN + 1);
+        }
+        // A fan-out branch whose target also takes an edge from an earlier
+        // rank across a frame border: the merge bus for that target and the
+        // fan-out bus would share a row, and the long edge would seem to feed
+        // every branch on it. (Elsewhere the long edge often runs through the
+        // boxes between, and the extra row only staggers a clean split.)
+        if has_fan_out
+            && matches!(graph.direction, Direction::TD | Direction::TB)
+            && !has_labels
+            && fan_out_target_merges_long_edge(graph, layer, layers.get(layer_idx + 1))
+        {
             spacing = spacing.max(SPACING_FANIN + 1);
         }
 
@@ -456,24 +474,91 @@ impl LayoutSpacingPolicy {
             // short of an eight-cell label.  The four-cell allowance matches the
             // LR/RL inline label margins and keeps the policy bounded by the
             // public label-width contract.
+            //
+            // A label drawn inline on the run into a single-entry target also
+            // needs a shaft cell between the source side and its leading blank
+            // when the run ends in a marker; boxes narrower than the layer
+            // column already have that cell.
             if has_labels {
-                let widest_label = layer
+                let column_width = layer
+                    .iter()
+                    .map(|&idx| graph.nodes[idx].width)
+                    .max()
+                    .unwrap_or(0);
+                let single_entry = |id: &str| {
+                    graph
+                        .edges
+                        .iter()
+                        .filter(|edge| !edge.is_back_edge && edge.to == id)
+                        .count()
+                        == 1
+                };
+                let wall_room = self.gutter + 1;
+                // Only an edge into the next layer draws its label in this gap.
+                let next_layer_ids: HashSet<&str> = layers
+                    .get(layer_idx + 1)
+                    .into_iter()
+                    .flatten()
+                    .map(|&idx| graph.nodes[idx].id.as_str())
+                    .collect();
+                let next_layer_ids = &next_layer_ids;
+                // The first and last layers a frame's members sit on.
+                let frame_layers = |id: &str| {
+                    let mut span: Option<(usize, usize)> = None;
+                    for (at, members) in layers.iter().enumerate() {
+                        if members
+                            .iter()
+                            .any(|&idx| graph.is_node_in_subgraph_tree(&graph.nodes[idx].id, id))
+                        {
+                            span = Some(span.map_or((at, at), |(first, _)| (first, at)));
+                        }
+                    }
+                    span
+                };
+                let frame_layers = &frame_layers;
+                let reserved = layer
                     .iter()
                     .flat_map(|&idx| {
-                        let source_id = &graph.nodes[idx].id;
+                        let source = &graph.nodes[idx];
+                        let flush = source.width == column_width;
                         graph
                             .edges
                             .iter()
-                            .filter(move |edge| {
-                                !edge.is_back_edge && edge.from.as_str() == source_id.as_str()
+                            .filter(move |edge| !edge.is_back_edge && edge.from == source.id)
+                            .filter_map(move |edge| {
+                                let width =
+                                    crate::display_profile::display_width(edge.label.as_deref()?)
+                                        .min(crate::spacing::MAX_LABEL_WIDTH);
+                                let marked = edge.kind != crate::graph::EdgeKind::Open;
+                                let lead = usize::from(flush && marked && single_entry(&edge.to));
+                                // Each frame wall crossed takes its gutter and the wall
+                                // itself out of the gap, and the label then sits in the
+                                // stretch beyond the walls with its own shaft cells.
+                                let (exits, entries) =
+                                    graph.edge_boundary_crossings(&edge.from, &edge.to);
+                                let adjacent = next_layer_ids.contains(edge.to.as_str());
+                                // Between sibling frames that share a layer, the frames'
+                                // own separation already widens the gap. Frames on layers
+                                // apart get no separation, and the gap between them holds
+                                // both walls (gen_c_118).
+                                let one_sided = exits.is_empty() != entries.is_empty();
+                                let layers_apart = || {
+                                    let last = exits.iter().filter_map(|id| frame_layers(id)).map(|(_, hi)| hi).max();
+                                    let first = entries.iter().filter_map(|id| frame_layers(id)).map(|(lo, _)| lo).min();
+                                    matches!((last, first), (Some(last), Some(first)) if last < first)
+                                };
+                                let crossed = if adjacent && (one_sided || layers_apart()) {
+                                    exits.len() + entries.len()
+                                } else {
+                                    0
+                                };
+                                let walls = crossed * wall_room + if crossed > 0 { 2 } else { 0 };
+                                Some(width + 4 + lead + walls)
                             })
-                            .filter_map(|edge| edge.label.as_deref())
-                            .map(crate::display_profile::display_width)
                     })
                     .max()
-                    .unwrap_or(0)
-                    .min(crate::spacing::MAX_LABEL_WIDTH);
-                spacing = spacing.max(widest_label.saturating_add(4));
+                    .unwrap_or(0);
+                spacing = spacing.max(reserved);
             }
 
             // The strict horizontal subgraph fan-in route owns one wall-clear
@@ -812,6 +897,40 @@ fn database_intermediate_scene_requires_headroom(
         layer
             .iter()
             .any(|index| graph.nodes[*index].id == intermediate.id)
+    })
+}
+
+/// Whether a node in `layer` fans out into the next layer and one of those
+/// targets also takes a forward edge from a node outside `layer` (ranked
+/// earlier, so that edge runs past this layer) and outside the target's frame.
+fn fan_out_target_merges_long_edge(
+    graph: &Graph,
+    layer: &[usize],
+    next: Option<&Vec<usize>>,
+) -> bool {
+    let Some(next) = next else {
+        return false;
+    };
+    let in_layer = |id: &str| layer.iter().any(|&idx| graph.nodes[idx].id == id);
+    let in_next = |id: &str| next.iter().any(|&idx| graph.nodes[idx].id == id);
+    let forward = || graph.edges.iter().filter(|edge| !edge.is_back_edge);
+    layer.iter().any(|&idx| {
+        let source = graph.nodes[idx].id.as_str();
+        let targets: Vec<&str> = forward()
+            .filter(|edge| edge.from == source)
+            .map(|edge| edge.to.as_str())
+            .collect();
+        targets.len() > 1
+            && targets.iter().any(|&target| {
+                in_next(target)
+                    && forward().any(|edge| {
+                        edge.to == target
+                            && edge.from != source
+                            && !in_layer(&edge.from)
+                            && graph.get_node_subgraph(&edge.from)
+                                != graph.get_node_subgraph(target)
+                    })
+            })
     })
 }
 
@@ -1187,6 +1306,8 @@ pub(super) fn place_nodes(
         node_rects,
         canvas,
         ranks,
+        futile_td_requests: Vec::new(),
+        wall_feeders: Vec::new(),
     }
 }
 

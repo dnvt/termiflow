@@ -5,7 +5,7 @@
 Render Mermaid flowcharts as ASCII/Unicode diagrams directly in your
 terminal—without a browser.
 
-Current status: TermiFlow v0.2.8 is the current public release. Print mode
+Current status: TermiFlow v0.2.9 is the current public release. Print mode
 and primary-screen watch mode (`--watch`) are the stable workflow; alternate-
 screen live preview (`--tui`) is available but remains partial because input and
 scroll behavior depends on the terminal emulator.
@@ -116,27 +116,33 @@ brew install dnvt/termiflow/termiflow
 The Homebrew formula is maintained in the external `dnvt/homebrew-termiflow`
 tap; this repository keeps installation instructions only.
 
-The v0.2.8 Linux release binaries are architecture-specific: the x86_64 GNU
-archive targets glibc 2.39 or newer, while the aarch64 GNU archive targets
-glibc 2.18 or newer. Older or different Linux userspaces can use the Rust
-source fallback below.
+Linux release binaries are architecture-specific GNU builds. If a provided
+binary cannot run on your Linux userspace, use the Rust source fallback below.
 
 ### GitHub Releases
 
 If Homebrew is unavailable, download a release binary from [GitHub
 Releases](https://github.com/dnvt/termiflow/releases).
 
+### Cargo (requires Rust)
+
+Install the published crate with a Rust toolchain and Cargo:
+
+```bash
+cargo install --locked --version 0.2.9 termiflow --bin tw
+```
+
 ### From source (requires Rust)
 
 A source checkout requires a Rust toolchain and Cargo:
 
 ```bash
-# From a checked-out v0.2.8 source tree:
+# From a checked-out v0.2.9 source tree:
 cargo install --locked --path . --bin tw
 ```
 
 This installs the checkout you are using. For a no-Rust installation, prefer
-the v0.2.8 Homebrew formula or the prebuilt binaries linked from the GitHub
+the v0.2.9 Homebrew formula or the prebuilt binaries linked from the GitHub
 release.
 
 ## Quickstart

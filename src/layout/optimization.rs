@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::geom::{Point, Rect};
-use crate::graph::Graph;
+use crate::graph::{Direction, Graph};
 use crate::orientation::{Axis, OrientedCoords};
 
 use super::placement::gap_for_axis;
@@ -59,6 +59,9 @@ pub(super) fn assign_layers(graph: &Graph) -> Vec<Vec<usize>> {
     }
 
     promote_nested_child_root_ranks(graph, &index_map, &adj, &order, &mut rank);
+    promote_subgraph_roots_below_external_sources(graph, &index_map, &adj, &order, &mut rank);
+    sink_frame_sources_to_their_targets(graph, &adj, &mut rank);
+    sink_frame_exits_below_frames(graph, &adj, &order, &mut rank);
 
     let mut by_rank: HashMap<usize, Vec<usize>> = HashMap::new();
     for (idx, r) in rank.iter().enumerate() {
@@ -100,10 +103,33 @@ fn promote_nested_child_root_ranks(
             continue;
         };
 
+        // In TD, the parent's own nodes the child feeds come after it in the
+        // flow (gen_c_073: l2b -> l1b); ranking the child below them too pushed
+        // the whole chain down and left the parent frame mostly empty. BT and
+        // LR/RL keep the old ranks: there a tighter frame put stubs on
+        // borders (gen_c_103, gen_c_132).
+        let td = matches!(graph.direction, Direction::TD | Direction::TB);
+        let mut downstream = vec![false; graph.nodes.len()];
+        let mut stack: Vec<usize> = graph
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| graph.is_node_in_subgraph_tree(&node.id, &subgraph.id))
+            .map(|(idx, _)| idx)
+            .collect();
+        while let Some(idx) = stack.pop() {
+            for &next in &adj[idx] {
+                if !downstream[next] {
+                    downstream[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
         let Some(parent_direct_max_rank) = parent
             .node_ids
             .iter()
             .filter_map(|node_id| index_map.get(node_id.as_str()).copied())
+            .filter(|&idx| !td || !downstream[idx])
             .map(|idx| rank[idx])
             .max()
         else {
@@ -123,6 +149,119 @@ fn promote_nested_child_root_ranks(
         return;
     }
 
+    for &from_idx in order {
+        for &to_idx in &adj[from_idx] {
+            let next_rank = rank[from_idx].saturating_add(1);
+            if rank[to_idx] < next_rank {
+                rank[to_idx] = next_rank;
+            }
+        }
+    }
+}
+
+fn promote_subgraph_roots_below_external_sources(
+    graph: &Graph,
+    index_map: &HashMap<&str, usize>,
+    adj: &[Vec<usize>],
+    order: &[usize],
+    rank: &mut [usize],
+) {
+    // An external node that feeds a subgraph must sit on a rank before the
+    // whole subgraph, or the envelope that spans the subgraph ranks wraps
+    // around it and draws a foreign node inside the frame. Lift the subgraph
+    // roots one rank past every external source. Skip a subgraph that also
+    // reaches one of those sources: no rank order can keep that source out.
+    let mut subgraphs: Vec<_> = graph.subgraphs.iter().collect();
+    subgraphs.sort_by(|left, right| left.id.cmp(&right.id));
+
+    for _ in 0..4 {
+        let mut promoted = false;
+        for subgraph in &subgraphs {
+            if subgraph.parent_id.is_some() {
+                continue;
+            }
+            let inside: Vec<bool> = graph
+                .nodes
+                .iter()
+                .map(|node| graph.is_node_in_subgraph_tree(&node.id, &subgraph.id))
+                .collect();
+            let sources: Vec<usize> = (0..graph.nodes.len())
+                .filter(|&from| !inside[from] && adj[from].iter().any(|&to| inside[to]))
+                .collect();
+            // BT envelopes infer visual nesting from rank order, so lifting a
+            // parent with child subgraphs can make its siblings read as nested.
+            // A source fanning into such a parent is lifted over all the same:
+            // the envelope stage cannot move it out from under the frame.
+            let fanning_source = sources
+                .iter()
+                .any(|&source| adj[source].iter().filter(|&&to| inside[to]).count() > 1);
+            if sources.is_empty()
+                || graph.direction == Direction::BT
+                    && !subgraph.child_ids.is_empty()
+                    && !fanning_source
+            {
+                continue;
+            }
+
+            let mut reached = vec![false; graph.nodes.len()];
+            let mut stack: Vec<usize> = (0..graph.nodes.len()).filter(|&idx| inside[idx]).collect();
+            while let Some(idx) = stack.pop() {
+                for &next in &adj[idx] {
+                    if !reached[next] {
+                        reached[next] = true;
+                        stack.push(next);
+                    }
+                }
+            }
+            if sources.iter().any(|&source| reached[source]) {
+                continue;
+            }
+
+            let minimum_rank = sources
+                .iter()
+                .map(|&source| rank[source].saturating_add(1))
+                .max()
+                .unwrap_or(0);
+            let mut trial = rank.to_vec();
+            let mut lifted = false;
+            for root_idx in nested_child_root_indices(graph, index_map, &subgraph.id) {
+                if trial[root_idx] < minimum_rank {
+                    trial[root_idx] = minimum_rank;
+                    lifted = true;
+                }
+            }
+            if !lifted {
+                continue;
+            }
+            propagate_ranks(adj, order, &mut trial);
+            // A lift that stretches a one-rank edge across another rank sends
+            // that edge past the nodes in between; keep the original ranks.
+            let stretches_an_edge = (0..graph.nodes.len()).any(|from| {
+                adj[from].iter().any(|&to| {
+                    rank[to].saturating_sub(rank[from]) <= 1
+                        && trial[to].saturating_sub(trial[from]) > 1
+                })
+            });
+            // Every entry from a lifted-over source must land on the first
+            // subgraph rank; a longer entry would cross the members above it.
+            let long_entry = sources.iter().any(|&source| {
+                adj[source]
+                    .iter()
+                    .any(|&to| inside[to] && trial[to] != trial[source].saturating_add(1))
+            });
+            if stretches_an_edge || long_entry {
+                continue;
+            }
+            rank.copy_from_slice(&trial);
+            promoted = true;
+        }
+        if !promoted {
+            return;
+        }
+    }
+}
+
+fn propagate_ranks(adj: &[Vec<usize>], order: &[usize], rank: &mut [usize]) {
     for &from_idx in order {
         for &to_idx in &adj[from_idx] {
             let next_rank = rank[from_idx].saturating_add(1);
@@ -219,7 +358,22 @@ pub(super) fn mark_back_edges(graph: &mut Graph) -> bool {
         state[u] = 2;
     }
 
-    for u in 0..graph.nodes.len() {
+    // Search from the nodes in the order the edges first name them as a
+    // source: a cycle then breaks at the edge that closes it in the author's
+    // flow (gen_a_169: Iterate -> Candidate), not wherever a node declared
+    // early in a subgraph happens to start the search.
+    let mut roots: Vec<usize> = Vec::with_capacity(graph.nodes.len());
+    let mut rooted = vec![false; graph.nodes.len()];
+    for edge in &graph.edges {
+        if let Some(&idx) = index_map.get(edge.from.as_str()) {
+            if !rooted[idx] {
+                rooted[idx] = true;
+                roots.push(idx);
+            }
+        }
+    }
+    roots.extend((0..graph.nodes.len()).filter(|&idx| !rooted[idx]));
+    for u in roots {
         if state[u] == 0 {
             dfs(
                 u,
@@ -232,7 +386,82 @@ pub(super) fn mark_back_edges(graph: &mut Graph) -> bool {
         }
     }
 
+    if has_cycle {
+        prefer_frame_entries_as_back_edges(graph);
+    }
+
     has_cycle
+}
+
+/// A cycle through a frame member can be broken at the member's exit or at
+/// the entries leading back into it. The search above takes whichever it
+/// meets first, which can break one member's exit while a peer in the same
+/// frame keeps its forward edge to the same target: the member then ranks
+/// after the rest of the cycle and its frame stretches across every rank
+/// between. When every forward entry into such a member comes from outside
+/// its frame and closes the cycle, break those entries instead: the member
+/// then has no forward entry, so no forward cycle can pass through it.
+fn prefer_frame_entries_as_back_edges(graph: &mut Graph) {
+    let reaches = |graph: &Graph, from: &str, to: &str| {
+        let mut seen: HashSet<&str> = HashSet::from([from]);
+        let mut stack = vec![from];
+        while let Some(current) = stack.pop() {
+            if current == to {
+                return true;
+            }
+            for edge in graph
+                .edges
+                .iter()
+                .filter(|e| !e.is_back_edge && e.from == current)
+            {
+                if seen.insert(edge.to.as_str()) {
+                    stack.push(edge.to.as_str());
+                }
+            }
+        }
+        false
+    };
+    for back_idx in 0..graph.edges.len() {
+        let back = &graph.edges[back_idx];
+        if !back.is_back_edge || back.from == back.to {
+            continue;
+        }
+        let member = back.from.clone();
+        let target = back.to.clone();
+        let Some(frame) = graph.get_node_subgraph(&member).map(str::to_string) else {
+            continue;
+        };
+        // Only where the frame broke the cycle inconsistently: another member
+        // of the frame keeps its forward edge to the same target.
+        let peer_flows_forward = graph.edges.iter().any(|e| {
+            !e.is_back_edge
+                && e.to == target
+                && e.from != member
+                && graph.is_node_in_subgraph_tree(&e.from, &frame)
+        });
+        if !peer_flows_forward {
+            continue;
+        }
+        let entries: Vec<usize> = graph
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.is_back_edge && e.to == member)
+            .map(|(idx, _)| idx)
+            .collect();
+        let breaks_cycle = |graph: &Graph, idx: usize| {
+            let entry = &graph.edges[idx];
+            !graph.is_node_in_subgraph_tree(&entry.from, &frame)
+                && reaches(graph, &target, &entry.from)
+        };
+        if entries.is_empty() || !entries.iter().all(|&idx| breaks_cycle(graph, idx)) {
+            continue;
+        }
+        for idx in entries {
+            graph.edges[idx].is_back_edge = true;
+        }
+        graph.edges[back_idx].is_back_edge = false;
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -438,3 +667,104 @@ fn apply_balance_pass(
 }
 
 // -----------------------------------------------------------------------------
+
+/// A frame member with no incoming edge starts on rank 0, however far down
+/// its targets sit; when those targets are later in the frame, the frame then
+/// spans every rank between and wraps around other frames placed there. Move
+/// such a source down to the rank just before its nearest target, when all
+/// its edges stay inside its own frame.
+/// BT keeps the old ranks: its envelopes infer nesting from rank order, and a
+/// shorter BT frame there moved routes onto boxes.
+fn sink_frame_sources_to_their_targets(graph: &Graph, adj: &[Vec<usize>], rank: &mut [usize]) {
+    if graph.direction == Direction::BT {
+        return;
+    }
+    let has_incoming: Vec<bool> = (0..graph.nodes.len())
+        .map(|idx| adj.iter().any(|targets| targets.contains(&idx)))
+        .collect();
+    for (idx, node) in graph.nodes.iter().enumerate() {
+        if has_incoming[idx] || adj[idx].is_empty() {
+            continue;
+        }
+        let Some(frame) = graph.get_node_subgraph(&node.id) else {
+            continue;
+        };
+        let in_frame = adj[idx]
+            .iter()
+            .all(|&target| graph.is_node_in_subgraph_tree(&graph.nodes[target].id, frame));
+        let nearest = adj[idx].iter().map(|&target| rank[target]).min();
+        if let (true, Some(nearest)) = (in_frame, nearest) {
+            rank[idx] = rank[idx].max(nearest.saturating_sub(1));
+        }
+    }
+}
+
+/// A node outside a frame that only frame members feed ranks right after its
+/// source, which can sit inside the frame's rank span: the frame then has to
+/// be pushed past it. A frame without nested frames moves such a node out from
+/// under itself while its members stay; a frame with nested ones cannot, and
+/// the border followed every whole-rank shift (gen_c_145: 67 bare rows). Rank
+/// such a node after that frame's last rank instead, unless it leads back
+/// into the frame.
+fn sink_frame_exits_below_frames(
+    graph: &Graph,
+    adj: &[Vec<usize>],
+    order: &[usize],
+    rank: &mut [usize],
+) {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) {
+        return;
+    }
+    let mut frames: Vec<_> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.parent_id.is_none() && !subgraph.child_ids.is_empty())
+        .collect();
+    frames.sort_by(|left, right| left.id.cmp(&right.id));
+    for frame in frames {
+        let inside: Vec<bool> = graph
+            .nodes
+            .iter()
+            .map(|node| graph.is_node_in_subgraph_tree(&node.id, &frame.id))
+            .collect();
+        let Some(last) = (0..graph.nodes.len())
+            .filter(|&idx| inside[idx])
+            .map(|idx| rank[idx])
+            .max()
+        else {
+            continue;
+        };
+        let mut moved = false;
+        for idx in 0..graph.nodes.len() {
+            if inside[idx] || rank[idx] > last {
+                continue;
+            }
+            let mut feeders = (0..graph.nodes.len()).filter(|&from| adj[from].contains(&idx));
+            let Some(first) = feeders.next() else {
+                continue;
+            };
+            if !inside[first] || !feeders.all(|from| inside[from]) {
+                continue;
+            }
+            let mut seen = vec![false; graph.nodes.len()];
+            let mut stack = vec![idx];
+            let mut returns = false;
+            while let Some(at) = stack.pop() {
+                for &next in &adj[at] {
+                    returns |= inside[next];
+                    if !seen[next] {
+                        seen[next] = true;
+                        stack.push(next);
+                    }
+                }
+            }
+            if !returns {
+                rank[idx] = last + 1;
+                moved = true;
+            }
+        }
+        if moved {
+            propagate_ranks(adj, order, rank);
+        }
+    }
+}

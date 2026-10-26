@@ -104,11 +104,7 @@ pub(super) fn carve_node_portals(
     let ring_zones: Vec<&SubgraphEnvelope> = subgraph_envelopes.values().collect();
 
     for (node_id, rect) in node_rects {
-        let shape = graph
-            .get_node(node_id)
-            .map(|node| node.shape)
-            .unwrap_or_default();
-        let entry = edge_entry_point_for_shape(*rect, coords.direction, shape);
+        let entry = edge_entry_point(*rect, coords.direction);
         let exit = edge_exit_point(*rect, coords.direction);
 
         let (allowed_rect, in_subgraph) = graph
@@ -417,7 +413,7 @@ pub(super) fn route_selective_horizontal_cross_subgraph_fanin_groups(
             .get(target_id)
             .copied()
             .unwrap_or_else(|| Rect::new(target.x, target.y, target.width, target.height));
-        let arrow = edge_entry_point_for_shape(target_rect, graph.direction, target.shape);
+        let arrow = edge_entry_point(target_rect, graph.direction);
 
         let mut starts = Vec::new();
         let mut all_from_same_subgraph = true;
@@ -1115,29 +1111,70 @@ pub(super) fn edge_exit_point(rect: Rect, direction: Direction) -> Point {
     }
 }
 
-pub(super) fn edge_entry_point_for_shape(
+/// Keep a single-entry vertical route straight when its source lane already lies
+/// inside the target's flat entry edge: move `end` to the lane instead of
+/// jogging one to three cells sideways just above the arrowhead.
+pub(super) fn straight_entry_end(
+    start: Point,
+    end: Point,
     rect: Rect,
     direction: Direction,
     shape: NodeShape,
 ) -> Point {
-    let shape_clearance = shape.incoming_edge_clearance(direction);
+    const MAX_OFFSET: usize = 3;
+    if matches!(direction, Direction::TD | Direction::TB | Direction::BT)
+        && shape.has_flat_vertical_entry()
+        && start.x != end.x
+        && start.x.abs_diff(end.x) <= MAX_OFFSET
+        && start.x >= rect.x + 2
+        && start.x + 3 <= rect.x + rect.width
+    {
+        Point::new(start.x, end.y)
+    } else {
+        end
+    }
+}
 
+/// The arrow cell right beside a target on its incoming side.  Every contour,
+/// including a diamond or flag point, takes the arrowhead against it; a
+/// blank cell before the contour reads as a detached arrow.
+pub(super) fn edge_entry_point(rect: Rect, direction: Direction) -> Point {
     match direction {
-        Direction::TD | Direction::TB => Point::new(
-            rect.x + rect.width / 2,
-            rect.y.saturating_sub(1 + shape_clearance),
-        ),
-        Direction::BT => Point::new(
-            rect.x + rect.width / 2,
-            rect.y + rect.height + shape_clearance,
-        ),
-        Direction::LR => Point::new(
-            rect.x.saturating_sub(1 + shape_clearance),
-            rect.y + rect.height / 2,
-        ),
-        Direction::RL => Point::new(
-            rect.x + rect.width + shape_clearance,
-            rect.y + rect.height / 2,
-        ),
+        Direction::TD | Direction::TB => {
+            Point::new(rect.x + rect.width / 2, rect.y.saturating_sub(1))
+        }
+        Direction::BT => Point::new(rect.x + rect.width / 2, rect.y + rect.height),
+        Direction::LR => Point::new(rect.x.saturating_sub(1), rect.y + rect.height / 2),
+        Direction::RL => Point::new(rect.x + rect.width, rect.y + rect.height / 2),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::straight_entry_end;
+    use crate::geom::{Point, Rect};
+    use crate::graph::{Direction, NodeShape};
+
+    #[test]
+    fn straight_entry_end_moves_only_small_offsets_inside_flat_edges() {
+        let straight = |rect: Rect, start_x, direction, shape| {
+            let end = Point::new(rect.x + rect.width / 2, 19);
+            straight_entry_end(Point::new(start_x, 5), end, rect, direction, shape).x
+        };
+        let wide = Rect::new(10, 20, 15, 3);
+        let narrow = Rect::new(10, 20, 7, 3);
+
+        assert_eq!(straight(wide, 15, Direction::TD, NodeShape::Rectangle), 15);
+        assert_eq!(straight(wide, 20, Direction::BT, NodeShape::Database), 20);
+        // Beyond the offset limit, next to a corner, or on a pointed shape the
+        // centred entry stays.
+        assert_eq!(straight(wide, 21, Direction::TD, NodeShape::Rectangle), 17);
+        assert_eq!(straight(wide, 13, Direction::TD, NodeShape::Rectangle), 17);
+        assert_eq!(
+            straight(narrow, 15, Direction::TD, NodeShape::Rectangle),
+            13
+        );
+        assert_eq!(straight(wide, 15, Direction::TD, NodeShape::Diamond), 17);
+        assert_eq!(straight(wide, 15, Direction::LR, NodeShape::Rectangle), 17);
     }
 }

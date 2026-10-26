@@ -40,3 +40,13 @@ Regenerate both canonical and authored full-corpus packets and review every BT
 title/portal homolog. Keep the rule only if repeated human-eye review confirms
 that the added row reduces hooks without turning long vertical corridors into
 new whitespace defects.
+
+## Amendment 2026-10-10: no turn needs no quiet row
+
+The quiet-row sequence applies only when the route turns. When the title-safe
+portal lane equals both the source stem and the arrow column, the BT portal
+selector now keeps that lane: the route has no turn at all
+(`collision_sibling_tight_bt`). When the portal lane already lies inside the
+target's flat bottom edge, the arrow lands on the lane rather than turning back
+to the centre (`subgraph_direct_bt`; straight-entry rule). Scene-simulation
+callers in `bt_sibling_target.rs` keep the previous behaviour.

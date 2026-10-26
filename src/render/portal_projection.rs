@@ -5,6 +5,7 @@ use crate::layout_snapshot::LayoutSnapshot;
 use crate::portals::{PortalSlots, TitleGutter};
 use crate::style::{vertical_portal_seam, StyleChars, BOX_HEIGHT};
 
+use super::edge::DETOUR_STRATEGY;
 use super::provenance::edge_owner_id;
 use super::{canvas, semantic, topology, Canvas};
 
@@ -193,7 +194,7 @@ pub(super) fn annotate_subgraph_region(
             return;
         };
         let title_y = subgraph_title_y(bounds, direction);
-        for (i, _) in title_fmt.chars().enumerate() {
+        for i in 0..crate::graph::title_cells(&title_fmt).len() {
             let x = start_x + i;
             if x < canvas.width {
                 canvas.set_meta_only(
@@ -304,6 +305,20 @@ pub(super) fn carve_subgraph_portals_on_canvas(
     }
 }
 
+/// The glyph beside a portal slot at `(x, y)` as the slot sees it: a blocked
+/// edge's detour turning there without claiming the slot's border cell
+/// `border` does not reach the slot, though ASCII draws its turn as a `+`
+/// that looks as if it does.
+fn beside_slot(canvas: &Canvas, x: usize, y: usize, border: (usize, usize)) -> char {
+    if canvas.fallback_route_strategy_claims_cell(DETOUR_STRATEGY, x, y)
+        && !canvas.fallback_route_claims_cell(border.0, border.1)
+    {
+        ' '
+    } else {
+        canvas.get(x, y)
+    }
+}
+
 pub(super) fn reinforce_subgraph_portals(
     canvas: &mut Canvas,
     graph: &Graph,
@@ -365,9 +380,13 @@ pub(super) fn reinforce_subgraph_portals(
                 for x in top_slots {
                     let px = clamp_horizontal(bounds, x);
                     let ty = top_y;
-                    let above = if ty > 0 { canvas.get(px, ty - 1) } else { ' ' };
+                    let above = if ty > 0 {
+                        beside_slot(canvas, px, ty - 1, (px, ty))
+                    } else {
+                        ' '
+                    };
                     let below = if ty + 1 < canvas.height {
-                        canvas.get(px, ty + 1)
+                        beside_slot(canvas, px, ty + 1, (px, ty))
                     } else {
                         ' '
                     };
@@ -396,12 +415,12 @@ pub(super) fn reinforce_subgraph_portals(
                 for x in bottom_slots {
                     let px = clamp_horizontal(bounds, x);
                     let above = if bottom_y > 0 {
-                        canvas.get(px, bottom_y - 1)
+                        beside_slot(canvas, px, bottom_y - 1, (px, bottom_y))
                     } else {
                         ' '
                     };
                     let below = if bottom_y + 1 < canvas.height {
-                        canvas.get(px, bottom_y + 1)
+                        beside_slot(canvas, px, bottom_y + 1, (px, bottom_y))
                     } else {
                         ' '
                     };
@@ -461,12 +480,12 @@ pub(super) fn reinforce_subgraph_portals(
                     if top_y < canvas.height && !is_textual(existing) && !canvas::is_arrow(existing)
                     {
                         let above = if top_y > 0 {
-                            canvas.get(px, top_y - 1)
+                            beside_slot(canvas, px, top_y - 1, (px, top_y))
                         } else {
                             ' '
                         };
                         let below = if top_y + 1 < canvas.height {
-                            canvas.get(px, top_y + 1)
+                            beside_slot(canvas, px, top_y + 1, (px, top_y))
                         } else {
                             ' '
                         };
@@ -492,12 +511,12 @@ pub(super) fn reinforce_subgraph_portals(
                         && !canvas::is_arrow(existing)
                     {
                         let above = if bottom_y > 0 {
-                            canvas.get(px, bottom_y - 1)
+                            beside_slot(canvas, px, bottom_y - 1, (px, bottom_y))
                         } else {
                             ' '
                         };
                         let below = if bottom_y + 1 < canvas.height {
-                            canvas.get(px, bottom_y + 1)
+                            beside_slot(canvas, px, bottom_y + 1, (px, bottom_y))
                         } else {
                             ' '
                         };
@@ -521,12 +540,12 @@ pub(super) fn reinforce_subgraph_portals(
                     if left_x < canvas.width && !is_textual(existing) && !canvas::is_arrow(existing)
                     {
                         let left = if left_x > 0 {
-                            canvas.get(left_x - 1, py)
+                            beside_slot(canvas, left_x - 1, py, (left_x, py))
                         } else {
                             ' '
                         };
                         let right = if left_x + 1 < canvas.width {
-                            canvas.get(left_x + 1, py)
+                            beside_slot(canvas, left_x + 1, py, (left_x, py))
                         } else {
                             ' '
                         };
@@ -548,12 +567,12 @@ pub(super) fn reinforce_subgraph_portals(
                         && !canvas::is_arrow(existing)
                     {
                         let left = if right_x > 0 {
-                            canvas.get(right_x - 1, py)
+                            beside_slot(canvas, right_x - 1, py, (right_x, py))
                         } else {
                             ' '
                         };
                         let right = if right_x + 1 < canvas.width {
-                            canvas.get(right_x + 1, py)
+                            beside_slot(canvas, right_x + 1, py, (right_x, py))
                         } else {
                             ' '
                         };
@@ -860,13 +879,335 @@ pub(super) fn finalize_horizontal_side_portals(
                 } else {
                     (segment.to.x, segment.from.x)
                 };
-                if left_x >= min_x && left_x <= max_x {
+                // Only where a drawn line meets the wall: the renderer may
+                // have taken the edge across another row than the layout's
+                // route, and an opening with no line beside it is a stub.
+                let drawn_beside = |canvas: &Canvas, x: usize| {
+                    is_horizontalish(canvas.get(x.saturating_sub(1), y))
+                        || is_horizontalish(canvas.get(x + 1, y))
+                };
+                if left_x >= min_x && left_x <= max_x && drawn_beside(canvas, left_x) {
                     stamp_side_portal(canvas, left_x, y);
                 }
-                if right_x >= min_x && right_x <= max_x {
+                if right_x >= min_x && right_x <= max_x && drawn_beside(canvas, right_x) {
                     stamp_side_portal(canvas, right_x, y);
                 }
             }
+        }
+    }
+}
+
+/// Routes end at nodes, so a horizontal route through a frame's side wall
+/// with a line on one side only is a stub leading nowhere (gen_c_034: the
+/// Vault fan-in's merge tee kept an arm out through Parent's wall). Close the
+/// wall and trim the stub back to the junction it leaves. A stub carrying an
+/// arrowhead, or reaching a box, is left alone.
+/// Whether two route owners belong to one fan: they share a source or a
+/// target (`fanout:<source>`, `fanin:<target>`, `edge:<i>:<from>-><to>`).
+fn same_edge_family(left: &str, right: &str) -> bool {
+    let ends = |owner: &str| -> (Option<String>, Option<String>) {
+        if let Some(source) = owner.strip_prefix("fanout:") {
+            (Some(source.to_owned()), None)
+        } else if let Some(target) = owner.strip_prefix("fanin:") {
+            (None, Some(target.to_owned()))
+        } else if let Some((_, pair)) = owner
+            .strip_prefix("edge:")
+            .and_then(|rest| rest.split_once(':'))
+        {
+            match pair.split_once("->") {
+                Some((from, to)) => (Some(from.to_owned()), Some(to.to_owned())),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        }
+    };
+    let (left_from, left_to) = ends(left);
+    let (right_from, right_to) = ends(right);
+    left == right
+        || left_from.is_some() && left_from == right_from
+        || left_to.is_some() && left_to == right_to
+}
+
+pub(super) fn trim_side_wall_stubs(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    chars: &StyleChars,
+    subgraph_chars: &StyleChars,
+) {
+    const MAX_STUB: usize = 4;
+    let is_route = |canvas: &Canvas, x: usize, y: usize| {
+        canvas.get_meta(x, y).is_some_and(|meta| {
+            matches!(
+                meta.owner_kind,
+                semantic::CellOwnerKind::EdgeSegment
+                    | semantic::CellOwnerKind::Junction
+                    | semantic::CellOwnerKind::PortalOpening
+            )
+        })
+    };
+    for subgraph in &graph.subgraphs {
+        let bounds = &subgraph.bounds;
+        if !bounds.is_valid() || bounds.height < 3 {
+            continue;
+        }
+        let right_x = bounds.x + bounds.width.saturating_sub(1);
+        let bottom_y = bounds.y + bounds.height.saturating_sub(1);
+        for wall_x in [bounds.x, right_x] {
+            for y in bounds.y + 1..bottom_y {
+                if wall_x >= canvas.width
+                    || y >= canvas.height
+                    || !canvas::is_horizontal(canvas.get(wall_x, y), chars)
+                    || !is_route(canvas, wall_x, y)
+                {
+                    continue;
+                }
+                // The two sides, each with whether its cell reaches the wall.
+                let reaches = |x: Option<usize>, from_left: bool| {
+                    x.filter(|&x| x < canvas.width).is_some_and(|x| {
+                        let cell = canvas.get(x, y);
+                        canvas::is_arrow(cell)
+                            || if from_left {
+                                topology::char_connects_right(cell)
+                            } else {
+                                topology::char_connects_left(cell)
+                            }
+                    })
+                };
+                let left = reaches(wall_x.checked_sub(1), true);
+                let right = reaches(Some(wall_x + 1), false);
+                if left == right {
+                    continue;
+                }
+                // A box on the other side: the line ends at a node there,
+                // arrowhead or not, and is no stub.
+                let other = if left {
+                    Some(wall_x + 1)
+                } else {
+                    wall_x.checked_sub(1)
+                };
+                if other.is_some_and(|x| is_node_owned_cell(canvas, x, y)) {
+                    continue;
+                }
+                // Walk from the wall along the stub to the junction it leaves.
+                let step = |x: usize| if left { x.checked_sub(1) } else { Some(x + 1) };
+                let mut run = Vec::new();
+                let mut at = step(wall_x);
+                let junction = loop {
+                    let Some(x) = at.filter(|&x| x < canvas.width) else {
+                        break None;
+                    };
+                    let cell = canvas.get(x, y);
+                    if !is_route(canvas, x, y) || canvas::is_arrow(cell) {
+                        break None;
+                    }
+                    if canvas::is_horizontal(cell, chars) && run.len() < MAX_STUB {
+                        run.push(x);
+                        at = step(x);
+                        continue;
+                    }
+                    if canvas::is_junction(cell, chars) || canvas::is_corner(cell, chars) {
+                        break Some(x);
+                    }
+                    break None;
+                };
+                let Some(junction) = junction else {
+                    continue;
+                };
+                // A line carrying on past the junction that belongs to another
+                // edge than the junction's vertical arms crosses them there:
+                // the "stub" is its tail, and trimming it would join the two
+                // edges in a tee (gen_a_174's Moderator -> Publish across the
+                // Remove fan-in).
+                let owner = |x: usize, y: usize| {
+                    canvas
+                        .get_meta(x, y)
+                        .filter(|_| is_route(canvas, x, y))
+                        .and_then(|meta| meta.owner_id.clone())
+                };
+                let through = step(junction).and_then(|x| owner(x, y));
+                let vertical = [y.checked_sub(1), Some(y + 1)]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|ay| owner(junction, ay))
+                    .collect::<Vec<_>>();
+                if through.as_ref().is_some_and(|through| {
+                    !vertical.is_empty()
+                        && !vertical.iter().any(|arm| same_edge_family(arm, through))
+                }) {
+                    continue;
+                }
+                canvas.set_owned(
+                    wall_x,
+                    y,
+                    subgraph_chars.v,
+                    semantic::CellOwnerKind::SubgraphBorder,
+                    &subgraph.id,
+                    1,
+                );
+                for x in run {
+                    canvas.set(x, y, ' ');
+                }
+                let Some(meta) = canvas.get_meta(junction, y).cloned() else {
+                    continue;
+                };
+                if let Some(glyph) = topology::canonical_routing_glyph(
+                    topology::canvas_connections(canvas, junction, y),
+                    chars,
+                    meta.owner_kind,
+                ) {
+                    match meta.owner_id.as_deref() {
+                        Some(owner) => canvas.set_owned(
+                            junction,
+                            y,
+                            glyph,
+                            meta.owner_kind,
+                            owner,
+                            meta.z_index,
+                        ),
+                        None => canvas.set(junction, y, glyph),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A thick or dotted line keeps its stroke where it crosses a frame's wall.
+/// The portal passes open the wall with a plain line, which reads as a thin
+/// edge joining the styled one there (`━━─━━`, `==-==`).  A crossing of two
+/// walls stacked together, or of a wall and the title row beside it, is one
+/// plain run; a line turning right after the wall ends the run at its corner.
+pub(super) fn keep_line_strokes_across_frame_walls(
+    canvas: &mut Canvas,
+    graph: &Graph,
+    chars: &StyleChars,
+) {
+    use crate::graph::EdgeKind;
+    let strokes = [EdgeKind::Thick, EdgeKind::Dotted]
+        .map(|kind| super::edge::style_for_edge_kind(chars, kind));
+    let frames: Vec<(usize, usize, usize, usize, usize)> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.bounds.is_valid())
+        .map(|subgraph| {
+            let bounds = &subgraph.bounds;
+            (
+                bounds.x,
+                bounds.x + bounds.width.saturating_sub(1),
+                bounds.y,
+                bounds.y + bounds.height.saturating_sub(1),
+                subgraph_title_y(bounds, graph.direction),
+            )
+        })
+        .collect();
+    // A cell where a line across `axis` passes a frame's wall or title row.
+    let on_frame = |x: usize, y: usize, axis: PortalAxis| {
+        frames
+            .iter()
+            .any(|&(left, right, top, bottom, title)| match axis {
+                PortalAxis::Horizontal => (x == left || x == right) && y > top && y < bottom,
+                PortalAxis::Vertical => {
+                    (y == top || y == bottom || y == title) && x > left && x < right
+                }
+            })
+    };
+    let not_frame = |canvas: &Canvas, x: usize, y: usize| {
+        canvas.get_meta(x, y).is_some_and(|meta| {
+            !matches!(
+                meta.owner_kind,
+                semantic::CellOwnerKind::SubgraphBorder | semantic::CellOwnerKind::SubgraphTitle
+            )
+        })
+    };
+    let mut restyled = Vec::new();
+    for &(left, right, top, bottom, _) in &frames {
+        let walls = (top + 1..bottom)
+            .flat_map(|y| [(left, y), (right, y)])
+            .map(|cell| (cell, PortalAxis::Horizontal))
+            .chain(
+                (left + 1..right)
+                    .flat_map(|x| [(x, top), (x, bottom)])
+                    .map(|cell| (cell, PortalAxis::Vertical)),
+            );
+        for ((x, y), axis) in walls {
+            let (plain, styled) = match axis {
+                PortalAxis::Horizontal => (chars.edge_h, strokes.map(|style| style.edge_h)),
+                PortalAxis::Vertical => (chars.edge_v, strokes.map(|style| style.edge_v)),
+            };
+            if canvas.get(x, y) != plain {
+                continue;
+            }
+            let step = |(x, y): (usize, usize), ahead: bool| match (axis, ahead) {
+                (PortalAxis::Horizontal, false) => Some((x.checked_sub(1)?, y)),
+                (PortalAxis::Horizontal, true) => Some((x + 1, y)),
+                (PortalAxis::Vertical, false) => Some((x, y.checked_sub(1)?)),
+                (PortalAxis::Vertical, true) => Some((x, y + 1)),
+            };
+            // The plain run through the wall, and the cells just past it.
+            let walk = |ahead: bool| {
+                let mut run = Vec::new();
+                let mut at = step((x, y), ahead);
+                while let Some((cx, cy)) =
+                    at.filter(|&(cx, cy)| canvas.get(cx, cy) == plain && on_frame(cx, cy, axis))
+                {
+                    run.push((cx, cy));
+                    at = step((cx, cy), ahead);
+                }
+                (run, at)
+            };
+            let (before_run, before) = walk(false);
+            let (after_run, after) = walk(true);
+            let carries = |end: Option<(usize, usize)>, glyph: char| {
+                end.is_some_and(|(ex, ey)| canvas.get(ex, ey) == glyph && not_frame(canvas, ex, ey))
+            };
+            // A corner, junction or head the line turns or ends at.
+            let joins = |end: Option<(usize, usize)>, toward_back: bool| {
+                end.is_some_and(|(ex, ey)| {
+                    let cell = canvas.get(ex, ey);
+                    let toward = match (axis, toward_back) {
+                        (PortalAxis::Horizontal, true) => topology::char_connects_left(cell),
+                        (PortalAxis::Horizontal, false) => topology::char_connects_right(cell),
+                        (PortalAxis::Vertical, true) => topology::char_connects_up(cell),
+                        (PortalAxis::Vertical, false) => topology::char_connects_down(cell),
+                    };
+                    not_frame(canvas, ex, ey)
+                        && !canvas::is_horizontal(cell, chars)
+                        && !canvas::is_vertical(cell, chars)
+                        && (toward || canvas::is_arrow(cell))
+                })
+            };
+            let Some(glyph) = styled.into_iter().find(|&glyph| {
+                glyph != plain
+                    && ((carries(before, glyph) && (carries(after, glyph) || joins(after, true)))
+                        || (carries(after, glyph) && joins(before, false)))
+            }) else {
+                continue;
+            };
+            restyled.extend(
+                before_run
+                    .into_iter()
+                    .chain([(x, y)])
+                    .chain(after_run)
+                    .map(|cell| (cell, glyph)),
+            );
+        }
+    }
+    for ((x, y), glyph) in restyled {
+        let Some(meta) = canvas.get_meta(x, y).cloned() else {
+            continue;
+        };
+        match meta.owner_id.as_deref() {
+            Some(owner) => canvas.set_owned_with_role(
+                x,
+                y,
+                glyph,
+                meta.owner_kind,
+                owner,
+                meta.role,
+                meta.z_index,
+            ),
+            None => canvas.set(x, y, glyph),
         }
     }
 }
@@ -877,6 +1218,20 @@ pub(super) fn finalize_dedicated_portal_markers(
     slots: &HashMap<String, PortalSlots>,
     chars: &StyleChars,
 ) {
+    // An arrow glyph with no route owner still marks a route, but not a `v`
+    // or `^` in a title or label (gen_a_151: the "v" of "Event Bus", moved
+    // under a portal slot, opened the wall above it).
+    let bare_arrow = |x: usize, y: usize, canvas: &Canvas| {
+        canvas::is_arrow(canvas.get(x, y))
+            && !canvas.get_meta(x, y).is_some_and(|meta| {
+                matches!(
+                    meta.owner_kind,
+                    semantic::CellOwnerKind::SubgraphTitle
+                        | semantic::CellOwnerKind::NodeLabel
+                        | semantic::CellOwnerKind::EdgeLabel
+                )
+            })
+    };
     let is_route_neighbor = |x: usize, y: usize, canvas: &Canvas| {
         canvas.get_meta(x, y).is_some_and(|meta| {
             matches!(
@@ -887,7 +1242,7 @@ pub(super) fn finalize_dedicated_portal_markers(
                     | semantic::CellOwnerKind::Junction
                     | semantic::CellOwnerKind::PortalOpening
             )
-        }) || canvas::is_arrow(canvas.get(x, y))
+        }) || bare_arrow(x, y, canvas)
     };
 
     let border_cell_is_route = |x: usize, y: usize, canvas: &Canvas| {
@@ -911,12 +1266,67 @@ pub(super) fn finalize_dedicated_portal_markers(
                 .is_some_and(|xx| is_route_neighbor(xx, y, canvas))
             || (x + 1 < canvas.width && is_route_neighbor(x + 1, y, canvas))
     };
+    // A side wall is crossed sideways, by a line reaching it from the left or
+    // right: the opening one row up or down, or a line running down beside
+    // the wall, is not a line through this cell.
+    let side_slot_has_route_neighbor = |x: usize, y: usize, canvas: &Canvas| {
+        let points_at_wall = |xx: usize, from_left: bool| {
+            let cell = canvas.get(xx, y);
+            canvas::is_arrow(cell)
+                || if from_left {
+                    topology::char_connects_right(cell)
+                } else {
+                    topology::char_connects_left(cell)
+                }
+        };
+        let toward = |xx: usize, from_left: bool| {
+            if !is_route_neighbor(xx, y, canvas) || !points_at_wall(xx, from_left) {
+                return false;
+            }
+            // A tee or corner beside the wall (ASCII draws both as `+`) may
+            // belong to a bus running beside it or turning away from it: it
+            // crosses only when the line also carries on past the wall.
+            let cell = canvas.get(xx, y);
+            let ambiguous = canvas::is_junction(cell, chars)
+                || canvas::is_corner(cell, chars)
+                || chars.corner_dr == chars.corner_ur && cell == chars.corner_dr;
+            let beyond = if from_left {
+                x.checked_add(1)
+            } else {
+                x.checked_sub(1)
+            };
+            !ambiguous
+                || beyond.is_some_and(|bx| bx < canvas.width && points_at_wall(bx, !from_left))
+        };
+        x.checked_sub(1).is_some_and(|xx| toward(xx, true))
+            || (x + 1 < canvas.width && toward(x + 1, false))
+    };
+
+    // A route uses a top or bottom border cell when it reaches it vertically,
+    // or when route cells sit on both sides of it (a turn not drawn yet). A
+    // horizontal run passing along the next row with nothing beyond the
+    // border does not cross.
+    // A reserved route turning beside the border without claiming its cell
+    // does not reach it.
+    let reaches_vertically = |x: usize, y: usize, canvas: &Canvas| {
+        let route_above = y.checked_sub(1).is_some_and(|above| {
+            is_route_neighbor(x, above, canvas) && beside_slot(canvas, x, above, (x, y)) != ' '
+        });
+        let route_below = y + 1 < canvas.height
+            && is_route_neighbor(x, y + 1, canvas)
+            && beside_slot(canvas, x, y + 1, (x, y)) != ' ';
+        let up = route_above
+            && (topology::char_connects_down(canvas.get(x, y - 1))
+                || canvas::is_arrow(canvas.get(x, y - 1)));
+        let down = route_below
+            && (topology::char_connects_up(canvas.get(x, y + 1))
+                || canvas::is_arrow(canvas.get(x, y + 1)));
+        let through = route_above && route_below;
+        (up || through, down || through)
+    };
 
     let horizontal_border_is_used = |x: usize, y: usize, canvas: &Canvas| {
-        let up = y
-            .checked_sub(1)
-            .is_some_and(|yy| is_route_neighbor(x, yy, canvas));
-        let down = y + 1 < canvas.height && is_route_neighbor(x, y + 1, canvas);
+        let (up, down) = reaches_vertically(x, y, canvas);
         let left = x
             .checked_sub(1)
             .is_some_and(|xx| is_route_neighbor(xx, y, canvas));
@@ -967,9 +1377,29 @@ pub(super) fn finalize_dedicated_portal_markers(
             let Some(meta) = canvas.get_meta(x, y) else {
                 continue;
             };
-            if meta.owner_kind == semantic::CellOwnerKind::PortalOpening
-                && slot_has_route_neighbor(x, y, canvas)
-            {
+            let on_horizontal_border = graph.subgraphs.iter().any(|subgraph| {
+                let bounds = &subgraph.bounds;
+                bounds.is_valid()
+                    && (y == bounds.y || y + 1 == bounds.y + bounds.height)
+                    && x > bounds.x
+                    && x + 1 < bounds.x + bounds.width
+            });
+            let on_side_border = graph.subgraphs.iter().any(|subgraph| {
+                let bounds = &subgraph.bounds;
+                bounds.is_valid()
+                    && (x == bounds.x || x + 1 == bounds.x + bounds.width)
+                    && y > bounds.y
+                    && y + 1 < bounds.y + bounds.height
+            });
+            let used = if on_horizontal_border {
+                let (up, down) = reaches_vertically(x, y, canvas);
+                up || down
+            } else if on_side_border {
+                side_slot_has_route_neighbor(x, y, canvas)
+            } else {
+                slot_has_route_neighbor(x, y, canvas)
+            };
+            if meta.owner_kind == semantic::CellOwnerKind::PortalOpening && used {
                 push_unique_marker(
                     &mut markers,
                     x,
@@ -995,33 +1425,33 @@ pub(super) fn finalize_dedicated_portal_markers(
         };
 
         if let Some(portals) = slots.get(&subgraph.id) {
+            let crossed = |x: usize, y: usize| {
+                let (up, down) = reaches_vertically(x, y, canvas);
+                up || down
+            };
             for &x in &portals.top {
                 let px = clamp_horizontal(bounds, x);
-                if !is_title_protected_cell(px, bounds.y)
-                    && slot_has_route_neighbor(px, bounds.y, canvas)
-                {
+                if !is_title_protected_cell(px, bounds.y) && crossed(px, bounds.y) {
                     push_unique_marker(&mut markers, px, bounds.y, &subgraph.id);
                 }
             }
             let bottom_y = bounds.y + bounds.height.saturating_sub(1);
             for &x in &portals.bottom {
                 let px = clamp_horizontal(bounds, x);
-                if !is_title_protected_cell(px, bottom_y)
-                    && slot_has_route_neighbor(px, bottom_y, canvas)
-                {
+                if !is_title_protected_cell(px, bottom_y) && crossed(px, bottom_y) {
                     push_unique_marker(&mut markers, px, bottom_y, &subgraph.id);
                 }
             }
             for &y in &portals.left {
                 let py = clamp_vertical(bounds, y);
-                if slot_has_route_neighbor(bounds.x, py, canvas) {
+                if side_slot_has_route_neighbor(bounds.x, py, canvas) {
                     push_unique_marker(&mut markers, bounds.x, py, &subgraph.id);
                 }
             }
             let right_x = bounds.x + bounds.width.saturating_sub(1);
             for &y in &portals.right {
                 let py = clamp_vertical(bounds, y);
-                if slot_has_route_neighbor(right_x, py, canvas) {
+                if side_slot_has_route_neighbor(right_x, py, canvas) {
                     push_unique_marker(&mut markers, right_x, py, &subgraph.id);
                 }
             }
@@ -1091,12 +1521,7 @@ pub(super) fn finalize_dedicated_portal_markers(
                     {
                         continue;
                     }
-                    let left_route = border_x
-                        .checked_sub(1)
-                        .is_some_and(|xx| is_route_neighbor(xx, y, canvas));
-                    let right_route =
-                        border_x + 1 < canvas.width && is_route_neighbor(border_x + 1, y, canvas);
-                    if left_route || right_route {
+                    if side_slot_has_route_neighbor(border_x, y, canvas) {
                         push_unique_marker(&mut markers, border_x, y, &subgraph.id);
                     }
                 }

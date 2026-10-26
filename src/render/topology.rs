@@ -67,8 +67,41 @@ pub fn canvas_connections(canvas: &Canvas, x: usize, y: usize) -> Connections {
     }
 }
 
+/// Read access to a rendered grid, the canvas while rendering or the semantic
+/// frame the critic reads, so both judge ASCII corners by the same rules.
+trait GlyphGrid {
+    fn glyph(&self, x: usize, y: usize) -> char;
+    fn owner(&self, x: usize, y: usize) -> Option<CellOwnerKind>;
+}
+
+impl GlyphGrid for Canvas {
+    fn glyph(&self, x: usize, y: usize) -> char {
+        self.get(x, y)
+    }
+
+    fn owner(&self, x: usize, y: usize) -> Option<CellOwnerKind> {
+        self.get_meta(x, y).map(|meta| meta.owner_kind)
+    }
+}
+
+impl GlyphGrid for SemanticFrame {
+    fn glyph(&self, x: usize, y: usize) -> char {
+        self.get(x, y).map_or(' ', |cell| cell.ch)
+    }
+
+    fn owner(&self, x: usize, y: usize) -> Option<CellOwnerKind> {
+        self.get(x, y).map(|cell| cell.owner_kind)
+    }
+}
+
 fn frame_connects_up(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     if y == 0 {
+        return false;
+    }
+    if is_ascii_frame_corner(frame, x, y - 1, is_ascii_plain_h(frame.glyph(x, y)))
+        || (is_ascii_plain_h(frame.glyph(x, y))
+            && ascii_corner_is_complete(frame, x, y - 1, (0, 1)))
+    {
         return false;
     }
 
@@ -78,7 +111,9 @@ fn frame_connects_up(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     match above.owner_kind {
         CellOwnerKind::EdgeLabel => {
             if y >= 2 {
-                return char_connects_down(frame.get(x, y - 2).map(|cell| cell.ch).unwrap_or(' '));
+                return char_connects_down(frame.get(x, y - 2).map(|cell| cell.ch).unwrap_or(' '))
+                    && !(is_ascii_plain_h(frame.glyph(x, y))
+                        && ascii_corner_is_complete(frame, x, y - 2, (0, 1)));
             }
             return false;
         }
@@ -93,6 +128,12 @@ fn frame_connects_down(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     if y + 1 >= frame.height {
         return false;
     }
+    if is_ascii_frame_corner(frame, x, y + 1, is_ascii_plain_h(frame.glyph(x, y)))
+        || (is_ascii_plain_h(frame.glyph(x, y))
+            && ascii_corner_is_complete(frame, x, y + 1, (0, -1)))
+    {
+        return false;
+    }
 
     let Some(below) = frame.get(x, y + 1) else {
         return false;
@@ -100,7 +141,9 @@ fn frame_connects_down(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     match below.owner_kind {
         CellOwnerKind::EdgeLabel => {
             if y + 2 < frame.height {
-                return char_connects_up(frame.get(x, y + 2).map(|cell| cell.ch).unwrap_or(' '));
+                return char_connects_up(frame.get(x, y + 2).map(|cell| cell.ch).unwrap_or(' '))
+                    && !(is_ascii_plain_h(frame.glyph(x, y))
+                        && ascii_corner_is_complete(frame, x, y + 2, (0, -1)));
             }
             return false;
         }
@@ -115,6 +158,12 @@ fn frame_connects_left(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     if x == 0 {
         return false;
     }
+    if is_ascii_frame_corner(frame, x - 1, y, is_ascii_plain_v(frame.glyph(x, y)))
+        || (is_ascii_plain_v(frame.glyph(x, y))
+            && ascii_corner_is_complete(frame, x - 1, y, (1, 0)))
+    {
+        return false;
+    }
 
     let Some(left) = frame.get(x - 1, y) else {
         return false;
@@ -122,7 +171,9 @@ fn frame_connects_left(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     match left.owner_kind {
         CellOwnerKind::EdgeLabel => {
             if x >= 2 {
-                return char_connects_right(frame.get(x - 2, y).map(|cell| cell.ch).unwrap_or(' '));
+                return char_connects_right(frame.get(x - 2, y).map(|cell| cell.ch).unwrap_or(' '))
+                    && !(is_ascii_plain_v(frame.glyph(x, y))
+                        && ascii_corner_is_complete(frame, x - 2, y, (1, 0)));
             }
             return false;
         }
@@ -137,6 +188,12 @@ fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     if x + 1 >= frame.width {
         return false;
     }
+    if is_ascii_frame_corner(frame, x + 1, y, is_ascii_plain_v(frame.glyph(x, y)))
+        || (is_ascii_plain_v(frame.glyph(x, y))
+            && ascii_corner_is_complete(frame, x + 1, y, (-1, 0)))
+    {
+        return false;
+    }
 
     let Some(right) = frame.get(x + 1, y) else {
         return false;
@@ -144,7 +201,9 @@ fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     match right.owner_kind {
         CellOwnerKind::EdgeLabel => {
             if x + 2 < frame.width {
-                return char_connects_left(frame.get(x + 2, y).map(|cell| cell.ch).unwrap_or(' '));
+                return char_connects_left(frame.get(x + 2, y).map(|cell| cell.ch).unwrap_or(' '))
+                    && !(is_ascii_plain_v(frame.glyph(x, y))
+                        && ascii_corner_is_complete(frame, x + 2, y, (-1, 0)));
             }
             return false;
         }
@@ -155,15 +214,97 @@ fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
     char_connects_left(right.ch)
 }
 
+/// Whether the ASCII frame or box corner at `(x, y)` should not count as an arm
+/// of the asking cell, when that cell is a plain straight edge (`plain_run`: `-` with
+/// the corner above or below it, `|` with the corner beside it). An ASCII
+/// corner is a `+`, which joins every direction; read as a route glyph it
+/// would turn an edge merely passing the corner into a junction. Turns and
+/// junctions keep the arm, so routes that already bend at a corner are left
+/// as they are.
+fn is_ascii_frame_corner(grid: &impl GlyphGrid, x: usize, y: usize, plain_run: bool) -> bool {
+    let owner = |x: usize| grid.owner(x, y);
+    plain_run
+        && grid.glyph(x, y) == '+'
+        && match owner(x) {
+            Some(CellOwnerKind::SubgraphBorder) => true,
+            // A box corner has its border on one side only; a `+` with border
+            // on both sides is a tee where an edge leaves the box.
+            Some(CellOwnerKind::NodeBorder) => {
+                let left = x > 0 && owner(x - 1) == Some(CellOwnerKind::NodeBorder);
+                let right = owner(x + 1) == Some(CellOwnerKind::NodeBorder);
+                left != right
+            }
+            _ => false,
+        }
+}
+
+/// A plain ASCII horizontal run cell: solid, dotted or thick.
+fn is_ascii_plain_h(ch: char) -> bool {
+    matches!(ch, '-' | '.' | '=')
+}
+
+/// A plain ASCII vertical run cell: solid or dotted.
+fn is_ascii_plain_v(ch: char) -> bool {
+    matches!(ch, '|' | ':')
+}
+
+/// Whether the ASCII `+` at `(x, y)` already turns or passes through with two
+/// of its other sides, so the plain run on `side` (the asking cell, relative
+/// to the `+`) is not one of its arms: a `-` cannot take a vertical arm, nor
+/// a `|` a horizontal one.
+fn ascii_corner_is_complete(
+    grid: &impl GlyphGrid,
+    x: usize,
+    y: usize,
+    side: (isize, isize),
+) -> bool {
+    if grid.glyph(x, y) != '+' {
+        return false;
+    }
+    // Box and frame borders have their own rules; this one is for edge turns.
+    let edge_owned = matches!(
+        grid.owner(x, y),
+        Some(CellOwnerKind::EdgeSegment | CellOwnerKind::Junction | CellOwnerKind::CycleEdge)
+    );
+    if !edge_owned {
+        return false;
+    }
+    let arms = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+        .into_iter()
+        .filter(|&step| step != side)
+        .filter(|&(dx, dy)| {
+            let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy)) else {
+                return false;
+            };
+            let ch = grid.glyph(nx, ny);
+            match (dx, dy) {
+                (0, -1) => char_connects_down(ch),
+                (0, 1) => char_connects_up(ch),
+                (-1, 0) => char_connects_right(ch),
+                _ => char_connects_left(ch),
+            }
+        })
+        .count();
+    arms >= 2
+}
+
 fn canvas_connects_up(canvas: &Canvas, x: usize, y: usize) -> bool {
     if y == 0 {
+        return false;
+    }
+    if is_ascii_frame_corner(canvas, x, y - 1, is_ascii_plain_h(canvas.get(x, y)))
+        || (is_ascii_plain_h(canvas.get(x, y))
+            && ascii_corner_is_complete(canvas, x, y - 1, (0, 1)))
+    {
         return false;
     }
 
     match canvas.get_meta(x, y - 1).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
             if y >= 2 {
-                return char_connects_down(canvas.get(x, y - 2));
+                return char_connects_down(canvas.get(x, y - 2))
+                    && !(is_ascii_plain_h(canvas.get(x, y))
+                        && ascii_corner_is_complete(canvas, x, y - 2, (0, 1)));
             }
             return false;
         }
@@ -171,18 +312,26 @@ fn canvas_connects_up(canvas: &Canvas, x: usize, y: usize) -> bool {
         _ => {}
     }
 
-    char_connects_down(canvas.get(x, y - 1))
+    char_connects_down(route_glyph(canvas, x, y - 1))
 }
 
 fn canvas_connects_down(canvas: &Canvas, x: usize, y: usize) -> bool {
     if y + 1 >= canvas.height {
         return false;
     }
+    if is_ascii_frame_corner(canvas, x, y + 1, is_ascii_plain_h(canvas.get(x, y)))
+        || (is_ascii_plain_h(canvas.get(x, y))
+            && ascii_corner_is_complete(canvas, x, y + 1, (0, -1)))
+    {
+        return false;
+    }
 
     match canvas.get_meta(x, y + 1).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
             if y + 2 < canvas.height {
-                return char_connects_up(canvas.get(x, y + 2));
+                return char_connects_up(canvas.get(x, y + 2))
+                    && !(is_ascii_plain_h(canvas.get(x, y))
+                        && ascii_corner_is_complete(canvas, x, y + 2, (0, -1)));
             }
             return false;
         }
@@ -190,18 +339,26 @@ fn canvas_connects_down(canvas: &Canvas, x: usize, y: usize) -> bool {
         _ => {}
     }
 
-    char_connects_up(canvas.get(x, y + 1))
+    char_connects_up(route_glyph(canvas, x, y + 1))
 }
 
 fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
     if x == 0 {
         return false;
     }
+    if is_ascii_frame_corner(canvas, x - 1, y, is_ascii_plain_v(canvas.get(x, y)))
+        || (is_ascii_plain_v(canvas.get(x, y))
+            && ascii_corner_is_complete(canvas, x - 1, y, (1, 0)))
+    {
+        return false;
+    }
 
     match canvas.get_meta(x - 1, y).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
             if x >= 2 {
-                return char_connects_right(canvas.get(x - 2, y));
+                return char_connects_right(canvas.get(x - 2, y))
+                    && !(is_ascii_plain_v(canvas.get(x, y))
+                        && ascii_corner_is_complete(canvas, x - 2, y, (1, 0)));
             }
             return false;
         }
@@ -209,18 +366,26 @@ fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
         _ => {}
     }
 
-    char_connects_right(canvas.get(x - 1, y))
+    char_connects_right(route_glyph(canvas, x - 1, y))
 }
 
 fn canvas_connects_right(canvas: &Canvas, x: usize, y: usize) -> bool {
     if x + 1 >= canvas.width {
         return false;
     }
+    if is_ascii_frame_corner(canvas, x + 1, y, is_ascii_plain_v(canvas.get(x, y)))
+        || (is_ascii_plain_v(canvas.get(x, y))
+            && ascii_corner_is_complete(canvas, x + 1, y, (-1, 0)))
+    {
+        return false;
+    }
 
     match canvas.get_meta(x + 1, y).map(|meta| meta.owner_kind) {
         Some(CellOwnerKind::EdgeLabel) => {
             if x + 2 < canvas.width {
-                return char_connects_left(canvas.get(x + 2, y));
+                return char_connects_left(canvas.get(x + 2, y))
+                    && !(is_ascii_plain_v(canvas.get(x, y))
+                        && ascii_corner_is_complete(canvas, x + 2, y, (-1, 0)));
             }
             return false;
         }
@@ -228,7 +393,28 @@ fn canvas_connects_right(canvas: &Canvas, x: usize, y: usize) -> bool {
         _ => {}
     }
 
-    char_connects_left(canvas.get(x + 1, y))
+    char_connects_left(route_glyph(canvas, x + 1, y))
+}
+
+/// The heavy corners stay out of the glyph tables, which would otherwise
+/// read every frame corner as joining the line beside it; a heavy corner a
+/// route owns (the heavy style) reads as its light twin and joins like any
+/// other (gen_d_203: Hub's self-loop corner beside A -> H's crossing).
+fn route_glyph(canvas: &Canvas, x: usize, y: usize) -> char {
+    let ch = canvas.get(x, y);
+    let routed = canvas.get_meta(x, y).is_some_and(|meta| {
+        matches!(
+            meta.owner_kind,
+            CellOwnerKind::EdgeSegment | CellOwnerKind::CycleEdge | CellOwnerKind::Junction
+        )
+    });
+    match ch {
+        '┏' if routed => '┌',
+        '┓' if routed => '┐',
+        '┗' if routed => '└',
+        '┛' if routed => '┘',
+        _ => ch,
+    }
 }
 
 pub fn canonical_routing_glyph(
@@ -468,6 +654,31 @@ mod tests {
 
     fn unicode_chars() -> StyleChars {
         CompositeStyle::default().to_style_chars(BaseStyle::Unicode)
+    }
+
+    /// A heavy corner a route owns joins its two neighbours; a frame's
+    /// heavy corner joins none.
+    #[test]
+    fn heavy_route_corners_join_their_neighbours_and_frame_corners_do_not() {
+        let corner = |ch: char, owner: CellOwnerKind| {
+            let mut canvas = Canvas::new(3, 3);
+            canvas.set_owned(1, 1, ch, owner, "edge:0:A->B", 1);
+            [
+                canvas_connections(&canvas, 1, 0).down,
+                canvas_connections(&canvas, 1, 2).up,
+                canvas_connections(&canvas, 0, 1).right,
+                canvas_connections(&canvas, 2, 1).left,
+            ]
+        };
+        let edge = CellOwnerKind::EdgeSegment;
+        assert_eq!(corner('┏', edge), [false, true, false, true]);
+        assert_eq!(corner('┓', edge), [false, true, true, false]);
+        assert_eq!(corner('┗', edge), [true, false, false, true]);
+        assert_eq!(corner('┛', edge), [true, false, true, false]);
+        assert_eq!(
+            corner('┏', CellOwnerKind::SubgraphBorder),
+            [false, false, false, false]
+        );
     }
 
     #[test]

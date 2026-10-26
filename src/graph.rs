@@ -197,9 +197,20 @@ pub fn subgraph_title_text_with_padding_sides(
     format!("{leading}{title}{trailing}")
 }
 
+/// The cells a title token takes on its row: a wide character is followed
+/// by a `'\0'` cell, which printing the row skips.
+pub fn title_cells(text: &str) -> Vec<char> {
+    text.chars()
+        .flat_map(|c| {
+            let padding = crate::style::display_char_width(c).saturating_sub(1);
+            std::iter::once(c).chain(std::iter::repeat_n('\0', padding))
+        })
+        .collect()
+}
+
 /// Display width of the rendered subgraph title token.
 pub fn subgraph_title_len(title: &str) -> usize {
-    subgraph_title_text(title).chars().count()
+    title_cells(&subgraph_title_text(title)).len()
 }
 
 /// Display width of a title token with additional wrapper padding.
@@ -213,9 +224,12 @@ pub fn subgraph_title_len_with_padding_sides(
     leading_extra_padding: usize,
     trailing_extra_padding: usize,
 ) -> usize {
-    subgraph_title_text_with_padding_sides(title, leading_extra_padding, trailing_extra_padding)
-        .chars()
-        .count()
+    title_cells(&subgraph_title_text_with_padding_sides(
+        title,
+        leading_extra_padding,
+        trailing_extra_padding,
+    ))
+    .len()
 }
 
 /// Interior row that carries the subgraph title for the given orientation.
@@ -513,19 +527,17 @@ pub enum Direction {
 }
 
 impl NodeShape {
-    /// Extra outward space required before an incoming arrow reaches a shape.
-    ///
-    /// Most contours can accept the generic one-cell target entry. Diamonds
-    /// need one more cell on every side because their visible contour tapers
-    /// toward the center. Mermaid's asymmetric Flag has a left-facing point,
-    /// so only a left-to-right approach needs the same visual separation.
-    /// Database/cylinder contours intentionally use the generic one-cell
-    /// entry: an extra shape-specific bridge places a terminal arrowhead before
-    /// its final shaft and makes the arrow look detached from the receiver.
-    pub(crate) fn incoming_edge_clearance(self, direction: Direction) -> usize {
-        usize::from(
-            self == NodeShape::Diamond
-                || (self == NodeShape::Asymmetric && direction == Direction::LR),
+    /// Whether the top and bottom borders are flat runs, so a vertical edge may
+    /// land anywhere inside them rather than only at the centre.
+    pub(crate) fn has_flat_vertical_entry(self) -> bool {
+        matches!(
+            self,
+            NodeShape::Rectangle
+                | NodeShape::Rounded
+                | NodeShape::Stadium
+                | NodeShape::Subroutine
+                | NodeShape::Database
+                | NodeShape::Asymmetric
         )
     }
 }
@@ -1880,44 +1892,6 @@ mod tests {
     #[test]
     fn direction_default_is_td() {
         assert_eq!(Direction::default(), Direction::TD);
-    }
-
-    #[test]
-    fn incoming_edge_clearance_is_direction_aware_for_flag() {
-        assert_eq!(
-            NodeShape::Asymmetric.incoming_edge_clearance(Direction::LR),
-            1
-        );
-        assert_eq!(
-            NodeShape::Asymmetric.incoming_edge_clearance(Direction::RL),
-            0
-        );
-        assert_eq!(
-            NodeShape::Asymmetric.incoming_edge_clearance(Direction::TD),
-            0
-        );
-        assert_eq!(
-            NodeShape::Asymmetric.incoming_edge_clearance(Direction::BT),
-            0
-        );
-        assert_eq!(NodeShape::Diamond.incoming_edge_clearance(Direction::RL), 1);
-        for direction in [
-            Direction::TD,
-            Direction::TB,
-            Direction::BT,
-            Direction::LR,
-            Direction::RL,
-        ] {
-            assert_eq!(
-                NodeShape::Database.incoming_edge_clearance(direction),
-                0,
-                "database entry must use the generic terminal clearance for {direction:?}"
-            );
-        }
-        assert_eq!(
-            NodeShape::Rectangle.incoming_edge_clearance(Direction::LR),
-            0
-        );
     }
 
     #[test]

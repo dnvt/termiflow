@@ -103,7 +103,10 @@ pub fn draw_subgraph(
         let title_fmt = crate::graph::subgraph_title_text(t);
         if let Some(start_x) = crate::graph::subgraph_title_start_x(x, width, t, direction) {
             let title_y = subgraph_title_y(rect, direction);
-            for (i, c) in title_fmt.chars().enumerate() {
+            for (i, c) in crate::graph::title_cells(&title_fmt)
+                .into_iter()
+                .enumerate()
+            {
                 if start_x + i < canvas.width {
                     canvas.set(start_x + i, title_y, c);
                 }
@@ -140,7 +143,7 @@ pub fn draw_node(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_node_with_terminal_entry_policy(
+pub(crate) fn draw_node_with_terminal_entry_policy(
     canvas: &mut Canvas,
     x: usize,
     y: usize,
@@ -233,98 +236,6 @@ fn draw_node_with_terminal_entry_policy(
     }
 }
 
-/// Draw a node while preserving its horizontal source wall for a generic
-/// multi-edge fanout.
-///
-/// `draw_boxlike` normally replaces a side wall with a junction when a route
-/// is immediately outside the node. That is useful for a single visible port,
-/// but it conflates the enclosure with the shared collector used by a
-/// multi-edge fanout. The route remains connected through the adjacent cell;
-/// restoring the shape-owned wall keeps the node boundary independently
-/// legible.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_node_with_fanout_policy(
-    canvas: &mut Canvas,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    label_lines: &[String],
-    shape: NodeShape,
-    style: &StyleChars,
-    direction: Direction,
-    preserve_horizontal_side_wall: bool,
-    preserve_database_terminal_entry_wall: bool,
-) {
-    draw_node_with_terminal_entry_policy(
-        canvas,
-        x,
-        y,
-        width,
-        height,
-        label_lines,
-        shape,
-        style,
-        direction,
-        preserve_database_terminal_entry_wall,
-    );
-
-    if !preserve_horizontal_side_wall || !matches!(direction, Direction::LR | Direction::RL) {
-        return;
-    }
-
-    let Some((left_side, right_side)) = fanout_side_walls(shape, style) else {
-        return;
-    };
-    let center_y = y + height.max(3) / 2;
-    let (side_x, side_char) = match direction {
-        Direction::LR => (x + width.saturating_sub(1), right_side),
-        Direction::RL => (x, left_side),
-        Direction::TD | Direction::TB | Direction::BT => return,
-    };
-    if side_x < canvas.width && center_y < canvas.height {
-        canvas.set(side_x, center_y, side_char);
-    }
-}
-
-pub(crate) fn supports_horizontal_fanout_wall(shape: NodeShape) -> bool {
-    matches!(
-        shape,
-        NodeShape::Rectangle
-            | NodeShape::Rounded
-            | NodeShape::Stadium
-            | NodeShape::Hexagon
-            | NodeShape::Database
-            | NodeShape::Subroutine
-            | NodeShape::Parallelogram
-            | NodeShape::ParallelogramAlt
-            | NodeShape::Trapezoid
-            | NodeShape::TrapezoidAlt
-    )
-}
-
-fn fanout_side_walls(shape: NodeShape, style: &StyleChars) -> Option<(char, char)> {
-    match shape {
-        NodeShape::Rectangle
-        | NodeShape::Rounded
-        | NodeShape::Database
-        | NodeShape::Parallelogram
-        | NodeShape::ParallelogramAlt
-        | NodeShape::Trapezoid
-        | NodeShape::TrapezoidAlt => Some((style.v, style.v)),
-        NodeShape::Stadium => Some(('(', ')')),
-        NodeShape::Hexagon => Some(('<', '>')),
-        NodeShape::Subroutine => {
-            let double_vertical = if style.tl == '┌' { '║' } else { '|' };
-            Some((double_vertical, double_vertical))
-        }
-        NodeShape::Diamond
-        | NodeShape::Circle
-        | NodeShape::DoubleCircle
-        | NodeShape::Asymmetric => None,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn draw_boxlike(
     canvas: &mut Canvas,
@@ -349,23 +260,45 @@ fn draw_boxlike(
 
     // Top border - check for edge exits above (BT direction only)
     let mut bt_preferred_down_arm: Option<usize> = None;
+    // Whether the line above the top border at `pos_x` runs down into it.
+    let has_down_arm = |canvas: &Canvas, pos_x: usize| {
+        let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
+        let above2 = if y > 1 { canvas.get(pos_x, y - 2) } else { ' ' };
+        let above_is_vertical = is_vertical(above, style) || is_arrow(above);
+        let above_is_corner_down = above == style.corner_dr || above == style.corner_dl;
+        let above_is_junction = is_junction(above, style);
+        let above2_is_vertical =
+            is_vertical(above2, style) || is_arrow(above2) || is_junction(above2, style);
+        above_is_vertical || ((above_is_corner_down || above_is_junction) && above2_is_vertical)
+    };
+    // ASCII draws every corner and tee as `+`, so one with a line above it
+    // and a line on one side only may be a turn on its way up (a jog above
+    // the box) as well as a tee into the border. Right under an arrowhead it
+    // is the line running straight up into its target.
+    let ascii_turn = |canvas: &Canvas, pos_x: usize| {
+        let above = canvas.get(pos_x, y - 1);
+        if y < 2 || is_arrow(canvas.get(pos_x, y - 2)) {
+            return false;
+        }
+        let side = |cell: char| is_horizontal(cell, style) || cell == above;
+        style.corner_dr == style.corner_ur
+            && above == style.corner_dr
+            && side(canvas.get(pos_x.saturating_sub(1), y - 1))
+                != side(canvas.get(pos_x + 1, y - 1))
+    };
     if direction == Direction::BT {
         let center_x = x + width / 2;
         let mut candidates: Vec<usize> = Vec::new();
         for i in 1..width.saturating_sub(1) {
             let pos_x = x + i;
-            let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            let above2 = if y > 1 { canvas.get(pos_x, y - 2) } else { ' ' };
-            let above_is_vertical = is_vertical(above, style) || is_arrow(above);
-            let above_is_corner_down = above == style.corner_dr || above == style.corner_dl;
-            let above_is_junction = is_junction(above, style);
-            let above2_is_vertical =
-                is_vertical(above2, style) || is_arrow(above2) || is_junction(above2, style);
-            let has_down_arm = above_is_vertical
-                || ((above_is_corner_down || above_is_junction) && above2_is_vertical);
-            if has_down_arm {
+            if has_down_arm(canvas, pos_x) {
                 candidates.push(pos_x);
             }
+        }
+        // When every candidate could be such a turn, none is taken: the
+        // source's real exits get their junction afterwards.
+        if candidates.iter().all(|&pos_x| ascii_turn(canvas, pos_x)) {
+            candidates.clear();
         }
         if let Some(best) = candidates.into_iter().min_by_key(|pos| {
             let dist = (*pos).abs_diff(center_x);
@@ -380,16 +313,10 @@ fn draw_boxlike(
         let pos_x = x + i;
         let c = if direction == Direction::BT {
             let above = if y > 0 { canvas.get(pos_x, y - 1) } else { ' ' };
-            let above2 = if y > 1 { canvas.get(pos_x, y - 2) } else { ' ' };
-            // Only treat junctions/corners as a down arm if a vertical continues above them.
             let above_is_vertical = is_vertical(above, style) || is_arrow(above);
-            let above_is_corner_down = above == style.corner_dr || above == style.corner_dl;
-            let above_is_junction = is_junction(above, style);
-            let above2_is_vertical =
-                is_vertical(above2, style) || is_arrow(above2) || is_junction(above2, style);
-            let has_down_arm = above_is_vertical
-                || ((above_is_corner_down || above_is_junction) && above2_is_vertical);
-            if has_down_arm && (bt_preferred_down_arm == Some(pos_x) || above_is_vertical) {
+            if has_down_arm(canvas, pos_x)
+                && (bt_preferred_down_arm == Some(pos_x) || above_is_vertical)
+            {
                 style.junction_up
             } else {
                 top_h
@@ -452,10 +379,25 @@ fn draw_boxlike(
         let c = if matches!(direction, Direction::TD | Direction::TB) {
             let below = canvas.get(pos_x, bottom_y + 1);
             // Check for vertical lines, junctions, or corners with upward component
-            let has_up_arm = is_vertical(below, style)
+            let mut has_up_arm = is_vertical(below, style)
                 || is_junction(below, style)
                 || below == style.corner_ur  // ┘ - up/left corner
                 || below == style.corner_ul; // └ - up/right corner
+            if has_up_arm && below == style.corner_dr && style.corner_dr == style.corner_ur {
+                // ASCII draws every corner and tee as `+`. One that runs on
+                // down and off to one side is a turn on its way down (a jog
+                // starting under the box), not a line into the border; the
+                // source's real exits get their junction afterwards.
+                let row = bottom_y + 1;
+                let side = |cell: char| is_horizontal(cell, style) || cell == below;
+                let down = canvas.get(pos_x, row + 1);
+                let runs_down = is_vertical(down, style) || down == below || is_arrow(down);
+                // One side only: with lines on both sides it is as likely a line
+                // crossing a frame border on its way up.
+                let turns = side(canvas.get(pos_x.saturating_sub(1), row))
+                    != side(canvas.get(pos_x + 1, row));
+                has_up_arm = !(runs_down && turns);
+            }
             if has_up_arm {
                 style.junction_down
             } else {
@@ -1154,59 +1096,6 @@ mod tests {
         assert_eq!(rows[0].chars().next(), Some('┌'));
         assert_eq!(rows[0].chars().last(), Some('┐'));
         assert_eq!(rows[1].chars().last(), Some('│'));
-    }
-
-    #[test]
-    fn fanout_source_policy_preserves_horizontal_side_wall_in_both_directions_and_styles() {
-        for style in [&ASCII_CHARS, &UNICODE_CHARS] {
-            for direction in [Direction::LR, Direction::RL] {
-                let mut preserved = mk_canvas(20, 5);
-                let (outside_x, node_x, wall_x, expected_wall, expected_junction) = match direction
-                {
-                    Direction::LR => (12, 4, 11, style.v, style.junction_right),
-                    Direction::RL => (3, 4, 4, style.v, style.junction_left),
-                    Direction::TD | Direction::TB | Direction::BT => unreachable!(),
-                };
-                preserved.set(outside_x, 2, style.edge_h);
-                draw_node_with_fanout_policy(
-                    &mut preserved,
-                    node_x,
-                    1,
-                    8,
-                    3,
-                    &lines("Hub"),
-                    NodeShape::Rectangle,
-                    style,
-                    direction,
-                    true,
-                    false,
-                );
-                assert_eq!(
-                    preserved.get(wall_x, 2),
-                    expected_wall,
-                    "fanout source wall was not preserved for {style:?} {direction:?}"
-                );
-
-                let mut ordinary = mk_canvas(20, 5);
-                ordinary.set(outside_x, 2, style.edge_h);
-                draw_node(
-                    &mut ordinary,
-                    node_x,
-                    1,
-                    8,
-                    3,
-                    &lines("Hub"),
-                    NodeShape::Rectangle,
-                    style,
-                    direction,
-                );
-                assert_eq!(
-                    ordinary.get(wall_x, 2),
-                    expected_junction,
-                    "ordinary source port changed for {style:?} {direction:?}"
-                );
-            }
-        }
     }
 
     #[test]

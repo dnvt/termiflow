@@ -42,7 +42,7 @@ fn raw_char_at(frame: &str, x: usize, y: usize) -> Option<char> {
     frame.lines().nth(y)?.chars().nth(x)
 }
 
-fn diamond_entry_clearance_errors(input: &str, style: BaseStyle, optimized: bool) -> Vec<String> {
+fn diamond_entry_touch_errors(input: &str, style: BaseStyle, optimized: bool) -> Vec<String> {
     let mut graph = parse(input, false)
         .expect("parse diamond-entry fixture")
         .graph;
@@ -57,26 +57,17 @@ fn diamond_entry_clearance_errors(input: &str, style: BaseStyle, optimized: bool
         .get_node("Check")
         .expect("diamond-entry fixture target node");
 
-    let (entry, gap) = match graph.direction {
-        termiflow::graph::Direction::TD | termiflow::graph::Direction::TB => (
-            (target.center_x(), target.y.saturating_sub(2)),
-            (target.center_x(), target.y.saturating_sub(1)),
-        ),
-        termiflow::graph::Direction::BT => (
-            (target.center_x(), target.bottom_y().saturating_add(1)),
-            (target.center_x(), target.bottom_y()),
-        ),
-        termiflow::graph::Direction::LR => (
-            (target.x.saturating_sub(2), target.center_y()),
-            (target.x.saturating_sub(1), target.center_y()),
-        ),
-        termiflow::graph::Direction::RL => (
-            (
-                target.x.saturating_add(target.width).saturating_add(1),
-                target.center_y(),
-            ),
-            (target.x.saturating_add(target.width), target.center_y()),
-        ),
+    // The arrow tip sits on the cell directly adjacent to the diamond contour.
+    let entry = match graph.direction {
+        termiflow::graph::Direction::TD | termiflow::graph::Direction::TB => {
+            (target.center_x(), target.y.saturating_sub(1))
+        }
+        // `bottom_y` is already the row just below the box.
+        termiflow::graph::Direction::BT => (target.center_x(), target.bottom_y()),
+        termiflow::graph::Direction::LR => (target.x.saturating_sub(1), target.center_y()),
+        termiflow::graph::Direction::RL => {
+            (target.x.saturating_add(target.width), target.center_y())
+        }
     };
 
     let trace = GeometryTrace::from_graph(&graph);
@@ -116,20 +107,6 @@ fn diamond_entry_clearance_errors(input: &str, style: BaseStyle, optimized: bool
             entry.0, entry.1, entry_meta.role
         ));
     }
-    let Some(gap_meta) = outcome.semantic_frame.get(gap.0, gap.1) else {
-        errors.push(format!(
-            "semantic frame has no gap cell at ({}, {})",
-            gap.0, gap.1
-        ));
-        return errors;
-    };
-    if gap_meta.ch != ' ' || gap_meta.role != termiflow::render::semantic::CellRole::Empty {
-        errors.push(format!(
-            "semantic gap cell at ({}, {}) is {:?}/{:?}, not empty",
-            gap.0, gap.1, gap_meta.ch, gap_meta.role
-        ));
-    }
-
     let min_x = graph
         .nodes
         .iter()
@@ -151,14 +128,6 @@ fn diamond_entry_clearance_errors(input: &str, style: BaseStyle, optimized: bool
     ) != Some(entry_meta.ch)
     {
         errors.push("cropped raw frame disagrees with semantic entry glyph".to_string());
-    }
-    if raw_char_at(
-        &outcome.output,
-        gap.0.saturating_sub(min_x),
-        gap.1.saturating_sub(min_y),
-    ) != Some(' ')
-    {
-        errors.push("cropped raw frame lost the one-cell diamond entry gap".to_string());
     }
 
     errors
@@ -2607,7 +2576,7 @@ fn bt_sibling_chain_scene_clearance_oracle_covers_full_focused_matrix() {
 }
 
 #[test]
-fn diamond_entry_clearance_oracle_covers_direction_style_and_mode_matrix() {
+fn diamond_entry_touch_oracle_covers_direction_style_and_mode_matrix() {
     for direction in ["td", "bt", "lr", "rl"] {
         let input = fs::read_to_string(format!(
             "tests/fixtures/inputs/subgraph_shapes_{direction}.md"
@@ -2616,10 +2585,10 @@ fn diamond_entry_clearance_oracle_covers_direction_style_and_mode_matrix() {
 
         for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
             for optimized in [false, true] {
-                let errors = diamond_entry_clearance_errors(&input, style, optimized);
+                let errors = diamond_entry_touch_errors(&input, style, optimized);
                 assert!(
                     errors.is_empty(),
-                    "diamond entry-clearance oracle failed for {direction} {style:?} optimized={optimized}: {errors:?}"
+                    "diamond entry-touch oracle failed for {direction} {style:?} optimized={optimized}: {errors:?}"
                 );
             }
         }
@@ -2862,7 +2831,7 @@ fn shape_all_flag_contours_preserve_point_and_shoulders_across_matrix() {
 }
 
 #[test]
-fn shape_all_lr_flag_attachment_keeps_arrow_and_point_visibly_separate() {
+fn shape_all_lr_flag_attachment_touches_the_point() {
     let input = fs::read_to_string("tests/fixtures/inputs/shape_all_lr.md")
         .expect("read all-shapes LR Flag fixture");
 
@@ -2883,8 +2852,8 @@ fn shape_all_lr_flag_attachment_keeps_arrow_and_point_visibly_separate() {
             let chars = style.chars();
             let y = flag.center_y();
             let point_x = flag.x;
-            let arrow_x = point_x.saturating_sub(2);
-            let separator_x = point_x.saturating_sub(1);
+            // The arrowhead sits against the point, like every other contour.
+            let arrow_x = point_x.saturating_sub(1);
             let cell = |x: usize, y: usize| {
                 outcome
                     .semantic_frame
@@ -2897,12 +2866,6 @@ fn shape_all_lr_flag_attachment_keeps_arrow_and_point_visibly_separate() {
                 cell(arrow_x, y),
                 chars.arrow_right,
                 "LR Flag lost its incoming arrowhead for {style:?} optimized={optimized}:\n{}",
-                outcome.output
-            );
-            assert_ne!(
-                cell(separator_x, y),
-                chars.arrow_right,
-                "LR Flag arrowhead still touches the point for {style:?} optimized={optimized}:\n{}",
                 outcome.output
             );
             assert_eq!(
@@ -3788,14 +3751,16 @@ fn mixed_edge_kind_fanout_preserves_source_enclosure_and_edge_identity() {
                 .lines()
                 .find(|line| line.contains("Hub"))
                 .expect("Hub row in mixed edge-kind fanout frame");
+            // RL: the shared line leaves Hub through a port on its left wall,
+            // as a single-kind fan-out does; the right wall stays whole.
             let expected_hub = match style {
-                BaseStyle::Ascii => "|  Hub  |",
-                BaseStyle::Unicode => "│  Hub  │",
+                BaseStyle::Ascii => "+  Hub  |",
+                BaseStyle::Unicode => "┤  Hub  │",
                 _ => unreachable!("oracle only covers ASCII and Unicode styles"),
             };
             assert!(
                 hub_line.contains(expected_hub),
-                "mixed edge-kind fanout must retain a complete Hub enclosure for {style:?} optimized={optimized}:\n{}",
+                "mixed edge-kind fanout must leave Hub through a port and keep its other wall for {style:?} optimized={optimized}:\n{}",
                 first.output
             );
 
@@ -4309,4 +4274,1524 @@ fn strict_subgraph_fan_in_preserves_boundary_lanes_and_target_ports() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Boundary-crossing visible connectivity
+//
+// For every non-back edge that crosses at least one subgraph boundary, walk the
+// raw frame backward from a visible arrowhead (or circle/cross endpoint) next
+// to the target and require that the walk reaches the source node. Subgraph
+// borders may only be crossed straight through a perpendicular pierce glyph;
+// walking along a border, through a corner, or into another node is blocked.
+// Geometry (node/subgraph rectangles) comes from the laid-out graph; route
+// evidence comes from raw glyphs only.
+// ---------------------------------------------------------------------------
+
+/// Rows (`fixture/style/mode`) whose boundary-crossing edges are visibly
+/// disconnected in the current renderer. Each entry is a confirmed human-eye
+/// defect; the corpus sweep requires the observed failing set to equal this
+/// list exactly, so fixes must shrink it and regressions cannot hide.
+const BOUNDARY_CONNECTIVITY_KNOWN_DISCONNECTED: &[&str] = &[];
+
+/// Regression inputs that are not (yet) golden fixtures. The TD long-title
+/// entry was disconnected while its step landed on the title row; it now
+/// enters past the title and turns below it. The BT variant is the corpus
+/// fixture `subgraph_single_bt_long_title`.
+const BOUNDARY_CONNECTIVITY_INLINE_CASES: &[(&str, &str)] = &[
+    (
+        "subgraph_single_td_long_title",
+        "graph TD\nBefore[Start]\nsubgraph SG1 [Container with a much longer title]\nSolo[Single Node]\nend\nAfter[End]\nBefore --> Solo\nSolo --> After\n",
+    ),
+];
+
+const CONNECTIVITY_UP: u8 = 0;
+const CONNECTIVITY_RIGHT: u8 = 1;
+const CONNECTIVITY_DOWN: u8 = 2;
+const CONNECTIVITY_LEFT: u8 = 3;
+
+fn connectivity_mask(ch: char) -> u8 {
+    match ch {
+        '-' | '─' | '═' | '━' | '╌' | '┄' | '┅' | '╍' | '=' | '.' => 0b1010,
+        '|' | '│' | '║' | '┃' | '╎' | '┆' | '┇' | '╏' | ':' => 0b0101,
+        '+' | '┼' | '╬' | '╋' => 0b1111,
+        '┌' | '╔' | '┏' | '╭' => 0b0110,
+        '┐' | '╗' | '┓' | '╮' => 0b1100,
+        '└' | '╚' | '┗' | '╰' => 0b0011,
+        '┘' | '╝' | '┛' | '╯' => 0b1001,
+        '├' | '╠' | '┣' | '┝' | '┠' => 0b0111,
+        '┤' | '╣' | '┫' | '┥' | '┨' => 0b1101,
+        '┬' | '╦' | '┳' | '┯' | '┰' => 0b1110,
+        '┴' | '╩' | '┻' | '┷' | '┸' => 0b1011,
+        'x' | '✕' => 0b1111,
+        '>' | '→' | '▶' => 0b1000,
+        '<' | '←' | '◀' => 0b0010,
+        'v' | '↓' | '▼' => 0b0001,
+        '^' | '↑' | '▲' => 0b0100,
+        _ => 0,
+    }
+}
+
+fn connectivity_step(step: u8) -> (isize, isize) {
+    route_identity_step(termiflow::graph::Direction::TD, step)
+}
+
+struct ConnectivityGrid {
+    lines: Vec<Vec<char>>,
+}
+
+impl ConnectivityGrid {
+    /// Index cells by display column (as the layout does): a wide glyph
+    /// occupies its cell plus a blank continuation cell, and zero-width
+    /// marks attach to the previous cell.
+    fn new(frame: &str) -> Self {
+        use unicode_width::UnicodeWidthChar;
+        Self {
+            lines: frame
+                .lines()
+                .map(|line| {
+                    let mut cells = Vec::new();
+                    for ch in line.chars() {
+                        match ch.width().unwrap_or(0) {
+                            0 => {}
+                            1 => cells.push(ch),
+                            width => {
+                                cells.push(ch);
+                                cells.extend(std::iter::repeat_n('\u{0}', width - 1));
+                            }
+                        }
+                    }
+                    cells
+                })
+                .collect(),
+        }
+    }
+
+    fn get(&self, x: isize, y: isize) -> char {
+        if x < 0 || y < 0 {
+            return ' ';
+        }
+        self.lines
+            .get(y as usize)
+            .and_then(|row| row.get(x as usize))
+            .copied()
+            .unwrap_or(' ')
+    }
+
+    /// ASCII `+` is both corner and junction; infer its arms from neighbours.
+    fn mask(&self, x: isize, y: isize) -> u8 {
+        let ch = self.get(x, y);
+        if ch != '+' {
+            return connectivity_mask(ch);
+        }
+        let mut mask = 0;
+        for step in 0..4u8 {
+            let (dx, dy) = connectivity_step(step);
+            if connectivity_mask(self.get(x + dx, y + dy)) & (1 << route_identity_opposite(step))
+                != 0
+            {
+                mask |= 1 << step;
+            }
+        }
+        mask
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FrameRect {
+    x: isize,
+    y: isize,
+    width: isize,
+    height: isize,
+}
+
+impl FrameRect {
+    fn contains(&self, x: isize, y: isize) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+    fn right(&self) -> isize {
+        self.x + self.width - 1
+    }
+    fn bottom(&self) -> isize {
+        self.y + self.height - 1
+    }
+}
+
+/// Locate the frame origin. The crop origin is not exported, so start from the
+/// minimum node/subgraph corner and accept the first nearby offset at which
+/// every node label appears on its own row inside its own rectangle.
+fn connectivity_frame_origin(
+    graph: &termiflow::Graph,
+    grid: &ConnectivityGrid,
+) -> Option<(isize, isize)> {
+    let min_x = graph
+        .nodes
+        .iter()
+        .map(|node| node.x)
+        .chain(graph.subgraphs.iter().map(|subgraph| subgraph.bounds.x))
+        .min()? as isize;
+    let min_y = graph
+        .nodes
+        .iter()
+        .map(|node| node.y)
+        .chain(graph.subgraphs.iter().map(|subgraph| subgraph.bounds.y))
+        .min()? as isize;
+    let probes: Vec<(String, isize, isize, isize, isize)> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let probe: String = node
+                .label
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(3)
+                .collect();
+            (!probe.is_empty()).then_some((
+                probe,
+                node.x as isize,
+                node.y as isize,
+                node.width as isize,
+                node.height as isize,
+            ))
+        })
+        .collect();
+    // First on the box's centre row, where a one-line label sits: a frame with
+    // rows above its top box (a BT back edge's run) would otherwise match a
+    // label one row off and shift every box. Then anywhere in the box.
+    for strict in [true, false] {
+        for dy in 0..=12isize {
+            for dx in 0..=12isize {
+                let (ox, oy) = (min_x - dx, min_y - dy);
+                let all_found = probes.iter().all(|(probe, x, y, width, height)| {
+                    let rows = if strict {
+                        y - oy + height / 2..y - oy + height / 2 + 1
+                    } else {
+                        y - oy..y - oy + height
+                    };
+                    rows.into_iter().any(|row| {
+                        let text: String = (x - ox..x - ox + width)
+                            .map(|col| grid.get(col, row))
+                            .filter(|c| c.is_ascii_alphanumeric())
+                            .collect();
+                        text.contains(probe.as_str())
+                    })
+                });
+                if all_found {
+                    return Some((ox, oy));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn connectivity_label_matches(graph: &termiflow::Graph, run: &str) -> bool {
+    let run = run.trim();
+    if run.is_empty() {
+        return false;
+    }
+    let stem = run.trim_end_matches('…').trim_end_matches("...").trim_end();
+    // Parallel edges of one kind share a line whose label joins their
+    // distinct labels in source order.
+    let mut labels: Vec<String> = Vec::new();
+    let mut groups: Vec<(&str, &str, termiflow::graph::EdgeKind, Vec<&str>)> = Vec::new();
+    for edge in &graph.edges {
+        let Some(label) = edge.label.as_deref() else {
+            continue;
+        };
+        labels.push(label.to_owned());
+        match groups
+            .iter_mut()
+            .find(|(from, to, kind, _)| *from == edge.from && *to == edge.to && *kind == edge.kind)
+        {
+            Some((_, _, _, parts)) if !parts.contains(&label) => parts.push(label),
+            Some(_) => {}
+            None => groups.push((&edge.from, &edge.to, edge.kind, vec![label])),
+        }
+    }
+    labels.extend(
+        groups
+            .iter()
+            .filter(|(_, _, _, parts)| parts.len() > 1)
+            .map(|(_, _, _, parts)| parts.join(", ")),
+    );
+    labels.iter().any(|label| {
+        label == run || (stem.len() < run.len() && !stem.is_empty() && label.starts_with(stem))
+    })
+}
+
+fn boundary_crossing_connectivity_errors_for_frame(
+    graph: &termiflow::Graph,
+    frame: &str,
+) -> Vec<String> {
+    let grid = ConnectivityGrid::new(frame);
+    let Some((ox, oy)) = connectivity_frame_origin(graph, &grid) else {
+        return vec!["frame origin could not be verified from node labels".to_string()];
+    };
+    let node_rects: Vec<(&str, FrameRect)> = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                node.id.as_str(),
+                FrameRect {
+                    x: node.x as isize - ox,
+                    y: node.y as isize - oy,
+                    width: node.width as isize,
+                    height: node.height as isize,
+                },
+            )
+        })
+        .collect();
+    let subgraph_rects: Vec<FrameRect> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.bounds.width > 0 && subgraph.bounds.height > 0)
+        .map(|subgraph| FrameRect {
+            x: subgraph.bounds.x as isize - ox,
+            y: subgraph.bounds.y as isize - oy,
+            width: subgraph.bounds.width as isize,
+            height: subgraph.bounds.height as isize,
+        })
+        .collect();
+    let node_at = |x: isize, y: isize| {
+        node_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(x, y))
+            .map(|(id, _)| *id)
+    };
+    // (on horizontal border line, on vertical border line)
+    let border_at = |x: isize, y: isize| {
+        let mut horizontal = false;
+        let mut vertical = false;
+        for rect in &subgraph_rects {
+            if (y == rect.y || y == rect.bottom()) && x >= rect.x && x <= rect.right() {
+                horizontal = true;
+            }
+            if (x == rect.x || x == rect.right()) && y >= rect.y && y <= rect.bottom() {
+                vertical = true;
+            }
+        }
+        (horizontal, vertical)
+    };
+
+    let mut errors = Vec::new();
+    for edge in &graph.edges {
+        if edge.is_back_edge || edge.from == edge.to {
+            continue;
+        }
+        let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+        if exits.is_empty() && enters.is_empty() {
+            continue;
+        }
+        let Some(target) = node_rects
+            .iter()
+            .find(|(id, _)| *id == edge.to)
+            .map(|(_, r)| *r)
+        else {
+            continue;
+        };
+
+        // Visible heads adjacent to the target, with the step pointing away.
+        let mut heads = Vec::new();
+        let endpoint = |ch: char| matches!(ch, 'o' | '○' | 'x' | '✕');
+        for x in target.x..=target.right() {
+            let top = grid.get(x, target.y - 1);
+            if matches!(top, 'v' | '↓' | '▼') || endpoint(top) {
+                heads.push((x, target.y - 1, CONNECTIVITY_UP));
+            }
+            let bottom = grid.get(x, target.bottom() + 1);
+            if matches!(bottom, '^' | '↑' | '▲') || endpoint(bottom) {
+                heads.push((x, target.bottom() + 1, CONNECTIVITY_DOWN));
+            }
+        }
+        for y in target.y..=target.bottom() {
+            let left = grid.get(target.x - 1, y);
+            if matches!(left, '>' | '→' | '▶') || endpoint(left) {
+                heads.push((target.x - 1, y, CONNECTIVITY_LEFT));
+            }
+            let right = grid.get(target.right() + 1, y);
+            if matches!(right, '<' | '←' | '◀') || endpoint(right) {
+                heads.push((target.right() + 1, y, CONNECTIVITY_RIGHT));
+            }
+        }
+        if heads.is_empty() {
+            errors.push(format!(
+                "boundary-crossing edge {} -> {} has no visible head at its target",
+                edge.from, edge.to
+            ));
+            continue;
+        }
+
+        // State: cell plus the step used to enter it (None for a head).
+        let mut queue = std::collections::VecDeque::new();
+        let mut visited = HashSet::new();
+        for &(x, y, away) in &heads {
+            queue.push_back((x, y, None::<u8>, Some(away)));
+        }
+        let mut reached_source = false;
+        'walk: while let Some((x, y, entered, forced)) = queue.pop_front() {
+            if !visited.insert((x, y, entered)) {
+                continue;
+            }
+            let (on_h, on_v) = border_at(x, y);
+            let steps: Vec<u8> = if let Some(step) = forced {
+                vec![step]
+            } else if on_h || on_v {
+                // A border pierce only continues straight through.
+                entered.into_iter().collect()
+            } else if matches!(grid.get(x, y), 'x' | '✕') {
+                entered.into_iter().collect()
+            } else {
+                (0..4u8)
+                    .filter(|step| grid.mask(x, y) & (1 << step) != 0)
+                    .collect()
+            };
+            for step in steps {
+                // A border portal may be drawn as a one-sided tee (`┬`/`┴`), so
+                // its own arms are not required to continue straight through.
+                if entered.is_some()
+                    && forced.is_none()
+                    && !(on_h || on_v)
+                    && grid.mask(x, y) & (1 << step) == 0
+                {
+                    continue;
+                }
+                let (dx, dy) = connectivity_step(step);
+                let (mut nx, mut ny) = (x + dx, y + dy);
+                if let Some(node) = node_at(nx, ny) {
+                    if node == edge.from {
+                        reached_source = true;
+                        break 'walk;
+                    }
+                    continue;
+                }
+                let back = route_identity_opposite(step);
+                let (nh, nv) = border_at(nx, ny);
+                if nh || nv {
+                    // Cross a border only perpendicular to it, never at a
+                    // corner, and only through a glyph with an arm on the
+                    // crossing axis (a pierce or a portal tee).
+                    let vertical_step = dy != 0;
+                    let axis_arms = if vertical_step { 0b0101 } else { 0b1010 };
+                    let corner = nh && nv;
+                    let perpendicular = (nh && vertical_step) || (nv && !vertical_step);
+                    if corner || !perpendicular || grid.mask(nx, ny) & axis_arms == 0 {
+                        continue;
+                    }
+                    queue.push_back((nx, ny, Some(step), None));
+                    continue;
+                }
+                if grid.mask(nx, ny) & (1 << back) == 0 && dx == 0 {
+                    // Allow a centred edge label written across a vertical
+                    // shaft: skip that one text row when the row's text run is
+                    // a declared edge label and the shaft resumes beyond it.
+                    let mut left = nx;
+                    while left > 0 && grid.get(left - 1, ny) != ' ' {
+                        left -= 1;
+                    }
+                    let mut right = nx;
+                    while grid.get(right + 1, ny) != ' ' {
+                        right += 1;
+                    }
+                    let run: String = (left..=right).map(|cx| grid.get(cx, ny)).collect();
+                    let (bx, by) = (nx, ny + dy);
+                    if grid.get(nx, ny) != ' '
+                        && connectivity_label_matches(graph, &run)
+                        && node_at(bx, by).is_none()
+                        && grid.mask(bx, by) & (1 << back) != 0
+                    {
+                        queue.push_back((bx, by, Some(step), None));
+                    }
+                    continue;
+                }
+                if grid.mask(nx, ny) & (1 << back) == 0 {
+                    // Allow an inline edge label on a horizontal shaft.
+                    let mut run = String::new();
+                    let mut jumped = false;
+                    for k in 1..=48isize {
+                        let (cx, cy) = (x + dx * k, y);
+                        if node_at(cx, cy).is_some() || border_at(cx, cy) != (false, false) {
+                            break;
+                        }
+                        let ch = grid.get(cx, cy);
+                        // A leftward scan reads the label back to front.
+                        let text: String = if dx < 0 {
+                            run.chars().rev().collect()
+                        } else {
+                            run.clone()
+                        };
+                        if k > 1
+                            && connectivity_mask(ch) & (1 << back) != 0
+                            && connectivity_label_matches(graph, &text)
+                        {
+                            nx = cx;
+                            ny = cy;
+                            jumped = true;
+                            break;
+                        }
+                        run.push(ch);
+                    }
+                    if !jumped {
+                        continue;
+                    }
+                }
+                queue.push_back((nx, ny, Some(step), None));
+            }
+        }
+        if !reached_source {
+            errors.push(format!(
+                "boundary-crossing edge {} -> {} is not visibly connected from its target head back to its source",
+                edge.from, edge.to
+            ));
+        }
+    }
+    errors
+}
+
+fn boundary_crossing_connectivity_errors(
+    input: &str,
+    style: BaseStyle,
+    optimized: bool,
+) -> Option<(termiflow::Graph, String, Vec<String>)> {
+    let mut graph = parse(input, false).ok()?.graph;
+    let mut config = Config::default();
+    config.optimize_render = optimized;
+    config.composite_style = CompositeStyle::from_base(style);
+    config.spacing = config.spacing.for_direction(graph.direction);
+    measure::measure_graph(&mut graph, &config);
+    let (graph, outcome) = layout_and_render_with_feedback(graph, config).ok()?;
+    let errors = boundary_crossing_connectivity_errors_for_frame(&graph, &outcome.output);
+    Some((graph, outcome.output, errors))
+}
+
+fn connectivity_style_name(style: BaseStyle) -> &'static str {
+    match style {
+        BaseStyle::Ascii => "ascii",
+        _ => "unicode",
+    }
+}
+
+#[test]
+fn boundary_crossing_edges_are_visibly_connected_across_the_corpus() {
+    let mut inputs: Vec<_> = fs::read_dir("tests/fixtures/inputs")
+        .expect("read fixture inputs")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md") && !path.is_symlink())
+        .collect();
+    inputs.sort();
+    let mut cases: Vec<(String, String)> = inputs
+        .iter()
+        .map(|path| {
+            (
+                path.file_stem().unwrap().to_string_lossy().to_string(),
+                fs::read_to_string(path).expect("read fixture"),
+            )
+        })
+        .collect();
+    cases.extend(
+        BOUNDARY_CONNECTIVITY_INLINE_CASES
+            .iter()
+            .map(|(name, input)| (format!("inline:{name}"), (*input).to_string())),
+    );
+    let mut failing = std::collections::BTreeSet::new();
+    let mut details = Vec::new();
+    let mut checked = 0usize;
+    for (stem, input) in &cases {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let Some((_, _, errors)) =
+                    boundary_crossing_connectivity_errors(input, style, optimized)
+                else {
+                    continue;
+                };
+                checked += 1;
+                if !errors.is_empty() {
+                    let row = format!(
+                        "{stem}/{}/{}",
+                        connectivity_style_name(style),
+                        if optimized { "optimized" } else { "default" }
+                    );
+                    details.push(format!("{row}: {errors:?}"));
+                    failing.insert(row);
+                }
+            }
+        }
+    }
+    let expected: std::collections::BTreeSet<String> = BOUNDARY_CONNECTIVITY_KNOWN_DISCONNECTED
+        .iter()
+        .flat_map(|fixture| {
+            ["ascii", "unicode"].into_iter().flat_map(move |style| {
+                ["default", "optimized"]
+                    .into_iter()
+                    .map(move |mode| format!("{fixture}/{style}/{mode}"))
+            })
+        })
+        .collect();
+    assert!(checked > 0, "no renderable fixtures were checked");
+    assert_eq!(
+        failing,
+        expected,
+        "boundary connectivity failing set drifted (checked {checked} rows):\n{}",
+        details.join("\n")
+    );
+}
+
+#[test]
+fn boundary_crossing_connectivity_oracle_detects_a_removed_pierce() {
+    let input = fs::read_to_string("tests/fixtures/inputs/subgraph_single_td.md")
+        .expect("read subgraph_single_td");
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        let (graph, frame, errors) = boundary_crossing_connectivity_errors(&input, style, false)
+            .expect("render subgraph_single_td");
+        assert!(
+            errors.is_empty(),
+            "control frame must be connected: {errors:?}\n{frame}"
+        );
+        let chars = CompositeStyle::from_base(style).to_style_chars(style);
+        // Replace every vertical pierce on any subgraph horizontal border with
+        // the plain border glyph; the walk must then fail.
+        let grid = ConnectivityGrid::new(&frame);
+        let (ox, oy) = connectivity_frame_origin(&graph, &grid).expect("origin");
+        let mut mutated = frame.clone();
+        let mut replaced = 0;
+        for subgraph in &graph.subgraphs {
+            for y in [
+                subgraph.bounds.y,
+                subgraph.bounds.y + subgraph.bounds.height - 1,
+            ] {
+                for x in subgraph.bounds.x + 1..subgraph.bounds.x + subgraph.bounds.width - 1 {
+                    let fx = (x as isize - ox) as usize;
+                    let fy = (y as isize - oy) as usize;
+                    if raw_char_at(&mutated, fx, fy) == Some(chars.edge_v) {
+                        mutated = replace_raw_char(&mutated, fx, fy, chars.edge_h);
+                        replaced += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            replaced > 0,
+            "control frame has no border pierce to remove:\n{frame}"
+        );
+        let mutated_errors = boundary_crossing_connectivity_errors_for_frame(&graph, &mutated);
+        assert!(
+            !mutated_errors.is_empty(),
+            "removing border pierces must disconnect the route:\n{mutated}"
+        );
+    }
+}
+
+/// Node boxes must never overlap: an overlapped node is invisible, so the
+/// diagram silently loses it (exploration corpus: 24 of 1002 diagrams).
+#[test]
+fn laid_out_nodes_never_overlap() {
+    let cases = [
+        ("weave_lr", "graph LR\n    subgraph S [Weave]\n        a[a]\n        c[c]\n        e[e]\n    end\n    a --> b[b]\n    b --> c\n    c --> d[d]\n    d --> e\n    e --> f[f]\n"),
+        ("nested_cycle_bt", "graph BT\n    Start[Start] --> I\n    subgraph O [Outer]\n        subgraph In [Inner]\n            I[Work]\n        end\n        J[Gate]\n    end\n    I --> K[Feedback]\n    K --> J\n    J --> I\n"),
+        ("long_title_rl", "graph RL\n    E1[Edge] --> n\n    subgraph O [Out]\n        subgraph In [Extremely Long Inner Container Heading Text]\n            n[n]\n        end\n    end\n    n --> E2[Exit]\n"),
+        ("help_center_lr", "flowchart LR\n    subgraph Ticketing [Help Center]\n        Article[(Help Articles)]\n        Search[Article Search]\n        Search --> Article\n    end\n    Visitor((Visitor)) --> Search\n    Search --> Found{Answer found?}\n    Found --> Deflect[Deflected]\n    Found --> Contact[Contact Form]\n    Contact --> Ticket[Create Ticket]\n    Ticket --> Gap[Content Gap Report]\n    Gap --> Article\n"),
+    ];
+    let mut failures = Vec::new();
+    for (name, input) in cases {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            let mut graph = parse(input, false).expect("parse overlap case").graph;
+            let mut config = Config::default();
+            config.composite_style = CompositeStyle::from_base(style);
+            config.spacing = config.spacing.for_direction(graph.direction);
+            measure::measure_graph(&mut graph, &config);
+            let (graph, _) =
+                layout_and_render_with_feedback(graph, config).expect("layout overlap case");
+            for (index, a) in graph.nodes.iter().enumerate() {
+                for b in &graph.nodes[index + 1..] {
+                    let overlap = a.x < b.x + b.width
+                        && b.x < a.x + a.width
+                        && a.y < b.y + b.height
+                        && b.y < a.y + a.height;
+                    if overlap {
+                        failures.push(format!("{name}/{style:?}: {} overlaps {}", a.id, b.id));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "overlapping nodes:\n{}",
+        failures.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Raw-frame topology audit (exploration tool)
+//
+// From each node's border, flood along connected route glyphs: tees and
+// corners branch, crossings (four-arm glyphs) and subgraph border pierces only
+// continue straight, and arrowheads/end markers also touch the box they point
+// into. Every node whose box the flood touches is "reached". Comparing reached
+// nodes with the declared (undirected) neighbours finds phantom connections
+// (routes through boxes, merged buses) and detached edges. Run with
+// `TERMIFLOW_TOPOLOGY_CORPUS=<dir> TERMIFLOW_TOPOLOGY_OUT=<tsv>
+//  cargo test --test independent_oracles topology_audit -- --ignored`.
+// ---------------------------------------------------------------------------
+
+fn topology_reached_nodes(
+    graph: &termiflow::Graph,
+    grid: &ConnectivityGrid,
+    origin: (isize, isize),
+    source: &str,
+    strict_crossings: bool,
+) -> std::collections::BTreeSet<String> {
+    topology_reached_nodes_with_crossing_policy(
+        graph,
+        grid,
+        origin,
+        source,
+        strict_crossings,
+        false,
+    )
+}
+
+fn topology_reached_nodes_with_crossing_policy(
+    graph: &termiflow::Graph,
+    grid: &ConnectivityGrid,
+    origin: (isize, isize),
+    source: &str,
+    strict_crossings: bool,
+    explicit_only: bool,
+) -> std::collections::BTreeSet<String> {
+    let (ox, oy) = origin;
+    let rects: Vec<(&str, FrameRect)> = graph
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                node.id.as_str(),
+                FrameRect {
+                    x: node.x as isize - ox,
+                    y: node.y as isize - oy,
+                    width: node.width as isize,
+                    height: node.height as isize,
+                },
+            )
+        })
+        .collect();
+    let subgraph_rects: Vec<FrameRect> = graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.bounds.width > 0 && subgraph.bounds.height > 0)
+        .map(|subgraph| FrameRect {
+            x: subgraph.bounds.x as isize - ox,
+            y: subgraph.bounds.y as isize - oy,
+            width: subgraph.bounds.width as isize,
+            height: subgraph.bounds.height as isize,
+        })
+        .collect();
+    let node_at = |x: isize, y: isize| {
+        rects
+            .iter()
+            .find(|(_, rect)| rect.contains(x, y))
+            .map(|(id, _)| *id)
+    };
+    let on_border = |x: isize, y: isize| {
+        subgraph_rects.iter().any(|rect| {
+            ((y == rect.y || y == rect.bottom()) && x >= rect.x && x <= rect.right())
+                || ((x == rect.x || x == rect.right()) && y >= rect.y && y <= rect.bottom())
+        })
+    };
+    let Some(source_rect) = rects.iter().find(|(id, _)| *id == source).map(|(_, r)| *r) else {
+        return Default::default();
+    };
+
+    let mut queue = std::collections::VecDeque::new();
+    let mut visited = HashSet::new();
+    let perimeter = (source_rect.x..=source_rect.right())
+        .map(|x| (x, source_rect.y - 1, CONNECTIVITY_DOWN))
+        .chain(
+            (source_rect.x..=source_rect.right())
+                .map(|x| (x, source_rect.bottom() + 1, CONNECTIVITY_UP)),
+        )
+        .chain(
+            (source_rect.y..=source_rect.bottom())
+                .map(|y| (source_rect.x - 1, y, CONNECTIVITY_RIGHT)),
+        )
+        .chain(
+            (source_rect.y..=source_rect.bottom())
+                .map(|y| (source_rect.right() + 1, y, CONNECTIVITY_LEFT)),
+        );
+    let points_toward = |ch: char, toward_box: u8| match ch {
+        '^' | '\u{2191}' | '\u{25b2}' => toward_box == CONNECTIVITY_UP,
+        '>' | '\u{2192}' | '\u{25b6}' => toward_box == CONNECTIVITY_RIGHT,
+        'v' | '\u{2193}' | '\u{25bc}' => toward_box == CONNECTIVITY_DOWN,
+        '<' | '\u{2190}' | '\u{25c0}' => toward_box == CONNECTIVITY_LEFT,
+        'o' | '\u{25cb}' => true,
+        _ => false,
+    };
+    // A bidirectional edge leaves its source through an arrowhead.
+    let has_bidirectional = graph.edges.iter().any(|edge| {
+        edge.kind == termiflow::graph::EdgeKind::Bidirectional
+            && (edge.from == source || edge.to == source)
+    });
+    for (x, y, toward_box) in perimeter {
+        // Outgoing side only: a shaft touching the box, not an arrowhead into it.
+        let ch = grid.get(x, y);
+        let incoming_head = points_toward(ch, toward_box);
+        if node_at(x, y).is_none()
+            && (grid.mask(x, y) & (1 << toward_box) != 0 || incoming_head)
+            && (!incoming_head || has_bidirectional)
+        {
+            queue.push_back((x, y, route_identity_opposite(toward_box)));
+        }
+    }
+
+    let mut reached = std::collections::BTreeSet::new();
+    while let Some((x, y, entered)) = queue.pop_front() {
+        if !visited.insert((x, y, entered)) {
+            continue;
+        }
+        let ch = grid.get(x, y);
+        let mask = grid.mask(x, y);
+        let straight_only = (strict_crossings && mask == 0b1111)
+            || (explicit_only && matches!(ch, 'x' | '✕'))
+            || on_border(x, y);
+        let pointing: Option<u8> = match ch {
+            '^' | '\u{2191}' | '\u{25b2}' => Some(CONNECTIVITY_UP),
+            '>' | '\u{2192}' | '\u{25b6}' => Some(CONNECTIVITY_RIGHT),
+            'v' | '\u{2193}' | '\u{25bc}' => Some(CONNECTIVITY_DOWN),
+            '<' | '\u{2190}' | '\u{25c0}' => Some(CONNECTIVITY_LEFT),
+            'o' | '\u{25cb}' => Some(entered),
+            _ => None,
+        };
+        if let Some(step) = pointing {
+            let (dx, dy) = connectivity_step(step);
+            if let Some(node) = node_at(x + dx, y + dy) {
+                if node != source {
+                    reached.insert(node.to_string());
+                }
+            }
+        }
+        let steps: Vec<u8> = if straight_only {
+            vec![entered]
+        } else {
+            (0..4u8).filter(|step| mask & (1 << step) != 0).collect()
+        };
+        for step in steps {
+            let (dx, dy) = connectivity_step(step);
+            let (nx, ny) = (x + dx, y + dy);
+            if node_at(nx, ny).is_some() {
+                // A plain shaft touching a box is a port, not a target.
+                continue;
+            }
+            let back = route_identity_opposite(step);
+            let next_mask = grid.mask(nx, ny);
+            // A letter that doubles as a glyph (`o`, `x`) followed by more text
+            // starts a label written flush against the shaft; one with a letter
+            // beside it across a vertical shaft ends or sits inside a label
+            // centred on it ("no").
+            let after = grid.get(nx + dx, ny + dy);
+            let beside = dy != 0
+                && (grid.get(nx - 1, ny).is_ascii_alphabetic()
+                    || grid.get(nx + 1, ny).is_ascii_alphabetic());
+            let in_word = grid.get(nx, ny).is_ascii_alphabetic()
+                && ((after != ' '
+                    && (connectivity_mask(after) == 0 || after.is_ascii_alphabetic()))
+                    || beside);
+            if in_word {
+                if let Some(resume) = topology_label_skip(graph, grid, (nx, ny), step) {
+                    queue.push_back((resume.0, resume.1, step));
+                    continue;
+                }
+            }
+            if matches!(grid.get(nx, ny), 'o' | '\u{25cb}') {
+                // Circle end markers have no arms; they point onward.
+                queue.push_back((nx, ny, step));
+                continue;
+            }
+            if next_mask & (1 << back) == 0 && !(on_border(nx, ny) && next_mask != 0) {
+                // An edge label written across the shaft: skip a text run that
+                // is a declared label when the shaft resumes beyond it.
+                if let Some(resume) = topology_label_skip(graph, grid, (nx, ny), step) {
+                    queue.push_back((resume.0, resume.1, step));
+                }
+                continue;
+            }
+            queue.push_back((nx, ny, step));
+        }
+    }
+    reached
+}
+
+fn topology_label_skip(
+    graph: &termiflow::Graph,
+    grid: &ConnectivityGrid,
+    start: (isize, isize),
+    step: u8,
+) -> Option<(isize, isize)> {
+    let back = route_identity_opposite(step);
+    let (dx, dy) = connectivity_step(step);
+    let first = grid.get(start.0, start.1);
+    let text_at = |x: isize, y: isize| {
+        let ch = grid.get(x, y);
+        ch != ' ' && connectivity_mask(ch) == 0
+    };
+    // A label across a vertical shaft can put its word gap on the shaft.
+    let word_gap = dy != 0 && text_at(start.0 - 1, start.1) && text_at(start.0 + 1, start.1);
+    if first == ' ' && !word_gap {
+        // Labels are padded by one blank on each side of the shaft.
+        let after = grid.get(start.0 + dx, start.1 + dy);
+        if after == ' ' || connectivity_mask(after) != 0 {
+            return None;
+        }
+    }
+    if dy != 0 {
+        // Vertical shaft: the label is a centred text row.
+        // Extend across single inner spaces ("on done"), stopping at a
+        // double space or a route glyph.
+        let is_text = |x: isize| {
+            let ch = grid.get(x, start.1);
+            ch != ' ' && connectivity_mask(ch) == 0
+        };
+        let mut left = start.0;
+        while is_text(left - 1) || (grid.get(left - 1, start.1) == ' ' && is_text(left - 2)) {
+            left -= 1;
+        }
+        let mut right = start.0;
+        while is_text(right + 1) || (grid.get(right + 1, start.1) == ' ' && is_text(right + 2)) {
+            right += 1;
+        }
+        let run: String = (left..=right)
+            .map(|x| grid.get(x, start.1))
+            .filter(|c| *c != '\u{0}')
+            .collect();
+        let resume = (start.0, start.1 + dy);
+        let resumes = grid.mask(resume.0, resume.1) & (1 << back) != 0
+            || matches!(grid.get(resume.0, resume.1), 'o' | '\u{25cb}');
+        return (connectivity_label_matches(graph, &run) && resumes).then_some(resume);
+    }
+    let mut run = String::new();
+    for k in 0..64isize {
+        let (cx, cy) = (start.0 + dx * k, start.1);
+        let ch = grid.get(cx, cy);
+        // A label may itself hold glyph-like ASCII characters (`o`, `x`, `+`),
+        // so the shaft resumes at the first such cell that closes a declared
+        // label; a non-ASCII glyph always ends the run.
+        let ends = connectivity_mask(ch) & (1 << back) != 0 || matches!(ch, 'o' | '\u{25cb}');
+        if k > 0 && ends {
+            let mut text: String = run.chars().filter(|c| *c != '\u{0}').collect();
+            if dx < 0 {
+                text = text.chars().rev().collect();
+            }
+            if connectivity_label_matches(graph, &text) {
+                return Some((cx, cy));
+            }
+            if !ch.is_ascii() {
+                return None;
+            }
+        }
+        run.push(ch);
+    }
+    None
+}
+
+/// Negative control: the trace reaches only the nodes an edge joins, in both
+/// modes, so a flood that returned every node would fail here.
+#[test]
+fn topology_trace_does_not_reach_unconnected_nodes() {
+    for direction in ["TD", "LR"] {
+        let input =
+            format!("graph {direction}\n    A[Alpha] --> B[Beta]\n    C[Gamma] --> D[Delta]\n");
+        let (graph, frame, _) =
+            boundary_crossing_connectivity_errors(&input, BaseStyle::Unicode, false)
+                .expect("render");
+        let grid = ConnectivityGrid::new(&frame);
+        let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+        for strict in [false, true] {
+            let reached = topology_reached_nodes(&graph, &grid, origin, "A", strict);
+            assert!(
+                reached.contains("B") && !reached.contains("C") && !reached.contains("D"),
+                "A reaches exactly B ({direction}, strict={strict}): {reached:?}\n{frame}"
+            );
+        }
+    }
+}
+
+/// gen_a_151: the order topic also feeds the Lake fan-in. Its remaining
+/// branch used to bend on the Event Bus wall, which erased the route to
+/// Fraud Service. That branch must stay separate from the user topic's exit.
+#[test]
+fn a_mixed_fanout_keeps_its_frame_exit_connected_and_independent() {
+    let input = "graph TD
+    subgraph Producers
+        Web[Web App]
+        Mobile[Mobile App]
+        Partner[Partner API]
+    end
+    subgraph Bus [Event Bus]
+        Topic1[[user.events]]
+        Topic2[[order.events]]
+    end
+    Web --> Topic1
+    Mobile --> Topic1
+    Web --> Topic2
+    Partner --> Topic2
+    Topic1 --> Lake[(Data Lake)]
+    Topic2 --> Lake
+    Topic2 --> Fraud[Fraud Service]
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            let order = topology_reached_nodes(&graph, &grid, origin, "Topic2", true);
+            assert!(
+                order.contains("Fraud") && order.contains("Lake"),
+                "order.events reaches both targets ({style:?}, optimized={optimized}): {order:?}\n{frame}"
+            );
+            let user = topology_reached_nodes(&graph, &grid, origin, "Topic1", true);
+            assert!(
+                user.contains("Lake") && !user.contains("Fraud"),
+                "user.events reaches only Lake ({style:?}, optimized={optimized}): {user:?}\n{frame}"
+            );
+        }
+    }
+}
+
+/// gen_a_116: the direct Bastion -> database leg must bypass App Servers
+/// on its own port. Sharing the application fan-in gives Proxy a false path.
+#[test]
+fn a_framed_triangle_keeps_its_direct_leg_independent() {
+    let input = "graph TD
+    subgraph Pub [Public Internet]
+        Users((Users))
+    end
+    subgraph DMZ
+        Proxy[Reverse Proxy]
+        Bastion[Bastion Host]
+    end
+    subgraph Internal [Internal Network]
+        AppSrv[App Servers]
+        DBSrv[(DB Servers)]
+        AppSrv --> DBSrv
+    end
+    Users --> Proxy
+    Proxy --> AppSrv
+    Admin[Admin Laptop] --> Bastion
+    Bastion -.-> AppSrv
+    Bastion -.-> DBSrv
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            let bastion = topology_reached_nodes(&graph, &grid, origin, "Bastion", true);
+            let proxy = topology_reached_nodes(&graph, &grid, origin, "Proxy", true);
+            let app = topology_reached_nodes(&graph, &grid, origin, "AppSrv", true);
+            assert!(
+                bastion.contains("AppSrv") && bastion.contains("DBSrv")
+                    && proxy.contains("AppSrv") && !proxy.contains("DBSrv")
+                    && app.contains("DBSrv"),
+                "independent triangle ({style:?}, optimized={optimized}): Bastion={bastion:?}, Proxy={proxy:?}, AppSrv={app:?}\n{frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn topology_trace_reads_through_a_label_word_gap_on_a_vertical_shaft() {
+    let input = "graph TD\n    A[Source] -->|ab cd| B[Target]\n";
+    let (graph, frame, _) =
+        boundary_crossing_connectivity_errors(input, BaseStyle::Unicode, false).expect("render");
+    assert!(frame.contains("ab cd"), "{frame}");
+    let grid = ConnectivityGrid::new(&frame);
+    let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+    let reached = topology_reached_nodes(&graph, &grid, origin, "A", false);
+    assert!(
+        reached.contains("B"),
+        "A -> B must trace through the label:\n{frame}"
+    );
+}
+
+/// gen_a_086: the direct Rails -> Postgres leg must bypass Sidekiq without
+/// joining its S3 branch. Other existing missing edges are separate cases.
+#[test]
+fn a_mixed_fanout_bypasses_a_later_source_in_its_own_frame() {
+    let input = "graph TD
+    subgraph Web [Web Tier]
+        Next[Next.js]
+    end
+    subgraph Api [API Tier]
+        Rails[Rails API]
+        Sidekiq[Sidekiq]
+    end
+    subgraph Stores [Data Stores]
+        PG[(Postgres)]
+        Redis[(Redis)]
+        S3[(S3)]
+    end
+    Next --> Rails
+    Rails --> PG
+    Rails --> Redis
+    Redis --> Sidekiq
+    Sidekiq --> PG
+    Sidekiq --> S3
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            let rails = topology_reached_nodes(&graph, &grid, origin, "Rails", true);
+            let worker = topology_reached_nodes(&graph, &grid, origin, "Sidekiq", true);
+            let web = topology_reached_nodes(&graph, &grid, origin, "Next", true);
+            assert!(
+                web.contains("Rails"),
+                "Next still reaches Rails: {web:?}\n{frame}"
+            );
+            assert!(rails.contains("PG") && !rails.contains("S3"),
+                "Rails reaches Postgres without gaining S3 ({style:?}, optimized={optimized}): {rails:?}\n{frame}");
+            assert!(rails.contains("Redis"),
+                "Rails reaches Redis around Sidekiq ({style:?}, optimized={optimized}): {rails:?}\n{frame}");
+            // The explicit crossing must also remove the parent's
+            // ASCII/optimized '+' ambiguity between Sidekiq and Redis.
+            assert!(worker.contains("PG") && worker.contains("S3")
+                && !worker.contains("Redis"),
+                "Sidekiq keeps its independent targets ({style:?}, optimized={optimized}): {worker:?}\n{frame}");
+        }
+    }
+}
+
+/// gen_a_163: the upward Hardware fan-in must pass Hypervisor's title.
+#[test]
+fn a_bt_fan_in_crosses_the_target_frame_without_hiding_under_its_title() {
+    let input = "graph BT
+    subgraph Hardware
+        CPU[CPU]
+        GPU[GPU]
+        NIC[NIC]
+    end
+    subgraph Hypervisor
+        KVM[KVM]
+    end
+    subgraph Guests [Virtual Machines]
+        VM1[VM: web]
+        VM2[VM: ml]
+    end
+    CPU & GPU & NIC --> KVM
+    KVM --> VM1
+    KVM --> VM2
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            for (source, targets) in [
+                ("CPU", &["KVM"][..]),
+                ("GPU", &["KVM"][..]),
+                ("NIC", &["KVM"][..]),
+                ("KVM", &["VM1", "VM2"][..]),
+            ] {
+                let reached = topology_reached_nodes(&graph, &grid, origin, source, true);
+                assert!(targets.iter().all(|t| reached.contains(*t)), "{source} reaches {targets:?} ({style:?}, optimized={optimized}): {reached:?}\n{frame}");
+            }
+        }
+    }
+}
+
+#[test]
+fn topology_trace_reads_through_a_label_holding_glyph_letters() {
+    for direction in ["LR", "RL"] {
+        let input = format!(
+            "graph {direction}\n    A[Source] -->|tax + fox| B[Target]\n    A -->|ok| C[Other]\n"
+        );
+        let (graph, frame, _) =
+            boundary_crossing_connectivity_errors(&input, BaseStyle::Unicode, false)
+                .expect("render");
+        assert!(frame.contains(" ok "), "{frame}");
+        let grid = ConnectivityGrid::new(&frame);
+        let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+        let reached = topology_reached_nodes(&graph, &grid, origin, "A", false);
+        assert!(
+            reached.contains("B") && reached.contains("C"),
+            "an `o` inside a label is text, not an end marker ({direction}):\n{frame}"
+        );
+    }
+}
+
+/// A label centred on a vertical shaft can end on the shaft with an `o`
+/// ("no"); that `o` is text, not a circle end marker.
+#[test]
+fn topology_trace_reads_through_a_label_ending_in_o_on_a_vertical_shaft() {
+    let input = "graph TD\n    A[Source] -->|no| B[Target]\n";
+    let (graph, frame, _) =
+        boundary_crossing_connectivity_errors(input, BaseStyle::Unicode, false).expect("render");
+    assert!(frame.contains("│\n     no\n      ↓"), "{frame}");
+    let grid = ConnectivityGrid::new(&frame);
+    let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+    let reached = topology_reached_nodes(&graph, &grid, origin, "A", false);
+    assert!(
+        reached.contains("B"),
+        "A -> B must trace through the label:\n{frame}"
+    );
+}
+
+/// gen_d_120: a back edge over the top puts a lane above the topmost box; with
+/// single-letter labels the frame origin is still found from the labels, and
+/// X reaches A along it.
+#[test]
+fn a_back_edge_over_the_top_is_traced_with_short_labels() {
+    let input = "graph RL\nA --> X\nX --> A\nB --> Y\nY --> B\nC --> Z\nZ --> C\n";
+    let (graph, frame, _) =
+        boundary_crossing_connectivity_errors(input, BaseStyle::Unicode, false).expect("render");
+    let grid = ConnectivityGrid::new(&frame);
+    let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+    let reached = topology_reached_nodes(&graph, &grid, origin, "X", false);
+    assert!(reached.contains("A"), "X does not reach A:\n{frame}");
+}
+
+/// A blocked edge's outside detour is dropped where it would cut another
+/// edge's line or join it to the wrong box; each case names an edge the
+/// detour would cut, or a pair it would falsely join.
+#[test]
+fn blocked_edge_detours_leave_other_lines_alone() {
+    // gen_c_145: r3 -> o3's detour took the row m2 -> o4 turns on.
+    let cut = "graph TD
+    E1[e1] --> r1
+    E2[e2] --> m1
+    subgraph R [Root]
+        r1[r1] --> r2[r2]
+        r1 --> r3[r3]
+        subgraph M [Mid]
+            m1[m1] --> m2[m2]
+            m1 --> m3[m3]
+            subgraph L [Leaf]
+                l1[l1] --> l2[l2]
+                l1 --> l3[l3]
+            end
+        end
+    end
+    r2 --> m2
+    m3 --> l1
+    E3[e3] --> l1
+    l2 --> O1[o1]
+    l3 --> O2[o2]
+    r3 --> O3[o3]
+    m2 --> O4[o4]
+    O1 --> O5[o5]
+";
+    // gen_a_203: Vite -> Asset Manifest's detour left the line below the
+    // manifest, joined to Vite's bus, touching it without a head.
+    let entry = "graph BT
+    subgraph Frontend [Frontend Build]
+        TS[TypeScript]
+        CSS[PostCSS]
+        Bundler[Vite]
+        TS --> Bundler
+        CSS --> Bundler
+    end
+    subgraph Output
+        JS[/Hashed JS/]
+        Styles[/Hashed CSS/]
+        Manifest[(Asset Manifest)]
+    end
+    Bundler --> JS
+    Bundler --> Styles
+    Bundler --> Manifest
+    Manifest --> Server[SSR Server]
+";
+    // gen_a_086: Rails -> Redis's detour shared Rails' stem with
+    // Rails -> Postgres, still drawn through Sidekiq.
+    let sibling = "graph TD
+    subgraph Web [Web Tier]
+        Next[Next.js]
+    end
+    subgraph Api [API Tier]
+        Rails[Rails API]
+        Sidekiq[Sidekiq]
+    end
+    subgraph Stores [Data Stores]
+        PG[(Postgres)]
+        Redis[(Redis)]
+        S3[(S3)]
+    end
+    Next --> Rails
+    Rails --> PG
+    Rails --> Redis
+    Redis --> Sidekiq
+    Sidekiq --> PG
+    Sidekiq --> S3
+";
+    // gen_d_117: duplicates of a detoured edge keep that detour.
+    let duplicates = "graph TD\nA --> B --> C --> D\nA --> D\nA --> D\nA -.-> D\n";
+    for (input, from, to, joined) in [
+        (cut, "m2", "O4", true),
+        (entry, "Manifest", "JS", false),
+        (sibling, "Sidekiq", "Redis", false),
+        (duplicates, "C", "B", false),
+    ] {
+        let (graph, frame, _) =
+            boundary_crossing_connectivity_errors(input, BaseStyle::Unicode, false)
+                .expect("render");
+        let grid = ConnectivityGrid::new(&frame);
+        let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+        let reached = topology_reached_nodes(&graph, &grid, origin, from, !joined);
+        assert_eq!(
+            reached.contains(to),
+            joined,
+            "{from} -> {to} should be joined: {joined}\n{frame}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "exploration tool: run over a corpus directory"]
+fn topology_audit() {
+    let Ok(dir) = std::env::var("TERMIFLOW_TOPOLOGY_CORPUS") else {
+        return;
+    };
+    let out = std::env::var("TERMIFLOW_TOPOLOGY_OUT").unwrap_or_else(|_| "topology.tsv".into());
+    let mut paths: Vec<_> = fs::read_dir(&dir)
+        .expect("read corpus")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    paths.sort();
+    let mut rows = Vec::new();
+    for path in paths {
+        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+        let input = fs::read_to_string(&path).expect("read input");
+        let Some((graph, frame, _)) =
+            boundary_crossing_connectivity_errors(&input, BaseStyle::Unicode, false)
+        else {
+            // Record the failure: a frame that stops rendering must not
+            // silently drop its rows and lower the counts.
+            rows.push(format!("{stem}\tRENDER\t-\t-"));
+            continue;
+        };
+        let grid = ConnectivityGrid::new(&frame);
+        let Some(origin) = connectivity_frame_origin(&graph, &grid) else {
+            rows.push(format!("{stem}\tORIGIN\t-\t-"));
+            continue;
+        };
+        for node in &graph.nodes {
+            use termiflow::graph::EdgeKind;
+            let marked = |kind: EdgeKind| !matches!(kind, EdgeKind::Open | EdgeKind::CrossEnd);
+            let declared: std::collections::BTreeSet<String> = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.from != edge.to && marked(edge.kind))
+                .filter_map(|edge| {
+                    if edge.from == node.id {
+                        Some(edge.to.clone())
+                    } else if edge.to == node.id && edge.kind == EdgeKind::Bidirectional {
+                        Some(edge.from.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            // Nodes joined by unmarked kinds cannot be judged by arrowheads.
+            let unmarked: std::collections::BTreeSet<String> = graph
+                .edges
+                .iter()
+                .filter(|edge| !marked(edge.kind))
+                .flat_map(|edge| [edge.from.clone(), edge.to.clone()])
+                .collect();
+            // Missing only if even branching through four-arm glyphs fails;
+            // phantom only if reached while crossings stay straight.
+            let loose = topology_reached_nodes(&graph, &grid, origin, &node.id, false);
+            let reached = topology_reached_nodes(&graph, &grid, origin, &node.id, true);
+            for phantom in reached
+                .difference(&declared)
+                .filter(|id| !unmarked.contains(*id))
+            {
+                rows.push(format!("{stem}\tPHANTOM\t{}\t{phantom}", node.id));
+            }
+            for missing in declared.difference(&loose) {
+                // Tag the edge so failures can be grouped by routing path.
+                let mut tags = Vec::new();
+                if let Some(edge) = graph
+                    .edges
+                    .iter()
+                    .find(|edge| edge.from == node.id && edge.to == *missing)
+                {
+                    let out_degree = graph.edges.iter().filter(|e| e.from == edge.from).count();
+                    let in_degree = graph.edges.iter().filter(|e| e.to == edge.to).count();
+                    let (exits, enters) = graph.edge_boundary_crossings(&edge.from, &edge.to);
+                    if edge.is_back_edge {
+                        tags.push("back");
+                    }
+                    if !exits.is_empty() || !enters.is_empty() {
+                        tags.push("crosses");
+                    }
+                    if out_degree > 1 {
+                        tags.push("fan_out");
+                    }
+                    if in_degree > 1 {
+                        tags.push("fan_in");
+                    }
+                    if edge.label.is_some() {
+                        tags.push("labeled");
+                    }
+                }
+                rows.push(format!(
+                    "{stem}\tMISSING\t{}\t{missing}\t{}",
+                    node.id,
+                    if tags.is_empty() {
+                        "plain".to_string()
+                    } else {
+                        tags.join(",")
+                    }
+                ));
+            }
+        }
+    }
+    fs::write(&out, rows.join("\n") + "\n").expect("write topology audit");
+}
+
+// This mutation uses the raw frame's display columns, preserving original
+// UTF-8 text rather than treating display-column x as a byte/char index.
+fn replace_s2_raw_display_cell(frame: &str, x: usize, y: usize, replacement: char) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut rows = frame.lines().map(str::to_owned).collect::<Vec<_>>();
+    let row = rows.get_mut(y).expect("raw frame row");
+    let mut display_x = 0;
+    let mut byte_range = None;
+    for (byte, ch) in row.char_indices() {
+        let width = ch.width().unwrap_or(0);
+        if width > 0 && display_x == x {
+            assert_eq!(width, 1, "crossing occupies one display column");
+            byte_range = Some(byte..byte + ch.len_utf8());
+            break;
+        }
+        display_x += width;
+    }
+    row.replace_range(
+        byte_range.expect("raw display cell"),
+        &replacement.to_string(),
+    );
+    let mut changed = rows.join("\n");
+    if frame.ends_with('\n') {
+        changed.push('\n');
+    }
+    changed
+}
+
+#[test]
+fn an_upward_mixed_sibling_return_keeps_explicit_crossings_independent() {
+    let input = "graph TD
+    subgraph Web [Web Tier]
+        Next[Next.js]
+    end
+    subgraph Api [API Tier]
+        Rails[Rails API]
+        Sidekiq[Sidekiq]
+    end
+    subgraph Stores [Data Stores]
+        PG[(Postgres)]
+        Redis[(Redis)]
+        S3[(S3)]
+    end
+    Next --> Rails
+    Rails --> PG
+    Rails --> Redis
+    Redis --> Sidekiq
+    Sidekiq --> PG
+    Sidekiq --> S3
+";
+    let mut failures = Vec::new();
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            let expected = [
+                ("Next", vec!["Rails"]),
+                ("Rails", vec!["PG", "Redis"]),
+                ("Redis", vec!["Sidekiq"]),
+                ("Sidekiq", vec!["PG", "S3"]),
+            ];
+            let first_hop_errors = |candidate: &ConnectivityGrid| {
+                expected
+                    .iter()
+                    .filter_map(|(source, targets)| {
+                        let reached = topology_reached_nodes_with_crossing_policy(
+                            &graph, candidate, origin, source, false, true,
+                        );
+                        let wanted = targets
+                            .iter()
+                            .map(|id| id.to_string())
+                            .collect::<std::collections::BTreeSet<_>>();
+                        (reached != wanted)
+                            .then(|| format!("{source}: expected {wanted:?}, got {reached:?}"))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let errors = first_hop_errors(&grid);
+            if !errors.is_empty() {
+                failures.push(format!(
+                    "explicit-only first hops ({style:?}, optimized={optimized}): {errors:?}\n{frame}"
+                ));
+                continue;
+            }
+
+            let chars = CompositeStyle::from_base(style).to_style_chars(style);
+            let marker = chars.cross_end;
+            let mut crossings = Vec::new();
+            for (y, row) in grid.lines.iter().enumerate() {
+                for x in 0..row.len() {
+                    let (fx, fy) = (x as isize, y as isize);
+                    if grid.get(fx, fy) != marker {
+                        continue;
+                    }
+                    let (gx, gy) = (fx + origin.0, fy + origin.1);
+                    if graph.nodes.iter().any(|n| {
+                        gx >= n.x as isize
+                            && gx < (n.x + n.width) as isize
+                            && gy >= n.y as isize
+                            && gy < n.bottom_y() as isize
+                    }) {
+                        continue;
+                    }
+                    // The label Next.js includes 'x'. A routing marker has
+                    // all four reciprocal arms; text cannot pass this test.
+                    let four_arms = (0..4u8).all(|step| {
+                        let (dx, dy) = connectivity_step(step);
+                        let next_mask = grid.mask(fx + dx, fy + dy);
+                        next_mask & (1 << route_identity_opposite(step)) != 0
+                    });
+                    if four_arms {
+                        crossings.push((x, y));
+                    }
+                }
+            }
+            assert!(
+                !crossings.is_empty(),
+                "expected isolated routing crossings ({style:?}, optimized={optimized})\n{frame}"
+            );
+            for (x, y) in crossings {
+                assert_eq!(grid.get(x as isize, y as isize), marker);
+                let changed = replace_s2_raw_display_cell(&frame, x, y, chars.cross);
+                let changed_grid = ConnectivityGrid::new(&changed);
+                assert_eq!(changed_grid.get(x as isize, y as isize), chars.cross);
+                let errors = first_hop_errors(&changed_grid);
+                assert!(
+                    !errors.is_empty(),
+                    "turning only crossing ({x},{y}) into {:?} did not change any first hop \
+                     ({style:?}, optimized={optimized})\n{changed}",
+                    chars.cross
+                );
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -6,7 +6,9 @@ use crate::orientation::OrientedCoords;
 use crate::style::StyleChars;
 
 use super::super::canvas::Canvas;
-use super::super::edge_policy::{td_single_incoming_route_x, title_safe_td_entry_x};
+use super::super::edge_policy::{
+    straight_entry_x, td_single_incoming_route_x, title_safe_td_entry_x,
+};
 use super::super::fallback_route::{
     FallbackAxis, FallbackRoutePlan, FallbackSegment, PortalEntryDecision,
 };
@@ -162,6 +164,246 @@ fn legacy_preferred_portal_x(
         }
     }
     x
+}
+
+/// Whether a nested TD entry's run down column `x`, from the border of
+/// `frame` to the row above the border of `next`, meets a box other than the
+/// edge's own: the shared lane can run straight through the boxes placed
+/// above the inner frame.
+fn nested_run_meets_box(
+    graph: &Graph,
+    ends: [&str; 2],
+    frame: &crate::graph::Subgraph,
+    next: &crate::graph::Subgraph,
+    x: usize,
+) -> bool {
+    let top = frame.bounds.y.saturating_add(1);
+    let bottom = next.bounds.y.saturating_sub(1);
+    graph.nodes.iter().any(|node| {
+        !ends.contains(&node.id.as_str())
+            && x >= node.x
+            && x < node.x + node.width
+            && node.y <= bottom
+            && top < node.y + node.height
+    })
+}
+
+/// A column for a nested TD entry's run from the border of `frames[0]` to
+/// the row above the border of the last frame, when the usual lane meets a
+/// box: the nearest one whose run meets no box, unrelated frame or other
+/// vertical line (clear of the boxes' sides and the frame's own borders
+/// first; the edge's own boxes do not count).
+/// Without `jog_to` the column must enter the last frame straight, title-safe
+/// in every frame; with it, the run stays in `frames[0]` and then jogs along
+/// the row above the last border to `jog_to`, which must meet no box. `None`
+/// when no such column exists.
+fn clear_nested_entry_lane(
+    graph: &Graph,
+    ends: [&str; 2],
+    canvas: &Canvas,
+    style: &StyleChars,
+    frames: &[&crate::graph::Subgraph],
+    lane: usize,
+    jog_to: Option<usize>,
+) -> Option<usize> {
+    let (outer, inner) = (frames.first()?, frames.last()?);
+    if frames.len() < 2 {
+        return None;
+    }
+    let top = outer.bounds.y.saturating_add(1);
+    let bottom = inner.bounds.y.checked_sub(1).filter(|&row| row >= top)?;
+    let meets_box = |x: usize, y0: usize, y1: usize, margin: usize| {
+        graph.nodes.iter().any(|node| {
+            !ends.contains(&node.id.as_str())
+                && x + margin >= node.x
+                && x < node.x + node.width + margin
+                && node.y <= y1
+                && y0 < node.y + node.height
+        })
+    };
+    let meets_frame = |x: usize| {
+        graph.subgraphs.iter().any(|other| {
+            !frames.iter().any(|frame| frame.id == other.id)
+                && other.bounds.is_valid()
+                && !graph.is_subgraph_ancestor(&other.id, &outer.id)
+                && x >= other.bounds.x
+                && x < other.bounds.x + other.bounds.width
+                && other.bounds.y <= bottom
+                && top < other.bounds.y + other.bounds.height
+        })
+    };
+    let run_clear = |x: usize, margin: usize| {
+        !meets_box(x, top, bottom, margin)
+            && !meets_frame(x)
+            && (top..=bottom).all(|y| !super::super::canvas::is_vertical(canvas.get(x, y), style))
+    };
+    let jog_clear = |x: usize| {
+        jog_to.is_none_or(|to| (x.min(to)..=x.max(to)).all(|cx| !meets_box(cx, bottom, bottom, 0)))
+    };
+    let span = if jog_to.is_some() { outer } else { inner };
+    let first = span.bounds.x.saturating_add(1);
+    let last = (span.bounds.x + span.bounds.width).saturating_sub(2);
+    let safe = |x: &usize| {
+        let checked = if jog_to.is_some() {
+            &frames[..1]
+        } else {
+            frames
+        };
+        checked.iter().all(|frame| {
+            nearest_title_safe_x(&frame.bounds, frame.title.as_deref(), *x, graph.direction) == *x
+        })
+    };
+    // Clear of the boxes' sides and the frame's own borders first.
+    [1, 0].into_iter().find_map(|margin| {
+        (first..=last)
+            .filter(safe)
+            .filter(|&x| margin == 0 || (x > first && x < last))
+            .filter(|&x| run_clear(x, margin) && jog_clear(x))
+            .min_by_key(|&x| (x.abs_diff(lane), x))
+    })
+}
+
+/// A TD edge leaving frames for a target straight below drops down the
+/// source's centre column. When that drop meets another box or a frame the
+/// edge does not leave (a nested frame placed under the source), it reads as
+/// an edge into them; run it down the nearest clear column of the frame it
+/// leaves instead: a jog on the row below the source, the run, and a jog back
+/// on the lowest free row from which the drop into the target is clear.
+#[allow(clippy::too_many_arguments)]
+fn route_td_exit_detour(
+    from: &Node,
+    to: &Node,
+    stem_start_x: usize,
+    stem_start_y: usize,
+    arrow_x: usize,
+    arrow_y: usize,
+    canvas: &mut Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+    owner: Option<RouteOwner<'_>>,
+) -> bool {
+    if !matches!(graph.direction, Direction::TD | Direction::TB) || stem_start_x != arrow_x {
+        return false;
+    }
+    let (exits, enters) = graph.edge_boundary_crossings(&from.id, &to.id);
+    if exits.is_empty() || !enters.is_empty() {
+        return false;
+    }
+    let frames: Vec<&crate::graph::Subgraph> = exits
+        .iter()
+        .filter_map(|id| graph.get_subgraph(id))
+        .filter(|frame| frame.bounds.is_valid())
+        .collect();
+    let Some(inner) = frames.first() else {
+        return false;
+    };
+    let border_rows: Vec<usize> = frames
+        .iter()
+        .map(|frame| (frame.bounds.y + frame.bounds.height).saturating_sub(1))
+        .collect();
+    let (top, last_row) = (stem_start_y, arrow_y.saturating_sub(1));
+    if last_row <= top + 1 {
+        return false;
+    }
+    let meets_box = |x0: usize, x1: usize, y0: usize, y1: usize, margin: usize| {
+        graph.nodes.iter().any(|node| {
+            node.id != from.id
+                && node.id != to.id
+                && x1 + margin >= node.x
+                && x0 < node.x + node.width + margin
+                && node.y <= y1
+                && y0 < node.y + node.height
+        })
+    };
+    let meets_frame = |x0: usize, x1: usize, y0: usize, y1: usize, margin: usize| {
+        graph.subgraphs.iter().any(|frame| {
+            frame.bounds.is_valid()
+                && !graph.is_node_in_subgraph_tree(&from.id, &frame.id)
+                && !graph.is_node_in_subgraph_tree(&to.id, &frame.id)
+                && x1 + margin >= frame.bounds.x
+                && x0 < frame.bounds.x + frame.bounds.width + margin
+                && frame.bounds.y <= y1
+                && y0 < frame.bounds.y + frame.bounds.height
+        })
+    };
+    let drop_clear = |y0: usize, margin: usize| {
+        !meets_box(stem_start_x, stem_start_x, y0, last_row, margin)
+            && !meets_frame(stem_start_x, stem_start_x, y0, last_row, margin)
+    };
+    if drop_clear(top, 0) {
+        return false;
+    }
+    // A jog row meets no box or unrelated frame, and carries no other line
+    // except a vertical one it crosses.
+    let jog_clear = |lane: usize, y: usize| {
+        let (low, high) = (lane.min(stem_start_x), lane.max(stem_start_x));
+        !meets_box(low, high, y, y, 0)
+            && !meets_frame(low, high, y, y, 0)
+            && (low..=high).all(|x| {
+                let cell = canvas.get(x, y);
+                cell == ' '
+                    || (x != low && x != high && super::super::canvas::is_vertical(cell, style))
+            })
+    };
+    let run_clear = |lane: usize, y1: usize, margin: usize| {
+        !meets_box(lane, lane, top, y1, margin)
+            && !meets_frame(lane, lane, top, y1, margin)
+            && (top..=y1).all(|y| canvas.get(lane, y) == ' ' || border_rows.contains(&y))
+    };
+    let first = inner.bounds.x.saturating_add(1);
+    let last = (inner.bounds.x + inner.bounds.width).saturating_sub(2);
+    let mut lanes: Vec<usize> = (first..=last).filter(|&x| x != stem_start_x).collect();
+    lanes.sort_by_key(|&x| (x.abs_diff(stem_start_x), x));
+    let Some((lane, turn)) = [1, 0].into_iter().find_map(|margin| {
+        lanes.iter().find_map(|&lane| {
+            ((top + 2)..=last_row)
+                .rev()
+                .filter(|y| !border_rows.contains(y))
+                .find(|&turn| {
+                    drop_clear(turn, 0)
+                        && run_clear(lane, turn, margin)
+                        && jog_clear(lane, top)
+                        && jog_clear(lane, turn)
+                })
+                .map(|turn| (lane, turn))
+        })
+    }) else {
+        return false;
+    };
+
+    let rightward = lane > stem_start_x;
+    let (low, high) = (lane.min(stem_start_x), lane.max(stem_start_x));
+    let (source_top, lane_top, lane_turn, source_turn) = if rightward {
+        (
+            style.corner_ul,
+            style.corner_dr,
+            style.corner_ur,
+            style.corner_dl,
+        )
+    } else {
+        (
+            style.corner_ur,
+            style.corner_dl,
+            style.corner_ul,
+            style.corner_dr,
+        )
+    };
+    for y in [top, turn] {
+        for x in low.saturating_add(1)..high {
+            set_route_edge_char(canvas, x, y, style.edge_h, style, owner);
+        }
+    }
+    set_route_edge_char(canvas, stem_start_x, top, source_top, style, owner);
+    set_route_edge_char(canvas, lane, top, lane_top, style, owner);
+    for y in top.saturating_add(1)..turn {
+        set_route_edge_char(canvas, lane, y, style.edge_v, style, owner);
+    }
+    set_route_edge_char(canvas, lane, turn, lane_turn, style, owner);
+    set_route_edge_char(canvas, stem_start_x, turn, source_turn, style, owner);
+    for y in turn.saturating_add(1)..arrow_y {
+        set_route_edge_char(canvas, stem_start_x, y, style.edge_v, style, owner);
+    }
+    true
 }
 
 fn nearest_title_safe_x(
@@ -801,13 +1043,14 @@ fn route_td_sibling_corridor(
     to: &Node,
     stem_start_x: usize,
     stem_start_y: usize,
-    arrow_x: usize,
+    final_arrow_x: &mut usize,
     arrow_y: usize,
     canvas: &mut Canvas,
     style: &StyleChars,
     graph: &Graph,
     owner: Option<RouteOwner<'_>>,
 ) -> bool {
+    let arrow_x = *final_arrow_x;
     let Some((source, target)) = direct_td_sibling_pair(graph, from, to) else {
         return false;
     };
@@ -871,6 +1114,14 @@ fn route_td_sibling_corridor(
     };
     let target_lane = td_sibling_portal_x(graph, &from.id, &to.id, arrow_x, graph.direction)
         .unwrap_or(preferred_target_lane);
+    // A target lane inside the receiving node's flat entry edge lands straight.
+    let arrow_x = if target_lane != arrow_x
+        && straight_entry_x(from, to, target_lane, arrow_x, arrow_y, graph).is_some()
+    {
+        target_lane
+    } else {
+        arrow_x
+    };
     // A jogged target lane needs one clean row above the arrow so its
     // horizontal leg cannot touch the receiving node's top corner. The
     // aligned tight case may share the arrow row because it has no jog at all.
@@ -950,6 +1201,7 @@ fn route_td_sibling_corridor(
         return false;
     }
 
+    *final_arrow_x = arrow_x;
     lower_td_fallback_plan(plan, canvas, style, owner);
     true
 }
@@ -1507,13 +1759,14 @@ pub(super) fn route_cross_subgraph_td(
     to: &Node,
     stem_start_x: usize,
     stem_start_y: usize,
-    arrow_x: usize,
+    final_arrow_x: &mut usize,
     arrow_y: usize,
     canvas: &mut Canvas,
     style: &StyleChars,
     graph: &Graph,
     owner: Option<RouteOwner<'_>>,
 ) -> bool {
+    let arrow_x = *final_arrow_x;
     let debug_timing = crate::runtime::current().diagnostics.timing;
     let from_sg = graph.get_node_subgraph(&from.id);
     let to_sg = graph.get_node_subgraph(&to.id);
@@ -1538,6 +1791,24 @@ pub(super) fn route_cross_subgraph_td(
                 "  cross-subgraph nested exit chain {} -> {}",
                 from.id, to.id
             );
+        }
+        return true;
+    }
+
+    if route_td_exit_detour(
+        from,
+        to,
+        stem_start_x,
+        stem_start_y,
+        arrow_x,
+        arrow_y,
+        canvas,
+        style,
+        graph,
+        owner,
+    ) {
+        if debug_timing {
+            eprintln!("  cross-subgraph exit detour {} -> {}", from.id, to.id);
         }
         return true;
     }
@@ -1603,7 +1874,7 @@ pub(super) fn route_cross_subgraph_td(
         to,
         stem_start_x,
         stem_start_y,
-        arrow_x,
+        final_arrow_x,
         arrow_y,
         canvas,
         style,
@@ -1714,14 +1985,40 @@ pub(super) fn route_cross_subgraph_td(
                         }
                     })
             });
-        for ancestor_id in enter_subgraphs.iter().rev() {
-            let Some(ancestor_sg) = graph.get_subgraph(ancestor_id) else {
-                continue;
-            };
-            if !ancestor_sg.bounds.is_valid() {
-                continue;
+        let chain: Vec<&crate::graph::Subgraph> = enter_subgraphs
+            .iter()
+            .rev()
+            .filter_map(|ancestor_id| graph.get_subgraph(ancestor_id))
+            .filter(|ancestor_sg| ancestor_sg.bounds.is_valid())
+            .collect();
+        let lane_x = |frame: &crate::graph::Subgraph| {
+            if direct_sibling_entry && frame.id == sg.id {
+                sibling_entry_x
+            } else {
+                nearest_title_safe_x(
+                    &frame.bounds,
+                    frame.title.as_deref(),
+                    shared_entry_x,
+                    graph.direction,
+                )
             }
-
+        };
+        // Each frame's lane runs down to the next border and jogs there. When
+        // one of those runs meets a box, one clear lane through the whole chain
+        // is taken if there is one, else a clear run and jog in each frame whose
+        // run meets a box.
+        let ends = [from.id.as_str(), to.id.as_str()];
+        let blocked = |depth: usize| {
+            chain.get(depth + 1).is_some_and(|next| {
+                nested_run_meets_box(graph, ends, chain[depth], next, lane_x(chain[depth]))
+            })
+        };
+        let straight_lane = (!direct_sibling_entry && (0..chain.len()).any(blocked))
+            .then(|| {
+                clear_nested_entry_lane(graph, ends, canvas, style, &chain, shared_entry_x, None)
+            })
+            .flatten();
+        for (depth, ancestor_sg) in chain.iter().enumerate() {
             let outside_y = ancestor_sg.bounds.y.saturating_sub(1);
             if current_y <= outside_y {
                 for y in current_y..=outside_y {
@@ -1729,15 +2026,22 @@ pub(super) fn route_cross_subgraph_td(
                 }
             }
 
-            let entry_x = if direct_sibling_entry && ancestor_sg.id == sg.id {
-                sibling_entry_x
-            } else {
-                nearest_title_safe_x(
-                    &ancestor_sg.bounds,
-                    ancestor_sg.title.as_deref(),
-                    shared_entry_x,
-                    graph.direction,
-                )
+            let entry_x = match (straight_lane, chain.get(depth + 1)) {
+                (Some(lane), _) => lane,
+                (None, Some(next)) if blocked(depth) => {
+                    let next_x = lane_x(next);
+                    clear_nested_entry_lane(
+                        graph,
+                        ends,
+                        canvas,
+                        style,
+                        &[ancestor_sg, next],
+                        lane_x(ancestor_sg),
+                        Some(next_x),
+                    )
+                    .unwrap_or_else(|| lane_x(ancestor_sg))
+                }
+                _ => lane_x(ancestor_sg),
             };
 
             if entry_x != current_x && outside_y < canvas.height {
@@ -1781,6 +2085,17 @@ pub(super) fn route_cross_subgraph_td(
             );
         }
 
+        // When the portal lane already lies inside the target's flat entry edge,
+        // land the arrow on that lane instead of jogging back to the centre.
+        let arrow_x = if transaction_x.is_none()
+            && current_x != arrow_x
+            && straight_entry_x(from, to, current_x, arrow_x, arrow_y, graph).is_some()
+        {
+            *final_arrow_x = current_x;
+            current_x
+        } else {
+            arrow_x
+        };
         let mut bridge_y = td_title_safe_entry_y(sg).max(current_y).min(arrow_y);
         if transaction_x.is_some() {
             bridge_y = arrow_y;
@@ -2036,6 +2351,12 @@ pub(super) fn route_cross_subgraph_td(
                 graph.direction,
             )
             .unwrap_or(portal_x);
+            // A target in a frame enclosing the source's is only left, not
+            // entered: no portal past that frame's title (gen_d_015's B -> C
+            // ran along Inner's bottom wall to clear Outer's title).
+            if enter_subgraphs.is_empty() {
+                portal_x = arrow_x;
+            }
         }
     }
 
@@ -2049,6 +2370,21 @@ pub(super) fn route_cross_subgraph_td(
             "  cross-subgraph {:?}->{:?} via portal ({}, {}) from ({}, {})",
             from.id, to.id, portal_x, portal_y, stem_start_x, stem_start_y
         );
+    }
+
+    // A line turning right under its source seems to start beside a diamond,
+    // whose point carries no port marker (see the source-junction stamp),
+    // and leaves no room for a branch label: leave it on a one-cell stem
+    // first (gen_a_111's PII exposed?), unless that puts the turn on the
+    // target frame's wall or title.
+    let turn_y = cursor_y + 1;
+    if from_sg.is_none()
+        && portal_x != cursor_x
+        && turn_y < portal_y
+        && (turn_y < sg.bounds.y || turn_y >= td_title_safe_entry_y(sg))
+    {
+        set_route_edge_char(canvas, cursor_x, cursor_y, style.edge_v, style, owner);
+        cursor_y += 1;
     }
 
     // Turn horizontally just outside the source border if needed.
@@ -2480,6 +2816,8 @@ struct BtSiblingRoutePlanContext<'a> {
     owner_id: String,
     edge_from_id: &'a str,
     edge_to_id: &'a str,
+    /// The caller can move the arrowhead along the target's entry edge.
+    movable_arrow: bool,
 }
 
 fn build_bt_sibling_route_plan(
@@ -2496,6 +2834,7 @@ fn build_bt_sibling_route_plan(
         owner_id,
         edge_from_id,
         edge_to_id,
+        movable_arrow,
     } = context;
     let source_top_y = source_sg.bounds.y;
     let target_bottom_y = target_sg
@@ -2515,11 +2854,26 @@ fn build_bt_sibling_route_plan(
     // bridge clears both the lower node branch and the title band; ordinary
     // sibling corridors retain their established one-row policy.
     let exact_mixed_scene = graph.bt_sibling_target_entry_scene().is_some();
+    // The row over the title where a lane off the arrow turns back to it.
+    // Without one, a lane enters straight: under the arrow, or, when the
+    // caller can move the arrow, anywhere on the target's flat entry edge if
+    // that is the target's only way in (gen_a_118's Reward Model, centred
+    // under Training Stages' title, had no line at all).
     let inside_y = bt_title_safe_entry_y_with_margin(target_sg, usize::from(exact_mixed_scene) + 1)
-        .ok_or_else(|| "target has no BT title-safe row".to_owned())?;
-    if arrow_y >= inside_y {
-        return Err("target arrow is not above the BT title-safe attachment row".to_owned());
-    }
+        .filter(|&inside_y| arrow_y < inside_y);
+    let takes_lane = |lane: usize| {
+        graph.get_node(edge_to_id).is_some_and(|node| {
+            node.shape.has_flat_vertical_entry()
+                && lane >= node.x + 2
+                && lane + 3 <= node.x + node.width
+                && graph
+                    .edges
+                    .iter()
+                    .filter(|edge| !edge.is_back_edge && edge.to == node.id)
+                    .count()
+                    == 1
+        })
+    };
 
     let mut candidates = bt_sibling_target_lane_candidates(
         &target_sg.bounds,
@@ -2613,6 +2967,35 @@ fn build_bt_sibling_route_plan(
             plan.push_horizontal(corridor_y, source_lane, target_lane, style.edge_h);
             plan.push_corner(target_lane, corridor_y, end_corner);
         }
+        let Some(inside_y) = inside_y else {
+            if target_lane != arrow_x && !(movable_arrow && takes_lane(target_lane)) {
+                rejections.push(format!(
+                    "x={target_lane}: target arrow is not above the BT title-safe attachment row"
+                ));
+                continue;
+            }
+            plan.set_arrow_attachment(target_lane, arrow_y);
+            plan.push_vertical(target_lane, corridor_y, arrow_y, style.edge_v);
+            if let Some(reason) = plan.validation_error(canvas.width, canvas.height) {
+                rejections.push(format!("x={target_lane}: {reason}"));
+                continue;
+            }
+            if let Some(reason) = plan.planned_cells().into_iter().find_map(|(x, y)| {
+                bt_sibling_plan_blocker(
+                    &plan,
+                    x,
+                    y,
+                    (stem_start_x, stem_start_y),
+                    (target_lane, arrow_y),
+                    canvas,
+                    graph,
+                )
+            }) {
+                rejections.push(format!("x={target_lane}: {reason}"));
+                continue;
+            }
+            return Ok(plan);
+        };
         plan.push_vertical(target_lane, corridor_y, inside_y, style.edge_v);
 
         if target_lane != arrow_x {
@@ -2929,6 +3312,71 @@ pub(super) enum BtRouteOutcome {
     NotApplicable,
 }
 
+/// A BT line out of nested frames to a box right of the outermost one would
+/// climb out through every top wall and come back down (gen_a_183: Freshness
+/// Monitors -> Slack Alert through Lineage Graph). It turns right on the row
+/// above its source instead, crosses the frames' right walls (they count as
+/// lines it may cross) and rises into its target, when that row and the rise
+/// are clear. A source with other lines out keeps its stem for them: this
+/// line leaves its top wall in a column of its own near its right end, so a
+/// line joining that stem cannot be read into its target (dbt Tests -> Slack
+/// Alert).
+#[allow(clippy::too_many_arguments)]
+fn bt_side_exit_plan(
+    from: &Node,
+    exit_subgraphs: &[&str],
+    (stem_x, stem_y): (usize, usize),
+    (arrow_x, arrow_y): (usize, usize),
+    canvas: &Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+    owner_id: String,
+) -> Option<FallbackRoutePlan> {
+    let outer = &graph.get_subgraph(exit_subgraphs.last()?)?.bounds;
+    if arrow_x < outer.x + outer.width {
+        return None;
+    }
+    let shared = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.from == from.id)
+        .count()
+        > 1;
+    let (exit_x, lane_y) = if shared {
+        ((from.x + from.width).checked_sub(3)?, stem_y)
+    } else {
+        (stem_x, stem_y.checked_sub(1)?)
+    };
+    let lane_clear = (exit_x..=arrow_x).all(|x| {
+        canvas.get(x, lane_y) == ' '
+            || super::super::canvas::is_vertical(canvas.get(x, lane_y), style)
+    });
+    if !lane_clear || (arrow_y..lane_y).any(|y| canvas.get(arrow_x, y) != ' ') {
+        return None;
+    }
+    let mut plan = FallbackRoutePlan::new(owner_id, "bt-side-exit-boundary-chain");
+    if shared {
+        plan.push_paint(exit_x, from.y, style.junction_up);
+    } else {
+        plan.push_vertical(stem_x, stem_y, lane_y, style.edge_v);
+    }
+    plan.push_corner(exit_x, lane_y, style.corner_dl);
+    plan.push_horizontal(lane_y, exit_x, arrow_x, style.edge_h);
+    for id in exit_subgraphs {
+        let bounds = &graph.get_subgraph(id)?.bounds;
+        plan.claim_boundary(
+            *id,
+            "right",
+            bounds.x + bounds.width - 1,
+            lane_y,
+            style.edge_h,
+        );
+    }
+    plan.push_corner(arrow_x, lane_y, style.corner_ur);
+    plan.push_vertical(arrow_x, lane_y, arrow_y, style.edge_v);
+    Some(plan)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn route_cross_subgraph_bt(
     from: &Node,
@@ -2941,6 +3389,7 @@ pub(super) fn route_cross_subgraph_bt(
     style: &StyleChars,
     graph: &Graph,
     owner: Option<RouteOwner<'_>>,
+    mut straight_arrow_x: Option<&mut usize>,
 ) -> BtRouteOutcome {
     let coords = OrientedCoords::new(Direction::BT);
     let from_sg = graph.get_node_subgraph(&from.id);
@@ -3012,9 +3461,16 @@ pub(super) fn route_cross_subgraph_bt(
                             owner_id,
                             edge_from_id: &from.id,
                             edge_to_id: &to.id,
+                            movable_arrow: straight_arrow_x.is_some(),
                         }) {
                             Ok(plan) => {
+                                let planned_arrow_x = plan.arrow_attachment.map(|arrow| arrow.x);
                                 if lower_bt_fallback_plan(plan, canvas, style, graph, owner) {
+                                    if let (Some(final_arrow_x), Some(planned_x)) =
+                                        (straight_arrow_x.as_deref_mut(), planned_arrow_x)
+                                    {
+                                        *final_arrow_x = planned_x;
+                                    }
                                     return BtRouteOutcome::Handled;
                                 }
                                 if sibling_parallel_edges == 2
@@ -3135,6 +3591,20 @@ pub(super) fn route_cross_subgraph_bt(
                         } else {
                             base_inside_y
                         }
+                    };
+
+                    // A title-safe portal lane inside the target's flat entry edge
+                    // lands straight when the caller can move its arrowhead.
+                    let arrow_x = match straight_arrow_x {
+                        Some(final_arrow_x)
+                            if entry_x != arrow_x
+                                && straight_entry_x(from, to, entry_x, arrow_x, arrow_y, graph)
+                                    .is_some() =>
+                        {
+                            *final_arrow_x = entry_x;
+                            entry_x
+                        }
+                        _ => arrow_x,
                     };
 
                     draw_line_primary(
@@ -3422,6 +3892,20 @@ pub(super) fn route_cross_subgraph_bt(
         let owner_id = owner
             .map(|route_owner| route_owner.id.to_owned())
             .unwrap_or_else(|| format!("fallback:{}->{}", from.id, to.id));
+        if let Some(plan) = bt_side_exit_plan(
+            from,
+            &exit_subgraphs,
+            (stem_start_x, stem_start_y),
+            (arrow_x, arrow_y),
+            canvas,
+            style,
+            graph,
+            owner_id.clone(),
+        ) {
+            if lower_bt_fallback_plan(plan, canvas, style, graph, owner) {
+                return BtRouteOutcome::Handled;
+            }
+        }
         let mut plan = FallbackRoutePlan::new(owner_id, "bt-exit-boundary-chain");
         let mut current_x = stem_start_x;
         let mut current_y = stem_start_y;
@@ -3510,7 +3994,7 @@ pub(super) fn route_cross_subgraph_bt(
     let border_y = src_sg.bounds.y;
     let max_inside_y = border_y + src_sg.bounds.height.saturating_sub(2);
     let inside_y = border_y.saturating_add(1).min(max_inside_y);
-    let portal_x = preferred_portal_x(
+    let mut portal_x = preferred_portal_x(
         &src_sg.bounds,
         src_sg.title.as_deref(),
         stem_start_x,
@@ -3518,13 +4002,35 @@ pub(super) fn route_cross_subgraph_bt(
         Direction::BT,
         false,
     );
+    // A lane change must not ride the top border row: later portal passes
+    // read each end of such a bridge as its own pierce and the route detaches.
+    // Prefer piercing at the arrow column and changing lanes on the first
+    // interior row (BT titles live on the bottom row, so the top interior row
+    // is title-free) when that row is clear between the two lanes.
+    if portal_x != arrow_x && inside_y > border_y && inside_y < canvas.height {
+        let left_wall = src_sg.bounds.x;
+        let right_wall = src_sg.bounds.x + src_sg.bounds.width.saturating_sub(1);
+        let (lo, hi) = (stem_start_x.min(arrow_x), stem_start_x.max(arrow_x));
+        let arrow_column_is_interior = arrow_x > left_wall && arrow_x < right_wall;
+        let inside_row_is_clear = (lo..=hi)
+            .filter(|&x| x != stem_start_x)
+            .all(|x| x < canvas.width && canvas.get(x, inside_y) == ' ');
+        let border_cell_is_free =
+            arrow_x < canvas.width && !is_textual(canvas.get(arrow_x, border_y));
+        if arrow_column_is_interior && inside_row_is_clear && border_cell_is_free {
+            portal_x = arrow_x;
+        }
+    }
 
-    // Walk up from the source exit to the row just inside the subgraph top border.
+    // Walk up from the source exit to the row just inside the subgraph top
+    // border, stopping under it when the lane changes there: the turn's corner
+    // merged into the run would read as a tee up to the border (gen_a_038).
+    let walk_end_y = inside_y + usize::from(portal_x != stem_start_x);
     draw_line_primary(
         stem_start_x,
         stem_start_y,
         stem_start_x,
-        inside_y,
+        walk_end_y,
         &coords,
         canvas,
         style,
@@ -3566,13 +4072,10 @@ pub(super) fn route_cross_subgraph_bt(
         set_route_edge_char(canvas, portal_x, inside_y, end_corner, style, owner);
     }
 
-    // Continue up across the title row and border. Prefer bridging back toward the
-    // target column on the actual border row so the title row only ever carries
-    // a clean vertical portal pierce.
+    // Continue up across the border. Any remaining lane change happens on the
+    // outside row when one exists above the border, never on the border row.
     let border_row_y = border_y;
     let outside_y = border_y.saturating_sub(1);
-    let bridge_on_border_row = portal_x != arrow_x;
-
     if inside_y > border_row_y {
         draw_line_primary(
             portal_x,
@@ -3587,58 +4090,19 @@ pub(super) fn route_cross_subgraph_bt(
         );
     }
 
-    if !bridge_on_border_row {
-        draw_line_primary(
-            portal_x,
-            border_row_y,
-            portal_x,
-            outside_y,
-            &coords,
-            canvas,
-            style,
-            Some(graph),
-            owner,
-        );
-    }
+    draw_line_primary(
+        portal_x,
+        border_row_y,
+        portal_x,
+        outside_y,
+        &coords,
+        canvas,
+        style,
+        Some(graph),
+        owner,
+    );
 
-    if bridge_on_border_row {
-        let start_corner = if arrow_x > portal_x {
-            style.corner_dl
-        } else {
-            style.corner_dr
-        };
-        set_route_edge_char(canvas, portal_x, border_row_y, start_corner, style, owner);
-
-        let (hx0, hx1) = if arrow_x > portal_x {
-            (portal_x + 1, arrow_x.saturating_sub(1))
-        } else {
-            (arrow_x + 1, portal_x.saturating_sub(1))
-        };
-        for x in hx0..=hx1 {
-            set_route_edge_char(canvas, x, border_row_y, style.edge_h, style, owner);
-        }
-
-        let end_corner = if arrow_x > portal_x {
-            style.corner_ur
-        } else {
-            style.corner_ul
-        };
-        set_route_edge_char(canvas, arrow_x, border_row_y, end_corner, style, owner);
-
-        if arrow_y < border_row_y {
-            draw_line_primary(
-                arrow_x,
-                border_row_y.saturating_sub(1),
-                arrow_x,
-                arrow_y,
-                &coords,
-                canvas,
-                style,
-                Some(graph),
-                owner,
-            );
-        }
-    } else if portal_x != arrow_x && border_y > 0 {
+    if portal_x != arrow_x && border_y > 0 && outside_y > arrow_y {
         // In BT mode, vertical line comes from below (larger y), turns horizontal
         // corner_dl (┌) if turning right, corner_dr (┐) if turning left
         let start_corner = if arrow_x > portal_x {
@@ -3678,7 +4142,7 @@ pub(super) fn route_cross_subgraph_bt(
             Some(graph),
             owner,
         );
-    } else if !bridge_on_border_row {
+    } else {
         draw_line_primary(
             portal_x,
             outside_y,
@@ -3714,7 +4178,6 @@ pub(super) fn route_cross_subgraph_bt(
     if portal_x < canvas.width
         && border_y < canvas.height
         && !is_textual(canvas.get(portal_x, border_y))
-        && !bridge_on_border_row
     {
         set_route_char(canvas, portal_x, border_y, style.edge_v, owner);
     }
@@ -4510,6 +4973,19 @@ pub(super) fn route_divergent_into_subgraph_bt(
         );
     }
 
+    // Pierce the bottom border on the portal lane so the trunk stays connected
+    // from the outside row through the title row to the branch bus.
+    if entry_x < canvas.width && border_y < canvas.height {
+        set_route_edge_char(
+            canvas,
+            entry_x,
+            border_y,
+            coords.primary_edge_char(style),
+            style,
+            Some(fanout_owner),
+        );
+    }
+
     if entry_y < canvas.height {
         set_route_edge_char(
             canvas,
@@ -4600,9 +5076,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        bt_sibling_plan_blocker, bt_sibling_target_lane_candidates, bt_title_safe_entry_y,
-        bt_title_safe_entry_y_with_margin, nearest_title_safe_x, preferred_portal_x,
-        td_sibling_corridor_row,
+        bt_sibling_plan_blocker, bt_sibling_target_lane_candidates, bt_side_exit_plan,
+        bt_title_safe_entry_y, bt_title_safe_entry_y_with_margin, nearest_title_safe_x,
+        preferred_portal_x, td_sibling_corridor_row,
     };
     use crate::graph::{Direction, Graph, Node, Rectangle, Subgraph};
     use crate::portals::{title_margin_for_direction, title_safe_portal_x, PortalColumnPreference};
@@ -4707,6 +5183,58 @@ mod tests {
         assert!(
             candidates.contains(&14),
             "preferred title-safe lane remains eligible"
+        );
+    }
+
+    /// S sits in Inner inside Outer (right walls at x 31 and 39); its one line
+    /// out turns on row 8, above its stem, toward a target arrow at (50, 5).
+    fn side_exit(
+        arrow_x: usize,
+        blocked: Option<(usize, usize, char)>,
+    ) -> Option<FallbackRoutePlan> {
+        let mut graph = Graph::new();
+        let mut source = Node::new("S", "S");
+        (source.x, source.y, source.width, source.height) = (15, 10, 10, 3);
+        graph.nodes.push(source.clone());
+        graph.edges.push(crate::graph::Edge::new("S", "T"));
+        let mut outer = Subgraph::new("Outer", None);
+        outer.bounds = Rectangle::new(10, 0, 30, 20);
+        let mut inner = Subgraph::new("Inner", None);
+        inner.bounds = Rectangle::new(12, 5, 20, 12);
+        graph.add_subgraph(outer);
+        graph.add_subgraph(inner);
+        let mut canvas = Canvas::new(80, 30);
+        if let Some((x, y, ch)) = blocked {
+            canvas.set(x, y, ch);
+        }
+        bt_side_exit_plan(
+            &source,
+            &["Inner", "Outer"],
+            (20, 9),
+            (arrow_x, 5),
+            &canvas,
+            crate::style::BaseStyle::Unicode.chars(),
+            &graph,
+            "edge:0:S->T".to_owned(),
+        )
+    }
+
+    #[test]
+    fn a_bt_side_exit_runs_only_right_on_a_clear_row_and_rise() {
+        let plan = side_exit(50, None).expect("clear row and rise");
+        assert!(plan.claims_cell(31, 8) && plan.claims_cell(39, 8) && plan.claims_cell(50, 6));
+        assert!(side_exit(5, None).is_none(), "a target left of the frames");
+        assert!(
+            side_exit(50, Some((45, 8, '┐'))).is_none(),
+            "a corner on the row"
+        );
+        assert!(
+            side_exit(50, Some((45, 8, '│'))).is_some(),
+            "a line to cross"
+        );
+        assert!(
+            side_exit(50, Some((50, 6, '│'))).is_none(),
+            "a line in the rise"
         );
     }
 

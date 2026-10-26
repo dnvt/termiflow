@@ -1031,7 +1031,11 @@ D2 --> Response
 }
 
 #[test]
-fn rl_sibling_terminal_centerline_candidate_is_rejected_when_it_hits_peer_subgraph() {
+fn rl_sibling_terminal_target_stays_clear_of_the_peer_subgraph() {
+    // The terminal target fed from the data layer never lands on the peer
+    // service layer. (Before LR/RL frames stopped wrapping the frames they
+    // fan into, it sat under the service layer and its centreline candidate
+    // was blocked there; that geometry no longer arises.)
     let input = r#"graph RL
 API[API Gateway]
 subgraph SG1 [Service Layer]
@@ -1054,25 +1058,19 @@ D2 --> Response
     let graph = apply_coarse_layout(parsed.graph, None, CoarseLayoutConfig::default())
         .expect("layout RL sibling terminal fixture");
 
-    let data = graph.get_subgraph("SG2").expect("data layer");
     let service = graph.get_subgraph("SG1").expect("service layer");
     let response = graph.get_node("Response").expect("response builder");
-    let aligned_y = data.bounds.y + data.bounds.height / 2 - response.height / 2;
-    let candidate = crate::geom::Rect::new(response.x, aligned_y, response.width, response.height);
-    let keepout = candidate.inflate(1);
+    let keepout =
+        crate::geom::Rect::new(response.x, response.y, response.width, response.height).inflate(1);
     let overlaps_service = keepout.x < service.bounds.x + service.bounds.width
         && service.bounds.x < keepout.right()
         && keepout.y < service.bounds.y + service.bounds.height
         && service.bounds.y < keepout.bottom();
 
     assert!(
-        overlaps_service,
-        "fixture must keep the RL centerline candidate blocked by the peer subgraph: service={:?} candidate={candidate:?}",
-        service.bounds,
-    );
-    assert_ne!(
-        response.y, aligned_y,
-        "blocked RL candidate must not move the response target onto the peer subgraph"
+        !overlaps_service,
+        "the response target must stay clear of the peer subgraph: service={:?} response=({}, {})",
+        service.bounds, response.x, response.y,
     );
 }
 

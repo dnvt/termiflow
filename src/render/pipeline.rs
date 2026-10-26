@@ -5,9 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 use super::canvas::{self, Canvas};
 use super::critic::{self, analyze, emit_debug_report};
-use super::cycle::{self, route_cycle_edge};
+use super::cycle::{self, route_cycle_edge_on_lane};
 use super::edge::{
-    database_terminal_target_id, plan_boundary_fan_in_scene, plan_bt_multi_entry_scene,
+    database_terminal_target_id, detour_route, detours_in_the_way, edge_path_is_blocked,
+    plan_blocked_edge_detours, plan_boundary_fan_in_scene, plan_bt_multi_entry_scene,
     plan_bt_parallel_scene, plan_bt_parallel_sibling_scene, plan_bt_sibling_scene,
     plan_bt_sibling_target_scene, plan_dense_crossing_scenes, plan_diamond_scenes,
     plan_lr_rl_sibling_chain_scene, plan_lr_rl_sibling_target_scene,
@@ -15,23 +16,28 @@ use super::edge::{
     repair_database_source_border, route_convergent_edges, route_database_intermediate_scene,
     route_dedicated_fan_in_edges, route_divergent_edges, route_fan_in_identity_edges,
     route_vertical_branch_rejoin_identity_edges, route_vertical_fan_in_edges,
-    route_wide_terminal_fan_in_edges,
+    route_wide_terminal_fan_in_edges, settle_blocked_edge_detour_joins,
 };
 use super::labels::{
-    draw_convergent_edge_label, draw_edge_label, draw_routed_edge_label, pad_string,
+    draw_convergent_edge_label, draw_cycle_edge_label, draw_detour_edge_label, draw_edge_label,
+    draw_routed_edge_label, format_edge_label_with_limit, pad_string,
 };
 use super::outcome::RenderOutcome;
 use super::portal_projection::{
     annotate_node_region, annotate_subgraph_region, carve_subgraph_portals_on_canvas,
     finalize_dedicated_portal_markers, finalize_horizontal_side_portals,
-    finalize_td_parallel_portal_seams, reinforce_subgraph_portals,
+    finalize_td_parallel_portal_seams, keep_line_strokes_across_frame_walls,
+    reinforce_subgraph_portals, trim_side_wall_stubs,
 };
-use super::portal_restore::{cleanup_bt_title_rows, draw_subgraph_title, restore_subgraph_borders};
+use super::portal_restore::{
+    cleanup_bt_title_rows, draw_subgraph_title, restore_subgraph_borders,
+    routes_through_foreign_boxes,
+};
 use super::precomputed;
 use super::provenance::{edge_owner_id, refresh_provenance};
 use super::repair::{
     optimize_canvas, stabilize_arrow_shafts, stabilize_degree_mismatches, stabilize_junction_cells,
-    stabilize_routing_topology, stabilize_straight_segments,
+    stabilize_routing_topology_keeping, stabilize_straight_segments,
 };
 use super::scene::{Scene, SceneIntent, SceneRecorder};
 use super::semantic::{CellOwnerKind, CellRole, SemanticFrame};
@@ -54,29 +60,74 @@ pub(super) fn render_with_feedback_with_contract(
     config: &Config,
     endpoint_contract: Option<&crate::layout_render_contract::BtSiblingEndpointContract>,
 ) -> Result<RenderOutcome> {
+    // A blocked edge's outside detour found in another line's way is dropped
+    // and the frame drawn again; each pass drops at least one more.
+    let mut dropped = HashSet::new();
+    let (first, detoured, in_the_way) = render_frame(graph, config, endpoint_contract, &dropped)?;
+    if !detoured {
+        return Ok(first);
+    }
+    let chars = config.composite_style.to_style_chars(BaseStyle::default());
+    if chars.junction_down != chars.corner_dr {
+        let (mut outcome, mut in_the_way) = (first, in_the_way);
+        while !in_the_way.is_empty() {
+            dropped.extend(in_the_way);
+            (outcome, _, in_the_way) = render_frame(graph, config, endpoint_contract, &dropped)?;
+        }
+        return Ok(outcome);
+    }
+    // ASCII draws a tee and a corner both as `+`, which hides whether a
+    // detour is in the way; take the Unicode frames' decision instead.
+    let unicode = Config {
+        composite_style: crate::style::CompositeStyle::default(),
+        ..config.clone()
+    };
+    loop {
+        let (_, _, in_the_way) = render_frame(graph, &unicode, endpoint_contract, &dropped)?;
+        if in_the_way.is_empty() {
+            break;
+        }
+        dropped.extend(in_the_way);
+    }
+    if dropped.is_empty() {
+        return Ok(first);
+    }
+    Ok(render_frame(graph, config, endpoint_contract, &dropped)?.0)
+}
+
+fn render_frame(
+    graph: &Graph,
+    config: &Config,
+    endpoint_contract: Option<&crate::layout_render_contract::BtSiblingEndpointContract>,
+    dropped_detours: &HashSet<usize>,
+) -> Result<(RenderOutcome, bool, HashSet<usize>)> {
     if graph.nodes.is_empty() {
-        return Ok(RenderOutcome {
-            output: String::new(),
-            semantic_frame: SemanticFrame::default(),
-            display_semantic_frame: SemanticFrame::default(),
-            critic_report: critic::CriticReport {
-                score: 0,
-                findings: Vec::new(),
-                notes: vec![
-                    "nodes=0".to_string(),
-                    "edges=0".to_string(),
-                    "subgraphs=0".to_string(),
-                    "frame=0x0".to_string(),
-                    "non_space_cells=0".to_string(),
-                ],
+        return Ok((
+            RenderOutcome {
+                output: String::new(),
+                semantic_frame: SemanticFrame::default(),
+                display_semantic_frame: SemanticFrame::default(),
+                critic_report: critic::CriticReport {
+                    score: 0,
+                    findings: Vec::new(),
+                    notes: vec![
+                        "nodes=0".to_string(),
+                        "edges=0".to_string(),
+                        "subgraphs=0".to_string(),
+                        "frame=0x0".to_string(),
+                        "non_space_cells=0".to_string(),
+                    ],
+                },
+                warnings: Vec::new(),
+                optimized: false,
+                repair_passes: 0,
+                layout_attempts: 0,
+                layout_repairs_applied: 0,
+                portal_trace: super::trace::PortalTrace::default(),
             },
-            warnings: Vec::new(),
-            optimized: false,
-            repair_passes: 0,
-            layout_attempts: 0,
-            layout_repairs_applied: 0,
-            portal_trace: super::trace::PortalTrace::default(),
-        });
+            false,
+            HashSet::new(),
+        ));
     }
 
     let context = crate::runtime::current();
@@ -118,6 +169,108 @@ pub(super) fn render_with_feedback_with_contract(
     height = height
         .max(max_bottom.saturating_add(1).min(max_canvas_height))
         .max(1);
+    let cycle_source_detours = cycle::plan_vertical_cycle_source_detours(graph);
+    let cycle_target_detours = cycle::plan_vertical_cycle_target_detours(graph);
+    let cycle_bottom_exits = cycle::plan_vertical_cycle_bottom_exits(graph, &config.spacing);
+    // A labelled back edge writes its label on its cycle route: in TD/BT on
+    // the leg from the source out to the right gutter, which must hold
+    // `─ label ─`; in LR/RL on or just below the bottom gutter run.
+    let labelled_back_edges = graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| edge.is_back_edge && edge.from != edge.to && edge.label.is_some());
+    for (edge_idx, edge) in labelled_back_edges {
+        let label = format_edge_label_with_limit(
+            edge.label.as_deref().unwrap_or_default(),
+            config.max_edge_label_width,
+        );
+        if is_horizontal {
+            height = (height + 1).min(max_canvas_height);
+        } else if let Some(from) = graph.nodes.iter().find(|node| node.id == edge.from) {
+            // The leg crosses the walls of the frames around the source; the
+            // label goes on its last stretch, past the outermost wall.
+            let leg_start = graph
+                .subgraphs
+                .iter()
+                .filter(|subgraph| graph.is_node_in_subgraph_tree(&from.id, &subgraph.id))
+                .map(|subgraph| subgraph.bounds.x + subgraph.bounds.width)
+                .fold(from.x + from.width, usize::max);
+            // A detoured leg runs along its detour row, past its stub and jog.
+            let leg_start = if cycle_source_detours.contains_key(&edge_idx) {
+                leg_start.max(from.x + from.width + 2)
+            } else {
+                leg_start
+            };
+            let needed = leg_start + display_width(&label) + 4 + 2;
+            width = width.max(needed.min(max_canvas_width));
+        }
+    }
+    let cycle_lanes = cycle::plan_horizontal_cycle_lanes(graph, &config.spacing);
+    if let Some(lowest_lane) = cycle_lanes.values().map(|lane| lane.gutter_y).max() {
+        height = height.max(lowest_lane.saturating_add(2).min(max_canvas_height));
+    }
+    if let Some(lowest_detour) = cycle_source_detours.values().max() {
+        height = height.max(lowest_detour.saturating_add(2).min(max_canvas_height));
+    }
+    if let Some(lowest_exit) = cycle_bottom_exits.values().map(|exit| exit.row).max() {
+        height = height.max(lowest_exit.saturating_add(2).min(max_canvas_height));
+    }
+    // A TD/TB self-loop closes on a row below its box; on the bottom rank
+    // that row lies past the layout, and the loop would not be drawn. Rows
+    // are reserved only for a loop with its node's side cell to itself: its
+    // arrow on a cell another back edge leaves from would hide that exit.
+    let self_loop_offset = config.spacing.row_spacing.max(2);
+    let height_before_self_loops = height;
+    let side_cell_shared = |node_id: &str| {
+        graph
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(idx, edge)| {
+                edge.is_back_edge
+                    && (edge.to == node_id
+                        || (edge.from == node_id && !cycle_bottom_exits.contains_key(idx)))
+            })
+            .count()
+            > 1
+    };
+    if matches!(graph.direction, Direction::TD | Direction::TB) {
+        let lowest_loop = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.is_back_edge && edge.from == edge.to)
+            .filter(|edge| !side_cell_shared(&edge.from))
+            .filter_map(|edge| graph_index.node_by_name(&edge.from))
+            .map(|node| node.bottom_y() + self_loop_offset)
+            .max();
+        if let Some(loop_y) = lowest_loop {
+            height = height.max(loop_y.saturating_add(1).min(max_canvas_height));
+        }
+    }
+    // Back edges whose loops meet each take their own gutter column, two
+    // apart; without the width for them they share the outermost one.
+    // A loop leaves its source on its bottom-exit row when it has one.
+    let mut cycle_source_rows = cycle_source_detours.clone();
+    cycle_source_rows.extend(
+        cycle_bottom_exits
+            .iter()
+            .map(|(&idx, exit)| (idx, exit.row)),
+    );
+    let mut cycle_gutter_insets = cycle::plan_vertical_cycle_gutters(
+        graph,
+        &config.spacing,
+        &cycle_source_rows,
+        &cycle_target_detours,
+    );
+    if let Some(widest) = cycle_gutter_insets.values().max() {
+        let needed = width + 2 * widest;
+        if needed <= max_canvas_width {
+            width = needed;
+        } else {
+            cycle_gutter_insets.clear();
+        }
+    }
 
     let portals_enabled = !context.compatibility.disable_portals;
     let node_rects = node_rects_from_graph(graph);
@@ -245,26 +398,6 @@ pub(super) fn render_with_feedback_with_contract(
         render_stabilization_protected = true;
         planned_scene_edges.extend(0..graph.edges.len());
     }
-    let (diamond_edges, rejected_diamond_edges) = if database_scene_claimed {
-        (HashSet::new(), HashSet::new())
-    } else {
-        plan_diamond_scenes(graph, &mut canvas, &chars)
-    };
-    planned_scene_edges.extend(diamond_edges);
-    let dense_scene_edges = plan_dense_crossing_scenes(graph, &mut canvas, &chars);
-    planned_scene_edges.extend(dense_scene_edges.iter().copied());
-    // A topology match that could not be safely lowered is deliberately
-    // fail-closed.  The edge remains in the evidence as untraced rather than
-    // silently re-entering the generic convergence/divergence passes.
-    planned_scene_edges.extend(rejected_diamond_edges);
-
-    // Get visible nodes
-    let visible_nodes: Vec<&Node> = graph
-        .nodes
-        .iter()
-        .filter(|n| canvas.is_visible(n))
-        .collect();
-
     // Precomputed routes from the layout/routing stages (may be partial).
     let mut routed_edges: HashSet<usize> = HashSet::new();
     for edge_id in layout_snapshot.route_ids() {
@@ -275,11 +408,41 @@ pub(super) fn render_with_feedback_with_contract(
             routed_edges.insert(edge_id.index());
         }
     }
+    let (diamond_edges, rejected_diamond_edges) = if database_scene_claimed {
+        (HashSet::new(), HashSet::new())
+    } else {
+        plan_diamond_scenes(graph, &mut canvas, &chars)
+    };
+    planned_scene_edges.extend(diamond_edges);
+    let dense_scene_edges = plan_dense_crossing_scenes(graph, &mut canvas, &chars);
+    planned_scene_edges.extend(dense_scene_edges.iter().copied());
+    // A plain edge whose straight path would run through another box gets
+    // an outside detour before the generic passes can hide it there.
+    let detour_claimed: HashSet<usize> =
+        planned_scene_edges.union(&routed_edges).copied().collect();
+    let detour_edges =
+        plan_blocked_edge_detours(graph, &mut canvas, &chars, &detour_claimed, dropped_detours);
+    planned_scene_edges.extend(detour_edges.iter().copied());
+    // A topology match that could not be safely lowered stays fail-closed
+    // while its straight path is blocked: the edge remains in the evidence as
+    // untraced rather than re-entering the generic passes that would hide it.
+    // One with a clear path, or now detoured, is drawn rather than dropped.
+    planned_scene_edges.extend(rejected_diamond_edges.into_iter().filter(|&edge_idx| {
+        !detour_edges.contains(&edge_idx) && edge_path_is_blocked(graph, &canvas, edge_idx)
+    }));
+
+    // Get visible nodes
+    let visible_nodes: Vec<&Node> = graph
+        .nodes
+        .iter()
+        .filter(|n| canvas.is_visible(n))
+        .collect();
+
     let has_precomputed_routes = !routed_edges.is_empty();
 
     // Group forward edges by source node for expanded routing
     let mut edges_by_source: HashMap<&str, Vec<&Node>> = HashMap::new();
-    let mut cycle_edges: Vec<(String, &Node, &Node)> = Vec::new();
+    let mut cycle_edges: Vec<(usize, String, &Node, &Node)> = Vec::new();
     let mut sources_with_edges: HashSet<&str> = HashSet::new();
 
     // First pass: group edges by source (skip edges that already have routed paths)
@@ -292,7 +455,7 @@ pub(super) fn render_with_feedback_with_contract(
         };
 
         if e.is_back_edge {
-            cycle_edges.push((edge_owner_id(edge_idx, e), from, to));
+            cycle_edges.push((edge_idx, edge_owner_id(edge_idx, e), from, to));
             continue;
         }
 
@@ -472,65 +635,125 @@ pub(super) fn render_with_feedback_with_contract(
     }
 
     // Draw back-edges (cycle edges) that were not pre-routed.
-    for (owner_id, from, to) in cycle_edges {
-        route_cycle_edge(
+    // Plain ones go first, so a cell a styled back edge shares with them
+    // stays plain.
+    cycle_edges.sort_by_key(|(edge_idx, ..)| {
+        matches!(
+            graph.edges[*edge_idx].kind,
+            EdgeKind::Thick | EdgeKind::Dotted
+        )
+    });
+    // The cells where back edges touch their nodes: in TD/BT every back edge
+    // at a node uses the node's one side cell; in LR/RL each uses its lane's
+    // column below the node.  A marker or head drawn on a cell several back
+    // edges share would label all of them, so those keep the plain arrow.
+    let vertical_cycles = !matches!(graph.direction, Direction::LR | Direction::RL);
+    let end_cells = |edge_idx: usize, from: &Node, to: &Node| {
+        let lane = cycle_lanes.get(&edge_idx);
+        let side = |node: &Node, lane_x: Option<usize>| {
+            let x = if vertical_cycles {
+                usize::MAX
+            } else {
+                lane_x.unwrap_or(node.x + node.width / 2)
+            };
+            (node.id.clone(), x)
+        };
+        (
+            match cycle_bottom_exits.get(&edge_idx) {
+                Some(exit) => (from.id.clone(), exit.x),
+                None => side(from, lane.map(|lane| lane.from_x)),
+            },
+            side(to, lane.map(|lane| lane.to_x)),
+        )
+    };
+    let mut end_cell_uses: HashMap<(String, usize), usize> = HashMap::new();
+    for (edge_idx, _, from, to) in &cycle_edges {
+        let (source, target) = end_cells(*edge_idx, from, to);
+        *end_cell_uses.entry(source.clone()).or_default() += 1;
+        if target != source {
+            *end_cell_uses.entry(target).or_default() += 1;
+        }
+    }
+    let shared = |cell: &(String, usize)| end_cell_uses.get(cell).is_some_and(|&uses| uses > 1);
+    // Boxes a back edge's loop may close beside; frames would have it cross
+    // their walls, so a graph with frames keeps the right gutter.
+    let local_cycle_boxes: Option<Vec<crate::geom::Rect>> = graph.subgraphs.is_empty().then(|| {
+        graph
+            .nodes
+            .iter()
+            .map(|node| {
+                crate::geom::Rect::new(node.x, node.y, node.width, node.bottom_y() - node.y)
+            })
+            .collect()
+    });
+    for (edge_idx, owner_id, from, to) in cycle_edges {
+        // A self-loop on a shared side cell that had no row before the loop
+        // rows were reserved stays undrawn, as it was.
+        if from.id == to.id
+            && matches!(graph.direction, Direction::TD | Direction::TB)
+            && side_cell_shared(&from.id)
+            && from.bottom_y() + self_loop_offset >= height_before_self_loops
+        {
+            continue;
+        }
+        // A thick or dotted back edge keeps its kind along the cycle route.
+        let kind = graph.edges[edge_idx].kind;
+        let (source, target) = end_cells(edge_idx, from, to);
+        let end_kind = match kind {
+            EdgeKind::Bidirectional if shared(&source) => EdgeKind::Arrow,
+            EdgeKind::CircleEnd | EdgeKind::CrossEnd | EdgeKind::Open if shared(&target) => {
+                EdgeKind::Arrow
+            }
+            kind => kind,
+        };
+        let mut cycle_chars = chars;
+        if matches!(kind, EdgeKind::Thick | EdgeKind::Dotted) {
+            let kind_chars = super::edge::style_for_edge_kind(&chars, kind);
+            cycle_chars.back_h = kind_chars.edge_h;
+            cycle_chars.back_v = kind_chars.edge_v;
+        }
+        route_cycle_edge_on_lane(
             from,
             to,
             &mut canvas,
-            &chars,
+            &cycle_chars,
             &config.spacing,
             graph.direction,
             Some(owner_id.as_str()),
+            end_kind,
+            cycle_lanes.get(&edge_idx).copied(),
+            cycle_source_detours.get(&edge_idx).copied(),
+            cycle_target_detours.get(&edge_idx).map(Vec::as_slice),
+            cycle_bottom_exits.get(&edge_idx).copied(),
+            cycle_gutter_insets.get(&edge_idx).copied().unwrap_or(0),
+            local_cycle_boxes.as_deref(),
         );
     }
+
+    settle_blocked_edge_detour_joins(&mut canvas, &chars);
 
     canvas.set_write_stage("edge-crossing-finalize");
     canvas.finalize_explicit_crossings(&chars);
 
     ensure_vertical_edge_label_width(&mut canvas, graph, config);
 
-    // Generic horizontal fanout routes share a collector immediately outside
-    // the source. Keep the source's shape-owned wall distinct from that
-    // collector; single-edge ports and planned/dense routes retain their
-    // existing junction ownership.
-    let horizontal_fanout_sources: HashSet<&str> =
-        if matches!(graph.direction, Direction::LR | Direction::RL) {
-            source_ids
-                .iter()
-                .copied()
-                .filter(|source_id| {
-                    edges_by_source.get(*source_id).is_some_and(|targets| {
-                        let mut edge_kinds = Vec::new();
-                        let unprocessed_count = targets
-                            .iter()
-                            .filter(|target| {
-                                !processed_edges.contains(&(*source_id, target.id.as_str()))
-                            })
-                            .filter_map(|target| {
-                                graph.edges.iter().find(|edge| {
-                                    !edge.is_back_edge
-                                        && edge.from == **source_id
-                                        && edge.to == target.id
-                                })
-                            })
-                            .inspect(|edge| {
-                                if !edge_kinds.contains(&edge.kind) {
-                                    edge_kinds.push(edge.kind);
-                                }
-                            })
-                            .count();
-                        unprocessed_count >= 2 && edge_kinds.len() >= 2
-                    })
-                })
-                .collect()
-        } else {
-            HashSet::new()
-        };
-
     // Draw edge labels (route-aware for precomputed paths, heuristic for fallback paths)
     canvas.set_write_stage("edge-label");
     let mut edge_label_placements = Vec::new();
-    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+    // Back-edge labels go last so they never displace a forward edge's label.
+    let label_order = graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| !edge.is_back_edge)
+        .chain(
+            graph
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(_, edge)| edge.is_back_edge),
+        );
+    for (edge_idx, edge) in label_order {
         let Some(label) = edge.label.as_deref() else {
             continue;
         };
@@ -541,6 +764,27 @@ pub(super) fn render_with_feedback_with_contract(
             continue;
         };
         if !canvas.is_visible(from) || !canvas.is_visible(to) {
+            continue;
+        }
+
+        // A detoured edge's label goes on its detour.
+        let detour = detour_edges
+            .contains(&edge_idx)
+            .then(|| detour_route(graph, &canvas, edge_idx))
+            .flatten();
+        if let Some(route) = detour.as_ref() {
+            if let Some(placement) = draw_detour_edge_label(
+                &mut canvas,
+                route,
+                label,
+                &chars,
+                graph,
+                config,
+                edge_idx,
+                edge,
+            ) {
+                edge_label_placements.push(placement);
+            }
             continue;
         }
 
@@ -560,6 +804,23 @@ pub(super) fn render_with_feedback_with_contract(
             continue;
         }
 
+        if edge.is_back_edge {
+            if let Some(placement) = draw_cycle_edge_label(
+                &mut canvas,
+                from,
+                graph,
+                label,
+                graph.direction,
+                &chars,
+                config,
+                edge_idx,
+                edge,
+            ) {
+                edge_label_placements.push(placement);
+                continue;
+            }
+        }
+
         // Fall back to heuristic placement for edges without precomputed routes
         let is_convergent = convergent_targets.contains(to.id.as_str());
         if is_convergent {
@@ -573,6 +834,7 @@ pub(super) fn render_with_feedback_with_contract(
                 config,
                 edge_idx,
                 edge,
+                graph,
             ) {
                 edge_label_placements.push(placement);
             }
@@ -615,7 +877,7 @@ pub(super) fn render_with_feedback_with_contract(
         } else {
             &node.label_lines
         };
-        shapes::draw_node_with_fanout_policy(
+        shapes::draw_node_with_terminal_entry_policy(
             &mut canvas,
             node.x,
             node.y,
@@ -625,7 +887,6 @@ pub(super) fn render_with_feedback_with_contract(
             node.shape,
             &chars,
             graph.direction,
-            horizontal_fanout_sources.contains(node.id.as_str()),
             database_terminal_target == Some(node.id.as_str()),
         );
         annotate_node_region(&mut canvas, node, &chars);
@@ -644,11 +905,6 @@ pub(super) fn render_with_feedback_with_contract(
             continue;
         };
         if !canvas.is_visible(from) {
-            continue;
-        }
-        if horizontal_fanout_sources.contains(from.id.as_str())
-            && shapes::supports_horizontal_fanout_wall(from.shape)
-        {
             continue;
         }
         // Diamond points and asymmetric Flag contours are shape-owned, not
@@ -711,6 +967,28 @@ pub(super) fn render_with_feedback_with_contract(
             }
         }
 
+        // An even-width box has two centre columns, and a fan-in may leave it
+        // on the left one to run straight into its merge trunk. Mark the stem
+        // that actually leaves the box.
+        if matches!(graph.direction, Direction::TD | Direction::TB)
+            && from.width.is_multiple_of(2)
+            && junction_x == from.center_x()
+            && junction_x > from.x + 1
+        {
+            let below_y = junction_y.saturating_add(1);
+            let leaves = |x: usize| {
+                below_y < canvas.height && {
+                    let c = canvas.get(x, below_y);
+                    canvas::is_vertical(c, &chars)
+                        || canvas::is_junction(c, &chars)
+                        || canvas::is_arrow(c)
+                }
+            };
+            if !leaves(junction_x) && leaves(junction_x - 1) {
+                junction_x -= 1;
+            }
+        }
+
         if graph.direction == Direction::BT {
             let above_y = from.y.saturating_sub(1);
             if above_y < canvas.height && from.x + 2 <= from.x + from.width.saturating_sub(1) {
@@ -747,6 +1025,233 @@ pub(super) fn render_with_feedback_with_contract(
             );
             source_junction_records.push((junction_x, junction_y, format!("junction:{source_id}")));
         }
+        // A BT line that leaves its source's top wall in a column of its own
+        // (a side exit out of nested frames) gets a port of its own too.
+        let side_ports: Vec<usize> = (from.x + 1..(from.x + from.width).saturating_sub(1))
+            .filter(|&x| {
+                canvas.fallback_route_strategy_claims_cell("bt-side-exit-boundary-chain", x, from.y)
+            })
+            .collect();
+        for x in side_ports {
+            let mut port_scene = Scene::new();
+            port_scene.push(SceneIntent::edge_inferred(x, junction_y, junction_char));
+            port_scene.resolve_with_recorder(
+                &mut canvas,
+                &chars,
+                &mut scene_recorder,
+                "source-junction",
+            );
+            source_junction_records.push((x, junction_y, format!("junction:{source_id}")));
+        }
+    }
+
+    // Back edges leave their source through the cross-axis side (bottom in
+    // LR/RL, right wall in TD/BT) and start outside the contour, so the box
+    // redraw leaves a plain border where the route departs. Mark that exit
+    // with the same junction a forward exit gets, but only when the border
+    // cell is still plain and the route really continues right outside it.
+    let mut back_exits: Vec<(&str, usize, usize, char)> = Vec::new();
+    for (edge_idx, edge) in graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| edge.is_back_edge && edge.from != edge.to)
+    {
+        let Some(from) = graph_index.node_by_name(&edge.from) else {
+            continue;
+        };
+        // LR/RL exits leave through the bottom border, which other shapes
+        // (a hexagon) also draw flat; the glyph checks below guard the cell.
+        let horizontal = matches!(graph.direction, Direction::LR | Direction::RL);
+        if !canvas.is_visible(from) || !(horizontal || from.shape.has_flat_vertical_entry()) {
+            continue;
+        }
+        let exit = match graph.direction {
+            // A lane over the top leaves through the top border instead.
+            Direction::LR | Direction::RL
+                if cycle_lanes.get(&edge_idx).is_some_and(|lane| lane.above) =>
+            {
+                let x = cycle_lanes[&edge_idx].from_x;
+                let border_y = from.y;
+                (border_y > 0
+                    && canvas::is_horizontal(canvas.get(x, border_y), &chars)
+                    && canvas::is_vertical(canvas.get(x, border_y - 1), &chars))
+                .then_some((x, border_y, chars.junction_up))
+            }
+            Direction::LR | Direction::RL => {
+                let x = cycle_lanes
+                    .get(&edge_idx)
+                    .map_or(from.x + from.width / 2, |lane| lane.from_x);
+                let border_y = from.bottom_y().saturating_sub(1);
+                (canvas::is_horizontal(canvas.get(x, border_y), &chars)
+                    && canvas::is_vertical(canvas.get(x, from.bottom_y()), &chars))
+                .then_some((x, border_y, chars.junction_down))
+            }
+            Direction::TD | Direction::TB if cycle_bottom_exits.contains_key(&edge_idx) => {
+                let x = cycle_bottom_exits[&edge_idx].x;
+                let border_y = from.bottom_y().saturating_sub(1);
+                (canvas::is_horizontal(canvas.get(x, border_y), &chars)
+                    && canvas::is_vertical(canvas.get(x, from.bottom_y()), &chars))
+                .then_some((x, border_y, chars.junction_down))
+            }
+            Direction::BT if cycle_bottom_exits.contains_key(&edge_idx) => {
+                let x = cycle_bottom_exits[&edge_idx].x;
+                (canvas::is_horizontal(canvas.get(x, from.y), &chars)
+                    && canvas::is_vertical(canvas.get(x, from.y.saturating_sub(1)), &chars))
+                .then_some((x, from.y, chars.junction_up))
+            }
+            Direction::TD | Direction::TB | Direction::BT => {
+                let border_x = from.x + from.width.saturating_sub(1);
+                let y = cycle::center_y(from);
+                (canvas::is_vertical(canvas.get(border_x, y), &chars)
+                    && canvas::is_horizontal(canvas.get(from.x + from.width, y), &chars))
+                .then_some((border_x, y, chars.junction_right))
+            }
+        };
+        if let Some((x, y, junction)) = exit {
+            back_exits.push((edge.from.as_str(), x, y, junction));
+        }
+    }
+    back_exits.sort_unstable();
+    back_exits.dedup();
+    for (source_id, x, y, junction) in back_exits {
+        let mut back_exit_scene = Scene::new();
+        back_exit_scene.push(SceneIntent::edge_inferred(x, y, junction));
+        back_exit_scene.resolve_with_recorder(
+            &mut canvas,
+            &chars,
+            &mut scene_recorder,
+            "source-junction",
+        );
+        source_junction_records.push((x, y, format!("junction:{source_id}")));
+    }
+
+    // A bidirectional edge drawn by the renderer's fan-in/fan-out lowerers
+    // gets only its target head. When it is the source's only outgoing edge,
+    // the stem right outside the source belongs to it alone, so the reverse
+    // head can sit on that stem exactly as a precomputed route draws it.
+    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+        if edge.kind != EdgeKind::Bidirectional
+            || edge.is_back_edge
+            || edge.from == edge.to
+            || routed_edges.contains(&edge_idx)
+            || graph
+                .edges
+                .iter()
+                .filter(|other| !other.is_back_edge && other.from == edge.from)
+                .count()
+                != 1
+            // Two-way edges merged into one target bus would read as a
+            // connection between their sources once both carry a head.
+            || graph.edges.iter().enumerate().any(|(other_idx, other)| {
+                other_idx != edge_idx
+                    && !other.is_back_edge
+                    && other.to == edge.to
+                    && other.kind == EdgeKind::Bidirectional
+            })
+        {
+            continue;
+        }
+        let Some(from) = graph_index.node_by_name(&edge.from) else {
+            continue;
+        };
+        if !canvas.is_visible(from) {
+            continue;
+        }
+        let right = from.x + from.width;
+        let bottom = from.bottom_y();
+        // (exit cells along the source side, step to the next stem cell, head)
+        let (exits, beyond, head): (Vec<(usize, usize)>, (isize, isize), char) =
+            match graph.direction {
+                Direction::TD | Direction::TB => (
+                    (from.x + 1..right.saturating_sub(1))
+                        .map(|x| (x, bottom))
+                        .collect(),
+                    (0, 1),
+                    chars.arrow_up,
+                ),
+                Direction::BT if from.y > 0 => (
+                    (from.x + 1..right.saturating_sub(1))
+                        .map(|x| (x, from.y - 1))
+                        .collect(),
+                    (0, -1),
+                    chars.arrow_down,
+                ),
+                Direction::LR => (
+                    (from.y + 1..bottom.saturating_sub(1))
+                        .map(|y| (right, y))
+                        .collect(),
+                    (1, 0),
+                    chars.arrow_left,
+                ),
+                Direction::RL if from.x > 0 => (
+                    (from.y + 1..bottom.saturating_sub(1))
+                        .map(|y| (from.x - 1, y))
+                        .collect(),
+                    (-1, 0),
+                    chars.arrow_right,
+                ),
+                _ => continue,
+            };
+        let vertical_flow = beyond.0 == 0;
+        let stems: Vec<(usize, usize)> = exits
+            .into_iter()
+            .filter(|&(x, y)| {
+                let glyph = canvas.get(x, y);
+                if vertical_flow {
+                    canvas::is_vertical(glyph, &chars)
+                } else {
+                    canvas::is_horizontal(glyph, &chars)
+                }
+            })
+            .collect();
+        let [(x, y)] = stems.as_slice() else {
+            continue;
+        };
+        let (next_x, next_y) = (*x as isize + beyond.0, *y as isize + beyond.1);
+        if next_x < 0 || next_y < 0 {
+            continue;
+        }
+        let next = canvas.get(next_x as usize, next_y as usize);
+        if next == ' ' || canvas::is_arrow(next) {
+            continue;
+        }
+        canvas.set_owned_with_role(
+            *x,
+            *y,
+            head,
+            CellOwnerKind::EdgeSegment,
+            &edge_owner_id(edge_idx, edge),
+            CellRole::ArrowTip,
+            super::edge::ROUTE_Z_INDEX,
+        );
+    }
+
+    // An open back edge has no head; its line ended flat against the target's
+    // border. Tee it into the border, as its source end already is.
+    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+        if !edge.is_back_edge || edge.kind != EdgeKind::Open || edge.from == edge.to {
+            continue;
+        }
+        let Some(to) = graph_index.node_by_name(&edge.to) else {
+            continue;
+        };
+        if !matches!(to.shape, NodeShape::Rectangle | NodeShape::Rounded) {
+            continue;
+        }
+        for (x, y, tee) in
+            open_back_edge_end_tees(&canvas, to, &edge_owner_id(edge_idx, edge), &chars)
+        {
+            let mut tee_scene = Scene::new();
+            tee_scene.push(SceneIntent::edge_inferred(x, y, tee));
+            tee_scene.resolve_with_recorder(
+                &mut canvas,
+                &chars,
+                &mut scene_recorder,
+                "source-junction",
+            );
+            source_junction_records.push((x, y, format!("junction:{}", to.id)));
+        }
     }
 
     canvas.set_write_stage("border-restore");
@@ -761,13 +1266,16 @@ pub(super) fn render_with_feedback_with_contract(
 
     // Redraw subgraph titles last so portals/edges cannot corrupt the text.
     canvas.set_write_stage("title-redraw");
+    let blocked_routes = routes_through_foreign_boxes(&canvas, graph);
     for subgraph in &graph.subgraphs {
         draw_subgraph_title(
             &mut canvas,
+            &subgraph.id,
             &subgraph.bounds,
             subgraph.title.as_deref(),
             graph.direction,
             td_sibling_title_gutter(graph, &subgraph.id),
+            &blocked_routes,
         );
     }
     if graph.direction == Direction::BT {
@@ -899,7 +1407,7 @@ pub(super) fn render_with_feedback_with_contract(
     canvas.set_write_stage("stabilize");
     if !render_stabilization_protected
         && optimize_render
-        && stabilize_routing_topology(&mut canvas, &chars)
+        && stabilize_routing_topology_keeping(&mut canvas, &chars, &frame_corners(graph))
     {
         canvas.set_write_stage("provenance");
         refresh_provenance(
@@ -955,7 +1463,9 @@ pub(super) fn render_with_feedback_with_contract(
         &edge_label_placements,
     );
     canvas.set_write_stage("stabilize");
-    if !render_stabilization_protected && stabilize_routing_topology(&mut canvas, &chars) {
+    if !render_stabilization_protected
+        && stabilize_routing_topology_keeping(&mut canvas, &chars, &frame_corners(graph))
+    {
         canvas.set_write_stage("provenance");
         refresh_provenance(
             &mut canvas,
@@ -1023,6 +1533,14 @@ pub(super) fn render_with_feedback_with_contract(
     canvas.set_write_stage("portal-seam-finalize");
     finalize_td_parallel_portal_seams(&mut canvas, graph, &portal_slots, &chars, subgraph_chars);
 
+    canvas.set_write_stage("wall-stub-trim");
+    trim_side_wall_stubs(&mut canvas, graph, &chars, subgraph_chars);
+
+    canvas.set_write_stage("wall-stroke");
+    keep_line_strokes_across_frame_walls(&mut canvas, graph, &chars);
+
+    let in_the_way = detours_in_the_way(graph, &canvas, &detour_edges);
+
     let portal_trace = super::trace::PortalTrace::from_canvas(
         graph,
         &portal_slots,
@@ -1042,18 +1560,96 @@ pub(super) fn render_with_feedback_with_contract(
         pad_string(&canvas.to_string(), config.pad)
     };
 
-    Ok(RenderOutcome {
-        output,
-        semantic_frame,
-        display_semantic_frame,
-        critic_report,
-        warnings: graph.warnings.clone(),
-        optimized: optimize_render,
-        repair_passes: applied_repair_passes,
-        layout_attempts: 1,
-        layout_repairs_applied: 0,
-        portal_trace,
-    })
+    Ok((
+        RenderOutcome {
+            output,
+            semantic_frame,
+            display_semantic_frame,
+            critic_report,
+            warnings: graph.warnings.clone(),
+            optimized: optimize_render,
+            repair_passes: applied_repair_passes,
+            layout_attempts: 1,
+            layout_repairs_applied: 0,
+            portal_trace,
+        },
+        !detour_edges.is_empty(),
+        in_the_way,
+    ))
+}
+
+/// The tees for `node`'s border wherever the line of the edge owned by
+/// `owner_id` touches it from outside: a line along the border's normal
+/// (horizontal beside a side, vertical above or below) ends there.
+fn open_back_edge_end_tees(
+    canvas: &Canvas,
+    node: &Node,
+    owner_id: &str,
+    chars: &crate::style::StyleChars,
+) -> Vec<(usize, usize, char)> {
+    let (left, top) = (node.x, node.y);
+    let right = node.x + node.width.saturating_sub(1);
+    let bottom = node.y + node.height.max(BOX_HEIGHT).saturating_sub(1);
+    let owned_line = |canvas: &Canvas, x: usize, y: usize, horizontal: bool| {
+        let cell = canvas.get(x, y);
+        let line = if horizontal {
+            canvas::is_horizontal(cell, chars)
+        } else {
+            canvas::is_vertical(cell, chars)
+        };
+        line && canvas
+            .get_meta(x, y)
+            .and_then(|meta| meta.owner_id.as_deref())
+            == Some(owner_id)
+    };
+    let mut tees = Vec::new();
+    for y in top + 1..bottom {
+        if owned_line(canvas, right + 1, y, true)
+            && canvas::is_vertical(canvas.get(right, y), chars)
+        {
+            tees.push((right, y, chars.junction_right));
+        }
+        if left > 0
+            && owned_line(canvas, left - 1, y, true)
+            && canvas::is_vertical(canvas.get(left, y), chars)
+        {
+            tees.push((left, y, chars.junction_left));
+        }
+    }
+    for x in left + 1..right {
+        if owned_line(canvas, x, bottom + 1, false)
+            && canvas::is_horizontal(canvas.get(x, bottom), chars)
+        {
+            tees.push((x, bottom, chars.junction_down));
+        }
+        if top > 0
+            && owned_line(canvas, x, top - 1, false)
+            && canvas::is_horizontal(canvas.get(x, top), chars)
+        {
+            tees.push((x, top, chars.junction_up));
+        }
+    }
+    tees
+}
+
+/// The four corner cells of every frame.
+fn frame_corners(graph: &Graph) -> HashSet<(usize, usize)> {
+    graph
+        .subgraphs
+        .iter()
+        .filter(|subgraph| subgraph.bounds.is_valid())
+        .flat_map(|subgraph| {
+            let bounds = &subgraph.bounds;
+            let right = bounds.x + bounds.width.saturating_sub(1);
+            let bottom = bounds.y + bounds.height.saturating_sub(1);
+            [
+                (bounds.x, bounds.y),
+                (right, bounds.y),
+                (bounds.x, bottom),
+                (right, bottom),
+            ]
+        })
+        .collect()
 }
 
 fn canvas_has_explicit_route_cell(canvas: &Canvas, x: usize, y: usize) -> bool {

@@ -375,6 +375,24 @@ pub(crate) fn title_safe_portal_x_with_text_padding_sides(
     )
 }
 
+/// A TD/TB frame too narrow for the full title margin still takes the column
+/// just past the title with a smaller margin, one column clear of the right
+/// wall, rather than a line down through the title text.
+fn narrow_title_lane(
+    direction: Direction,
+    end: usize,
+    title_margin: usize,
+    max: usize,
+) -> Option<usize> {
+    if !matches!(direction, Direction::TD | Direction::TB) {
+        return None;
+    }
+    (0..title_margin)
+        .rev()
+        .map(|margin| end + margin + 1)
+        .find(|&lane| lane < max)
+}
+
 fn title_safe_portal_x_for_span(
     left_x: usize,
     width: usize,
@@ -418,14 +436,14 @@ fn title_safe_portal_x_for_span(
             }
             (Some(left), None) => left,
             (None, Some(right)) => right,
-            (None, None) => x,
+            (None, None) => narrow_title_lane(direction, end, title_margin, max).unwrap_or(x),
         }
     } else if protected_end < max {
         protected_end + 1
     } else if protected_start > min {
         protected_start.saturating_sub(1)
     } else {
-        x
+        narrow_title_lane(direction, end, title_margin, max).unwrap_or(x)
     };
 
     // A vertical cross-subgraph route can approach a target node one column
@@ -468,7 +486,10 @@ pub(crate) fn bt_target_portal_x_avoiding_single_cell_turn_with_source_center(
         title_margin,
         PortalColumnPreference::Directional,
     );
-    let initial_is_quiet = initial.abs_diff(source_x) >= 3 && initial.abs_diff(arrow_x) >= 3;
+    // A lane shared by the source stem and the arrow has no turn at all.
+    let straight_through = initial == source_x && initial == arrow_x;
+    let initial_is_quiet =
+        straight_through || (initial.abs_diff(source_x) >= 3 && initial.abs_diff(arrow_x) >= 3);
     if initial_is_quiet {
         return initial;
     }

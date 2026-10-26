@@ -1637,6 +1637,13 @@
       "stderr_contains": []
     },
     {
+      "name": "subgraph_single_bt_long_title",
+      "kind": "success",
+      "direction": "BT",
+      "stderr_policy": "empty",
+      "stderr_contains": []
+    },
+    {
       "name": "subgraph_single_lr",
       "kind": "success",
       "direction": "LR",

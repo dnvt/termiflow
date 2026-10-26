@@ -3,6 +3,8 @@
 //! Provides the core `Canvas` type and character classification utilities
 //! for detecting line types, junctions, and resolving overlapping characters.
 
+use std::collections::HashMap;
+
 use crate::graph::Node;
 use crate::style::{display_char_width, StyleChars, ASCII_CHARS, UNICODE_CHARS};
 
@@ -282,11 +284,18 @@ pub struct Canvas {
     meta_grid: Vec<Vec<CellMeta>>,
     explicit_crossings_enabled: bool,
     explicit_crossing_cells: Vec<(usize, usize)>,
+    fallback_crossing_writers: Vec<(String, String, usize, usize)>,
     write_stage_grid: Vec<Vec<String>>,
     current_write_stage: String,
     fallback_route_plans: Vec<FallbackRoutePlan>,
     fallback_route_evidence: Vec<FallbackRoutePlan>,
     fallback_route_rejections: Vec<FallbackRouteRejection>,
+    /// Reserved routes, by owner id, that refused a route write to a cell
+    /// they hold, with that cell and the writer.
+    refused_route_writes: Vec<(String, usize, usize, Option<String>)>,
+    /// Subgraph titles the final title pass slid off a line crossing their
+    /// band: subgraph id -> new start column of the formatted title.
+    moved_titles: HashMap<String, usize>,
 }
 
 impl Canvas {
@@ -300,11 +309,14 @@ impl Canvas {
             meta_grid: vec![vec![CellMeta::default(); width]; height],
             explicit_crossings_enabled: false,
             explicit_crossing_cells: Vec::new(),
+            fallback_crossing_writers: Vec::new(),
             write_stage_grid: vec![vec!["init".to_owned(); width]; height],
             current_write_stage: "init".to_owned(),
             fallback_route_plans: Vec::new(),
             fallback_route_evidence: Vec::new(),
             fallback_route_rejections: Vec::new(),
+            refused_route_writes: Vec::new(),
+            moved_titles: HashMap::new(),
         }
     }
 
@@ -630,6 +642,130 @@ impl Canvas {
         }
     }
 
+    /// A validated reserved run admits only a perpendicular interior crossing.
+    /// Keep it separate from a junction and recheck its four arms at finalization.
+    pub(crate) fn set_explicit_route_crossing(
+        &mut self,
+        x: usize,
+        y: usize,
+        s: &StyleChars,
+        owner: &str,
+    ) {
+        self.set_owned_with_role(
+            x,
+            y,
+            s.cross_end,
+            CellOwnerKind::EdgeSegment,
+            owner,
+            CellRole::Junction,
+            5,
+        );
+        self.explicit_crossing_cells.push((x, y));
+    }
+
+    pub(crate) fn allow_fallback_route_crossing(
+        &mut self,
+        holder: &str,
+        writer: &str,
+        x: usize,
+        y: usize,
+    ) {
+        self.fallback_crossing_writers
+            .push((holder.into(), writer.into(), x, y));
+    }
+
+    /// Admit an exact writer across one foreign straight reservation. The
+    /// writer's own plan may already be recorded before its cells are painted.
+    pub(crate) fn share_planned_fallback_crossing(
+        &mut self,
+        x: usize,
+        y: usize,
+        run: super::fallback_route::FallbackAxis,
+        writer: &str,
+    ) -> bool {
+        let mut holders = self
+            .fallback_route_plans
+            .iter()
+            .enumerate()
+            .filter(|(_, plan)| {
+                plan.claims_cell(x, y)
+                    && plan.owner_id != writer
+                    && !plan.covered_edge_ids.iter().any(|id| id == writer)
+            });
+        let (Some((index, plan)), None) = (holders.next(), holders.next()) else {
+            return false;
+        };
+        if !self
+            .fallback_crossing_writers
+            .iter()
+            .any(|(holder, expected, cx, cy)| {
+                holder == &plan.owner_id && expected == writer && *cx == x && *cy == y
+            })
+        {
+            return false;
+        }
+        if !self
+            .get_meta(x, y)
+            .filter(|meta| meta.z_index > 0)
+            .and_then(|meta| meta.owner_id.as_deref())
+            .is_some_and(|owner| {
+                owner == plan.owner_id || plan.covered_edge_ids.iter().any(|id| id == owner)
+            })
+        {
+            return false;
+        }
+        let on_run = plan.segments.iter().any(|segment| {
+            segment.axis == run
+                && match run {
+                    super::fallback_route::FallbackAxis::Horizontal => {
+                        segment.from.y == y
+                            && x > segment.from.x.min(segment.to.x)
+                            && x < segment.from.x.max(segment.to.x)
+                    }
+                    super::fallback_route::FallbackAxis::Vertical => {
+                        segment.from.x == x
+                            && y > segment.from.y.min(segment.to.y)
+                            && y < segment.from.y.max(segment.to.y)
+                    }
+                }
+        });
+        let turns = plan
+            .corners
+            .iter()
+            .map(|corner| corner.point)
+            .chain(plan.paints.iter().map(|paint| paint.point))
+            .any(|point| point.x == x && point.y == y)
+            || plan
+                .boundary_claims
+                .iter()
+                .any(|claim| claim.x == x && claim.y == y);
+        if !on_run || turns {
+            return false;
+        }
+        self.fallback_route_plans[index].allow_shared_cell(x, y);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn planned_fallback_crossing_allowed(
+        &self,
+        x: usize,
+        y: usize,
+        writer: &str,
+    ) -> bool {
+        self.fallback_crossing_writers
+            .iter()
+            .any(|(holder, expected, cx, cy)| {
+                expected == writer
+                    && *cx == x
+                    && *cy == y
+                    && self
+                        .fallback_route_plans
+                        .iter()
+                        .any(|p| p.owner_id == *holder && p.claims_cell(x, y))
+            })
+    }
+
     fn is_interior_crossing(&self, x: usize, y: usize, s: &StyleChars) -> bool {
         let neighbors = [
             self.get(x.saturating_sub(1), y),
@@ -731,6 +867,115 @@ impl Canvas {
         self.fallback_route_plans.push(plan);
     }
 
+    /// Note that a route write at `(x, y)` by `writer` was refused because
+    /// another reserved route holds the cell.
+    pub(crate) fn note_refused_route_write(&mut self, x: usize, y: usize, writer: Option<&str>) {
+        let holders: Vec<(String, usize, usize, Option<String>)> = self
+            .fallback_route_plans
+            .iter()
+            .filter(|plan| {
+                plan.claims_cell(x, y)
+                    && !writer.is_some_and(|owner| {
+                        owner == plan.owner_id
+                            || plan.covered_edge_ids.iter().any(|edge_id| edge_id == owner)
+                    })
+            })
+            .map(|plan| (plan.owner_id.clone(), x, y, writer.map(str::to_owned)))
+            .collect();
+        self.refused_route_writes.extend(holders);
+    }
+
+    /// The reserved routes, by owner id, that refused a route write to a cell
+    /// they hold, with that cell and the writer.
+    pub(crate) fn refused_route_writes(&self) -> &[(String, usize, usize, Option<String>)] {
+        &self.refused_route_writes
+    }
+
+    /// Let a line cross the straight run of a reserved `strategy` route at
+    /// `(x, y)` at a right angle: when that route alone holds the cell, and
+    /// holds it only as part of a straight run along `run`, the cell is
+    /// recorded as shared with the crossing line and true is returned.
+    pub(crate) fn share_fallback_route_crossing(
+        &mut self,
+        x: usize,
+        y: usize,
+        run: super::fallback_route::FallbackAxis,
+        strategy: &str,
+    ) -> bool {
+        let mut holders = self
+            .fallback_route_plans
+            .iter()
+            .enumerate()
+            .filter(|(_, plan)| plan.claims_cell(x, y));
+        let (Some((index, plan)), None) = (holders.next(), holders.next()) else {
+            return false;
+        };
+        let on_run = plan.segments.iter().any(|segment| {
+            segment.axis == run
+                && match run {
+                    super::fallback_route::FallbackAxis::Horizontal => {
+                        segment.from.y == y
+                            && x > segment.from.x.min(segment.to.x)
+                            && x < segment.from.x.max(segment.to.x)
+                    }
+                    super::fallback_route::FallbackAxis::Vertical => {
+                        segment.from.x == x
+                            && y > segment.from.y.min(segment.to.y)
+                            && y < segment.from.y.max(segment.to.y)
+                    }
+                }
+        });
+        let turns = plan
+            .corners
+            .iter()
+            .map(|corner| corner.point)
+            .chain(plan.paints.iter().map(|paint| paint.point))
+            .any(|point| point.x == x && point.y == y)
+            || plan
+                .boundary_claims
+                .iter()
+                .any(|claim| claim.x == x && claim.y == y);
+        if plan.strategy != strategy || !on_run || turns {
+            return false;
+        }
+        self.fallback_route_plans[index].allow_shared_cell(x, y);
+        true
+    }
+
+    /// The cells of every reserved fallback route with `strategy` that
+    /// refused a later route write.
+    pub(crate) fn fallback_route_refused_points(&self, strategy: &str) -> Vec<(usize, usize)> {
+        self.refused_route_writes
+            .iter()
+            .filter(|(holder, _, _, _)| {
+                self.fallback_route_plans
+                    .iter()
+                    .any(|plan| plan.owner_id == *holder && plan.strategy == strategy)
+            })
+            .map(|&(_, x, y, _)| (x, y))
+            .collect()
+    }
+
+    /// The reserved fallback route owned by `owner_id`.
+    pub(crate) fn fallback_route_plan(&self, owner_id: &str) -> Option<&FallbackRoutePlan> {
+        self.fallback_route_plans
+            .iter()
+            .find(|plan| plan.owner_id == owner_id)
+    }
+
+    /// The corner cells of every reserved fallback route with `strategy`.
+    pub(crate) fn fallback_route_corner_points(&self, strategy: &str) -> Vec<(usize, usize)> {
+        self.fallback_route_plans
+            .iter()
+            .filter(|plan| plan.strategy == strategy)
+            .flat_map(|plan| {
+                plan.corners
+                    .iter()
+                    .map(|corner| (corner.point.x, corner.point.y))
+            })
+            .collect()
+    }
+
     /// Record a route for final audit evidence without reserving its cells
     /// against later route lowering.  Some generic routes are painted before
     /// a legitimate crossing/branch is lowered; making their diagnostic plan
@@ -764,6 +1009,17 @@ impl Canvas {
             .collect()
     }
 
+    /// Record that the final title pass slid `subgraph_id`'s title to start
+    /// at `start_x`.
+    pub(crate) fn record_moved_title(&mut self, subgraph_id: &str, start_x: usize) {
+        self.moved_titles.insert(subgraph_id.to_string(), start_x);
+    }
+
+    /// Where the final title pass moved `subgraph_id`'s title, if it did.
+    pub(crate) fn moved_title_start(&self, subgraph_id: &str) -> Option<usize> {
+        self.moved_titles.get(subgraph_id).copied()
+    }
+
     pub(crate) fn fallback_route_rejections(&self) -> Vec<FallbackRouteRejection> {
         self.fallback_route_rejections.clone()
     }
@@ -774,6 +1030,18 @@ impl Canvas {
         self.fallback_route_plans
             .iter()
             .any(|plan| plan.claims_cell(x, y))
+    }
+
+    /// Whether a reserved fallback route with `strategy` holds `(x, y)`.
+    pub(crate) fn fallback_route_strategy_claims_cell(
+        &self,
+        strategy: &str,
+        x: usize,
+        y: usize,
+    ) -> bool {
+        self.fallback_route_plans
+            .iter()
+            .any(|plan| plan.strategy == strategy && plan.claims_cell(x, y))
     }
 
     /// Return whether a later route writer would trespass on a previously

@@ -419,73 +419,6 @@ fn harmonize_side_by_side_horizontal_top_level_sibling_heights(
     }
 }
 
-fn is_horizontal_visual_nesting_candidate(
-    graph: &Graph,
-    node_rects: &HashMap<String, Rect>,
-    parent_id: &str,
-    child_id: &str,
-    parent: &SubgraphEnvelope,
-    child: &SubgraphEnvelope,
-    gutter: usize,
-) -> bool {
-    if !matches!(graph.direction, Direction::LR | Direction::RL) {
-        return false;
-    }
-    if subgraphs_have_declared_hierarchy(graph, parent_id, child_id) {
-        return false;
-    }
-
-    let cross_boundary_targets: HashSet<&str> = graph
-        .edges
-        .iter()
-        .filter(|edge| {
-            !edge.is_back_edge
-                && graph.get_node_subgraph(&edge.from) == Some(parent_id)
-                && graph.get_node_subgraph(&edge.to) == Some(child_id)
-        })
-        .map(|edge| edge.to.as_str())
-        .collect();
-    if cross_boundary_targets.len() < 2 {
-        return false;
-    }
-
-    let child_has_external_outgoing = graph.edges.iter().any(|edge| {
-        !edge.is_back_edge
-            && graph.is_node_in_subgraph_tree(&edge.from, child_id)
-            && !graph.is_node_in_subgraph_tree(&edge.to, child_id)
-    });
-    if !child_has_external_outgoing {
-        return false;
-    }
-
-    let near_parent_flow_band = match graph.direction {
-        Direction::LR => {
-            child.outer.x
-                <= parent
-                    .outer
-                    .right()
-                    .saturating_add(gutter.saturating_add(2))
-        }
-        Direction::RL => {
-            child.outer.right().saturating_add(gutter.saturating_add(2)) >= parent.outer.x
-        }
-        _ => false,
-    };
-    if !near_parent_flow_band {
-        return false;
-    }
-
-    node_rects.iter().any(|(node_id, rect)| {
-        graph.get_node_subgraph(node_id) == Some(parent_id)
-            && rects_overlap_vertically(*rect, child.outer)
-            && match graph.direction {
-                Direction::LR => rect.x < child.outer.right(),
-                Direction::RL => rect.right() > child.outer.x,
-                _ => false,
-            }
-    })
-}
-
 pub(super) fn current_node_rect(
     rects: &HashMap<String, Rect>,
     node_id: &str,
@@ -667,63 +600,6 @@ pub fn compute_envelopes(
                     }
                 }
             }
-            if let Some(parent_mut) = envelopes.get_mut(parent_id) {
-                parent_mut.outer = new_outer;
-            }
-        }
-    }
-
-    if matches!(graph.direction, Direction::LR | Direction::RL) {
-        for e in &graph.edges {
-            let Some(from_sg) = graph.get_node_subgraph(&e.from) else {
-                continue;
-            };
-            let Some(to_sg) = graph.get_node_subgraph(&e.to) else {
-                continue;
-            };
-            if from_sg == to_sg {
-                continue;
-            }
-            if subgraphs_have_declared_hierarchy(graph, from_sg, to_sg) {
-                continue;
-            }
-
-            let parent_id = from_sg;
-            let child_id = to_sg;
-            let (Some(parent), Some(child)) = (envelopes.get(parent_id), envelopes.get(child_id))
-            else {
-                continue;
-            };
-            if !is_horizontal_visual_nesting_candidate(
-                graph, node_rects, parent_id, child_id, parent, child, gutter,
-            ) {
-                continue;
-            }
-
-            let mut new_outer = parent.outer.union(&child.outer);
-            let desired_bottom = child.outer.bottom().saturating_add(1);
-            if new_outer.bottom() < desired_bottom {
-                new_outer.height += desired_bottom - new_outer.bottom();
-            }
-
-            match graph.direction {
-                Direction::LR => {
-                    let desired_right = child.outer.right().saturating_add(2);
-                    if new_outer.right() < desired_right {
-                        new_outer.width += desired_right - new_outer.right();
-                    }
-                }
-                Direction::RL => {
-                    let desired_left = child.outer.x.saturating_sub(2);
-                    if new_outer.x > desired_left {
-                        let extra = new_outer.x - desired_left;
-                        new_outer.x = desired_left;
-                        new_outer.width += extra;
-                    }
-                }
-                _ => {}
-            }
-
             if let Some(parent_mut) = envelopes.get_mut(parent_id) {
                 parent_mut.outer = new_outer;
             }
@@ -1069,6 +945,7 @@ fn build_envelope(
 
     let title_on_bottom = has_title && matches!(graph.direction, Direction::BT);
     let title_on_top = has_title && !title_on_bottom;
+    let is_fanout_entry = incoming_cross_count > 1 && incoming_outside_sources.len() == 1;
 
     let mut top_hard_pad = if title_on_top {
         // Titles now live on the first interior row. Reserve the title row plus
@@ -1077,7 +954,6 @@ fn build_envelope(
         // Special-case: when a single external source fans out into multiple targets
         // inside this titled subgraph, we need extra internal rows to draw a trunk,
         // split bar, drops, and arrowheads without colliding with the title row.
-        let is_fanout_entry = incoming_cross_count > 1 && incoming_outside_sources.len() == 1;
         if is_fanout_entry {
             6
         } else if incoming_cross_count > 0
@@ -1246,6 +1122,13 @@ fn build_envelope(
     {
         bottom_pad = top_pad.saturating_add(1);
     }
+    if title_on_top && is_fanout_entry && matches!(graph.direction, Direction::TD | Direction::TB) {
+        // A titled TD fan-out entry needs the border, the title, the bus and
+        // the arrow rows above its targets. A shallow bottom (an exit target
+        // close below) must not let the balance spend the bus row, or the bus
+        // collapses onto the arrow row.
+        top_pad = top_pad.max(4);
+    }
     if matches!(graph.direction, Direction::TD | Direction::TB)
         && super::td_terminal_entry_scene_subgraph(graph)
             .is_some_and(|scene| scene.id == subgraph.id)
@@ -1256,12 +1139,65 @@ fn build_envelope(
         top_pad = top_pad.saturating_add(1);
     }
 
-    let outer = Rect::new(
+    let mut outer = Rect::new(
         inner.x.saturating_sub(side_pad),
         inner.y.saturating_sub(top_pad),
         inner.width + side_pad * 2,
         inner.height + top_pad + bottom_pad,
     );
+    // A TD line entering above a target that sits under the title has to pass
+    // the title in a lane beside it (gen_c_081); the rows it turns back on are
+    // reserved once the layout settles (`reserve_title_turn_rows`).
+    if title_on_top
+        && incoming_cross_count > 0
+        && matches!(graph.direction, Direction::TD | Direction::TB)
+    {
+        if let Some(len) = subgraph
+            .title
+            .as_deref()
+            .map(crate::graph::subgraph_title_len)
+        {
+            // Targets whose centre lies on the title text (its padded span ends at
+            // x + 1 + len).
+            let text_end = outer.x + len;
+            let under: Vec<&Rect> = incoming_inside_targets
+                .iter()
+                .filter_map(|id| node_rects.get(*id))
+                .filter(|rect| rect.x + rect.width / 2 <= text_end)
+                .collect();
+            // A plain line from a sibling frame takes the sibling corridor's own
+            // lane, beside the title on either side (fx_subgraph_chain_td).
+            let from_sibling = graph.edges.iter().any(|edge| {
+                !edge.is_back_edge
+                    && edge.kind == crate::graph::EdgeKind::Arrow
+                    && edge.label.is_none()
+                    && !graph.is_node_in_subgraph_tree(&edge.from, &subgraph.id)
+                    && graph.is_node_in_subgraph_tree(&edge.to, &subgraph.id)
+                    && graph.subgraphs.iter().any(|sibling| {
+                        sibling.id != subgraph.id
+                            && sibling.parent_id == subgraph.parent_id
+                            && graph.is_node_in_subgraph_tree(&edge.from, &sibling.id)
+                    })
+            });
+            // A labelled line beside another line into the frame shares its column
+            // above the frame; the other one keeps on down through the title, now
+            // beside the lane (gen_d_032).
+            let labelled_among_others = incoming_cross_count > 1
+                && graph.edges.iter().any(|edge| {
+                    edge.label.is_some()
+                        && !graph.is_node_in_subgraph_tree(&edge.from, &subgraph.id)
+                        && graph.is_node_in_subgraph_tree(&edge.to, &subgraph.id)
+                });
+            if !under.is_empty() && !from_sibling && !labelled_among_others {
+                // Room for a lane one cell past the padded title, a column clear
+                // of the right wall.
+                let grow = (len + 5).saturating_sub(outer.width);
+                let left = (grow / 2).min(outer.x);
+                outer.x -= left;
+                outer.width += grow;
+            }
+        }
+    }
     SubgraphEnvelope {
         outer,
         inner,

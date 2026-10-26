@@ -12,25 +12,14 @@ pub(super) fn get_node_center(node: &Node) -> (usize, usize) {
     (node.center_x(), node.center_y())
 }
 
-/// Where an incoming edge enters a target node (arrow position).
+/// Where an incoming edge enters a target node (arrow position): the cell
+/// right beside its contour, whatever the shape.
 pub(super) fn edge_entry_point(node: &Node, direction: Direction) -> (usize, usize) {
-    let shape_clearance = node.shape.incoming_edge_clearance(direction);
-
     match direction {
-        Direction::TD | Direction::TB => {
-            (node.center_x(), node.y.saturating_sub(1 + shape_clearance))
-        }
-        Direction::LR => (node.x.saturating_sub(1 + shape_clearance), node.center_y()),
-        Direction::RL => (
-            node.x
-                .saturating_add(node.width)
-                .saturating_add(shape_clearance),
-            node.center_y(),
-        ),
-        Direction::BT => (
-            node.center_x(),
-            node.bottom_y().saturating_add(shape_clearance),
-        ),
+        Direction::TD | Direction::TB => (node.center_x(), node.y.saturating_sub(1)),
+        Direction::LR => (node.x.saturating_sub(1), node.center_y()),
+        Direction::RL => (node.x.saturating_add(node.width), node.center_y()),
+        Direction::BT => (node.center_x(), node.bottom_y()),
     }
 }
 
@@ -109,6 +98,120 @@ pub(crate) fn edge_entry_candidates(node: &Node, direction: Direction) -> Vec<(u
     candidates
 }
 
+/// Whether a box has two centre columns a vertical edge could use.
+///
+/// An even-width box has two centre columns, `center_x() - 1` and
+/// `center_x()`. A trunk running down the left one lands one column beside
+/// a branch on the right one (`┴┬`); the box can take that branch on its
+/// left centre column instead, as long as its entry and exit stay on one
+/// column.
+fn has_left_centre_port(node: &Node, graph: &Graph) -> bool {
+    use crate::graph::NodeShape;
+
+    matches!(
+        graph.direction,
+        Direction::TD | Direction::TB | Direction::BT
+    ) && matches!(
+        node.shape,
+        NodeShape::Rectangle | NodeShape::Rounded | NodeShape::Stadium | NodeShape::Subroutine
+    ) && node.width >= 4
+        && node.width.is_multiple_of(2)
+        && !graph
+            .edges
+            .iter()
+            .any(|e| e.is_back_edge && (e.from == node.id || e.to == node.id))
+}
+
+fn non_back_edges<'a>(
+    graph: &'a Graph,
+    keep: impl Fn(&crate::graph::Edge) -> bool + 'a,
+) -> impl Iterator<Item = &'a crate::graph::Edge> + 'a {
+    graph
+        .edges
+        .iter()
+        .filter(move |e| !e.is_back_edge && keep(e))
+}
+
+/// Whether a fan-in source may leave on its left centre column.
+///
+/// Convergence draws before fan-outs, so a source with an incoming edge
+/// moves only when that edge is a plain fan-out branch the generic fan-out
+/// router will also take on the left column (see [`fan_out_target_uses_left_port`]).
+pub(super) fn fan_in_source_uses_left_port(source: &Node, graph: &Graph) -> bool {
+    if !has_left_centre_port(source, graph)
+        || non_back_edges(graph, |e| e.from == source.id).count() != 1
+    {
+        return false;
+    }
+    let incoming: Vec<_> = non_back_edges(graph, |e| e.to == source.id).collect();
+    match incoming.as_slice() {
+        [] => true,
+        [edge] => {
+            let Some(from) = graph.get_node(&edge.from) else {
+                return false;
+            };
+            let targets: Vec<_> = non_back_edges(graph, |e| e.from == from.id)
+                .filter_map(|e| graph.get_node_subgraph(&e.to))
+                .collect();
+            let fan_out = non_back_edges(graph, |e| e.from == from.id).count();
+            // Fan-outs into one foreign subgraph use their own router.
+            let subgraph_router = targets.len() == fan_out
+                && targets
+                    .iter()
+                    .all(|sg| Some(*sg) == targets.first().copied())
+                && graph.get_node_subgraph(&from.id) != targets.first().copied();
+            edge.label.is_none()
+                && fan_out > 1
+                && !subgraph_router
+                && from.center_x() + 1 == source.center_x()
+        }
+        _ => false,
+    }
+}
+
+/// Whether a fan-out target may take its branch on its left centre column.
+///
+/// The target's exit, if any, must already be drawn there.
+pub(super) fn fan_out_target_uses_left_port(
+    from: &Node,
+    target: &Node,
+    canvas: &Canvas,
+    style: &StyleChars,
+    graph: &Graph,
+) -> bool {
+    if !has_left_centre_port(target, graph) {
+        return false;
+    }
+    let incoming: Vec<_> = non_back_edges(graph, |e| e.to == target.id).collect();
+    let [edge] = incoming.as_slice() else {
+        return false;
+    };
+    if edge.from != from.id || edge.label.is_some() {
+        return false;
+    }
+    match non_back_edges(graph, |e| e.from == target.id).count() {
+        0 => true,
+        1 => {
+            let exit_y = match graph.direction {
+                Direction::BT => target.y.checked_sub(1),
+                _ => Some(target.y + target.height),
+            };
+            let leaves = |x: usize| {
+                exit_y.is_some_and(|y| {
+                    x < canvas.width && y < canvas.height && {
+                        let c = canvas.get(x, y);
+                        super::super::canvas::is_vertical(c, style)
+                            || super::super::canvas::is_junction(c, style)
+                    }
+                })
+            };
+            let centre = target.center_x();
+            leaves(centre - 1) && !leaves(centre)
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn hits_foreign_subgraph_border(node: &Node, x: usize, y: usize, graph: &Graph) -> bool {
     let own_subgraph = graph.get_node_subgraph(&node.id);
 
@@ -168,7 +271,7 @@ pub(super) fn draw_line_primary(
             let (start, end) = if y1 < y2 { (y1, y2) } else { (y2, y1) };
             for y in start..=end {
                 if let Some(g) = graph {
-                    if is_subgraph_title_cell(g, x1, y) {
+                    if is_subgraph_title_text_cell(g, x1, y) {
                         continue;
                     }
                 }
@@ -213,7 +316,7 @@ pub(super) fn draw_line_secondary(
                 if y != y1 && y != y2 {
                     // Skip corners
                     if let Some(g) = graph {
-                        if is_subgraph_title_cell(g, x1, y) {
+                        if is_subgraph_title_text_cell(g, x1, y) {
                             continue;
                         }
                     }
@@ -222,6 +325,25 @@ pub(super) fn draw_line_secondary(
             }
         }
     }
+}
+
+/// A visible title character (not the padding space around it). A vertical
+/// line may pass through the padding beside a title; skipping that cell would
+/// leave a gap in the line.
+pub(super) fn is_subgraph_title_text_cell(graph: &Graph, x: usize, y: usize) -> bool {
+    graph.subgraphs.iter().any(|sg| {
+        let (Some(title), true) = (sg.title.as_deref(), sg.bounds.is_valid()) else {
+            return false;
+        };
+        y == subgraph_title_y(&sg.bounds, graph.direction)
+            && crate::graph::subgraph_title_text_span(
+                sg.bounds.x,
+                sg.bounds.width,
+                title,
+                graph.direction,
+            )
+            .is_some_and(|(start, end)| x >= start && x <= end)
+    })
 }
 
 pub(crate) fn is_subgraph_title_cell(graph: &Graph, x: usize, y: usize) -> bool {

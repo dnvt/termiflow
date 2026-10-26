@@ -13,7 +13,7 @@ use super::topology::{canonical_routing_glyph, canvas_connections};
 use crate::graph::{Direction, Graph};
 use crate::portals::{td_sibling_title_gutter, PortalSlots};
 use crate::style::StyleChars;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Apply a bounded number of local repair passes to the canvas.
 #[allow(clippy::too_many_arguments)]
@@ -119,11 +119,22 @@ pub fn optimize_canvas(
 /// implied by their visible neighbors. This keeps default rendering free of
 /// obvious tee/corner mismatches without enabling heavier repair behavior.
 pub fn stabilize_routing_topology(canvas: &mut Canvas, chars: &StyleChars) -> bool {
+    stabilize_routing_topology_keeping(canvas, chars, &HashSet::new())
+}
+
+/// `stabilize_routing_topology`, leaving the `kept` cells as they are: a
+/// frame corner a route runs through keeps its corner rather than becoming
+/// whichever line its neighbours happen to connect.
+pub fn stabilize_routing_topology_keeping(
+    canvas: &mut Canvas,
+    chars: &StyleChars,
+    kept: &HashSet<(usize, usize)>,
+) -> bool {
     let mut updates = Vec::new();
 
     for y in 0..canvas.height {
         for x in 0..canvas.width {
-            if canvas.fallback_route_claims_cell(x, y) {
+            if canvas.fallback_route_claims_cell(x, y) || kept.contains(&(x, y)) {
                 continue;
             }
             let Some(meta) = canvas.get_meta(x, y).cloned() else {
@@ -504,11 +515,27 @@ fn restore_subgraph_title(
         return false;
     };
     let title_y = subgraph_title_y(&subgraph.bounds, direction);
+    let start_x = canvas.moved_title_start(subgraph_id).unwrap_or(start_x);
 
     let mut changed = false;
     for (idx, ch) in title_fmt.chars().enumerate() {
         let x = start_x + idx;
         if x >= canvas.width || title_y >= canvas.height {
+            continue;
+        }
+        if ch == ' '
+            && canvas.get_meta(x, title_y).is_some_and(|m| {
+                m.z_index > 0
+                    && matches!(
+                        m.owner_kind,
+                        CellOwnerKind::EdgeSegment
+                            | CellOwnerKind::ArrowHead
+                            | CellOwnerKind::Junction
+                            | CellOwnerKind::CycleEdge
+                            | CellOwnerKind::PortalOpening
+                    )
+            })
+        {
             continue;
         }
         if canvas.get(x, title_y) != ch {
@@ -554,7 +581,15 @@ fn extend_arrow_shaft(canvas: &mut Canvas, x: usize, y: usize, chars: &StyleChar
         _ => return false,
     };
 
-    if px < canvas.width && py < canvas.height && canvas.get(px, py) == ' ' {
+    // A label drawn across a vertical shaft leaves its own spaces; one that
+    // lands on the shaft column is a word gap, not a missing segment.
+    let label_at = |x: Option<usize>| {
+        x.and_then(|x| canvas.get_meta(x, py))
+            .is_some_and(|meta| meta.owner_kind == CellOwnerKind::EdgeLabel)
+    };
+    let inside_label =
+        shaft == chars.edge_v && label_at(px.checked_sub(1)) && label_at(Some(px + 1));
+    if px < canvas.width && py < canvas.height && canvas.get(px, py) == ' ' && !inside_label {
         canvas.set(px, py, shaft);
         return true;
     }
@@ -661,6 +696,28 @@ mod tests {
         ));
         let rendered = canvas.to_string_cropped(0);
         assert!(rendered.contains("Flow"));
+    }
+
+    #[test]
+    fn title_repair_uses_its_moved_slot_and_preserves_an_owned_word_gap() {
+        let mut graph = Graph::new();
+        let mut frame = crate::graph::Subgraph::new("sg", Some("Data Stores".into()));
+        frame.bounds = crate::graph::Rectangle::new(0, 0, 32, 5);
+        graph.add_subgraph(frame);
+        let mut canvas = Canvas::new(32, 5);
+        canvas.record_moved_title("sg", 12);
+        canvas.set_owned(17, 1, '|', CellOwnerKind::EdgeSegment, "route", 5);
+        canvas.set_owned(13, 1, '|', CellOwnerKind::EdgeSegment, "bad-letter", 5);
+        assert!(restore_subgraph_title(
+            &graph,
+            &mut canvas,
+            "sg",
+            Direction::TD
+        ));
+        assert_eq!(canvas.get(17, 1), '|');
+        assert_eq!(canvas.get(13, 1), 'D');
+        assert_eq!(canvas.get(3, 1), ' ');
+        assert!(canvas.to_string_cropped(0).contains("Data|Stores"));
     }
 
     #[test]
