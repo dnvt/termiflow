@@ -9,6 +9,22 @@ published tag and link to the corresponding GitHub release.
   and maintenance.
 - Record intentional visual or schema changes with their reviewed decision.
 
+## [0.2.9](https://github.com/dnvt/termiflow/releases/tag/v0.2.9) — 2026-10-26
+
+- Parse grouped and chained edges consistently across supported edge kinds and
+  label forms, including quoted node and edge labels.
+- Preserve subgraph membership when an edge references a node introduced
+  earlier outside that subgraph.
+- Improve fan-in, fan-out and cycle connections around intermediate nodes,
+  subgraph boundaries and title rows.
+- Keep independent routes separate with explicit nonjoining crossings when
+  validated detours intersect.
+- Measure subgraph titles in terminal display cells so wide characters keep
+  their intended spacing and route clearance.
+- Draw ASCII and Plus cycle vertical strokes with `|`; dotted edges retain
+  their distinct vertical style.
+- Retain existing public entry points, CLI options and the Rust 1.88 minimum.
+
 ## [0.2.8] — 2026-09-16
 
 - Strengthen topology-oracle and reviewer calibration for ambiguous diagram
