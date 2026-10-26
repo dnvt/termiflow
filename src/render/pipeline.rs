@@ -1010,6 +1010,16 @@ fn render_frame(
             }
         }
 
+        // A Subroutine's double wall is its shape cue. Its horizontal stem
+        // already ends outside the box, so keep that node-owned contour just
+        // as the Stadium's curved side survives generic source publication.
+        if matches!(graph.direction, Direction::LR | Direction::RL)
+            && from.shape == NodeShape::Subroutine
+            && canvas.get(junction_x, junction_y) == '║'
+        {
+            continue;
+        }
+
         if junction_x < canvas.width && junction_y < canvas.height {
             let mut source_junction_scene = Scene::new();
             source_junction_scene.push(SceneIntent::edge_inferred(

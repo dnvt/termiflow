@@ -3,6 +3,9 @@
 //! These deliberately do not consume `SemanticFrame`, provenance, or critic
 //! findings. Geometry checks consume the normalized trace as a separate input.
 
+// Shape identity assertions below read the rendered text, independently of
+// semantic-frame roles and renderer provenance.
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use termiflow::{
@@ -40,6 +43,164 @@ fn raw_frame_errors(input: &str, frame: &str) -> Vec<String> {
 
 fn raw_char_at(frame: &str, x: usize, y: usize) -> Option<char> {
     frame.lines().nth(y)?.chars().nth(x)
+}
+
+fn shape_identity_render(
+    direction: &str,
+    shape: &str,
+    attachment: &str,
+    style: BaseStyle,
+    optimized: bool,
+) -> (termiflow::Graph, String) {
+    // The same innocuous label prevents text from standing in for the shape.
+    let links = match attachment {
+        "isolated" => "",
+        "source" => "N --> B[After]",
+        "target" => "A[Before] --> N",
+        "through" => "A[Before] --> N\nN --> B[After]",
+        "fanout" => "A[Before] --> N\nN --> B[After]\nN --> C[Other]",
+        "cycle" => "N --> B[After]\nB --> N",
+        other => panic!("unsupported shape attachment {other}"),
+    };
+    let input = format!("graph {direction}\nN{shape}\n{links}\n");
+    let mut graph = parse(&input, false)
+        .expect("parse shape identity input")
+        .graph;
+    let mut config = Config::default();
+    config.crop = false;
+    config.optimize_render = optimized;
+    config.composite_style = CompositeStyle::from_base(style);
+    config.spacing = config.spacing.for_direction(graph.direction);
+    measure::measure_graph(&mut graph, &config);
+    let (graph, outcome) =
+        layout_and_render_with_feedback(graph, config).expect("render shape identity input");
+    let errors = raw_frame_errors(&input, &outcome.output);
+    assert!(
+        errors.is_empty(),
+        "shape input lost labels or heads: {errors:?}\n{}",
+        outcome.output
+    );
+    let grid = ConnectivityGrid::new(&outcome.output);
+    let origin = connectivity_frame_origin(&graph, &grid).expect("shape frame origin");
+    for node in &graph.nodes {
+        let expected: std::collections::BTreeSet<_> = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.from == node.id)
+            .map(|edge| edge.to.clone())
+            .collect();
+        assert_eq!(
+            topology_reached_nodes(&graph, &grid, origin, &node.id, true),
+            expected,
+            "shape frame changed visible route ownership from {}:\n{}",
+            node.id,
+            outcome.output
+        );
+    }
+    (graph, outcome.output)
+}
+
+#[test]
+fn shape_identity_stadium_ports_preserve_contour() {
+    for direction in ["LR", "RL", "TD", "BT"] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                for attachment in ["isolated", "source", "target", "through"] {
+                    let (graph, frame) =
+                        shape_identity_render(direction, "([Task])", attachment, style, optimized);
+                    let node = graph.get_node("N").expect("Stadium node");
+                    let row = node.y + node.height / 2;
+                    for (x, expected) in [(node.x, '('), (node.x + node.width - 1, ')')] {
+                        assert_eq!(
+                            raw_char_at(&frame, x, row),
+                            Some(expected),
+                            "Stadium lost its contour at ({x},{row}) for {direction} {style:?} optimized={optimized} {attachment}:\n{frame}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_identity_subroutine_retains_distinct_side_rails() {
+    for direction in ["LR", "RL", "TD", "BT"] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                for attachment in ["isolated", "source", "target", "through"] {
+                    let (graph, frame) =
+                        shape_identity_render(direction, "[[Task]]", attachment, style, optimized);
+                    let node = graph.get_node("N").expect("Subroutine node");
+                    let (left, right, expected) = if style == BaseStyle::Ascii {
+                        (node.x + 1, node.x + node.width - 2, '|')
+                    } else {
+                        (node.x, node.x + node.width - 1, '║')
+                    };
+                    for row in node.y + 1..node.y + node.height - 1 {
+                        for x in [left, right] {
+                            assert_eq!(
+                                raw_char_at(&frame, x, row),
+                                Some(expected),
+                                "Subroutine lost a distinctive rail at ({x},{row}) for {direction} {style:?} optimized={optimized} {attachment}:\n{frame}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_identity_ordinary_double_boxes_keep_their_source_tees() {
+    for direction in ["LR", "RL"] {
+        for optimized in [false, true] {
+            let (graph, frame) =
+                shape_identity_render(direction, "[Task]", "through", BaseStyle::Double, optimized);
+            let node = graph.get_node("N").expect("ordinary double-border box");
+            let (x, expected) = if direction == "LR" {
+                (node.x + node.width - 1, '╠')
+            } else {
+                (node.x, '╣')
+            };
+            assert_eq!(
+                raw_char_at(&frame, x, node.y + node.height / 2),
+                Some(expected),
+                "ordinary double box lost its source tee for {direction} optimized={optimized}:\n{frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn shape_identity_branch_and_cycle_controls_keep_contours_and_ownership() {
+    for direction in ["LR", "RL"] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                for attachment in ["fanout", "cycle"] {
+                    for shape in ["([Task])", "[[Task]]"] {
+                        let (graph, frame) =
+                            shape_identity_render(direction, shape, attachment, style, optimized);
+                        let node = graph.get_node("N").expect("branch/cycle shape");
+                        let row = node.y + node.height / 2;
+                        let (left, right, left_glyph, right_glyph) = match (shape, style) {
+                            ("([Task])", _) => (node.x, node.x + node.width - 1, '(', ')'),
+                            (_, BaseStyle::Ascii) => {
+                                (node.x + 1, node.x + node.width - 2, '|', '|')
+                            }
+                            _ => (node.x, node.x + node.width - 1, '║', '║'),
+                        };
+                        assert_eq!(
+                            (raw_char_at(&frame, left, row), raw_char_at(&frame, right, row)),
+                            (Some(left_glyph), Some(right_glyph)),
+                            "shape cue changed for {direction} {style:?} {attachment} {shape}:\n{frame}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn diamond_entry_touch_errors(input: &str, style: BaseStyle, optimized: bool) -> Vec<String> {

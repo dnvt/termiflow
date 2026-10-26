@@ -252,6 +252,7 @@ fn draw_boxlike(
     bottom_h: char,
     left_side: char,
     right_side: char,
+    preserve_side_contours: bool,
     style: &StyleChars,
     direction: Direction,
 ) {
@@ -335,7 +336,8 @@ fn draw_boxlike(
 
     for j in 0..inner_height {
         let row_y = y + 1 + j;
-        let left = if matches!(direction, Direction::LR | Direction::RL) {
+        let left = if !preserve_side_contours && matches!(direction, Direction::LR | Direction::RL)
+        {
             let outside = x.saturating_sub(1);
             let outside_char = canvas.get(outside, row_y);
             if is_horizontal(outside_char, style) || is_arrow(outside_char) {
@@ -346,7 +348,8 @@ fn draw_boxlike(
         } else {
             left_side
         };
-        let right = if matches!(direction, Direction::LR | Direction::RL) {
+        let right = if !preserve_side_contours && matches!(direction, Direction::LR | Direction::RL)
+        {
             let outside = x.saturating_add(width);
             let outside_char = canvas.get(outside, row_y);
             if is_horizontal(outside_char, style) || is_arrow(outside_char) {
@@ -438,6 +441,7 @@ fn draw_rectangle(
         style.h,
         style.v,
         style.v,
+        false,
         style,
         direction,
     );
@@ -475,6 +479,7 @@ fn draw_rounded(
         style.h,
         style.v,
         style.v,
+        false,
         style,
         direction,
     );
@@ -638,6 +643,7 @@ fn draw_stadium(
         style.h,
         '(',
         ')',
+        true,
         style,
         direction,
     );
@@ -670,6 +676,7 @@ fn draw_hexagon(
         style.h,
         '<',
         '>',
+        false,
         style,
         direction,
     );
@@ -705,6 +712,7 @@ fn draw_database(
         h,
         style.v,
         style.v,
+        false,
         style,
         direction,
     );
@@ -771,9 +779,38 @@ fn draw_subroutine(
         style.h,
         dv,
         dv,
+        dv == '║',
         style,
         direction,
     );
+
+    // The single-cell ASCII fallback cannot express a double side by itself.
+    // Put its second rails in the existing padding, only when every label row
+    // fits between them. Check the painted cells too: the existing label
+    // writer can occupy extra logical cells for a complex emoji sequence.
+    if dv == '|'
+        && width >= 4
+        && label_lines
+            .iter()
+            .all(|line| display_width(line) <= width - 4)
+    {
+        let left = x + 1;
+        let right = x + width - 2;
+        let rows = y + 1..y + height.max(3) - 1;
+        let rails_clear = rows.clone().all(|row| {
+            left < canvas.width
+                && right < canvas.width
+                && row < canvas.height
+                && canvas.get(left, row) == ' '
+                && canvas.get(right, row) == ' '
+        });
+        if rails_clear {
+            for row in rows {
+                canvas.set(left, row, '|');
+                canvas.set(right, row, '|');
+            }
+        }
+    }
 }
 
 /// Draw an asymmetric/flag shape.
@@ -878,6 +915,7 @@ fn draw_parallelogram(
         style.h,
         style.v,
         style.v,
+        false,
         style,
         direction,
     );
@@ -927,6 +965,7 @@ fn draw_trapezoid(
         style.h,
         style.v,
         style.v,
+        false,
         style,
         direction,
     );
@@ -945,6 +984,212 @@ mod tests {
 
     fn lines(s: &str) -> Vec<String> {
         vec![s.to_string()]
+    }
+
+    #[test]
+    fn shape_identity_subroutine_narrow_boxes_preserve_labels() {
+        for (label, width) in [
+            ("AB", 4),
+            ("漢", 5),
+            ("🙂", 5),
+            ("e\u{301}", 4),
+            ("  AB  ", 8),
+        ] {
+            let mut canvas = mk_canvas(16, 5);
+            draw_node(
+                &mut canvas,
+                2,
+                1,
+                width,
+                3,
+                &lines(label),
+                NodeShape::Subroutine,
+                &ASCII_CHARS,
+                Direction::LR,
+            );
+            let output = canvas.to_string_cropped(0);
+            assert!(
+                output.contains(label),
+                "inner rails overwrote a narrow label {label:?}: {output}"
+            );
+        }
+
+        let mut canvas = mk_canvas(8, 3);
+        draw_node(
+            &mut canvas,
+            0,
+            0,
+            3,
+            3,
+            &lines(""),
+            NodeShape::Subroutine,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        assert_eq!(canvas.get(1, 1), ' ');
+    }
+
+    #[test]
+    fn shape_identity_complex_grapheme_occupancy_is_preserved() {
+        for label in ["👩‍💻", "👨‍👩‍👧‍👦", "👍🏽"] {
+            let mut reference = mk_canvas(8, 3);
+            let mut candidate = mk_canvas(8, 3);
+            for (canvas, shape) in [
+                (&mut reference, NodeShape::Rectangle),
+                (&mut candidate, NodeShape::Subroutine),
+            ] {
+                draw_node(
+                    canvas,
+                    0,
+                    0,
+                    8,
+                    3,
+                    &lines(label),
+                    shape,
+                    &ASCII_CHARS,
+                    Direction::LR,
+                );
+            }
+
+            // Compare the existing writer's actual cells, including wide-glyph
+            // continuations. This protects its emitted text without claiming
+            // that pre-existing complex-grapheme layout is already correct.
+            assert_eq!(
+                candidate.get(6, 1),
+                reference.get(6, 1),
+                "inner rail replaced a label/continuation cell for {label:?}"
+            );
+            for x in 1..7 {
+                assert_eq!(
+                    candidate.get(x, 1),
+                    reference.get(x, 1),
+                    "blocked inner rails changed the label band for {label:?} at{x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shape_identity_subroutine_rails_leave_multiline_labels_intact() {
+        let labels = vec!["漢字".to_string(), "Task".to_string(), "🙂".to_string()];
+        let mut canvas = mk_canvas(12, 5);
+        draw_node(
+            &mut canvas,
+            0,
+            0,
+            10,
+            5,
+            &labels,
+            NodeShape::Subroutine,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        let output = canvas.to_string_cropped(0);
+        for label in labels {
+            assert!(output.contains(&label), "label {label:?} lost: {output}");
+        }
+        for row in 1..4 {
+            assert_eq!(canvas.get(1, row), '|');
+            assert_eq!(canvas.get(8, row), '|');
+        }
+    }
+
+    #[test]
+    fn shape_identity_clipped_subroutine_keeps_the_partial_label_band() {
+        let mut canvas = mk_canvas(9, 2);
+        draw_node(
+            &mut canvas,
+            0,
+            0,
+            10,
+            5,
+            &lines("Task"),
+            NodeShape::Subroutine,
+            &ASCII_CHARS,
+            Direction::TD,
+        );
+        assert_eq!(canvas.get(1, 1), ' ');
+        assert_eq!(canvas.get(8, 1), ' ');
+    }
+
+    #[test]
+    fn shape_identity_subroutine_fallback_and_mixed_fonts_keep_rails() {
+        use crate::style::BaseStyle;
+        let mut fonts: Vec<_> = [
+            BaseStyle::Double,
+            BaseStyle::Rounded,
+            BaseStyle::Heavy,
+            BaseStyle::Dots,
+            BaseStyle::Plus,
+            BaseStyle::Stars,
+            BaseStyle::Blocks,
+        ]
+        .iter()
+        .map(|style| *style.chars())
+        .collect();
+        let mut mixed = UNICODE_CHARS;
+        mixed.tl = '╭';
+        mixed.tr = '╮';
+        mixed.bl = '╰';
+        mixed.br = '╯';
+        fonts.push(mixed);
+        for style in fonts {
+            for direction in [Direction::LR, Direction::RL, Direction::TD, Direction::BT] {
+                let mut canvas = mk_canvas(16, 5);
+                canvas.set(1, 2, style.edge_h);
+                canvas.set(12, 2, style.edge_h);
+                draw_node(
+                    &mut canvas,
+                    2,
+                    1,
+                    10,
+                    3,
+                    &lines("Task"),
+                    NodeShape::Subroutine,
+                    &style,
+                    direction,
+                );
+                assert_eq!(canvas.get(3, 2), '|', "{direction:?} {style:?}");
+                assert_eq!(canvas.get(10, 2), '|', "{direction:?} {style:?}");
+                assert!(canvas.to_string_cropped(0).contains("Task"));
+            }
+        }
+    }
+
+    #[test]
+    fn shape_identity_other_boxlike_kinds_keep_generic_ports() {
+        for style in [&ASCII_CHARS, &UNICODE_CHARS, &crate::style::DOUBLE_CHARS] {
+            for shape in [
+                NodeShape::Rectangle,
+                NodeShape::Rounded,
+                NodeShape::Hexagon,
+                NodeShape::Database,
+                NodeShape::Parallelogram,
+                NodeShape::ParallelogramAlt,
+                NodeShape::Trapezoid,
+                NodeShape::TrapezoidAlt,
+            ] {
+                for direction in [Direction::LR, Direction::RL] {
+                    let mut canvas = mk_canvas(16, 5);
+                    canvas.set(1, 2, style.edge_h);
+                    canvas.set(12, 2, style.edge_h);
+                    draw_node(
+                        &mut canvas,
+                        2,
+                        1,
+                        10,
+                        3,
+                        &lines("Task"),
+                        shape,
+                        style,
+                        direction,
+                    );
+                    assert_eq!(canvas.get(2, 2), style.junction_left, "{shape:?}");
+                    assert_eq!(canvas.get(11, 2), style.junction_right, "{shape:?}");
+                    assert!(canvas.to_string_cropped(0).contains("Task"));
+                }
+            }
+        }
     }
 
     // =========================================================================
