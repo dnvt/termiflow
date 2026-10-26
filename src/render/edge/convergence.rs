@@ -3043,7 +3043,8 @@ mod tests {
             plan.claims_boundary("A", "bottom", 8, 34) && plan.claims_boundary("B", "top", 8, 39)
         );
         assert!(!plan.claims_cell(10, 33), "peer merge stays independent");
-        let controls: &[(&str, fn(&mut Graph))] = &[
+        type GraphControl = (&'static str, fn(&mut Graph));
+        let controls: &[GraphControl] = &[
             ("upward", |g| g.direction = Direction::BT),
             ("curved source", |g| g.nodes[0].shape = NodeShape::Circle),
             ("curved target", |g| g.nodes[2].shape = NodeShape::Diamond),
@@ -3212,7 +3213,8 @@ mod tests {
             '|',
             "aligned entry stays connected vertically"
         );
-        let controls: &[(&str, fn(&mut Graph))] = &[
+        type GraphControl = (&'static str, fn(&mut Graph));
+        let controls: &[GraphControl] = &[
             ("downward", |g| g.direction = Direction::TD),
             ("nested source", |g| {
                 g.subgraphs[0].parent_id = Some("B".into())
@@ -3322,7 +3324,8 @@ mod tests {
         assert!(plan.claims_cell(6, 18) && plan.claims_cell(3, 32));
         assert!(!plan.claims_cell(13, 19) && !plan.claims_cell(3, 33));
 
-        let controls: &[(&str, fn(&mut Graph))] = &[
+        type GraphControl = (&'static str, fn(&mut Graph));
+        let controls: &[GraphControl] = &[
             ("upward", |g| g.direction = Direction::BT),
             ("curved source", |g| g.nodes[0].shape = NodeShape::Circle),
             ("extra source exit", |g| {

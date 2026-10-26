@@ -3191,7 +3191,8 @@ mod generic_fanout_tests {
         );
         assert!(plan.claims_cell(21, 4) && plan.claims_cell(21, 8));
 
-        let controls: &[(&str, fn(&mut Graph))] = &[
+        type GraphControl = (&'static str, fn(&mut Graph));
+        let controls: &[GraphControl] = &[
             ("opposite direction", |g| g.direction = Direction::BT),
             ("non-flat source", |g| g.nodes[0].shape = NodeShape::Circle),
             ("non-flat target", |g| g.nodes[1].shape = NodeShape::Diamond),
@@ -3505,7 +3506,8 @@ mod generic_fanout_tests {
     #[test]
     fn a_mixed_sibling_detour_rejects_unsupported_topology_and_geometry() {
         let graph = mixed_sibling_detour_test_graph();
-        let controls: &[(&str, fn(&mut Graph))] = &[
+        type GraphControl = (&'static str, fn(&mut Graph));
+        let controls: &[GraphControl] = &[
             ("BT", |g| g.direction = Direction::BT),
             ("LR", |g| g.direction = Direction::LR),
             ("RL", |g| g.direction = Direction::RL),
@@ -4334,7 +4336,8 @@ mod upward_mixed_sibling_controls {
 
     #[test]
     fn the_upward_return_refuses_unsupported_family_geometry_and_titles() {
-        let controls: &[(&str, fn(&mut Graph))] = &[
+        type GraphControl = (&'static str, fn(&mut Graph));
+        let controls: &[GraphControl] = &[
             ("direction", |g| g.direction = Direction::BT),
             ("unsupported source port", |g| {
                 g.nodes[4].shape = NodeShape::Asymmetric
