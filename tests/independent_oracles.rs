@@ -5297,6 +5297,49 @@ fn topology_trace_reads_through_a_label_word_gap_on_a_vertical_shaft() {
     );
 }
 
+/// gen_a_086: the direct Rails -> Postgres leg must bypass Sidekiq without
+/// joining its S3 branch. Other existing missing edges are separate cases.
+#[test]
+fn a_mixed_fanout_bypasses_a_later_source_in_its_own_frame() {
+    let input = "graph TD
+    subgraph Web [Web Tier]
+        Next[Next.js]
+    end
+    subgraph Api [API Tier]
+        Rails[Rails API]
+        Sidekiq[Sidekiq]
+    end
+    subgraph Stores [Data Stores]
+        PG[(Postgres)]
+        Redis[(Redis)]
+        S3[(S3)]
+    end
+    Next --> Rails
+    Rails --> PG
+    Rails --> Redis
+    Redis --> Sidekiq
+    Sidekiq --> PG
+    Sidekiq --> S3
+";
+    for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+        for optimized in [false, true] {
+            let (graph, frame, _) =
+                boundary_crossing_connectivity_errors(input, style, optimized).expect("render");
+            let grid = ConnectivityGrid::new(&frame);
+            let origin = connectivity_frame_origin(&graph, &grid).expect("origin");
+            let rails = topology_reached_nodes(&graph, &grid, origin, "Rails", true);
+            let worker = topology_reached_nodes(&graph, &grid, origin, "Sidekiq", true);
+            assert!(rails.contains("PG") && !rails.contains("S3"),
+                "Rails reaches Postgres without gaining S3 ({style:?}, optimized={optimized}): {rails:?}\n{frame}");
+            // The parent already has an ASCII/optimized '+' ambiguity to
+            // Redis. Do not introduce that path in the other variants.
+            assert!(worker.contains("PG") && worker.contains("S3")
+                && (!worker.contains("Redis") || style == BaseStyle::Ascii && optimized),
+                "Sidekiq keeps its independent targets ({style:?}, optimized={optimized}): {worker:?}\n{frame}");
+        }
+    }
+}
+
 /// gen_a_163: the upward Hardware fan-in must pass Hypervisor's title.
 #[test]
 fn a_bt_fan_in_crosses_the_target_frame_without_hiding_under_its_title() {
