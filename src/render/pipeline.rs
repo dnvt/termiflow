@@ -1010,13 +1010,22 @@ fn render_frame(
             }
         }
 
-        // These horizontal stems end outside the node. Preserve Subroutine's
-        // double wall and Database's resolved border wall as shape-owned cues;
-        // ordinary box kinds still receive their normal source junction.
+        // Preserve Subroutine's double wall and Database's resolved wall.
+        // A proven adjacent Database collector needs the ordinary source port;
+        // its opposite wall still supplies the shape cue.
         if matches!(graph.direction, Direction::LR | Direction::RL)
             && ((from.shape == NodeShape::Subroutine && canvas.get(junction_x, junction_y) == '║')
                 || (from.shape == NodeShape::Database
-                    && canvas.get(junction_x, junction_y) == chars.v))
+                    && canvas.get(junction_x, junction_y) == chars.v
+                    && !database_source_needs_side_port(
+                        &canvas,
+                        graph,
+                        &layout_snapshot,
+                        &routed_edges,
+                        &planned_scene_edges,
+                        from,
+                        &chars,
+                    )))
         {
             continue;
         }
@@ -1589,6 +1598,95 @@ fn render_frame(
     ))
 }
 
+/// A precomputed collector can start vertically immediately outside a Database
+/// wall, leaving no horizontal stem to preserve through the box redraw. Only
+/// that route-owned contact needs the ordinary source port; the opposite plain
+/// wall remains the Database cue.
+fn database_source_needs_side_port(
+    canvas: &Canvas,
+    graph: &Graph,
+    layout_snapshot: &LayoutSnapshot,
+    routed_edges: &HashSet<usize>,
+    planned_scene_edges: &HashSet<usize>,
+    from: &Node,
+    chars: &crate::style::StyleChars,
+) -> bool {
+    if from.shape != NodeShape::Database || from.width < 2 {
+        return false;
+    }
+    let Some(right) = from.x.checked_add(from.width - 1) else {
+        return false;
+    };
+    let Some(y) = from.y.checked_add(from.height.max(BOX_HEIGHT) / 2) else {
+        return false;
+    };
+    let (source_x, opposite_x, outside_x) = match graph.direction {
+        Direction::LR => (right, from.x, right.checked_add(1)),
+        Direction::RL => (from.x, right, from.x.checked_sub(1)),
+        _ => return false,
+    };
+    let Some(outside_x) = outside_x else {
+        return false;
+    };
+    if y >= canvas.height
+        || source_x >= canvas.width
+        || opposite_x >= canvas.width
+        || outside_x >= canvas.width
+        || canvas.get(source_x, y) != chars.v
+        || canvas.get(opposite_x, y) != chars.v
+    {
+        return false;
+    }
+    let outside = crate::geom::Point::new(outside_x, y);
+    let glyph = canvas.get(outside_x, y);
+    let Some(meta) = canvas.get_meta(outside_x, y) else {
+        return false;
+    };
+    if !canvas::is_vertical(glyph, chars)
+        || meta.ch != glyph
+        || meta.owner_kind != CellOwnerKind::EdgeSegment
+        || meta.role != CellRole::Vertical
+    {
+        return false;
+    }
+    let route_is_active = |edge_idx: usize| {
+        routed_edges.contains(&edge_idx) && !planned_scene_edges.contains(&edge_idx)
+    };
+    // The last writer may be another source on the same collector. Prove its
+    // canonical route ownership rather than accepting any adjacent vertical line.
+    let owner = graph.edges.iter().enumerate().find(|(edge_idx, edge)| {
+        !edge.is_back_edge
+            && route_is_active(*edge_idx)
+            && meta.owner_id.as_deref() == Some(edge_owner_id(*edge_idx, edge).as_str())
+            && layout_snapshot
+                .route(EdgeId::from_index(*edge_idx))
+                .is_some_and(|route| {
+                    route.segments.iter().any(|segment| {
+                        segment.from.x == outside.x
+                            && segment.to.x == outside.x
+                            && segment.from.y != segment.to.y
+                            && outside.y >= segment.from.y.min(segment.to.y)
+                            && outside.y <= segment.from.y.max(segment.to.y)
+                    })
+                })
+    });
+    let Some((_, owner_edge)) = owner else {
+        return false;
+    };
+    graph.edges.iter().enumerate().any(|(edge_idx, edge)| {
+        !edge.is_back_edge
+            && edge.from == from.id
+            && edge.to == owner_edge.to
+            && route_is_active(edge_idx)
+            && layout_snapshot
+                .route(EdgeId::from_index(edge_idx))
+                .and_then(|route| route.segments.first())
+                .is_some_and(|first| {
+                    first.from == outside && first.to.x == outside.x && first.to.y != outside.y
+                })
+    })
+}
+
 /// The tees for `node`'s border wherever the line of the edge owned by
 /// `owner_id` touches it from outside: a line along the border's normal
 /// (horizontal beside a side, vertical above or below) ends there.
@@ -1854,4 +1952,460 @@ fn dense_explicit_crossing_policy(
                     && *other_start <= measured_spans[index].1
             })
     })
+}
+
+#[cfg(test)]
+mod database_source_port_tests {
+    use super::*;
+    use crate::geom::{EdgeRoute, Point, Segment};
+    use crate::graph::Edge;
+    use crate::style::{BaseStyle, CompositeStyle, StyleChars};
+
+    struct Contact {
+        graph: Graph,
+        canvas: Canvas,
+        routed: HashSet<usize>,
+        planned: HashSet<usize>,
+        chars: StyleChars,
+        outside: Point,
+        wall: Point,
+        opposite: Point,
+    }
+
+    impl Contact {
+        fn new(direction: Direction, style: BaseStyle, shared_owner: bool) -> Self {
+            Self::with_chars(direction, *style.chars(), shared_owner)
+        }
+
+        fn with_chars(direction: Direction, chars: StyleChars, shared_owner: bool) -> Self {
+            let mut graph = Graph::new();
+            graph.direction = direction;
+            let mut source = Node::with_shape("source", "Task", NodeShape::Database);
+            source.x = 20;
+            source.y = 12;
+            source.width = 11;
+            source.height = 3;
+            graph.add_node(source);
+            graph.add_node(Node::new("peer", "Peer"));
+            graph.add_node(Node::new("target", "Target"));
+            graph.add_node(Node::new("other", "Other"));
+            graph.add_edge(Edge::new("source", "target"));
+            graph.add_edge(Edge::new("peer", "target"));
+            let (wall_x, opposite_x, outside_x) = match direction {
+                Direction::LR => (30, 20, 31),
+                Direction::RL => (20, 30, 19),
+                _ => unreachable!("horizontal seam fixture"),
+            };
+            let outside = Point::new(outside_x, 13);
+            let wall = Point::new(wall_x, 13);
+            let opposite = Point::new(opposite_x, 13);
+            graph.edge_routes.insert(
+                0,
+                EdgeRoute {
+                    segments: vec![Segment::new(outside, Point::new(outside_x, 21))],
+                },
+            );
+            graph.edge_routes.insert(
+                1,
+                EdgeRoute {
+                    segments: vec![Segment::new(
+                        Point::new(outside_x, 5),
+                        Point::new(outside_x, 21),
+                    )],
+                },
+            );
+            let mut contact = Self {
+                graph,
+                canvas: Canvas::new(80, 32),
+                routed: HashSet::from([0, 1]),
+                planned: HashSet::new(),
+                chars,
+                outside,
+                wall,
+                opposite,
+            };
+            contact.canvas.set(wall.x, wall.y, chars.v);
+            contact.canvas.set(opposite.x, opposite.y, chars.v);
+            contact.paint_outside(
+                chars.edge_v,
+                CellOwnerKind::EdgeSegment,
+                CellRole::Vertical,
+                if shared_owner { 1 } else { 0 },
+            );
+            contact
+        }
+
+        fn paint_outside(
+            &mut self,
+            glyph: char,
+            kind: CellOwnerKind,
+            role: CellRole,
+            owner: usize,
+        ) {
+            self.canvas.set_owned_with_role(
+                self.outside.x,
+                self.outside.y,
+                glyph,
+                kind,
+                &edge_owner_id(owner, &self.graph.edges[owner]),
+                role,
+                5,
+            );
+        }
+
+        fn allows_with(&self, snapshot: &LayoutSnapshot) -> bool {
+            database_source_needs_side_port(
+                &self.canvas,
+                &self.graph,
+                snapshot,
+                &self.routed,
+                &self.planned,
+                &self.graph.nodes[0],
+                &self.chars,
+            )
+        }
+
+        fn allows(&self) -> bool {
+            self.allows_with(&LayoutSnapshot::from_graph(&self.graph))
+        }
+    }
+
+    fn rejects_change(label: &str, change: impl Fn(&mut Contact)) {
+        for direction in [Direction::LR, Direction::RL] {
+            let mut contact = Contact::new(direction, BaseStyle::Unicode, true);
+            assert!(
+                contact.allows(),
+                "positive seam prerequisite: {label} {direction:?}"
+            );
+            change(&mut contact);
+            assert!(!contact.allows(), "reject {label} {direction:?}");
+        }
+    }
+
+    #[test]
+    fn database_source_port_admits_own_and_shared_active_collectors() {
+        let styles = [
+            ("ascii", *BaseStyle::Ascii.chars()),
+            ("unicode", *BaseStyle::Unicode.chars()),
+            ("double", *BaseStyle::Double.chars()),
+            (
+                "double-rounded-ascii",
+                CompositeStyle {
+                    border: Some(BaseStyle::Double),
+                    corner: Some(BaseStyle::Rounded),
+                    junction: Some(BaseStyle::Ascii),
+                    ..CompositeStyle::from_base(BaseStyle::Unicode)
+                }
+                .to_style_chars(BaseStyle::default()),
+            ),
+            (
+                "ascii-unicode-double",
+                CompositeStyle {
+                    border: Some(BaseStyle::Ascii),
+                    corner: Some(BaseStyle::Unicode),
+                    junction: Some(BaseStyle::Double),
+                    ..CompositeStyle::from_base(BaseStyle::Unicode)
+                }
+                .to_style_chars(BaseStyle::default()),
+            ),
+        ];
+        for direction in [Direction::LR, Direction::RL] {
+            for (style, chars) in styles {
+                for shared_owner in [false, true] {
+                    let contact = Contact::with_chars(direction, chars, shared_owner);
+                    assert!(
+                        contact.allows(),
+                        "{direction:?} {style:?} shared={shared_owner}"
+                    );
+                    assert_eq!(
+                        contact.canvas.get(contact.opposite.x, contact.opposite.y),
+                        contact.chars.v
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn database_source_port_requires_active_own_route_and_first_segment() {
+        rejects_change("own route inactive", |c| {
+            c.routed.remove(&0);
+        });
+        rejects_change("own route overridden", |c| {
+            c.planned.insert(0);
+        });
+        rejects_change("own snapshot route absent", |c| {
+            c.graph.edge_routes.remove(&0);
+        });
+        rejects_change("own route empty", |c| {
+            c.graph.edge_routes.get_mut(&0).unwrap().segments.clear();
+        });
+        rejects_change("own edge backedge", |c| {
+            c.graph.edges[0].is_back_edge = true;
+        });
+        rejects_change("own source wrong", |c| {
+            c.graph.edges[0].from = "other".to_string();
+        });
+        rejects_change("own first point shifted", |c| {
+            c.graph.edge_routes.get_mut(&0).unwrap().segments[0].from.y += 1;
+        });
+        rejects_change("own first segment horizontal", |c| {
+            c.graph.edge_routes.get_mut(&0).unwrap().segments[0].to =
+                Point::new(c.outside.x + 4, c.outside.y);
+        });
+        rejects_change("own first segment zero", |c| {
+            c.graph
+                .edge_routes
+                .get_mut(&0)
+                .unwrap()
+                .segments
+                .insert(0, Segment::new(c.outside, c.outside));
+        });
+        rejects_change("stale leading segment", |c| {
+            c.graph
+                .edge_routes
+                .get_mut(&0)
+                .unwrap()
+                .segments
+                .insert(0, Segment::new(Point::new(2, 2), Point::new(2, 3)));
+        });
+        rejects_change("typed plan rejects diagonal own route", |c| {
+            c.graph.edge_routes.get_mut(&0).unwrap().segments[0].to.x += 1;
+        });
+    }
+
+    #[test]
+    fn database_source_port_requires_active_canonical_coowner_route() {
+        rejects_change("coowner route inactive", |c| {
+            c.routed.remove(&1);
+        });
+        rejects_change("coowner route overridden", |c| {
+            c.planned.insert(1);
+        });
+        rejects_change("coowner snapshot route absent", |c| {
+            c.graph.edge_routes.remove(&1);
+        });
+        rejects_change("coowner edge backedge", |c| {
+            c.graph.edges[1].is_back_edge = true;
+        });
+        rejects_change("coowner different target", |c| {
+            c.graph.edges[1].to = "other".to_string();
+            c.paint_outside(
+                c.chars.edge_v,
+                CellOwnerKind::EdgeSegment,
+                CellRole::Vertical,
+                1,
+            );
+        });
+        rejects_change("coowner stale canonical id", |c| {
+            c.canvas.set_owned_with_role(
+                c.outside.x,
+                c.outside.y,
+                c.chars.edge_v,
+                CellOwnerKind::EdgeSegment,
+                "edge:1:peer->other",
+                CellRole::Vertical,
+                5,
+            );
+        });
+        rejects_change("coowner generic id", |c| {
+            c.canvas.set_owned_with_role(
+                c.outside.x,
+                c.outside.y,
+                c.chars.edge_v,
+                CellOwnerKind::EdgeSegment,
+                "edge:peer->target",
+                CellRole::Vertical,
+                5,
+            );
+        });
+        rejects_change("coowner id absent", |c| {
+            c.canvas.set_meta_only(
+                c.outside.x,
+                c.outside.y,
+                CellOwnerKind::EdgeSegment,
+                None,
+                CellRole::Vertical,
+                5,
+            );
+        });
+        rejects_change("coowner vertical misses row", |c| {
+            c.graph.edge_routes.get_mut(&1).unwrap().segments[0] =
+                Segment::new(Point::new(c.outside.x, 2), Point::new(c.outside.x, 4));
+        });
+        rejects_change("coowner vertical misses column", |c| {
+            c.graph.edge_routes.get_mut(&1).unwrap().segments[0] = Segment::new(
+                Point::new(c.outside.x + 1, 5),
+                Point::new(c.outside.x + 1, 21),
+            );
+        });
+        rejects_change("coowner horizontal crossing", |c| {
+            c.graph.edge_routes.get_mut(&1).unwrap().segments[0] = Segment::new(
+                Point::new(c.outside.x - 4, c.outside.y),
+                Point::new(c.outside.x + 4, c.outside.y),
+            );
+        });
+        rejects_change("coowner zero contact", |c| {
+            c.graph.edge_routes.get_mut(&1).unwrap().segments[0] =
+                Segment::new(c.outside, c.outside);
+        });
+    }
+
+    #[test]
+    fn database_source_port_requires_real_shaft_and_prepublication_metadata() {
+        for glyph in [' ', 'x', '>', 'o', 'A', '─'] {
+            rejects_change(&format!("outside glyph {glyph:?}"), |c| {
+                c.paint_outside(glyph, CellOwnerKind::EdgeSegment, CellRole::Vertical, 1);
+            });
+        }
+        for kind in [
+            CellOwnerKind::Unknown,
+            CellOwnerKind::NodeBorder,
+            CellOwnerKind::ArrowHead,
+            CellOwnerKind::Junction,
+            CellOwnerKind::SubgraphBorder,
+            CellOwnerKind::EdgeLabel,
+            CellOwnerKind::CycleEdge,
+        ] {
+            rejects_change(&format!("outside owner kind {kind:?}"), |c| {
+                c.paint_outside(c.chars.edge_v, kind, CellRole::Vertical, 1);
+            });
+        }
+        for role in [
+            CellRole::Unknown,
+            CellRole::Text,
+            CellRole::Horizontal,
+            CellRole::Junction,
+            CellRole::ArrowTip,
+            CellRole::EndpointMarker,
+            CellRole::Border,
+            CellRole::Corner,
+        ] {
+            rejects_change(&format!("outside role {role:?}"), |c| {
+                c.paint_outside(c.chars.edge_v, CellOwnerKind::EdgeSegment, role, 1);
+            });
+        }
+    }
+
+    #[test]
+    fn database_source_port_preserves_both_cues_without_proven_contact() {
+        rejects_change("source cue absent", |c| {
+            c.canvas.set(c.wall.x, c.wall.y, c.chars.junction_right);
+        });
+        rejects_change("opposite cue absent", |c| {
+            c.canvas
+                .set(c.opposite.x, c.opposite.y, c.chars.junction_left);
+        });
+        for shape in [
+            NodeShape::Rectangle,
+            NodeShape::Subroutine,
+            NodeShape::Stadium,
+            NodeShape::Hexagon,
+            NodeShape::Diamond,
+        ] {
+            rejects_change(&format!("shape {shape:?}"), |c| {
+                c.graph.nodes[0].shape = shape;
+            });
+        }
+        for direction in [Direction::TD, Direction::TB, Direction::BT] {
+            rejects_change(&format!("direction {direction:?}"), |c| {
+                c.graph.direction = direction;
+            });
+        }
+    }
+
+    #[test]
+    fn database_source_port_fails_closed_on_bounds_and_checked_arithmetic() {
+        rejects_change("zero width", |c| {
+            c.graph.nodes[0].width = 0;
+        });
+        rejects_change("one cell width aliases opposite to source", |c| {
+            c.graph.nodes[0].width = 1;
+            c.wall = Point::new(20, 13);
+            c.opposite = c.wall;
+            c.outside = Point::new(
+                if c.graph.direction == Direction::LR {
+                    21
+                } else {
+                    19
+                },
+                13,
+            );
+            c.canvas.set(20, 13, c.chars.v);
+            c.graph.edge_routes.get_mut(&0).unwrap().segments[0] =
+                Segment::new(c.outside, Point::new(c.outside.x, 21));
+            c.graph.edge_routes.get_mut(&1).unwrap().segments[0] =
+                Segment::new(Point::new(c.outside.x, 5), Point::new(c.outside.x, 21));
+            c.paint_outside(
+                c.chars.edge_v,
+                CellOwnerKind::EdgeSegment,
+                CellRole::Vertical,
+                1,
+            );
+        });
+        rejects_change("right overflow", |c| {
+            c.graph.nodes[0].x = usize::MAX;
+        });
+        rejects_change("center y overflow", |c| {
+            c.graph.nodes[0].y = usize::MAX;
+        });
+        rejects_change("source row outside canvas", |c| {
+            c.graph.nodes[0].y = c.canvas.height;
+        });
+        rejects_change("opposite wall outside canvas", |c| {
+            c.graph.nodes[0].width = c.canvas.width;
+        });
+        let mut rl = Contact::new(Direction::RL, BaseStyle::Unicode, true);
+        assert!(rl.allows(), "RL zero-column prerequisite");
+        rl.graph.nodes[0].x = 0;
+        rl.canvas.set(0, 13, rl.chars.v);
+        rl.canvas.set(10, 13, rl.chars.v);
+        rl.outside = Point::new(0, 13);
+        rl.graph.edge_routes.get_mut(&0).unwrap().segments[0] =
+            Segment::new(rl.outside, Point::new(0, 21));
+        rl.graph.edge_routes.get_mut(&1).unwrap().segments[0] =
+            Segment::new(Point::new(0, 5), Point::new(0, 21));
+        rl.paint_outside(
+            rl.chars.edge_v,
+            CellOwnerKind::EdgeSegment,
+            CellRole::Vertical,
+            1,
+        );
+        assert!(
+            !rl.allows(),
+            "reject RL zero column without saturating outside into source"
+        );
+        let mut lr = Contact::new(Direction::LR, BaseStyle::Unicode, true);
+        assert!(lr.allows(), "LR outside-bound prerequisite");
+        lr.canvas = Canvas::new(lr.outside.x, 32);
+        lr.canvas.set(lr.wall.x, lr.wall.y, lr.chars.v);
+        lr.canvas.set(lr.opposite.x, lr.opposite.y, lr.chars.v);
+        assert!(!lr.allows(), "reject LR outside exactly at canvas width");
+        let mut lr_max = Contact::new(Direction::LR, BaseStyle::Unicode, true);
+        assert!(lr_max.allows(), "LR outside-overflow prerequisite");
+        lr_max.graph.nodes[0].x = usize::MAX - 10;
+        assert!(!lr_max.allows(), "reject LR outside checked-add overflow");
+    }
+
+    #[test]
+    fn database_source_port_consumes_typed_snapshot_route() {
+        let mut contact = Contact::new(Direction::RL, BaseStyle::Unicode, true);
+        let snapshot = LayoutSnapshot::from_graph(&contact.graph);
+        assert!(
+            contact.allows_with(&snapshot),
+            "typed-snapshot positive prerequisite"
+        );
+        contact.graph.edge_routes.clear();
+        assert!(
+            contact.allows_with(&snapshot),
+            "valid immutable snapshot survives compatibility-map mutation"
+        );
+        let empty_snapshot = LayoutSnapshot::from_graph(&contact.graph);
+        let replacement = Contact::new(Direction::RL, BaseStyle::Unicode, true);
+        contact.graph.edge_routes = replacement.graph.edge_routes;
+        assert!(
+            !contact.allows_with(&empty_snapshot),
+            "public compatibility routes cannot supply absent typed routes"
+        );
+    }
 }

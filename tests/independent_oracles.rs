@@ -6314,3 +6314,754 @@ fn an_upward_mixed_sibling_return_keeps_explicit_crossings_independent() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+// H3 regression expectations remain raw text plus public graph geometry.
+// Route assertions qualify fixture geometry, without private-state evidence.
+// The separately bound diagnostic calibrates fixture geometry and FINAL metadata;
+// private active/override/pre-publisher guards require later seam tests.
+const SHAPE_KIND_H3_GENERATED: &str = "%% probe: [d1 x1] fan-in from four inside nodes to one outside terminal\ngraph RL\n    subgraph Sources [Sources]\n        S1[Disk]\n        S2[Net]\n        S3[(Cache)]\n        S4([Queue])\n    end\n    S1 --> Sink[Aggregator]\n    S2 --> Sink\n    S3 --> Sink\n    S4 --> Sink\n";
+
+fn shape_kind_h3_styles() -> Vec<(&'static str, CompositeStyle)> {
+    let mut styles = vec![
+        ("ascii", CompositeStyle::from_base(BaseStyle::Ascii)),
+        ("unicode", CompositeStyle::from_base(BaseStyle::Unicode)),
+        ("double", CompositeStyle::from_base(BaseStyle::Double)),
+    ];
+    for (name, border, corner, junction) in [
+        (
+            "double-rounded-ascii",
+            BaseStyle::Double,
+            BaseStyle::Rounded,
+            BaseStyle::Ascii,
+        ),
+        (
+            "ascii-unicode-double",
+            BaseStyle::Ascii,
+            BaseStyle::Unicode,
+            BaseStyle::Double,
+        ),
+    ] {
+        let mut style = CompositeStyle::from_base(BaseStyle::Unicode);
+        style.border = Some(border);
+        style.corner = Some(corner);
+        style.junction = Some(junction);
+        styles.push((name, style));
+    }
+    styles
+}
+
+fn shape_kind_h3_config(style: CompositeStyle, optimized: bool) -> Config {
+    let mut config = Config::default();
+    config.crop = false;
+    config.pad = 0;
+    config.optimize_render = optimized;
+    config.composite_style = style;
+    config
+}
+
+fn shape_kind_h3_layout(
+    input: &str,
+    style: CompositeStyle,
+    optimized: bool,
+) -> (termiflow::Graph, String) {
+    let mut graph = parse(input, false).expect("parse H3 regression").graph;
+    // Match the separately calibrated generated capture byte-for-byte. Direct
+    // manual fixtures use the uncropped config instead.
+    let mut config = Config::default();
+    config.optimize_render = optimized;
+    config.composite_style = style;
+    config.spacing = config.spacing.for_direction(graph.direction);
+    measure::measure_graph(&mut graph, &config);
+    let (graph, outcome) =
+        layout_and_render_with_feedback(graph, config).expect("render H3 regression");
+    (graph, outcome.output)
+}
+
+fn shape_kind_h3_reached(
+    graph: &termiflow::Graph,
+    frame: &str,
+    source: &str,
+    strict: bool,
+) -> std::collections::BTreeSet<String> {
+    // Manual direct fixtures deliberately disable crop and pad. The cropped
+    // generated fixtures use shape_kind_h3_layout_reached instead.
+    topology_reached_nodes(graph, &ConnectivityGrid::new(frame), (0, 0), source, strict)
+}
+
+fn shape_kind_h3_layout_reached(
+    graph: &termiflow::Graph,
+    frame: &str,
+    source: &str,
+    strict: bool,
+) -> std::collections::BTreeSet<String> {
+    let grid = ConnectivityGrid::new(frame);
+    let origin =
+        connectivity_frame_origin(graph, &grid).expect("calibrated generated frame origin");
+    topology_reached_nodes(graph, &grid, origin, source, strict)
+}
+
+fn shape_kind_h3_expected(
+    graph: &termiflow::Graph,
+    source: &str,
+) -> std::collections::BTreeSet<String> {
+    graph
+        .edges
+        .iter()
+        .filter(|edge| edge.from == source)
+        .map(|edge| edge.to.clone())
+        .collect()
+}
+
+fn shape_kind_h3_all_nodes(graph: &termiflow::Graph, frame: &str, context: &str) {
+    for node in &graph.nodes {
+        for strict in [true, false] {
+            assert_eq!(
+                shape_kind_h3_reached(graph, frame, &node.id, strict),
+                shape_kind_h3_expected(graph, &node.id),
+                "{context}: changed raw neighbors of {} (strict={strict})\n{frame}",
+                node.id
+            );
+        }
+    }
+}
+
+fn shape_kind_h3_source_cells(
+    graph: &termiflow::Graph,
+    id: &str,
+) -> ((usize, usize), (usize, usize), (usize, usize)) {
+    let node = graph.get_node(id).expect("source node");
+    let y = node.center_y();
+    assert!(node.width >= 2, "distinct source/opposite walls required");
+    match graph.direction {
+        termiflow::graph::Direction::LR => {
+            let right = node
+                .x
+                .checked_add(node.width - 1)
+                .expect("source wall overflow");
+            (
+                (right, y),
+                (right.checked_add(1).expect("outside overflow"), y),
+                (node.x, y),
+            )
+        }
+        termiflow::graph::Direction::RL => {
+            let outside = node
+                .x
+                .checked_sub(1)
+                .expect("RL outside must not clamp inside source");
+            ((node.x, y), (outside, y), (node.x + node.width - 1, y))
+        }
+        other => panic!("horizontal H3 fixture required: {other:?}"),
+    }
+}
+
+fn shape_kind_h3_first_vertical(graph: &termiflow::Graph, id: &str) -> bool {
+    let (_, outside, _) = shape_kind_h3_source_cells(graph, id);
+    graph.edges.iter().enumerate().any(|(index, edge)| {
+        edge.from == id
+            && !edge.is_back_edge
+            && graph
+                .edge_routes
+                .get(&index)
+                .and_then(|route| route.segments.first())
+                .is_some_and(|segment| {
+                    (segment.from.x, segment.from.y) == outside
+                        && segment.to.x == segment.from.x
+                        && segment.to.y != segment.from.y
+                })
+    })
+}
+
+#[test]
+fn shape_kind_h3_generated_source_join_preserves_original_debt() {
+    // This exact mixed-shape input is not globally clean. S4's missing source
+    // attachment is separately retained as baseline debt; it is never used as
+    // a reason to waive the newly lost Database S3 branch or admit extra edges.
+    for direction in ["RL", "LR"] {
+        let input = SHAPE_KIND_H3_GENERATED.replacen("graph RL", &format!("graph {direction}"), 1);
+        for (style_name, style) in shape_kind_h3_styles() {
+            let wall = style.to_style_chars(BaseStyle::Unicode).v;
+            for optimized in [false, true] {
+                let (graph, frame) = shape_kind_h3_layout(&input, style.clone(), optimized);
+                let context =
+                    format!("literal gen_c_004 {direction} {style_name} optimized={optimized}");
+                let (_, _, opposite) = shape_kind_h3_source_cells(&graph, "S3");
+                let grid = ConnectivityGrid::new(&frame);
+                let origin =
+                    connectivity_frame_origin(&graph, &grid).expect("literal frame origin");
+                assert_eq!(
+                    grid.get(
+                        opposite.0 as isize - origin.0,
+                        opposite.1 as isize - origin.1
+                    ),
+                    wall,
+                    "{context}: opposite Database identity cue lost\n{frame}"
+                );
+                // The literal RL fixture has a measured zero-stub route. Mirror
+                // cases still protect reachability, without assuming their
+                // independent layout chose the same collector geometry.
+                if direction == "RL" {
+                    assert!(
+                        shape_kind_h3_first_vertical(&graph, "S3"),
+                        "{context}: fixture no longer exercises the intended FIRST-segment contact"
+                    );
+                } else {
+                    assert!(
+                        !shape_kind_h3_first_vertical(&graph, "S3"),
+                        "{context}: mirror's measured horizontal-first route changed"
+                    );
+                }
+                for node in &graph.nodes {
+                    let expected = shape_kind_h3_expected(&graph, &node.id);
+                    for strict in [true, false] {
+                        let reached =
+                            shape_kind_h3_layout_reached(&graph, &frame, &node.id, strict);
+                        assert!(reached.is_subset(&expected), "{context}: phantom target from {} strict={strict}: {reached:?}\n{frame}", node.id);
+                        if node.id != "S3" {
+                            // Calibrated unchanged e1: original RL S4 is
+                            // disconnected in every style/mode; LR S4 reaches
+                            // Sink. Preserve that exact scoped debt here.
+                            let required = if node.id == "S4" && direction == "RL" {
+                                std::collections::BTreeSet::new()
+                            } else {
+                                expected.clone()
+                            };
+                            assert_eq!(
+                                reached, required,
+                                "{context}: unrelated route changed from {}\n{frame}",
+                                node.id
+                            );
+                        }
+                    }
+                }
+                for strict in [true, false] {
+                    assert_eq!(shape_kind_h3_layout_reached(&graph, &frame, "S3", strict), shape_kind_h3_expected(&graph, "S3"), "H3 intended missing Database source join: {context} strict={strict}\n{frame}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_kind_h3_clean_fanin_has_exact_all_node_ownership() {
+    let clean = SHAPE_KIND_H3_GENERATED.replace("S4([Queue])", "S4[Queue]");
+    for direction in ["RL", "LR"] {
+        let input = clean.replacen("graph RL", &format!("graph {direction}"), 1);
+        for (name, style) in shape_kind_h3_styles() {
+            for optimized in [false, true] {
+                let (graph, frame) = shape_kind_h3_layout(&input, style.clone(), optimized);
+                if direction == "RL" {
+                    assert!(
+                        shape_kind_h3_first_vertical(&graph, "S3"),
+                        "clean homolog lost FIRST-segment contact {name}"
+                    );
+                }
+                // Check all independent controls before the intended S3 red.
+                for node in graph.nodes.iter().filter(|node| node.id != "S3") {
+                    for strict in [true, false] {
+                        assert_eq!(shape_kind_h3_layout_reached(&graph, &frame, &node.id, strict), shape_kind_h3_expected(&graph, &node.id), "clean setup is not a valid S3-only witness: {direction} {name} optimized={optimized} {} strict={strict}\n{frame}", node.id);
+                    }
+                }
+                for node in &graph.nodes {
+                    for strict in [true, false] {
+                        assert_eq!(shape_kind_h3_layout_reached(&graph, &frame, &node.id, strict), shape_kind_h3_expected(&graph, &node.id), "H3 intended clean-homolog Database source join: {direction} {name} optimized={optimized} {} strict={strict}\n{frame}", node.id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn shape_kind_h3_point(
+    x: usize,
+    y: usize,
+    mirrored: bool,
+    shift: (usize, usize),
+) -> termiflow::geom::Point {
+    termiflow::geom::Point::new(
+        if mirrored {
+            79 - x + shift.0
+        } else {
+            x + shift.0
+        },
+        y + shift.1,
+    )
+}
+
+fn shape_kind_h3_node(
+    graph: &mut termiflow::Graph,
+    id: &str,
+    label: &str,
+    shape: termiflow::graph::NodeShape,
+    position: (usize, usize),
+    mirrored: bool,
+    shift: (usize, usize),
+) {
+    let (x, y) = position;
+    let mut node = termiflow::Node::with_shape(id, label, shape);
+    node.width = 11;
+    node.height = 3;
+    node.x = if mirrored {
+        80 - x - node.width + shift.0
+    } else {
+        x + shift.0
+    };
+    node.y = y + shift.1;
+    graph.add_node(node);
+}
+
+fn shape_kind_h3_route(
+    graph: &mut termiflow::Graph,
+    from: &str,
+    to: &str,
+    points: &[(usize, usize)],
+    mirrored: bool,
+    shift: (usize, usize),
+) {
+    let index = graph.edges.len();
+    graph.add_edge(termiflow::Edge::new(from, to));
+    let mut route = termiflow::geom::EdgeRoute::new();
+    for pair in points.windows(2) {
+        route.push_segment(
+            shape_kind_h3_point(pair[0].0, pair[0].1, mirrored, shift),
+            shape_kind_h3_point(pair[1].0, pair[1].1, mirrored, shift),
+        );
+    }
+    graph.edge_routes.insert(index, route);
+}
+
+fn shape_kind_h3_contact_graph(
+    shape: termiflow::graph::NodeShape,
+    mirrored: bool,
+    shifted: bool,
+    through: bool,
+) -> (termiflow::Graph, &'static str) {
+    let shift = if shifted { (7, 3) } else { (0, 0) };
+    let id = if shifted { "RenamedStore" } else { "D" };
+    let peer = if shifted { "PeerRoute" } else { "P" };
+    let target = if shifted { "Destination" } else { "T" };
+    let mut graph = termiflow::Graph::new();
+    graph.direction = if mirrored {
+        termiflow::graph::Direction::RL
+    } else {
+        termiflow::graph::Direction::LR
+    };
+    shape_kind_h3_node(&mut graph, id, "Task", shape, (20, 12), mirrored, shift);
+    shape_kind_h3_node(
+        &mut graph,
+        peer,
+        "Peer",
+        termiflow::graph::NodeShape::Rectangle,
+        (20, 4),
+        mirrored,
+        shift,
+    );
+    shape_kind_h3_node(
+        &mut graph,
+        target,
+        "Sink",
+        termiflow::graph::NodeShape::Rectangle,
+        (58, 20),
+        mirrored,
+        shift,
+    );
+    shape_kind_h3_route(
+        &mut graph,
+        id,
+        target,
+        &[(31, 13), (31, 21), (57, 21)],
+        mirrored,
+        shift,
+    );
+    // Last-published peer legitimately shares the vertical collector and target.
+    shape_kind_h3_route(
+        &mut graph,
+        peer,
+        target,
+        &[(31, 5), (31, 21), (57, 21)],
+        mirrored,
+        shift,
+    );
+    if through {
+        shape_kind_h3_node(
+            &mut graph,
+            "Before",
+            "Input",
+            termiflow::graph::NodeShape::Rectangle,
+            (2, 12),
+            mirrored,
+            shift,
+        );
+        shape_kind_h3_route(
+            &mut graph,
+            "Before",
+            id,
+            &[(13, 13), (19, 13)],
+            mirrored,
+            shift,
+        );
+    }
+    (graph, id)
+}
+
+fn shape_kind_h3_outline_at(graph: &termiflow::Graph, frame: &str, id: &str) -> Vec<char> {
+    let node = graph.get_node(id).unwrap();
+    let mut contour = Vec::new();
+    for dy in 0..node.height {
+        for dx in 0..node.width {
+            if dy == 0 || dy + 1 == node.height || dx == 0 || dx + 1 == node.width {
+                contour.push(
+                    raw_char_at(frame, node.x + dx, node.y + dy).expect("complete H3 enclosure"),
+                );
+            }
+        }
+    }
+    contour
+}
+
+#[test]
+fn shape_kind_h3_shared_source_and_through_contacts_keep_opposite_cue() {
+    for mirrored in [false, true] {
+        for shifted in [false, true] {
+            for through in [false, true] {
+                let (database, id) = shape_kind_h3_contact_graph(
+                    termiflow::graph::NodeShape::Database,
+                    mirrored,
+                    shifted,
+                    through,
+                );
+                let (hexagon, hex_id) = shape_kind_h3_contact_graph(
+                    termiflow::graph::NodeShape::Hexagon,
+                    mirrored,
+                    shifted,
+                    through,
+                );
+                let db = database.get_node(id).unwrap();
+                let hex = hexagon.get_node(hex_id).unwrap();
+                assert_eq!(
+                    (&db.label, db.width, db.height),
+                    (&hex.label, hex.width, hex.height)
+                );
+                assert!(
+                    shape_kind_h3_first_vertical(&database, id),
+                    "direct fixture must start at exact SIDE outside cell"
+                );
+                let (_, contact, _) = shape_kind_h3_source_cells(&database, id);
+                assert_eq!(
+                    database.edges[0].to, database.edges[1].to,
+                    "actual peer route must have the same target"
+                );
+                assert!(
+                    database.edge_routes[&1].segments.iter().any(|segment| {
+                        segment.from.x == contact.0
+                            && segment.to.x == contact.0
+                            && (segment.from.y.min(segment.to.y)..=segment.from.y.max(segment.to.y))
+                                .contains(&contact.1)
+                    }),
+                    "same-target peer must actually cover the exact outside cell"
+                );
+                for (name, style) in shape_kind_h3_styles() {
+                    let wall = style.to_style_chars(BaseStyle::Unicode).v;
+                    for optimized in [false, true] {
+                        let config = shape_kind_h3_config(style.clone(), optimized);
+                        let mut measured_database = database.clone();
+                        let mut measured_hexagon = hexagon.clone();
+                        measure::measure_graph(&mut measured_database, &config);
+                        measure::measure_graph(&mut measured_hexagon, &config);
+                        let measured_db = measured_database.get_node(id).unwrap();
+                        let measured_hex = measured_hexagon.get_node(hex_id).unwrap();
+                        assert_eq!(
+                            (measured_db.width, measured_db.height),
+                            (measured_hex.width, measured_hex.height),
+                            "same-label natural measured sizes must also match"
+                        );
+                        let db_frame = termiflow::render_canvas_with_feedback(&database, &config)
+                            .expect("render direct Database contact")
+                            .output;
+                        let hex_frame = termiflow::render_canvas_with_feedback(&hexagon, &config)
+                            .expect("render equal Task Hexagon control")
+                            .output;
+                        let context = format!("direct shared contact mirror={mirrored} shifted={shifted} through={through} {name} optimized={optimized}");
+                        let (source, outside, opposite) = shape_kind_h3_source_cells(&database, id);
+                        assert_eq!(
+                            raw_char_at(&db_frame, opposite.0, opposite.1),
+                            Some(wall),
+                            "{context}: independent opposite Database wall lost\n{db_frame}"
+                        );
+                        assert_ne!(
+                            shape_kind_h3_outline_at(&database, &db_frame, id),
+                            shape_kind_h3_outline_at(&hexagon, &hex_frame, hex_id),
+                            "{context}: equal-label/equal-size enclosure alias"
+                        );
+                        let grid = ConnectivityGrid::new(&db_frame);
+                        let toward_db = if mirrored {
+                            CONNECTIVITY_RIGHT
+                        } else {
+                            CONNECTIVITY_LEFT
+                        };
+                        assert_ne!(grid.mask(outside.0 as isize, outside.1 as isize) & (1 << toward_db), 0, "H3 intended missing direct Database branch arm: {context} source={source:?} outside={outside:?}\n{db_frame}");
+                        assert_ne!(
+                            raw_char_at(&db_frame, source.0, source.1),
+                            Some(wall),
+                            "{context}: eligible source port was left a plain wall"
+                        );
+                        shape_kind_h3_all_nodes(&database, &db_frame, &context);
+                        // The unchanged-parent diagnostic found a separate
+                        // tight Hexagon source debt: its angle and adjacent
+                        // vertical rail do not form a raw source arm. Retain
+                        // that exact baseline including every other node;
+                        // never count it as the Database intended red or
+                        // weaken the grid. Roomy Hexagon positives stay intact.
+                        for node in &hexagon.nodes {
+                            for strict in [true, false] {
+                                let required = if node.id == hex_id {
+                                    std::collections::BTreeSet::new()
+                                } else {
+                                    shape_kind_h3_expected(&hexagon, &node.id)
+                                };
+                                assert_eq!(shape_kind_h3_reached(&hexagon, &hex_frame, &node.id, strict), required, "unchanged tight Hexagon baseline altered: {context} {} strict={strict}\n{hex_frame}", node.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn shape_kind_h3_foreign_rail_graph(
+    mirrored: bool,
+    shifted: bool,
+    same_target: bool,
+) -> (termiflow::Graph, &'static str) {
+    let shift = if shifted { (7, 3) } else { (0, 0) };
+    let id = if shifted { "RenamedStore" } else { "D" };
+    let mut graph = termiflow::Graph::new();
+    graph.direction = if mirrored {
+        termiflow::graph::Direction::RL
+    } else {
+        termiflow::graph::Direction::LR
+    };
+    shape_kind_h3_node(
+        &mut graph,
+        id,
+        "Task",
+        termiflow::graph::NodeShape::Database,
+        (20, 12),
+        mirrored,
+        shift,
+    );
+    shape_kind_h3_node(
+        &mut graph,
+        "Own",
+        "Own",
+        termiflow::graph::NodeShape::Rectangle,
+        (4, 4),
+        mirrored,
+        shift,
+    );
+    shape_kind_h3_node(
+        &mut graph,
+        "Foreign",
+        "Foreign",
+        termiflow::graph::NodeShape::Rectangle,
+        (4, 20),
+        mirrored,
+        shift,
+    );
+    // D's active FIRST segment starts at TOP outside, never normal SIDE.
+    shape_kind_h3_route(
+        &mut graph,
+        id,
+        "Own",
+        &[(25, 11), (25, 5), (15, 5)],
+        mirrored,
+        shift,
+    );
+    if same_target {
+        shape_kind_h3_route(
+            &mut graph,
+            "Foreign",
+            "Own",
+            &[(15, 21), (31, 21), (31, 5), (15, 5)],
+            mirrored,
+            shift,
+        );
+    } else {
+        shape_kind_h3_node(
+            &mut graph,
+            "Other",
+            "Other",
+            termiflow::graph::NodeShape::Rectangle,
+            (58, 1),
+            mirrored,
+            shift,
+        );
+        shape_kind_h3_route(
+            &mut graph,
+            "Foreign",
+            "Other",
+            &[(15, 21), (31, 21), (31, 2), (57, 2)],
+            mirrored,
+            shift,
+        );
+    }
+    (graph, id)
+}
+
+#[test]
+fn shape_kind_h3_top_owned_route_rejects_adjacent_foreign_side_rail() {
+    for mirrored in [false, true] {
+        for shifted in [false, true] {
+            for same_target in [false, true] {
+                let (graph, id) = shape_kind_h3_foreign_rail_graph(mirrored, shifted, same_target);
+                assert!(
+                    !shape_kind_h3_first_vertical(&graph, id),
+                    "TOP route cannot qualify as SIDE contact"
+                );
+                let own = graph.edge_routes.get(&0).unwrap().segments.first().unwrap();
+                let node = graph.get_node(id).unwrap();
+                assert_eq!((own.from.x, own.from.y), (node.center_x(), node.y - 1));
+                for (name, style) in shape_kind_h3_styles() {
+                    let wall = style.to_style_chars(BaseStyle::Unicode).v;
+                    for optimized in [false, true] {
+                        let frame = termiflow::render_canvas_with_feedback(
+                            &graph,
+                            &shape_kind_h3_config(style.clone(), optimized),
+                        )
+                        .expect("render nearby-foreign-rail negative")
+                        .output;
+                        let (source, outside, opposite) = shape_kind_h3_source_cells(&graph, id);
+                        let context = format!("foreign-side rail mirror={mirrored} shifted={shifted} same_target={same_target} {name} optimized={optimized}");
+                        assert_eq!(
+                            raw_char_at(&frame, source.0, source.1),
+                            Some(wall),
+                            "{context}: invented source port from nearby rail\n{frame}"
+                        );
+                        assert_eq!(
+                            raw_char_at(&frame, opposite.0, opposite.1),
+                            Some(wall),
+                            "{context}: opposite wall changed"
+                        );
+                        // Same-target endpoint equality alone cannot detect an
+                        // invented second port. The raw contour/rail assertions
+                        // above and below are mandatory independent controls.
+                        let grid = ConnectivityGrid::new(&frame);
+                        let toward_db = if mirrored {
+                            CONNECTIVITY_RIGHT
+                        } else {
+                            CONNECTIVITY_LEFT
+                        };
+                        assert_eq!(
+                            grid.mask(outside.0 as isize, outside.1 as isize) & (1 << toward_db),
+                            0,
+                            "{context}: foreign rail acquired phantom Database branch"
+                        );
+                        shape_kind_h3_all_nodes(&graph, &frame, &context);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_kind_h3_no_outgoing_route_cannot_gain_side_contact() {
+    for mirrored in [false, true] {
+        for shifted in [false, true] {
+            for nearby_rail in [false, true] {
+                let (mut graph, id) = shape_kind_h3_foreign_rail_graph(mirrored, shifted, false);
+                // Remove only D's route. Keep the foreign route immediately
+                // outside D in one control; the other control is truly isolated.
+                graph.edges.remove(0);
+                graph.edge_routes.remove(&0);
+                let foreign = graph.edge_routes.remove(&1).unwrap();
+                graph.edge_routes.insert(0, foreign);
+                if !nearby_rail {
+                    graph.edges.clear();
+                    graph.edge_routes.clear();
+                    graph.nodes.retain(|node| node.id == id);
+                }
+                assert!(!shape_kind_h3_first_vertical(&graph, id));
+                for (name, style) in shape_kind_h3_styles() {
+                    let wall = style.to_style_chars(BaseStyle::Unicode).v;
+                    for optimized in [false, true] {
+                        let frame = termiflow::render_canvas_with_feedback(
+                            &graph,
+                            &shape_kind_h3_config(style.clone(), optimized),
+                        )
+                        .expect("render no-outgoing negative")
+                        .output;
+                        let (source, _, opposite) = shape_kind_h3_source_cells(&graph, id);
+                        let context = format!("no outgoing mirror={mirrored} shifted={shifted} nearby_rail={nearby_rail} {name} optimized={optimized}");
+                        assert_eq!(
+                            (
+                                raw_char_at(&frame, source.0, source.1),
+                                raw_char_at(&frame, opposite.0, opposite.1)
+                            ),
+                            (Some(wall), Some(wall)),
+                            "{context}: invented side port without own route\n{frame}"
+                        );
+                        shape_kind_h3_all_nodes(&graph, &frame, &context);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_kind_h3_tight_join_raw_walk_rejects_branch_route_and_head_cuts() {
+    for mirrored in [false, true] {
+        let (graph, id) = shape_kind_h3_contact_graph(
+            termiflow::graph::NodeShape::Database,
+            mirrored,
+            false,
+            true,
+        );
+        for (name, style) in shape_kind_h3_styles() {
+            for optimized in [false, true] {
+                let frame = termiflow::render_canvas_with_feedback(
+                    &graph,
+                    &shape_kind_h3_config(style.clone(), optimized),
+                )
+                .expect("render tight raw-oracle control")
+                .output;
+                // These controls are meaningful only after the unmodified
+                // positive is connected. Parent failure here is the SAME H3
+                // source defect, never evidence that the negative oracle passed.
+                shape_kind_h3_all_nodes(&graph, &frame, "H3 raw-oracle positive prerequisite");
+                let (_, outside, _) = shape_kind_h3_source_cells(&graph, id);
+                let branch_cut = shape_kind_change_cell(
+                    &frame,
+                    outside.0,
+                    outside.1,
+                    style.to_style_chars(BaseStyle::Unicode).edge_v,
+                );
+                let route_cut_point = shape_kind_h3_point(40, 21, mirrored, (0, 0));
+                let route_cut =
+                    shape_kind_change_cell(&frame, route_cut_point.x, route_cut_point.y, ' ');
+                let head = shape_kind_h3_point(57, 21, mirrored, (0, 0));
+                assert!(
+                    matches!(
+                        raw_char_at(&frame, head.x, head.y),
+                        Some('<' | '>' | '←' | '→' | '◀' | '▶')
+                    ),
+                    "select actual shared target head: {name}\n{frame}"
+                );
+                let head_cut = shape_kind_change_cell(&frame, head.x, head.y, ' ');
+                for (cut_name, broken) in [
+                    ("source branch arm", branch_cut),
+                    ("route after first segment", route_cut),
+                    ("shared target head", head_cut),
+                ] {
+                    for strict in [true, false] {
+                        assert!(!shape_kind_h3_reached(&graph, &broken, id, strict).contains("T"), "raw walk accepted {cut_name} loss: mirror={mirrored} {name} optimized={optimized} strict={strict}\n{broken}");
+                    }
+                    // A shared collector has one external head for two edges.
+                    // Do not use the generic head-count scanner as the oracle,
+                    // or claim that scanner is necessarily green for this scene.
+                }
+            }
+        }
+    }
+}

@@ -1,8 +1,11 @@
 # Preserve Database identity at horizontal ports
 
-Status: provisional. Focused tests, selected mutations and independent Rust
-code review support this candidate; final source qualification, full fresh
-visual review, cycle acceptance and current maintainer approval remain gates.
+Status: provisional. The unconditional wall-preservation candidate was rejected
+by the generated topology audit. Its guarded successor passes the focused raw
+and private eligibility tests. All 21 selected mutants compile and fail at
+their intended assertions, with passing controls before and after; independent
+code and runtime reviews support this source checkpoint. Full fresh visual
+review, cycle acceptance and current maintainer approval remain gates.
 
 The all-shapes LR/RL frame used the same slash caps and generic port junctions
 for Database and Hexagon. The words and their measured widths supplied the
@@ -17,22 +20,41 @@ to a previously distinct connected pair. The maintainer chose to preserve
 the existing intrinsic ASCII approximation for this remediation. That choice
 does not permit a new connected alias or approve the candidate source.
 
-The Database-wall hypothesis keeps its existing resolved `style.v` sides at
-horizontal attachments. The primitive retains them, and the normal late
-source-junction publisher preserves an actual wall only for the semantic
-Database kind and LR/RL. The Subroutine double-wall rule remains separate.
-Hexagon/Decision behavior, measured bounds, labels, exterior ports and vertical
-Database projection stay unchanged. Existing strict terminal-entry wall
-restoration is supporting precedent, rather than proof for all topologies.
+The Database primitive retains its existing resolved `style.v` sides at
+horizontal attachments. Unconditionally suppressing the late source port lost
+`Cache -> Aggregator` in `gen_c_004`: the precomputed fan-in collector starts
+vertically one cell outside Cache, leaving no horizontal stem. A preserved wall
+beside that collector lacks a reciprocal branch arm. Both the ASCII and Unicode
+complete frames showed the loss; this was a real added topology finding.
+
+The guarded successor permits the ordinary late source port only at that
+proven route contact. Both source and opposite cells must be in bounds and
+contain the resolved wall. The source's active, non-overridden typed route must
+start with a nonzero vertical segment at the exact adjacent cell. That cell
+must actually contain a vertical EdgeSegment with its canonical route owner.
+A shared collector's last writer may be another source, so its active route
+must cover the cell vertically and have the same target. A foreign rail, stale
+route, top exit, endpoint or planned-scene override supplies no such proof.
+The opposite plain wall remains a Database cue even at a tight through port.
+
+The Subroutine double-wall rule remains separate. Hexagon/Decision behavior,
+measured bounds, labels and vertical Database projection stay unchanged. The
+original missing Queue source contact in `gen_c_004` remains a separately
+measured baseline; a Rectangle-Queue homolog checks exact ownership for every
+node without that debt. Existing strict terminal-entry wall restoration is
+supporting precedent, rather than proof for all topologies.
 
 The tests compare enclosure-only signatures with identical labels and sizes,
-assert both Database walls across attachment/direction/style/mode cases, and
+assert both Database walls in roomy attachment/direction/style/mode cases, and
 check mixed border/corner/junction configurations using the resolved border.
 They preserve every node's raw reached-neighbor equality. A bounded test-only
 adapter excludes only declared node-owned polygon contour angles from arrow
 counting; real external heads, shafts and stray outside angles remain checked.
 Deleting a source stem also must fail the graph walk when the distant head
-and its local shaft still look valid.
+and its local shaft still look valid. Separate tight-contact tests require
+the source branch, opposite wall, unequal Database/Hexagon enclosure and exact
+raw reached-neighbor sets. Cutting the branch arm, later route or shared
+target head must each lose the target after an uncut positive succeeds.
 
 The old generic-Database port assertion encoded this demonstrated collision;
 the stronger wall/ownership contract replaces it. Hexagon and all other
