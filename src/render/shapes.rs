@@ -712,7 +712,7 @@ fn draw_database(
         h,
         style.v,
         style.v,
-        false,
+        true,
         style,
         direction,
     );
@@ -722,10 +722,10 @@ fn draw_database(
     }
 }
 
-/// Keep the terminal database contour distinct when the route arrow already
-/// owns the adjacent receiver cell. The strict scene policy is supplied by
-/// the graph-owned caller; generic database nodes retain draw_boxlike's
-/// existing junction inference.
+/// Reaffirm the terminal Database wall where the claimed strict scene places
+/// an adjacent receiver arrow. Horizontal Database walls are also retained by
+/// the generic primitive; this scene hook preserves its explicit entry policy
+/// without changing the graph-owned terminal lane or endpoint.
 fn restore_arrow_adjacent_database_walls(
     canvas: &mut Canvas,
     x: usize,
@@ -1157,13 +1157,36 @@ mod tests {
     }
 
     #[test]
+    fn shape_kind_connected_database_preserves_side_walls() {
+        for style in [&ASCII_CHARS, &UNICODE_CHARS, &crate::style::DOUBLE_CHARS] {
+            for direction in [Direction::LR, Direction::RL] {
+                let mut canvas = mk_canvas(16, 5);
+                canvas.set(1, 2, style.edge_h);
+                canvas.set(12, 2, style.edge_h);
+                draw_node(
+                    &mut canvas,
+                    2,
+                    1,
+                    10,
+                    3,
+                    &lines("Task"),
+                    NodeShape::Database,
+                    style,
+                    direction,
+                );
+                assert_eq!((canvas.get(2, 2), canvas.get(11, 2)), (style.v, style.v));
+                assert!(canvas.to_string_cropped(0).contains("Task"));
+            }
+        }
+    }
+
+    #[test]
     fn shape_identity_other_boxlike_kinds_keep_generic_ports() {
         for style in [&ASCII_CHARS, &UNICODE_CHARS, &crate::style::DOUBLE_CHARS] {
             for shape in [
                 NodeShape::Rectangle,
                 NodeShape::Rounded,
                 NodeShape::Hexagon,
-                NodeShape::Database,
                 NodeShape::Parallelogram,
                 NodeShape::ParallelogramAlt,
                 NodeShape::Trapezoid,

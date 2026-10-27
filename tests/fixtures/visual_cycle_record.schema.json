@@ -94,7 +94,8 @@
           "properties": {
             "decisions_sha256": {"$ref": "#/$defs/sha256"},
             "reviewed": {"type": "integer", "minimum": 1},
-            "expected_rows": {"type": "integer", "minimum": 1}
+            "expected_rows": {"type": "integer", "minimum": 1},
+            "history": {"$ref": "#/$defs/history_binding"}
           }
         },
         "holdout": {
@@ -112,7 +113,8 @@
             "decisions_sha256": {"$ref": "#/$defs/sha256"},
             "reviewed": {"type": "integer", "minimum": 1},
             "expected_rows": {"type": "integer", "minimum": 1},
-            "status": {"enum": ["passed", "failed", "blocked", "not_run"]}
+            "status": {"enum": ["passed", "failed", "blocked", "not_run"]},
+            "history": {"$ref": "#/$defs/history_binding"}
           }
         },
         "fix": {
@@ -179,7 +181,8 @@
       "properties": {
         "decisions_sha256": {"$ref": "#/$defs/sha256"},
         "reviewed": {"type": "integer", "minimum": 1},
-        "expected_rows": {"type": "integer", "minimum": 1}
+        "expected_rows": {"type": "integer", "minimum": 1},
+        "history": {"$ref": "#/$defs/history_binding"}
       }
     },
     "holdout_review": {
@@ -190,7 +193,8 @@
         "receipt_sha256": {"$ref": "#/$defs/sha256"},
         "decisions_sha256": {"$ref": "#/$defs/sha256"},
         "reviewed": {"type": "integer", "minimum": 1},
-        "expected_rows": {"type": "integer", "minimum": 1}
+        "expected_rows": {"type": "integer", "minimum": 1},
+        "history": {"$ref": "#/$defs/history_binding"}
       }
     },
     "observation": {"type": "string", "minLength": 1},
@@ -269,7 +273,32 @@
       }
     }
   },
+  "allOf": [{
+    "if": {"anyOf": [
+      {"properties": {"review": {"required": ["history"]}}},
+      {"properties": {"holdout_review": {"required": ["history"]}}},
+      {"properties": {"scope": {"properties": {"review": {"required": ["history"]}}}}},
+      {"properties": {"scope": {"properties": {"holdout": {"required": ["history"]}}}}}
+    ]},
+    "then": {"properties": {
+      "review": {"required": ["history"]},
+      "holdout_review": {"required": ["history"]},
+      "scope": {"properties": {
+        "review": {"required": ["history"]},
+        "holdout": {"required": ["history"]}
+      }}
+    }}
+  }],
   "$defs": {
+    "history_binding": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"

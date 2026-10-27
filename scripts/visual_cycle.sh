@@ -8,13 +8,17 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/visual_cycle.sh --packet DIR --decisions FILE \
   --queue-manifest FILE --holdout-receipt FILE \
-  --holdout-decisions FILE --record FILE --output FILE [--history FILE]
+  --holdout-decisions FILE --record FILE --output FILE [--history FILE] \
+  [--holdout-history FILE]
 
 Validate a strict visual packet and its complete one-frame review ledger, then
 validate the separate evaluator-owned holdout packet/ledger, then emit one
 hash-bound termiflow.visual_cycle.v2 receipt from an explicit cycle record.
 This command never appends decisions, updates goldens, or changes baselines.
 The output path must not already exist.
+--history is shared by default. --holdout-history overrides only holdout review.
+An override, or any record history member, requires all four computed history
+bindings in review, scope.review, holdout_review and scope.holdout.
 USAGE
 }
 
@@ -31,6 +35,7 @@ holdout_decisions_path=""
 record_path=""
 output_path=""
 history_path=""
+holdout_history_path=""
 
 while (($# > 0)); do
   case "$1" in
@@ -72,6 +77,12 @@ while (($# > 0)); do
     --history)
       (($# >= 2)) || die "--history requires a JSONL ledger"
       history_path="$2"
+      shift 2
+      ;;
+    --holdout-history)
+      (($# >= 2)) || die "--holdout-history requires a JSONL ledger"
+      [[ -n "$2" ]] || die "--holdout-history requires a JSONL ledger"
+      holdout_history_path="$2"
       shift 2
       ;;
     --help|-h)
@@ -151,10 +162,47 @@ holdout_receipt_file="$(resolve_file "$holdout_receipt_path" holdout-receipt)"
 holdout_decisions_file="$(resolve_file "$holdout_decisions_path" holdout-decisions)"
 record_file="$(resolve_file "$record_path" cycle-record)"
 output_file="$(resolve_output "$output_path")"
-history_args=()
+history_file=""
+main_history_args=()
 if [[ -n "$history_path" ]]; then
   history_file="$(resolve_file "$history_path" visual-history)"
-  history_args=(--history "$history_file")
+  main_history_args=(--history "$history_file")
+fi
+holdout_history_file="$history_file"
+if [[ -n "$holdout_history_path" ]]; then
+  holdout_history_file="$(resolve_file "$holdout_history_path" holdout-history)"
+fi
+holdout_history_args=()
+if [[ -n "$holdout_history_file" ]]; then
+  holdout_history_args=(--history "$holdout_history_file")
+fi
+
+history_binding() {
+  if [[ -z "$1" ]]; then
+    printf 'null\n'
+  else
+    jq -cn --arg path "$1" --arg sha256 "$(hash_file "$1")" \
+      '{path:$path,sha256:$sha256}'
+  fi
+}
+main_history_binding="$(history_binding "$history_file")"
+holdout_history_binding="$(history_binding "$holdout_history_file")"
+bind_history=false
+if [[ -n "$holdout_history_path" ]] || jq -e '
+  [.review, .scope.review, .holdout_review, .scope.holdout] |
+  any(.[]; if type == "object" then has("history") else false end)
+' "$record_file" >/dev/null; then
+  bind_history=true
+fi
+if [[ "$bind_history" == true ]]; then
+  jq -e --argjson main "$main_history_binding" \
+    --argjson holdout "$holdout_history_binding" '
+    (.review | has("history")) and (.scope.review | has("history")) and
+    (.holdout_review | has("history")) and (.scope.holdout | has("history")) and
+    .review.history == $main and .scope.review.history == $main and
+    .holdout_review.history == $holdout and .scope.holdout.history == $holdout
+  ' "$record_file" >/dev/null \
+    || die "cycle history bindings do not match selected ledgers"
 fi
 
 for required in COMPLETE.json manifest.jsonl identity.json PACKET.sha256; do
@@ -244,22 +292,13 @@ if ! "$root_dir/scripts/visual_validate.sh" \
   die "strict visual validation failed"
 fi
 
-if [[ -n "$history_path" ]]; then
-  review_command=(
-    "$root_dir/scripts/review_visual_packet.sh"
-    --packet "$packet_dir"
-    --decisions "$decisions_file"
-    --history "$history_file"
-    --validate
-  )
-else
-  review_command=(
-    "$root_dir/scripts/review_visual_packet.sh"
-    --packet "$packet_dir"
-    --decisions "$decisions_file"
-    --validate
-  )
-fi
+review_command=(
+  "$root_dir/scripts/review_visual_packet.sh"
+  --packet "$packet_dir"
+  --decisions "$decisions_file"
+  "${main_history_args[@]}"
+  --validate
+)
 if ! "${review_command[@]}" \
   >"$tmp_dir/review.stdout" 2>"$tmp_dir/review.stderr"; then
   cat "$tmp_dir/review.stderr" >&2
@@ -288,22 +327,13 @@ if ! "$root_dir/scripts/visual_validate.sh" \
   cat "$tmp_dir/holdout-visual.stdout" >&2
   die "strict holdout visual validation failed"
 fi
-if [[ -n "$history_path" ]]; then
-  holdout_review_command=(
-    "$root_dir/scripts/review_visual_packet.sh"
-    --packet "$holdout_packet_dir"
-    --decisions "$holdout_decisions_file"
-    --history "$history_file"
-    --validate
-  )
-else
-  holdout_review_command=(
-    "$root_dir/scripts/review_visual_packet.sh"
-    --packet "$holdout_packet_dir"
-    --decisions "$holdout_decisions_file"
-    --validate
-  )
-fi
+holdout_review_command=(
+  "$root_dir/scripts/review_visual_packet.sh"
+  --packet "$holdout_packet_dir"
+  --decisions "$holdout_decisions_file"
+  "${holdout_history_args[@]}"
+  --validate
+)
 if ! "${holdout_review_command[@]}" \
   >"$tmp_dir/holdout-review.stdout" 2>"$tmp_dir/holdout-review.stderr"; then
   cat "$tmp_dir/holdout-review.stderr" >&2
@@ -318,6 +348,10 @@ holdout_review_schema="$(jq -er '.schema | strings' "$tmp_dir/holdout-review.std
   || die "unexpected holdout review coverage schema: $holdout_review_schema"
 (( holdout_reviewed == holdout_expected_rows )) \
   || die "holdout review coverage is incomplete: $holdout_reviewed of $holdout_expected_rows"
+
+[[ "$(history_binding "$history_file")" == "$main_history_binding" && \
+   "$(history_binding "$holdout_history_file")" == "$holdout_history_binding" ]] \
+  || die "visual history changed during cycle validation"
 
 complete_sha256="$(hash_file "$packet_dir/COMPLETE.json")"
 manifest_sha256="$(hash_file "$packet_dir/manifest.jsonl")"
@@ -369,6 +403,7 @@ if ! jq -e \
   --argjson holdout_expected "$holdout_expected_rows" \
   --argjson reviewed "$reviewed" \
   --argjson expected "$expected_rows" \
+  --argjson bind_history "$bind_history" \
   --arg lesson_sha "$lesson_sha256" '
     def nonempty_string:
       type == "string" and length > 0;
@@ -376,6 +411,8 @@ if ! jq -e \
       type == "array" and length > 0 and all(.[]; nonempty_string);
     def has_only($allowed):
       (keys | sort) == ($allowed | sort);
+    def history_fields($required):
+      has_only($required + (if $bind_history then ["history"] else [] end));
     def enum($values; $value):
       ($values | index($value)) != null;
     has_only(["schema", "cycle_id", "disposition", "packet", "scope", "queue", "review",
@@ -387,9 +424,9 @@ if ! jq -e \
       "identity_sha256", "packet_checksum_sha256"])) and
     (.scope | type == "object") and
     (.scope | has_only(["queue", "packet", "review", "holdout", "fix", "homologs", "homolog_result", "golden_approval", "lesson"])) and
-    (.review | has_only(["decisions_sha256", "reviewed", "expected_rows"])) and
+    (.review | history_fields(["decisions_sha256", "reviewed", "expected_rows"])) and
     (.queue | has_only(["queue_id", "queue_sha256", "manifest_sha256"])) and
-    (.holdout_review | has_only(["receipt_sha256", "decisions_sha256", "reviewed", "expected_rows"])) and
+    (.holdout_review | history_fields(["receipt_sha256", "decisions_sha256", "reviewed", "expected_rows"])) and
     (.fix | has_only(["status", "summary"])) and
     (.holdout | has_only(["status", "result"])) and
     (.homolog_result | has_only(["status", "summary"])) and
@@ -412,11 +449,11 @@ if ! jq -e \
     (.scope.packet.manifest_sha256 == $manifest) and
     (.scope.packet.identity_sha256 == $identity) and
     (.scope.packet.packet_checksum_sha256 == $checksum) and
-    (.scope.review | has_only(["decisions_sha256", "reviewed", "expected_rows"])) and
+    (.scope.review | history_fields(["decisions_sha256", "reviewed", "expected_rows"])) and
     (.scope.review.decisions_sha256 == $decisions) and
     (.scope.review.reviewed == $reviewed) and
     (.scope.review.expected_rows == $expected) and
-    (.scope.holdout | has_only(["receipt_sha256", "decisions_sha256", "reviewed", "expected_rows", "status"])) and
+    (.scope.holdout | history_fields(["receipt_sha256", "decisions_sha256", "reviewed", "expected_rows", "status"])) and
     (.scope.holdout.receipt_sha256 == $holdout_receipt_sha256) and
     (.scope.holdout.decisions_sha256 == $holdout_decisions_sha256) and
     (.scope.holdout.reviewed == $holdout_reviewed) and
@@ -514,6 +551,9 @@ jq -S -n \
   --argjson expected_rows "$expected_rows" \
   --argjson holdout_reviewed "$holdout_reviewed" \
   --argjson holdout_expected_rows "$holdout_expected_rows" \
+  --argjson bind_history "$bind_history" \
+  --argjson main_history_binding "$main_history_binding" \
+  --argjson holdout_history_binding "$holdout_history_binding" \
   --arg disposition "$disposition" \
   --arg fix_status "$fix_status" \
   --arg holdout_status "$holdout_status" \
@@ -621,7 +661,12 @@ jq -S -n \
       summary: $homolog_result_summary
     },
     golden_approval: "separate_review_required"
-  }' > "$receipt_stage"
+  } | if $bind_history then
+    .review.history = $main_history_binding |
+    .scope.review.history = $main_history_binding |
+    .holdout_review.history = $holdout_history_binding |
+    .scope.holdout.history = $holdout_history_binding
+  else . end' > "$receipt_stage"
 
 "$root_dir/scripts/publish_receipt.sh" "$receipt_stage" "$output_file"
 receipt_stage=""

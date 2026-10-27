@@ -242,6 +242,24 @@ owner-layer hypothesis, predicted observation, falsifier, next command, fix or
 explicit hold disposition, homolog result, holdout result, and a hash-bound
 durable lesson artifact.
 
+`--history FILE` supplies the same history to main and holdout review by
+default. Use `--history MAIN_HISTORY --holdout-history HOLDOUT_HISTORY` when
+the packets have different applicable risks. A focused main projection must
+retain every applicable risk and preserve its mapping to the complete ledger;
+keep the complete canonical/authored histories for the full-corpus pass.
+New holdouts with no applicable selectors may use an explicit zero-byte JSONL
+file after that applicability check. An empty file does not waive a risk.
+
+An override, or any record history member, requires all four bindings:
+`review.history`, `scope.review.history`, `holdout_review.history`, and
+`scope.holdout.history`. Each must equal the selected file's resolved absolute
+`path` and exact-byte `sha256`, or `null` when no file is supplied. The wrapper
+checks these values and copies computed bindings into the receipt. Legacy
+records without the new members retain the shared default. The wrapper uses
+native `--validate` on existing ledgers; its synthetic Unix/Bash integration
+tests prove process guards, not fresh perceptual coverage. Required sequential
+fresh review and strict learning remain separate evidence.
+
 The receipt is process evidence, not golden approval. Machine critic findings
 and perceptual decisions remain separate evidence layers. A `hold` or
 `falsified` cycle may keep a holdout blocked or unrun when the reason and next

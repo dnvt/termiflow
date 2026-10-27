@@ -1010,12 +1010,13 @@ fn render_frame(
             }
         }
 
-        // A Subroutine's double wall is its shape cue. Its horizontal stem
-        // already ends outside the box, so keep that node-owned contour just
-        // as the Stadium's curved side survives generic source publication.
+        // These horizontal stems end outside the node. Preserve Subroutine's
+        // double wall and Database's resolved border wall as shape-owned cues;
+        // ordinary box kinds still receive their normal source junction.
         if matches!(graph.direction, Direction::LR | Direction::RL)
-            && from.shape == NodeShape::Subroutine
-            && canvas.get(junction_x, junction_y) == '║'
+            && ((from.shape == NodeShape::Subroutine && canvas.get(junction_x, junction_y) == '║')
+                || (from.shape == NodeShape::Database
+                    && canvas.get(junction_x, junction_y) == chars.v))
         {
             continue;
         }

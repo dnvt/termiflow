@@ -45,11 +45,82 @@ fn raw_char_at(frame: &str, x: usize, y: usize) -> Option<char> {
     frame.lines().nth(y)?.chars().nth(x)
 }
 
+// Shape probes below use innocent ASCII labels, so character columns and
+// display columns coincide. Only declared Hexagon/Decision side contours are excluded
+// from the generic raw arrow scanner; the original frame still supplies all
+// cue assertions and every node's strict reached-neighbor check.
+fn shape_kind_raw_check_frame(graph: &termiflow::Graph, frame: &str) -> String {
+    let grid = ConnectivityGrid::new(frame);
+    let (ox, oy) = connectivity_frame_origin(graph, &grid).expect("shape probe origin");
+    let mut rows: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+    for node in &graph.nodes {
+        assert!(node.label.is_ascii(), "shape probe labels must be ASCII");
+        let contour_rows = match node.shape {
+            termiflow::graph::NodeShape::Hexagon => node.y + 1..node.y + node.height - 1,
+            termiflow::graph::NodeShape::Diamond => {
+                let center = node.y + node.height / 2;
+                center..center + 1
+            }
+            _ => continue,
+        };
+        for y in contour_rows {
+            for (x, expected) in [(node.x, '<'), (node.x + node.width - 1, '>')] {
+                let x = usize::try_from(x as isize - ox).expect("visible contour x");
+                let y = usize::try_from(y as isize - oy).expect("visible contour y");
+                if let Some(cell) = rows.get_mut(y).and_then(|row| row.get_mut(x)) {
+                    if *cell == expected {
+                        *cell = ' ';
+                    }
+                }
+            }
+        }
+    }
+    rows.into_iter()
+        .map(|row| row.into_iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn shape_kind_reachability_errors(graph: &termiflow::Graph, frame: &str) -> Vec<String> {
+    let grid = ConnectivityGrid::new(frame);
+    let origin = connectivity_frame_origin(graph, &grid).expect("shape probe origin");
+    graph
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let expected: std::collections::BTreeSet<_> = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.from == node.id)
+                .map(|edge| edge.to.clone())
+                .collect();
+            let reached = topology_reached_nodes(graph, &grid, origin, &node.id, true);
+            (reached != expected).then(|| format!("{}: {reached:?} != {expected:?}", node.id))
+        })
+        .collect()
+}
+
 fn shape_identity_render(
     direction: &str,
     shape: &str,
     attachment: &str,
     style: BaseStyle,
+    optimized: bool,
+) -> (termiflow::Graph, String) {
+    shape_identity_render_composite(
+        direction,
+        shape,
+        attachment,
+        CompositeStyle::from_base(style),
+        optimized,
+    )
+}
+
+fn shape_identity_render_composite(
+    direction: &str,
+    shape: &str,
+    attachment: &str,
+    composite_style: CompositeStyle,
     optimized: bool,
 ) -> (termiflow::Graph, String) {
     // The same innocuous label prevents text from standing in for the shape.
@@ -66,15 +137,28 @@ fn shape_identity_render(
     let mut graph = parse(&input, false)
         .expect("parse shape identity input")
         .graph;
+    let declared_shapes: HashMap<_, _> = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.shape))
+        .collect();
     let mut config = Config::default();
     config.crop = false;
     config.optimize_render = optimized;
-    config.composite_style = CompositeStyle::from_base(style);
+    config.composite_style = composite_style;
     config.spacing = config.spacing.for_direction(graph.direction);
     measure::measure_graph(&mut graph, &config);
     let (graph, outcome) =
         layout_and_render_with_feedback(graph, config).expect("render shape identity input");
-    let errors = raw_frame_errors(&input, &outcome.output);
+    assert_eq!(graph.nodes.len(), declared_shapes.len());
+    for node in &graph.nodes {
+        assert_eq!(
+            Some(&node.shape),
+            declared_shapes.get(&node.id),
+            "layout changed parser-declared kind"
+        );
+    }
+    let errors = raw_frame_errors(&input, &shape_kind_raw_check_frame(&graph, &outcome.output));
     assert!(
         errors.is_empty(),
         "shape input lost labels or heads: {errors:?}\n{}",
@@ -199,6 +283,280 @@ fn shape_identity_branch_and_cycle_controls_keep_contours_and_ownership() {
                     }
                 }
             }
+        }
+    }
+}
+
+fn shape_kind_outline(graph: &termiflow::Graph, frame: &str) -> (usize, usize, Vec<char>) {
+    let node = graph.get_node("N").expect("shape probe node");
+    let grid = ConnectivityGrid::new(frame);
+    let (ox, oy) = connectivity_frame_origin(graph, &grid).expect("shape probe origin");
+    let mut contour = Vec::new();
+    for dy in 0..node.height {
+        for dx in 0..node.width {
+            if dy == 0 || dy + 1 == node.height || dx == 0 || dx + 1 == node.width {
+                contour.push(grid.get(
+                    node.x as isize + dx as isize - ox,
+                    node.y as isize + dy as isize - oy,
+                ));
+            }
+        }
+    }
+    (node.width, node.height, contour)
+}
+
+#[test]
+fn shape_kind_database_hexagon_enclosures_differ_without_labels() {
+    for direction in ["LR", "RL", "TD", "BT"] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                for attachment in ["isolated", "source", "target", "through"] {
+                    let (database, db_frame) =
+                        shape_identity_render(direction, "[(Task)]", attachment, style, optimized);
+                    let (hexagon, hex_frame) =
+                        shape_identity_render(direction, "{{Task}}", attachment, style, optimized);
+                    let db = shape_kind_outline(&database, &db_frame);
+                    let hex = shape_kind_outline(&hexagon, &hex_frame);
+                    assert_eq!(
+                        (db.0, db.1),
+                        (hex.0, hex.1),
+                        "shape labels/sizes must not supply identity"
+                    );
+                    assert_ne!(db.2, hex.2, "Database and Hexagon share the same enclosure: {direction} {style:?} optimized={optimized} {attachment}\n{hex_frame}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_kind_database_keeps_both_side_walls_through_all_attachments() {
+    for direction in ["LR", "RL", "TD", "BT"] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode, BaseStyle::Double] {
+            for optimized in [false, true] {
+                for attachment in ["isolated", "source", "target", "through", "fanout", "cycle"] {
+                    let (graph, frame) =
+                        shape_identity_render(direction, "[(Task)]", attachment, style, optimized);
+                    let node = graph.get_node("N").expect("Database");
+                    let grid = ConnectivityGrid::new(&frame);
+                    let (ox, oy) =
+                        connectivity_frame_origin(&graph, &grid).expect("Database origin");
+                    for y in node.y + 1..node.y + node.height - 1 {
+                        assert_eq!((grid.get(node.x as isize - ox, y as isize - oy), grid.get((node.x + node.width - 1) as isize - ox, y as isize - oy)), (style.chars().v, style.chars().v), "Database lost a side wall: {direction} {style:?} optimized={optimized} {attachment}\n{frame}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_kind_connected_hexagon_decision_pairs_remain_distinct() {
+    // Isolated/vertical ASCII already has an intrinsic Hexagon/Decision base
+    // approximation. Protect the connected distinctions that exist now;
+    // Database repair must not transfer its alias to this pair.
+    for direction in ["LR", "RL"] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                for attachment in ["source", "target", "through"] {
+                    let (hexagon, hex_frame) =
+                        shape_identity_render(direction, "{{Task}}", attachment, style, optimized);
+                    let (decision, dec_frame) =
+                        shape_identity_render(direction, "{Task}", attachment, style, optimized);
+                    let hex = shape_kind_outline(&hexagon, &hex_frame);
+                    let dec = shape_kind_outline(&decision, &dec_frame);
+                    assert_eq!((hex.0, hex.1), (dec.0, dec.1));
+                    assert_ne!(hex.2, dec.2, "new connected Hexagon/Decision alias: {direction} {style:?} optimized={optimized} {attachment}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_kind_database_walls_follow_resolved_composite_border() {
+    for (border, corner, junction) in [
+        (BaseStyle::Double, BaseStyle::Rounded, BaseStyle::Ascii),
+        (BaseStyle::Ascii, BaseStyle::Unicode, BaseStyle::Double),
+    ] {
+        let mut composite = CompositeStyle::from_base(BaseStyle::Unicode);
+        composite.border = Some(border);
+        composite.corner = Some(corner);
+        composite.junction = Some(junction);
+        let expected = composite.to_style_chars(BaseStyle::Unicode).v;
+        for direction in ["LR", "RL"] {
+            for optimized in [false, true] {
+                for attachment in ["source", "target", "through", "fanout", "cycle"] {
+                    let (graph, frame) = shape_identity_render_composite(
+                        direction,
+                        "[(Task)]",
+                        attachment,
+                        composite.clone(),
+                        optimized,
+                    );
+                    let node = graph.get_node("N").unwrap();
+                    let grid = ConnectivityGrid::new(&frame);
+                    let (ox, oy) = connectivity_frame_origin(&graph, &grid).unwrap();
+                    let y = (node.y + node.height / 2) as isize - oy;
+                    assert_eq!((grid.get(node.x as isize - ox, y), grid.get((node.x + node.width - 1) as isize - ox, y)), (expected, expected), "Database lost actual composite border: {direction} {composite:?} {attachment}\n{frame}");
+                }
+            }
+        }
+    }
+}
+
+fn shape_kind_change_cell(frame: &str, x: usize, y: usize, replacement: char) -> String {
+    let mut rows: Vec<Vec<char>> = frame.lines().map(|line| line.chars().collect()).collect();
+    rows[y][x] = replacement;
+    rows.into_iter()
+        .map(|row| row.into_iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn shape_kind_contour_mask_cannot_hide_external_head_or_shaft_loss() {
+    for direction in ["LR", "RL"] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                for attachment in ["target", "through", "fanout"] {
+                    let (graph, frame) =
+                        shape_identity_render(direction, "{{Task}}", attachment, style, optimized);
+                    let grid = ConnectivityGrid::new(&frame);
+                    let (ox, oy) =
+                        connectivity_frame_origin(&graph, &grid).expect("mutation origin");
+                    let node = graph.get_node("N").unwrap();
+                    let y = usize::try_from((node.y + node.height / 2) as isize - oy).unwrap();
+                    let (head_x, shaft_x, expected) = if direction == "LR" {
+                        (
+                            (node.x as isize - ox - 1) as usize,
+                            (node.x as isize - ox - 2) as usize,
+                            if style == BaseStyle::Ascii {
+                                '>'
+                            } else {
+                                '→'
+                            },
+                        )
+                    } else {
+                        (
+                            ((node.x + node.width) as isize - ox) as usize,
+                            ((node.x + node.width + 1) as isize - ox) as usize,
+                            if style == BaseStyle::Ascii {
+                                '<'
+                            } else {
+                                '←'
+                            },
+                        )
+                    };
+                    assert_eq!(
+                        grid.get(head_x as isize, y as isize),
+                        expected,
+                        "select the actual external target head"
+                    );
+                    assert!(
+                        is_route_glyph(grid.get(shaft_x as isize, y as isize)),
+                        "select a real external shaft"
+                    );
+                    for x in [head_x, shaft_x] {
+                        let broken = shape_kind_change_cell(&frame, x, y, ' ');
+                        let raw = raw_topology_errors(
+                            &shape_kind_raw_check_frame(&graph, &broken),
+                            graph.edges.len(),
+                        );
+                        assert!(
+                            !raw.is_empty(),
+                            "outside head/shaft loss escaped raw checks at ({x},{y})"
+                        );
+                        assert!(
+                            !shape_kind_reachability_errors(&graph, &broken).is_empty(),
+                            "outside source ownership loss escaped all-node checks at ({x},{y})"
+                        );
+                    }
+                    let injected = format!("{frame}\n>");
+                    assert!(
+                        !raw_topology_errors(
+                            &shape_kind_raw_check_frame(&graph, &injected),
+                            graph.edges.len()
+                        )
+                        .is_empty(),
+                        "outside angle was incorrectly masked"
+                    );
+                }
+            }
+        }
+    }
+    // A cut next to the source is not necessarily shaftless at the distant
+    // target head. This control specifically requires the graph walk.
+    for shape in ["[(Task)]", "{{Task}}", "{Task}"] {
+        for direction in ["LR", "RL"] {
+            for style in [BaseStyle::Ascii, BaseStyle::Unicode, BaseStyle::Double] {
+                for optimized in [false, true] {
+                    let (graph, frame) =
+                        shape_identity_render(direction, shape, "source", style, optimized);
+                    let grid = ConnectivityGrid::new(&frame);
+                    let (ox, oy) = connectivity_frame_origin(&graph, &grid).unwrap();
+                    let node = graph.get_node("N").unwrap();
+                    let x = if direction == "LR" {
+                        (node.x + node.width) as isize - ox
+                    } else {
+                        node.x as isize - ox - 1
+                    };
+                    let y = (node.y + node.height / 2) as isize - oy;
+                    assert_eq!(
+                        grid.get(x, y),
+                        style.chars().edge_h,
+                        "select the actual source exterior shaft"
+                    );
+                    let broken = shape_kind_change_cell(&frame, x as usize, y as usize, ' ');
+                    assert!(
+                        raw_topology_errors(
+                            &shape_kind_raw_check_frame(&graph, &broken),
+                            graph.edges.len()
+                        )
+                        .is_empty(),
+                        "this is specifically a nonlocal connectivity control"
+                    );
+                    assert!(!shape_kind_reachability_errors(&graph, &broken).is_empty(), "source shaft cut escaped strict graph walk: {shape} {direction} {style:?} optimized={optimized}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shape_kind_decision_contour_mask_keeps_external_heads_accountable() {
+    for direction in ["LR", "RL"] {
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            let (graph, frame) = shape_identity_render(direction, "{Task}", "target", style, false);
+            let grid = ConnectivityGrid::new(&frame);
+            let (ox, oy) = connectivity_frame_origin(&graph, &grid).unwrap();
+            let node = graph.get_node("N").unwrap();
+            let x = if direction == "LR" {
+                node.x as isize - ox - 1
+            } else {
+                (node.x + node.width) as isize - ox
+            };
+            let y = (node.y + node.height / 2) as isize - oy;
+            let expected = match (direction, style) {
+                ("LR", BaseStyle::Ascii) => '>',
+                ("RL", BaseStyle::Ascii) => '<',
+                ("LR", _) => '→',
+                _ => '←',
+            };
+            assert_eq!(
+                grid.get(x, y),
+                expected,
+                "select real Decision receiving head"
+            );
+            let broken = shape_kind_change_cell(&frame, x as usize, y as usize, ' ');
+            assert!(
+                !raw_topology_errors(&shape_kind_raw_check_frame(&graph, &broken), 1).is_empty(),
+                "Decision contour concealed missing actual head"
+            );
+            assert!(
+                !shape_kind_reachability_errors(&graph, &broken).is_empty(),
+                "Before lost its route despite N having no outgoing edges"
+            );
         }
     }
 }
