@@ -177,7 +177,7 @@ fn route_convergent_from_subgraph_td(
     };
 
     let target_secondary = coords.secondary_coord(target_x, target_y);
-    let (span_start, span_end) = draw_source_lines_to_merge(
+    let (span_start, span_end, _) = draw_source_lines_to_merge(
         &source_positions,
         merge_x,
         merge_y,
@@ -188,6 +188,7 @@ fn route_convergent_from_subgraph_td(
         Some(graph),
         Some(&target.id),
         false,
+        None,
     );
 
     let (final_span_start, final_span_end) = if matches!(direction, Direction::TD | Direction::TB) {
@@ -868,7 +869,7 @@ fn route_convergent_from_subgraph_bt(
         default_arrow_x
     };
 
-    let (span_start, span_end) = draw_source_lines_to_merge(
+    let (span_start, span_end, _) = draw_source_lines_to_merge(
         &source_positions,
         merge_x,
         merge_y,
@@ -879,6 +880,7 @@ fn route_convergent_from_subgraph_bt(
         Some(graph),
         Some(&target.id),
         false,
+        None,
     );
 
     draw_merge_line(
@@ -1344,7 +1346,7 @@ fn route_convergent_from_subgraph_lr(
         );
     }
 
-    let (actual_span_start, actual_span_end) = draw_source_lines_to_merge(
+    let (actual_span_start, actual_span_end, _) = draw_source_lines_to_merge(
         &source_positions,
         merge_x,
         merge_y,
@@ -1355,6 +1357,7 @@ fn route_convergent_from_subgraph_lr(
         Some(graph),
         Some(&target.id),
         false,
+        None,
     );
 
     draw_merge_line(
@@ -1554,7 +1557,8 @@ fn draw_source_lines_to_merge(
     graph: Option<&Graph>,
     target_id: Option<&str>,
     relaxed_lanes: bool,
-) -> (usize, usize) {
+    straight_target_secondary: Option<usize>,
+) -> (usize, usize, bool) {
     let aligned = align_sources_to_trunk(source_positions, merge_x, direction, graph);
     let source_positions = aligned.as_slice();
     let bypasses: Vec<_> = source_positions
@@ -1609,6 +1613,26 @@ fn draw_source_lines_to_merge(
         span_end = span_end.max(merge_secondary);
     }
 
+    // A collapsed collector has no horizontal arm. Decide this before either
+    // terminal corner is written; turning it into a tee afterward loses the
+    // source-facing connection. Only the generic caller opts into this path.
+    let straight_zero_span = matches!(direction, Direction::TD | Direction::TB)
+        && straight_target_secondary.is_some_and(|target_secondary| {
+            span_start == span_end
+                && span_start == target_secondary
+                && target_secondary == coords.secondary_coord(merge_x, merge_y)
+        })
+        && source_positions.iter().zip(&drops).zip(&bypasses).all(
+            |((&(src_x, _, source), &drop_x), bypass)| {
+                if bypass.is_some() {
+                    // independent_triangle_leg ends vertically through merge_y-1.
+                    return true;
+                }
+                let (_, exit_y) = edge_exit_point(source, direction);
+                exit_y < merge_y || (exit_y == merge_y && drop_x == src_x)
+            },
+        );
+
     for ((&(src_x, src_y, source), &drop_x), bypass) in
         source_positions.iter().zip(&drops).zip(bypasses)
     {
@@ -1623,14 +1647,18 @@ fn draw_source_lines_to_merge(
         let src_secondary = coords.secondary_coord(drop_x, src_y);
         if let Some((_, plan)) = bypass {
             lower_td_fallback_plan(plan, canvas, style, owner);
-            let corner = get_convergence_corner(
-                src_secondary,
-                span_start,
-                span_end,
-                direction,
-                style,
-                coords,
-            );
+            let corner = if straight_zero_span {
+                style.edge_v
+            } else {
+                get_convergence_corner(
+                    src_secondary,
+                    span_start,
+                    span_end,
+                    direction,
+                    style,
+                    coords,
+                )
+            };
             set_route_edge_char(canvas, drop_x, merge_y, corner, style, owner);
             continue;
         }
@@ -1758,18 +1786,22 @@ fn draw_source_lines_to_merge(
         }
 
         // Corner where source line meets merge span
-        let corner_char = get_convergence_corner(
-            src_secondary,
-            span_start,
-            span_end,
-            direction,
-            style,
-            coords,
-        );
+        let corner_char = if straight_zero_span {
+            style.edge_v
+        } else {
+            get_convergence_corner(
+                src_secondary,
+                span_start,
+                span_end,
+                direction,
+                style,
+                coords,
+            )
+        };
         set_route_edge_char(canvas, merge_col_x, merge_col_y, corner_char, style, owner);
     }
 
-    (span_start, span_end)
+    (span_start, span_end, straight_zero_span)
 }
 
 /// A direct leg of a framed S -> M -> T / S -> T triangle must not use S's
@@ -2677,7 +2709,7 @@ pub fn route_convergent_edges(
     let target_secondary = coords.secondary_coord(target_x, target_y);
 
     // Draw from each source to merge point
-    let (actual_span_start, actual_span_end) = draw_source_lines_to_merge(
+    let (actual_span_start, actual_span_end, straight_zero_span) = draw_source_lines_to_merge(
         &source_positions,
         merge_x,
         merge_y,
@@ -2688,6 +2720,7 @@ pub fn route_convergent_edges(
         Some(graph),
         Some(&to.id),
         true,
+        Some(target_secondary),
     );
 
     // Expand span to include target if needed
@@ -2775,7 +2808,7 @@ pub fn route_convergent_edges(
     // Allow nudging the junction up a row when the span is tiny to avoid double rows.
     let mut merge_y_draw = merge_y;
 
-    if matches!(direction, Direction::TD | Direction::TB) {
+    if matches!(direction, Direction::TD | Direction::TB) && !straight_zero_span {
         let span_width = final_span_end.saturating_sub(final_span_start);
         // The nudge clears the row above; a frame border there must stay.
         let border_above = merge_y.checked_sub(1).is_some_and(|row| {
@@ -2828,7 +2861,7 @@ pub fn route_convergent_edges(
                 set_route_edge_char(canvas, x, y, ch, style, Some(fanin_owner));
             }
         }
-    } else {
+    } else if !straight_zero_span {
         set_route_edge_char(
             canvas,
             merge_x,
@@ -3471,6 +3504,587 @@ mod tests {
         assert_eq!(merge_lane_primary(Direction::TD, 20, 0, 10, 0, 3), Some(12));
         assert_eq!(merge_lane_primary(Direction::TD, 20, 0, 10, 2, 3), Some(14));
         assert_eq!(merge_lane_primary(Direction::BT, 10, 20, 0, 2, 3), Some(14));
+    }
+    // Append inside existing render::edge::convergence::tests only.
+    // Prepared without compiler/test/runtime execution; no root source edits.
+    use crate::orientation::OrientedCoords as GuardCoords;
+    use crate::render::semantic::CellRole as GuardRole;
+    use crate::spacing::SpacingConfig as GuardSpacing;
+    use crate::style::{BaseStyle as GuardBaseStyle, StyleChars as GuardStyle};
+
+    fn gu_scene(
+        direction: Direction,
+        target_y: usize,
+        dx: usize,
+        dy: usize,
+        mirror: bool,
+    ) -> (Graph, Canvas) {
+        let mut graph = Graph::new();
+        graph.direction = direction;
+        for (id, y, rank, shape) in [
+            ("A", 1, 0, NodeShape::Diamond),
+            ("B", 7, 1, NodeShape::Rectangle),
+            ("C", target_y, 2, NodeShape::Rectangle),
+        ] {
+            let mut node = Node::new(id, id);
+            node.label_lines = vec![id.to_owned()];
+            (node.x, node.y, node.width, node.height, node.rank) =
+                (dx + if mirror { 9 } else { 0 }, dy + y, 7, 3, rank);
+            node.shape = shape;
+            graph.add_node(node);
+        }
+        graph.add_edge(Edge::new("A", "C"));
+        graph.add_edge(Edge::new("B", "C"));
+        (graph, Canvas::new(16 + 2 * dx, 24 + 2 * dy))
+    }
+
+    fn gu_merge(graph: &Graph) -> (usize, usize) {
+        let b = graph.get_node("B").unwrap();
+        let c = graph.get_node("C").unwrap();
+        (
+            c.center_x(),
+            b.bottom_y().saturating_add(2).min(c.y.saturating_sub(2)),
+        )
+    }
+
+    fn gu_helper(
+        graph: &Graph,
+        canvas: &mut Canvas,
+        style: &GuardStyle,
+        merge: (usize, usize),
+        opt: Option<usize>,
+        reverse: bool,
+    ) -> (usize, usize, bool) {
+        let mut sources = [graph.get_node("A").unwrap(), graph.get_node("B").unwrap()];
+        if reverse {
+            sources.swap(0, 1);
+        }
+        let positions: Vec<_> = sources
+            .iter()
+            .map(|node| (node.center_x(), node.center_y(), *node))
+            .collect();
+        super::draw_source_lines_to_merge(
+            &positions,
+            merge.0,
+            merge.1,
+            &GuardCoords::new(graph.direction),
+            canvas,
+            style,
+            graph.direction,
+            Some(graph),
+            Some("C"),
+            true,
+            opt,
+        )
+    }
+
+    fn gu_route(graph: &Graph, canvas: &mut Canvas, style: &GuardStyle, reverse: bool) {
+        let mut sources = [graph.get_node("A").unwrap(), graph.get_node("B").unwrap()];
+        if reverse {
+            sources.swap(0, 1);
+        }
+        super::route_convergent_edges(
+            &sources,
+            graph.get_node("C").unwrap(),
+            canvas,
+            style,
+            &GuardSpacing::default(),
+            graph.direction,
+            graph,
+            None,
+        );
+    }
+
+    fn gu_canonical_source_owner(graph: &Graph, owner: Option<&str>) -> bool {
+        graph
+            .edges
+            .iter()
+            .filter(|edge| !edge.is_back_edge && edge.to == "C")
+            .any(|edge| {
+                owner == Some(super::edge_route_owner_id(graph, &edge.from, &edge.to).as_str())
+            })
+    }
+
+    #[test]
+    fn zero_span_td_merge_keeps_source_and_collector_vertical() {
+        use crate::render::topology::{
+            char_connects_down, char_connects_left, char_connects_right, char_connects_up,
+        };
+        for direction in [Direction::TD, Direction::TB] {
+            for base in [GuardBaseStyle::Ascii, GuardBaseStyle::Unicode] {
+                for target_y in [13, 15] {
+                    for (dx, dy) in [(0, 0), (2, 3)] {
+                        for mirror in [false, true] {
+                            for reverse in [false, true] {
+                                let (graph, mut canvas) =
+                                    gu_scene(direction, target_y, dx, dy, mirror);
+                                assert!(graph.edges.iter().all(|edge| edge.label.is_none()));
+                                let b = graph.get_node("B").unwrap();
+                                let c = graph.get_node("C").unwrap();
+                                let x = b.center_x();
+                                let first = b.bottom_y();
+                                let head = c.y - 1;
+                                let merge = gu_merge(&graph);
+                                assert_eq!(x, c.center_x());
+                                assert_eq!(merge.1, dy + if target_y == 13 { 11 } else { 12 });
+                                let style = base.chars();
+                                for source in [graph.get_node("A").unwrap(), b] {
+                                    assert!(super::independent_triangle_leg(
+                                        &graph, &canvas, style, source, "C", merge.0, merge.1
+                                    )
+                                    .is_none());
+                                    assert!(super::fan_in_lane_x(
+                                        &graph, &canvas, style, source, "C", x, merge, true
+                                    )
+                                    .is_none());
+                                }
+                                canvas.set_write_stage("unrelated-sentinel");
+                                let sentinel = (canvas.width - 1, canvas.height - 1);
+                                canvas.set(sentinel.0, sentinel.1, 'e');
+                                canvas.set(sentinel.0, sentinel.1, '\u{301}');
+                                canvas.set_write_stage("producer-guard");
+                                let before = canvas.clone();
+                                gu_route(&graph, &mut canvas, style, reverse);
+                                assert_eq!(
+                                    canvas.get(x, head),
+                                    style.arrow_down,
+                                    "actual target head intact"
+                                );
+                                assert!(
+                                    char_connects_down(canvas.get(x, first - 1)),
+                                    "source border retains outgoing arm"
+                                );
+                                // Roomy parent damages the INTERMEDIATE row11, so
+                                // endpoints alone do not establish this invariant.
+                                for y in first..head {
+                                    let ch = canvas.get(x, y);
+                                    let meta = canvas.get_meta(x, y).unwrap();
+                                    assert!(char_connects_up(ch)&&char_connects_down(ch),"GU01 raw vertical join lost {direction:?}/{base:?} target{target_y} reverse{reverse} ({x},{y})={ch:?}\n{canvas}");
+                                    assert_eq!(
+                                    ch, style.edge_v,
+                                    "blank zero-span route must invent no corner/tee at {x},{y}"
+                                );
+                                    assert!(!char_connects_left(ch) && !char_connects_right(ch));
+                                    assert_eq!(meta.role, GuardRole::Vertical);
+                                    assert_eq!(meta.owner_kind, CellOwnerKind::EdgeSegment);
+                                    assert_eq!(canvas.write_stage_at(x, y), Some("producer-guard"));
+                                    if y <= merge.1 {
+                                        assert!(gu_canonical_source_owner(&graph,meta.owner_id.as_deref()),"legal canonical source owner before collector, no group retag");
+                                    } else {
+                                        assert_eq!(meta.owner_id.as_deref(), Some("fanin:C"));
+                                    }
+                                }
+                                assert_eq!(
+                                    (canvas.width, canvas.height),
+                                    (before.width, before.height)
+                                );
+                                for y in 0..before.height {
+                                    for col in 0..before.width {
+                                        if col != x {
+                                            assert_eq!(canvas.get(col, y), before.get(col, y));
+                                            assert_eq!(
+                                                canvas.get_meta(col, y),
+                                                before.get_meta(col, y)
+                                            );
+                                            assert_eq!(
+                                                canvas.write_stage_at(col, y),
+                                                before.write_stage_at(col, y)
+                                            );
+                                        }
+                                    }
+                                }
+                                assert!(
+                                    format!("{canvas}").contains("e\u{301}"),
+                                    "unrelated combining stream remains intact"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_span_intent_excludes_real_turns_and_preserves_foreign_routes() {
+        use crate::render::topology::{
+            char_connects_down, char_connects_left, char_connects_right, char_connects_up,
+        };
+        for direction in [Direction::TD, Direction::TB] {
+            for base in [GuardBaseStyle::Ascii, GuardBaseStyle::Unicode] {
+                let (graph, blank) = gu_scene(direction, 13, 0, 0, false);
+                let style = base.chars();
+                let merge = gu_merge(&graph);
+                let mut enabled = blank.clone();
+                let accepted = gu_helper(&graph, &mut enabled, style, merge, Some(3), false);
+                assert_eq!(accepted, (3, 3, true));
+                assert_eq!(enabled.get(3, 11), style.edge_v);
+                let mut old = blank.clone();
+                let excluded = gu_helper(&graph, &mut old, style, merge, None, false);
+                assert_eq!(excluded, (3, 3, false));
+                assert_eq!(
+                    old.get(3, 11),
+                    style.corner_ul,
+                    "None caller keeps its actual terminal corner"
+                );
+                let mut wrong_target = blank.clone();
+                let mut baseline = blank.clone();
+                let got = gu_helper(&graph, &mut wrong_target, style, merge, Some(4), false);
+                assert!(
+                    !got.2,
+                    "collapsed source span does not authorize a displaced target"
+                );
+                gu_helper(&graph, &mut baseline, style, merge, None, false);
+                assert_eq!(
+                    wrong_target, baseline,
+                    "target mismatch preserves ALL existing helper state"
+                );
+
+                // A REAL one-column horizontal merge is excluded. None is the
+                // existing helper behavior; compare every Canvas field, not text.
+                let mut span_one = graph.clone();
+                span_one.get_node_mut("C").unwrap().x = 1;
+                let mut with_opt = blank.clone();
+                let mut without_opt = blank.clone();
+                let got = gu_helper(&span_one, &mut with_opt, style, (4, 11), Some(4), false);
+                assert_eq!((got.0, got.1, got.2), (3, 4, false));
+                gu_helper(&span_one, &mut without_opt, style, (4, 11), None, false);
+                assert_eq!(with_opt, without_opt);
+
+                // An unjogged source whose firststem IS the merge must be fixed,
+                // rather than excluded with an unnecessarily strict inequality.
+                let mut same_row = blank.clone();
+                let got = gu_helper(&graph, &mut same_row, style, (3, 10), Some(3), false);
+                assert!(got.2);
+                assert_eq!(same_row.get(3, 10), style.edge_v);
+                assert_eq!(
+                    same_row.get_meta(3, 10).unwrap().owner_id.as_deref(),
+                    Some("edge:1:B->C")
+                );
+                let mut reverse_interval = blank.clone();
+                assert!(
+                    !gu_helper(&graph, &mut reverse_interval, style, (3, 9), Some(3), false).2,
+                    "physical reverse source interval excluded"
+                );
+
+                // span1's borderAbove condition still forbids clearing that row.
+                let mut framed = span_one.clone();
+                let mut frame = Subgraph::new("Above", None);
+                frame.bounds = Rectangle::new(1, 10, 6, 1);
+                framed.add_subgraph(frame);
+                let mut bordered = blank.clone();
+                bordered.set_write_stage("frame-fixture");
+                bordered.set_owned_with_role(
+                    4,
+                    10,
+                    style.edge_h,
+                    CellOwnerKind::SubgraphBorder,
+                    "Above",
+                    GuardRole::Border,
+                    6,
+                );
+                let protected = bordered.get_meta(4, 10).cloned();
+                let stage = bordered.write_stage_at(4, 10).map(str::to_owned);
+                bordered.set_write_stage("producer-guard");
+                gu_route(&framed, &mut bordered, style, false);
+                assert_eq!(bordered.get(4, 10), style.edge_h);
+                assert_eq!(bordered.get_meta(4, 10).cloned(), protected);
+                assert_eq!(bordered.write_stage_at(4, 10).map(str::to_owned), stage);
+
+                // A real foreign horizontal run must remain a real crossing;
+                // vertical lowering is routed through the normal overlap writer.
+                let mut crossed = blank.clone();
+                crossed.set_write_stage("foreign-route");
+                let foreign = super::RouteOwner {
+                    kind: CellOwnerKind::EdgeSegment,
+                    id: "foreign-horizontal",
+                };
+                for x in 1..=5 {
+                    super::set_route_edge_char(
+                        &mut crossed,
+                        x,
+                        11,
+                        style.edge_h,
+                        style,
+                        Some(foreign),
+                    );
+                }
+                let untouched: Vec<_> = [1, 2, 4, 5]
+                    .into_iter()
+                    .map(|x| {
+                        (
+                            x,
+                            crossed.get_meta(x, 11).cloned(),
+                            crossed.write_stage_at(x, 11).map(str::to_owned),
+                        )
+                    })
+                    .collect();
+                crossed.set_write_stage("producer-guard");
+                gu_route(&graph, &mut crossed, style, false);
+                let ch = crossed.get(3, 11);
+                assert!(
+                    char_connects_up(ch)
+                        && char_connects_down(ch)
+                        && char_connects_left(ch)
+                        && char_connects_right(ch),
+                    "foreign crossing arms must survive, got {ch:?}"
+                );
+                for (x, meta, stage) in untouched {
+                    assert_eq!(crossed.get(x, 11), style.edge_h);
+                    assert_eq!(crossed.get_meta(x, 11).cloned(), meta);
+                    assert_eq!(crossed.write_stage_at(x, 11).map(str::to_owned), stage);
+                }
+
+                // An actual validated L-shaped reserved route is not a sharable
+                // straight-run crossing at its corner. No direct/forced write.
+                let mut claimed = blank.clone();
+                let mut plan = FallbackRoutePlan::new("reserved-elbow", "guard-foreign-elbow");
+                plan.push_vertical(3, 9, 11, style.edge_v);
+                plan.push_horizontal(11, 3, 6, style.edge_h);
+                plan.push_corner(3, 11, style.corner_ul);
+                assert!(plan
+                    .validation_error(claimed.width, claimed.height)
+                    .is_none());
+                claimed.record_fallback_route_plan(plan.clone());
+                claimed.set_write_stage("reserved-elbow");
+                let holder = super::RouteOwner {
+                    kind: CellOwnerKind::EdgeSegment,
+                    id: "reserved-elbow",
+                };
+                for y in 9..11 {
+                    super::set_route_edge_char(
+                        &mut claimed,
+                        3,
+                        y,
+                        style.edge_v,
+                        style,
+                        Some(holder),
+                    );
+                }
+                for x in 4..=6 {
+                    super::set_route_edge_char(
+                        &mut claimed,
+                        x,
+                        11,
+                        style.edge_h,
+                        style,
+                        Some(holder),
+                    );
+                }
+                super::set_route_edge_char(
+                    &mut claimed,
+                    3,
+                    11,
+                    style.corner_ul,
+                    style,
+                    Some(holder),
+                );
+                let cells: Vec<_> = [(3, 9), (3, 10), (3, 11), (4, 11), (5, 11), (6, 11)]
+                    .into_iter()
+                    .map(|(x, y)| {
+                        (
+                            x,
+                            y,
+                            claimed.get(x, y),
+                            claimed.get_meta(x, y).cloned(),
+                            claimed.write_stage_at(x, y).map(str::to_owned),
+                        )
+                    })
+                    .collect();
+                claimed.set_write_stage("producer-guard");
+                let mut none = claimed.clone();
+                let mut opted = claimed.clone();
+                assert!(gu_helper(&graph, &mut opted, style, merge, Some(3), false).2);
+                assert!(!gu_helper(&graph, &mut none, style, merge, None, false).2);
+                assert_eq!(
+                    opted, none,
+                    "both intended glyphs are refused through existing claimed-route writer"
+                );
+                gu_route(&graph, &mut claimed, style, false);
+                for (x, y, ch, meta, stage) in cells {
+                    assert_eq!(claimed.get(x, y), ch);
+                    assert_eq!(claimed.get_meta(x, y).cloned(), meta);
+                    assert_eq!(claimed.write_stage_at(x, y).map(str::to_owned), stage);
+                }
+                assert_eq!(claimed.fallback_route_plan("reserved-elbow"), Some(&plan));
+                assert!(!claimed.refused_route_writes().is_empty());
+            }
+        }
+        // An ACTUAL safe jog above the merge must remain eligible. Source A
+        // routes around D onto B's center column; its real source jog survives.
+        for direction in [Direction::TD, Direction::TB] {
+            for base in [GuardBaseStyle::Ascii, GuardBaseStyle::Unicode] {
+                let mut graph = Graph::new();
+                graph.direction = direction;
+                for (id, x, y, width, height, shape) in [
+                    ("A", 5, 10, 7, 3, NodeShape::Rectangle),
+                    ("B", 0, 1, 7, 3, NodeShape::Diamond),
+                    ("C", 0, 20, 7, 3, NodeShape::Rectangle),
+                    ("D", 5, 15, 7, 1, NodeShape::Rectangle),
+                ] {
+                    let mut n = Node::new(id, id);
+                    (n.x, n.y, n.width, n.height, n.shape) = (x, y, width, height, shape);
+                    graph.add_node(n);
+                }
+                graph.add_edge(Edge::new("A", "C"));
+                graph.add_edge(Edge::new("B", "C"));
+                let mut canvas = Canvas::new(24, 28);
+                let style = base.chars();
+                let a = graph.get_node("A").unwrap();
+                let b = graph.get_node("B").unwrap();
+                assert!(
+                    super::independent_triangle_leg(&graph, &canvas, style, a, "C", 3, 16)
+                        .is_none()
+                );
+                assert!(
+                    super::independent_triangle_leg(&graph, &canvas, style, b, "C", 3, 16)
+                        .is_none()
+                );
+                assert_eq!(
+                    super::fan_in_lane_x(&graph, &canvas, style, a, "C", 8, (3, 16), true),
+                    Some(3),
+                    "setup: actual planner chooses the clear aligned drop"
+                );
+                assert!(
+                    super::fan_in_lane_x(&graph, &canvas, style, b, "C", 3, (3, 16), true)
+                        .is_none()
+                );
+                assert_eq!(
+                    gu_helper(&graph, &mut canvas, style, (3, 16), Some(3), false),
+                    (3, 3, true)
+                );
+                assert_eq!(
+                    canvas.get(8, 13),
+                    style.corner_ur,
+                    "real source-side horizontal jog turn retained"
+                );
+                for x in 4..8 {
+                    assert_eq!(canvas.get(x, 13), style.edge_h);
+                }
+                assert!(
+                    char_connects_right(canvas.get(3, 13)),
+                    "real source jog joins the shared vertical"
+                );
+                for y in 14..=16 {
+                    assert_eq!(
+                        canvas.get(3, y),
+                        style.edge_v,
+                        "post-jog arrival remains vertical through original merge"
+                    );
+                }
+            }
+        }
+        // Same-row horizontal jogs are not fabricated here: current normal
+        // fan_in_lane_x requires merge_y-1 > exit_y, and the triangle bypass
+        // requires its middle.bottom_y < merge_y. Runtime kill credit for that
+        // defensive predicate or the flagged bypass-corner subcase is absent.
+
+        // The new opt-in must be a complete no-op in the excluded orientations.
+        for direction in [Direction::BT, Direction::LR, Direction::RL] {
+            let (mut graph, mut blank) = gu_scene(Direction::TD, 13, 0, 0, false);
+            graph.direction = direction;
+            let merge = if direction == Direction::BT {
+                for n in &mut graph.nodes {
+                    n.y = 20 - n.y - 3;
+                }
+                (3, 8)
+            } else {
+                for n in &mut graph.nodes {
+                    let y = n.y;
+                    (n.x, n.y, n.width, n.height) = (
+                        if direction == Direction::LR {
+                            y
+                        } else {
+                            24 - y - 3
+                        },
+                        0,
+                        3,
+                        7,
+                    );
+                }
+                blank = Canvas::new(24, 16);
+                (if direction == Direction::LR { 11 } else { 12 }, 3)
+            };
+            for base in [GuardBaseStyle::Ascii, GuardBaseStyle::Unicode] {
+                let mut opted = blank.clone();
+                let mut none = blank.clone();
+                assert!(!gu_helper(&graph, &mut opted, base.chars(), merge, Some(3), false).2);
+                assert!(!gu_helper(&graph, &mut none, base.chars(), merge, None, false).2);
+                assert_eq!(
+                    opted, none,
+                    "excluded {direction:?} helper behavior unchanged"
+                );
+            }
+        }
+        // Kind-specific shafts remain the caller's actual style, not a thin-only
+        // hardcoded vertical. No global raw-topology support is inferred here.
+        for base in [GuardBaseStyle::Ascii, GuardBaseStyle::Unicode] {
+            for kind in [
+                crate::graph::EdgeKind::Thick,
+                crate::graph::EdgeKind::Dotted,
+            ] {
+                let (mut graph, mut canvas) = gu_scene(Direction::TD, 13, 0, 0, false);
+                for edge in &mut graph.edges {
+                    edge.kind = kind;
+                }
+                let style = super::super::style_for_edge_kind(base.chars(), kind);
+                gu_route(&graph, &mut canvas, &style, false);
+                for y in 10..12 {
+                    assert_eq!(canvas.get(3, y), style.edge_v);
+                    assert!(crate::render::canvas::is_vertical(canvas.get(3, y), &style));
+                }
+                assert_eq!(canvas.get(3, 12), style.arrow_down);
+            }
+        }
+    }
+
+    #[test]
+    fn zero_span_public_graph_entry_keeps_local_source_seams() {
+        use crate::render::topology::{char_connects_down, char_connects_up};
+        for direction in [Direction::TD, Direction::TB] {
+            for base in [GuardBaseStyle::Ascii, GuardBaseStyle::Unicode] {
+                for cap in [7, 16] {
+                    let (graph, _) = gu_scene(direction, 13, 0, 0, false);
+                    let mut config = crate::config::Config {
+                        crop: false,
+                        pad: 0,
+                        optimize_render: false,
+                        composite_style: crate::style::CompositeStyle::from_base(base),
+                        ..crate::config::Config::default()
+                    };
+                    config.spacing.max_canvas_width = cap;
+                    let outcome = crate::render::render_with_feedback(&graph, &config)
+                        .expect("actual public positioned Graph caller");
+                    assert!(graph.edges.iter().all(|edge| edge.label.is_none()));
+                    assert!(
+                        outcome.semantic_frame.width >= 7 && outcome.semantic_frame.width <= cap
+                    );
+                    assert!(outcome.semantic_frame.height >= 16);
+                    for id in ["A", "B", "C"] {
+                        assert!(
+                            outcome.output.contains(id),
+                            "visible public node {id}:\n{}",
+                            outcome.output
+                        );
+                    }
+                    let frame = &outcome.semantic_frame;
+                    let ch = |x, y| frame.get(x, y).expect("local public source/target cell").ch;
+                    assert!(char_connects_down(ch(3, 9)), "B's boundary exits downward");
+                    assert!(
+                    char_connects_up(ch(3, 10)) && char_connects_down(ch(3, 10)),
+                    "public B local source seam disconnected {direction:?}/{base:?}/cap{cap}:\n{}",
+                    outcome.output
+                );
+                    assert!(
+                        char_connects_up(ch(3, 11)),
+                        "next local shaft accepts B's vertical continuation"
+                    );
+                    assert_eq!(ch(3, 12), base.chars().arrow_down, "actual C head survives");
+                    // No parser/layout equivalence, generic dispatch at cap16,
+                    // one-head-per-edge or global A->C reachability assertion.
+                }
+            }
+        }
     }
 }
 

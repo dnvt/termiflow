@@ -112,6 +112,12 @@ fn frame_connects_up(frame: &SemanticFrame, x: usize, y: usize) -> bool {
         CellOwnerKind::EdgeLabel => {
             if y >= 2 {
                 return char_connects_down(frame.get(x, y - 2).map(|cell| cell.ch).unwrap_or(' '))
+                    && !is_ascii_frame_corner(
+                        frame,
+                        x,
+                        y - 2,
+                        is_ascii_plain_h(frame.glyph(x, y)),
+                    )
                     && !(is_ascii_plain_h(frame.glyph(x, y))
                         && ascii_corner_is_complete(frame, x, y - 2, (0, 1)));
             }
@@ -142,6 +148,12 @@ fn frame_connects_down(frame: &SemanticFrame, x: usize, y: usize) -> bool {
         CellOwnerKind::EdgeLabel => {
             if y + 2 < frame.height {
                 return char_connects_up(frame.get(x, y + 2).map(|cell| cell.ch).unwrap_or(' '))
+                    && !is_ascii_frame_corner(
+                        frame,
+                        x,
+                        y + 2,
+                        is_ascii_plain_h(frame.glyph(x, y)),
+                    )
                     && !(is_ascii_plain_h(frame.glyph(x, y))
                         && ascii_corner_is_complete(frame, x, y + 2, (0, -1)));
             }
@@ -172,6 +184,12 @@ fn frame_connects_left(frame: &SemanticFrame, x: usize, y: usize) -> bool {
         CellOwnerKind::EdgeLabel => {
             if x >= 2 {
                 return char_connects_right(frame.get(x - 2, y).map(|cell| cell.ch).unwrap_or(' '))
+                    && !is_ascii_frame_corner(
+                        frame,
+                        x - 2,
+                        y,
+                        is_ascii_plain_v(frame.glyph(x, y)),
+                    )
                     && !(is_ascii_plain_v(frame.glyph(x, y))
                         && ascii_corner_is_complete(frame, x - 2, y, (1, 0)));
             }
@@ -202,6 +220,12 @@ fn frame_connects_right(frame: &SemanticFrame, x: usize, y: usize) -> bool {
         CellOwnerKind::EdgeLabel => {
             if x + 2 < frame.width {
                 return char_connects_left(frame.get(x + 2, y).map(|cell| cell.ch).unwrap_or(' '))
+                    && !is_ascii_frame_corner(
+                        frame,
+                        x + 2,
+                        y,
+                        is_ascii_plain_v(frame.glyph(x, y)),
+                    )
                     && !(is_ascii_plain_v(frame.glyph(x, y))
                         && ascii_corner_is_complete(frame, x + 2, y, (-1, 0)));
             }
@@ -303,6 +327,12 @@ fn canvas_connects_up(canvas: &Canvas, x: usize, y: usize) -> bool {
         Some(CellOwnerKind::EdgeLabel) => {
             if y >= 2 {
                 return char_connects_down(canvas.get(x, y - 2))
+                    && !is_ascii_frame_corner(
+                        canvas,
+                        x,
+                        y - 2,
+                        is_ascii_plain_h(canvas.get(x, y)),
+                    )
                     && !(is_ascii_plain_h(canvas.get(x, y))
                         && ascii_corner_is_complete(canvas, x, y - 2, (0, 1)));
             }
@@ -330,6 +360,12 @@ fn canvas_connects_down(canvas: &Canvas, x: usize, y: usize) -> bool {
         Some(CellOwnerKind::EdgeLabel) => {
             if y + 2 < canvas.height {
                 return char_connects_up(canvas.get(x, y + 2))
+                    && !is_ascii_frame_corner(
+                        canvas,
+                        x,
+                        y + 2,
+                        is_ascii_plain_h(canvas.get(x, y)),
+                    )
                     && !(is_ascii_plain_h(canvas.get(x, y))
                         && ascii_corner_is_complete(canvas, x, y + 2, (0, -1)));
             }
@@ -357,6 +393,12 @@ fn canvas_connects_left(canvas: &Canvas, x: usize, y: usize) -> bool {
         Some(CellOwnerKind::EdgeLabel) => {
             if x >= 2 {
                 return char_connects_right(canvas.get(x - 2, y))
+                    && !is_ascii_frame_corner(
+                        canvas,
+                        x - 2,
+                        y,
+                        is_ascii_plain_v(canvas.get(x, y)),
+                    )
                     && !(is_ascii_plain_v(canvas.get(x, y))
                         && ascii_corner_is_complete(canvas, x - 2, y, (1, 0)));
             }
@@ -384,6 +426,12 @@ fn canvas_connects_right(canvas: &Canvas, x: usize, y: usize) -> bool {
         Some(CellOwnerKind::EdgeLabel) => {
             if x + 2 < canvas.width {
                 return char_connects_left(canvas.get(x + 2, y))
+                    && !is_ascii_frame_corner(
+                        canvas,
+                        x + 2,
+                        y,
+                        is_ascii_plain_v(canvas.get(x, y)),
+                    )
                     && !(is_ascii_plain_v(canvas.get(x, y))
                         && ascii_corner_is_complete(canvas, x + 2, y, (-1, 0)));
             }
@@ -745,5 +793,439 @@ mod tests {
         assert!(char_connects_right('='));
         assert!(char_connects_up('╎'));
         assert!(char_connects_down('╎'));
+    }
+
+    // TEST-ONLY PROPOSAL: append inside existing render::topology::tests.
+    // Base topology SHA5e39dbed...; no production edits, parsing, compile or execution.
+    // Three #[test] functions. All helper names are private to this test appendix.
+    type TcPoint = (usize, usize);
+
+    #[derive(Clone, Copy, Debug)]
+    enum TcLook {
+        Up,
+        Down,
+        Left,
+        Right,
+    }
+    impl TcLook {
+        fn step(self) -> (isize, isize) {
+            match self {
+                Self::Up => (0, -1),
+                Self::Down => (0, 1),
+                Self::Left => (-1, 0),
+                Self::Right => (1, 0),
+            }
+        }
+        fn horizontal(self) -> bool {
+            matches!(self, Self::Left | Self::Right)
+        }
+        fn plain(self) -> char {
+            if self.horizontal() {
+                '|'
+            } else {
+                '-'
+            }
+        }
+        fn aligned(self) -> char {
+            if self.horizontal() {
+                '-'
+            } else {
+                '|'
+            }
+        }
+        fn arm(self, c: Connections) -> bool {
+            match self {
+                Self::Up => c.up,
+                Self::Down => c.down,
+                Self::Left => c.left,
+                Self::Right => c.right,
+            }
+        }
+    }
+    fn tc_off(p: (usize, usize), d: (isize, isize)) -> (usize, usize) {
+        (
+            p.0.checked_add_signed(d.0).unwrap(),
+            p.1.checked_add_signed(d.1).unwrap(),
+        )
+    }
+    fn tc_put(c: &mut Canvas, p: (usize, usize), ch: char, owner: CellOwnerKind, role: CellRole) {
+        let (id, z) = match owner {
+            CellOwnerKind::NodeBorder | CellOwnerKind::NodeLabel => ("box", 3),
+            CellOwnerKind::SubgraphBorder | CellOwnerKind::SubgraphTitle => ("frame", 2),
+            CellOwnerKind::EdgeLabel => ("edge:0:A->B", 6),
+            _ => ("edge:0:A->B", 5),
+        };
+        c.set_owned_with_role(p.0, p.1, ch, owner, id, role, z);
+    }
+    fn tc_profiles() -> Vec<StyleChars> {
+        let ascii = CompositeStyle::from_base(BaseStyle::Ascii);
+        let mut mixed = ascii.clone();
+        mixed.border = Some(BaseStyle::Unicode);
+        mixed.junction = Some(BaseStyle::Unicode);
+        let mut double_border = ascii.clone();
+        double_border.border = Some(BaseStyle::Double);
+        double_border.junction = Some(BaseStyle::Heavy);
+        [ascii, mixed, double_border]
+            .into_iter()
+            .map(|s| s.to_style_chars(BaseStyle::Unicode))
+            .collect()
+    }
+    fn tc_base(look: TcLook, asking: char) -> (Canvas, TcPoint, TcPoint, TcPoint) {
+        let mut c = Canvas::new(11, 11);
+        let q = (5, 5);
+        let m = tc_off(q, look.step());
+        let f = tc_off(m, look.step());
+        let vertical = matches!(asking, '|' | ':') || asking == '+' && look.horizontal();
+        let axis = if vertical { (0, 1) } else { (1, 0) };
+        let role = if asking == '+' {
+            CellRole::Corner
+        } else if vertical {
+            CellRole::Vertical
+        } else {
+            CellRole::Horizontal
+        };
+        tc_put(&mut c, q, asking, CellOwnerKind::EdgeSegment, role);
+        for sign in [-1, 1] {
+            let p = tc_off(q, (axis.0 * sign, axis.1 * sign));
+            tc_put(
+                &mut c,
+                p,
+                if vertical { '|' } else { '-' },
+                CellOwnerKind::EdgeSegment,
+                if vertical {
+                    CellRole::Vertical
+                } else {
+                    CellRole::Horizontal
+                },
+            );
+        }
+        tc_put(&mut c, m, 'e', CellOwnerKind::EdgeLabel, CellRole::Text);
+        (c, q, m, f)
+    }
+    fn tc_corner(
+        c: &mut Canvas,
+        f: (usize, usize),
+        look: TcLook,
+        owner: CellOwnerKind,
+        chars: &StyleChars,
+    ) {
+        let border = matches!(
+            owner,
+            CellOwnerKind::NodeBorder | CellOwnerKind::SubgraphBorder
+        );
+        tc_put(
+            c,
+            f,
+            '+',
+            owner,
+            if border {
+                CellRole::Border
+            } else {
+                CellRole::Corner
+            },
+        );
+        let h = if matches!(look, TcLook::Right) {
+            (1, 0)
+        } else {
+            (-1, 0)
+        };
+        let v = if matches!(look, TcLook::Down) {
+            (0, 1)
+        } else {
+            (0, -1)
+        };
+        tc_put(
+            c,
+            tc_off(f, h),
+            if border { chars.h } else { '-' },
+            owner,
+            if border {
+                CellRole::Border
+            } else {
+                CellRole::Horizontal
+            },
+        );
+        tc_put(
+            c,
+            tc_off(f, v),
+            if border { chars.v } else { '|' },
+            owner,
+            if border {
+                CellRole::Border
+            } else {
+                CellRole::Vertical
+            },
+        );
+    }
+    fn tc_views(c: &Canvas, q: (usize, usize), look: TcLook, expected: bool, case: &str) {
+        let frame = SemanticFrame::from_canvas(c);
+        let a = canvas_connections(c, q.0, q.1);
+        assert_eq!(look.arm(a), expected, "tc-mask canvas {look:?} {case}");
+        let b = frame_connections(&frame, q.0, q.1);
+        assert_eq!(look.arm(b), expected, "tc-mask frame {look:?} {case}");
+        assert_eq!(
+            [a.up, a.down, a.left, a.right],
+            [b.up, b.down, b.left, b.right],
+            "grid parity {look:?} {case}"
+        );
+        assert_eq!(
+            SemanticFrame::from_canvas(c),
+            frame,
+            "queries preserve cells/metadata"
+        );
+    }
+    #[test]
+    fn topology_edge_label_reuses_boundary_corner_mask() {
+        // First parent-red case: Up / '-' / NodeBorder / pure ASCII / Canvas arm.
+        for look in [TcLook::Up, TcLook::Down, TcLook::Left, TcLook::Right] {
+            let glyphs = if look.horizontal() {
+                vec!['|', ':']
+            } else {
+                vec!['-', '.', '=']
+            };
+            for asking in glyphs {
+                for owner in [CellOwnerKind::NodeBorder, CellOwnerKind::SubgraphBorder] {
+                    for (profile, chars) in tc_profiles().into_iter().enumerate() {
+                        let (mut c, q, m, f) = tc_base(look, asking);
+                        tc_corner(&mut c, f, look, owner, &chars);
+                        assert_eq!(
+                            c.get_meta(m.0, m.1).unwrap().owner_kind,
+                            CellOwnerKind::EdgeLabel
+                        );
+                        let plain = if look.horizontal() {
+                            is_ascii_plain_v(asking)
+                        } else {
+                            is_ascii_plain_h(asking)
+                        };
+                        assert!(
+                            is_ascii_frame_corner(&c, f.0, f.1, plain),
+                            "existing boundary mask setup"
+                        );
+                        let case =
+                            format!("boundary={owner:?} asking={asking:?} profile={profile}");
+                        tc_views(&c, q, look, false, &case);
+                        if matches!(look, TcLook::Up)
+                            && asking == '-'
+                            && matches!(owner, CellOwnerKind::NodeBorder)
+                            && profile == 0
+                        {
+                            let mut repaired = c.clone();
+                            crate::render::repair::stabilize_degree_mismatches(
+                                &mut repaired,
+                                &chars,
+                            );
+                            assert_eq!(
+                                repaired.get(q.0, q.1),
+                                '-',
+                                "degree repair must not add the distant box-corner arm"
+                            );
+                            crate::render::repair::stabilize_routing_topology_keeping(
+                                &mut repaired,
+                                &chars,
+                                &std::collections::HashSet::new(),
+                            );
+                            assert_eq!(
+                                repaired.get(q.0, q.1),
+                                '-',
+                                "later topology repair preserves the same mask"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn topology_edge_label_mask_preserves_real_ports_and_opaque_neighbors() {
+        for look in [TcLook::Up, TcLook::Down, TcLook::Left, TcLook::Right] {
+            for chars in tc_profiles() {
+                for (case, expected) in [
+                    ("node-tee", true),
+                    ("route-shaft", true),
+                    ("route-corner", true),
+                    ("route-tee", true),
+                    ("complete-edge-corner", false),
+                    ("explicit-turn", true),
+                    ("node-label", false),
+                    ("title", false),
+                ] {
+                    let asking = match case {
+                        "node-tee" | "complete-edge-corner" => look.plain(),
+                        "explicit-turn" => '+',
+                        _ => look.aligned(),
+                    };
+                    let (mut c, q, m, f) = tc_base(look, asking);
+                    match case {
+                        "node-tee" => {
+                            tc_put(&mut c, f, '+', CellOwnerKind::NodeBorder, CellRole::Border);
+                            let axis = if look.horizontal() { (0, 1) } else { (1, 0) };
+                            for sign in [-1, 1] {
+                                tc_put(
+                                    &mut c,
+                                    tc_off(f, (axis.0 * sign, axis.1 * sign)),
+                                    if look.horizontal() { chars.v } else { chars.h },
+                                    CellOwnerKind::NodeBorder,
+                                    CellRole::Border,
+                                );
+                            }
+                            assert!(
+                                !is_ascii_frame_corner(&c, f.0, f.1, true),
+                                "two-sided real box tee setup"
+                            );
+                        }
+                        "complete-edge-corner" => {
+                            tc_corner(&mut c, f, look, CellOwnerKind::EdgeSegment, &chars)
+                        }
+                        "explicit-turn" => {
+                            tc_corner(&mut c, f, look, CellOwnerKind::NodeBorder, &chars);
+                            let clear = if look.horizontal() {
+                                (q.0, q.1 + 1)
+                            } else {
+                                (q.0 + 1, q.1)
+                            };
+                            c.set(clear.0, clear.1, ' ');
+                        }
+                        "route-corner" | "route-tee" => {
+                            tc_put(
+                                &mut c,
+                                f,
+                                '+',
+                                CellOwnerKind::EdgeSegment,
+                                if case == "route-corner" {
+                                    CellRole::Corner
+                                } else {
+                                    CellRole::Junction
+                                },
+                            );
+                            let axis = if look.horizontal() { (0, 1) } else { (1, 0) };
+                            let signs: &[isize] =
+                                if case == "route-tee" { &[-1, 1] } else { &[-1] };
+                            for &sign in signs {
+                                tc_put(
+                                    &mut c,
+                                    tc_off(f, (axis.0 * sign, axis.1 * sign)),
+                                    if look.horizontal() { '|' } else { '-' },
+                                    CellOwnerKind::EdgeSegment,
+                                    if look.horizontal() {
+                                        CellRole::Vertical
+                                    } else {
+                                        CellRole::Horizontal
+                                    },
+                                );
+                            }
+                        }
+                        _ => {
+                            let role = if look.horizontal() {
+                                CellRole::Horizontal
+                            } else {
+                                CellRole::Vertical
+                            };
+                            tc_put(&mut c, f, look.aligned(), CellOwnerKind::EdgeSegment, role);
+                            tc_put(
+                                &mut c,
+                                tc_off(f, look.step()),
+                                look.aligned(),
+                                CellOwnerKind::EdgeSegment,
+                                role,
+                            );
+                            if case == "node-label" || case == "title" {
+                                // Only the IMMEDIATE cell is opaque. No new far-text ownership rule.
+                                tc_put(
+                                    &mut c,
+                                    m,
+                                    look.aligned(),
+                                    if case == "node-label" {
+                                        CellOwnerKind::NodeLabel
+                                    } else {
+                                        CellOwnerKind::SubgraphTitle
+                                    },
+                                    CellRole::Text,
+                                );
+                            }
+                        }
+                    }
+                    tc_views(&c, q, look, expected, case);
+                }
+            }
+            let (q, m) = match look {
+                TcLook::Up => ((0, 1), (0, 0)),
+                TcLook::Down => ((0, 0), (0, 1)),
+                TcLook::Left => ((1, 0), (0, 0)),
+                TcLook::Right => ((0, 0), (1, 0)),
+            };
+            let mut tiny = Canvas::new(2, 2);
+            tc_put(
+                &mut tiny,
+                q,
+                look.plain(),
+                CellOwnerKind::EdgeSegment,
+                if look.horizontal() {
+                    CellRole::Vertical
+                } else {
+                    CellRole::Horizontal
+                },
+            );
+            tc_put(&mut tiny, m, 'e', CellOwnerKind::EdgeLabel, CellRole::Text);
+            tc_views(&tiny, q, look, false, "two-hop outside physical bounds");
+        }
+    }
+    #[test]
+    fn topology_td_caption_does_not_grow_a_distant_box_corner_arm() {
+        // Actual fixture, public API, styles × default/optimized Config lanes.
+        // This is not CLI/native/canonical/authored policy equivalence evidence.
+        let input = include_str!("../../tests/fixtures/inputs/label_junction_td.md");
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let outcome = crate::render_with_feedback(
+                    input,
+                    crate::RenderOptions::new()
+                        .with_style(style)
+                        .with_optimize_render(optimized)
+                        .with_crop(false)
+                        .with_pad(0),
+                )
+                .expect("actual TD fixture render");
+                let frame = &outcome.output;
+                let rows: Vec<Vec<char>> = frame.lines().map(|r| r.chars().collect()).collect();
+                let at = |x: usize, y: usize| rows.get(y).and_then(|r| r.get(x)).copied();
+                let ascii = style == BaseStyle::Ascii;
+                for label in ["Source", "Other", "Target", "label 1", "label 2"] {
+                    assert_eq!(
+                        frame.matches(label).count(),
+                        1,
+                        "fixture text setup {label}:\n{frame}"
+                    );
+                }
+                assert_eq!(
+                    frame
+                        .chars()
+                        .filter(|&c| c == if ascii { 'v' } else { '↓' })
+                        .count(),
+                    2,
+                    "two distinct heads setup:\n{frame}"
+                );
+                assert_eq!(
+                    at(6, 4),
+                    Some(if ascii { '+' } else { '└' }),
+                    "restored Source turn setup:\n{frame}"
+                );
+                assert_eq!(
+                    at(21, 4),
+                    Some(if ascii { '|' } else { '│' }),
+                    "Other lane setup:\n{frame}"
+                );
+                assert_eq!(
+                    at(11, 2),
+                    Some(if ascii { '+' } else { '┘' }),
+                    "Source corner setup:\n{frame}"
+                );
+                assert_eq!(
+                    at(11, 3),
+                    Some('e'),
+                    "caption between corner and run setup:\n{frame}"
+                );
+                assert_eq!(at(11,4),Some(if ascii { '-' } else { '─' }),"TD caption must not invent a box-corner arm at (11,4): {style:?} optimized={optimized}\n{frame}");
+            }
+        }
     }
 }

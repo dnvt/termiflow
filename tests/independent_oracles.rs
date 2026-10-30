@@ -6350,12 +6350,13 @@ fn shape_kind_h3_styles() -> Vec<(&'static str, CompositeStyle)> {
 }
 
 fn shape_kind_h3_config(style: CompositeStyle, optimized: bool) -> Config {
-    let mut config = Config::default();
-    config.crop = false;
-    config.pad = 0;
-    config.optimize_render = optimized;
-    config.composite_style = style;
-    config
+    Config {
+        crop: false,
+        pad: 0,
+        optimize_render: optimized,
+        composite_style: style,
+        ..Config::default()
+    }
 }
 
 fn shape_kind_h3_layout(
@@ -7060,6 +7061,318 @@ fn shape_kind_h3_tight_join_raw_walk_rejects_branch_route_and_head_cuts() {
                     // A shared collector has one external head for two edges.
                     // Do not use the generic head-count scanner as the oracle,
                     // or claim that scanner is necessarily green for this scene.
+                }
+            }
+        }
+    }
+}
+
+fn label15_render(input: &str, style: BaseStyle, optimized: bool) -> (termiflow::Graph, String) {
+    let mut graph = parse(input, false).expect("parse label15 literal").graph;
+    let mut config = Config::default();
+    config.crop = false;
+    config.pad = 0;
+    config.optimize_render = optimized;
+    config.composite_style = CompositeStyle::from_base(style);
+    config.spacing = config.spacing.for_direction(graph.direction);
+    measure::measure_graph(&mut graph, &config);
+    let (graph, outcome) =
+        layout_and_render_with_feedback(graph, config).expect("render label15 literal");
+    (graph, outcome.output)
+}
+
+#[test]
+fn label15_td_clamp_preserves_raw_turn_and_full_labels() {
+    let input = fs::read_to_string("tests/fixtures/inputs/label_junction_td.md")
+        .expect("existing label15 TD fixture");
+    let (graph, frame) = label15_render(&input, BaseStyle::Unicode, false);
+    assert_eq!(graph.direction, termiflow::graph::Direction::TD);
+    assert_eq!(graph.nodes.len(), 3, "label15 setup node count");
+    assert_eq!(graph.edges.len(), 2, "label15 setup edge count");
+    for (id, expected) in [
+        ("A", (0, 0, 12, 3)),
+        ("B", (16, 0, 11, 3)),
+        ("C", (7, 9, 12, 3)),
+    ] {
+        let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
+        assert_eq!(
+            (node.x, node.y, node.width, node.height),
+            expected,
+            "label15 setup geometry for {id}:\n{frame}"
+        );
+    }
+    let grid = ConnectivityGrid::new(&frame);
+    assert_eq!(
+        connectivity_frame_origin(&graph, &grid).expect("label15 setup origin"),
+        (0, 0),
+        "label15 uncropped setup origin"
+    );
+    for label in ["Source", "Other", "Target", "label 1", "label 2"] {
+        assert!(
+            frame.contains(label),
+            "label15 setup missing {label:?}:\n{frame}"
+        );
+    }
+    assert_eq!(frame.chars().filter(|ch| *ch == '↓').count(), 2);
+    for (x, y, expected) in [
+        (12, 8, '↓'),
+        (14, 8, '↓'),
+        (6, 3, '│'),
+        (7, 4, '─'),
+        (21, 4, '│'),
+        (21, 6, '┘'),
+    ] {
+        assert_eq!(
+            raw_char_at(&frame, x, y),
+            Some(expected),
+            "label15 setup protected neighbour/head at ({x},{y}):\n{frame}"
+        );
+    }
+    // Keep this after all literal/text/head/origin/adjacent-stroke prerequisites:
+    // the unchanged parent must fail here on digit '1', not on test setup.
+    assert_eq!(
+        raw_char_at(&frame, 6, 4),
+        Some('└'),
+        "label15 intended raw TD turn was overwritten:\n{frame}"
+    );
+    let reached = shape_kind_reachability_errors(&graph, &frame);
+    assert!(
+        reached.is_empty(),
+        "label15 raw reached-neighbour errors: {reached:?}\n{frame}"
+    );
+}
+
+fn label15_assert_vertical_frame(
+    graph: &termiflow::Graph,
+    frame: &str,
+    direction: &str,
+    style: BaseStyle,
+    ids: [&str; 3],
+) {
+    assert_eq!(graph.nodes.len(), 3);
+    assert_eq!(graph.edges.len(), 2);
+    let bt = direction == "BT";
+    let source_y = if bt { 9 } else { 0 };
+    let target_y = if bt { 0 } else { 9 };
+    for (id, x, y, width) in [
+        (ids[0], 0, source_y, 12),
+        (ids[1], 16, source_y, 11),
+        (ids[2], 7, target_y, 12),
+    ] {
+        let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
+        assert_eq!((node.x, node.y, node.width, node.height), (x, y, width, 3));
+        assert!(
+            frame.contains(&node.label),
+            "missing label {:?}:\n{frame}",
+            node.label
+        );
+    }
+    for edge in &graph.edges {
+        let label = edge.label.as_ref().expect("two labeled fixture edges");
+        assert!(
+            frame.contains(label),
+            "missing complete edge label {label:?}:\n{frame}"
+        );
+    }
+    let grid = ConnectivityGrid::new(frame);
+    assert_eq!(connectivity_frame_origin(graph, &grid), Some((0, 0)));
+    let ascii = style == BaseStyle::Ascii;
+    let head = match (ascii, bt) {
+        (true, true) => '^',
+        (true, false) => 'v',
+        (false, true) => '↑',
+        (false, false) => '↓',
+    };
+    assert_eq!(frame.chars().filter(|ch| *ch == head).count(), 2);
+    for x in [12, 14] {
+        assert_eq!(grid.get(x, if bt { 3 } else { 8 }), head);
+    }
+    assert_eq!(
+        grid.get(6, if bt { 7 } else { 3 }),
+        if ascii { '|' } else { '│' }
+    );
+    assert_eq!(
+        grid.get(6, 4),
+        if ascii {
+            '+'
+        } else if bt {
+            '┌'
+        } else {
+            '└'
+        },
+        "required Source turn {direction}/{style:?}:\n{frame}"
+    );
+    assert_eq!(
+        grid.get(21, if bt { 7 } else { 4 }),
+        if ascii { '|' } else { '│' }
+    );
+    let reached = shape_kind_reachability_errors(graph, frame);
+    assert!(
+        reached.is_empty(),
+        "label15 raw routes {direction}/{style:?}: {reached:?}\n{frame}"
+    );
+}
+
+#[test]
+fn label15_vertical_fanin_preserves_raw_routes_and_labels() {
+    for direction in ["TD", "BT"] {
+        let input = fs::read_to_string(format!(
+            "tests/fixtures/inputs/label_junction_{}.md",
+            direction.to_lowercase()
+        ))
+        .unwrap();
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let (graph, frame) = label15_render(&input, style, optimized);
+                label15_assert_vertical_frame(&graph, &frame, direction, style, ["A", "B", "C"]);
+            }
+        }
+    }
+}
+
+#[test]
+fn label15_renamed_wide_fanin_retains_text_and_routes() {
+    use unicode_width::UnicodeWidthStr;
+
+    let labels = ["界界界a", "e\u{301}ab cde"];
+    assert!(labels.iter().all(|label| label.width() == 7));
+    for direction in ["TD", "BT"] {
+        let input = format!(
+            "graph {direction}\nP[Origin] -->|{}| R[Finish]\nQ[Peer!] -->|{}| R\n",
+            labels[0], labels[1]
+        );
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let (graph, frame) = label15_render(&input, style, optimized);
+                label15_assert_vertical_frame(&graph, &frame, direction, style, ["P", "Q", "R"]);
+            }
+        }
+    }
+}
+
+#[test]
+fn label15_skip_detour_keeps_all_captions_source_local() {
+    // Observe the actual public API and raw text. An unlabeled rerender would
+    // change detour selection and would not be a valid comparison oracle.
+    for direction in ["TD", "TB", "BT"] {
+        let input = format!(
+            "graph {direction}\nA -->|this edge label is long enough that it should wrap onto two lines| B\nB -->|another long wrapped edge label for the second hop| C\nA -->|skip| C\n"
+        );
+        for style in [BaseStyle::Ascii, BaseStyle::Unicode] {
+            for optimized in [false, true] {
+                let outcome = termiflow::render_with_feedback(
+                    &input,
+                    RenderOptions::new()
+                        .with_style(style)
+                        .with_optimize_render(optimized)
+                        .with_wrap_labels(true)
+                        .with_max_label_lines(2),
+                )
+                .expect("public skip-detour matrix render");
+                let frame = &outcome.output;
+                let lines: Vec<_> = frame.lines().collect();
+                let ascii = style == BaseStyle::Ascii;
+                let bt = direction == "BT";
+                let side = if ascii { '|' } else { '│' };
+                let mut nodes = HashMap::new();
+                for id in ["A", "B", "C"] {
+                    let label = format!("{side}  {id}  {side}");
+                    assert_eq!(
+                        frame.matches(&label).count(),
+                        1,
+                        "node {id}: {direction}/{style:?}/{optimized}\n{frame}"
+                    );
+                    let (y, row) = lines
+                        .iter()
+                        .enumerate()
+                        .find(|(_, row)| row.contains(&label))
+                        .unwrap();
+                    let byte_x = row.find(&label).unwrap();
+                    let x = row[..byte_x].chars().count();
+                    assert!(y > 0 && y + 1 < lines.len());
+                    for (border_y, left, right) in [
+                        (
+                            y - 1,
+                            if ascii { '+' } else { '┌' },
+                            if ascii { '+' } else { '┐' },
+                        ),
+                        (
+                            y + 1,
+                            if ascii { '+' } else { '└' },
+                            if ascii { '+' } else { '┘' },
+                        ),
+                    ] {
+                        let border: Vec<_> = lines[border_y].chars().collect();
+                        assert_eq!(border.get(x), Some(&left), "left node border {id}\n{frame}");
+                        assert_eq!(
+                            border.get(x + 6),
+                            Some(&right),
+                            "right node border {id}\n{frame}"
+                        );
+                        assert!(
+                            border[x + 1..x + 6].iter().all(|ch| {
+                                if ascii {
+                                    matches!(ch, '-' | '+')
+                                } else {
+                                    matches!(ch, '─' | '┬' | '┴' | '┼')
+                                }
+                            }),
+                            "complete node border {id}\n{frame}"
+                        );
+                    }
+                    nodes.insert(id, (x, y));
+                }
+                // B and C have two physical receiver heads for three logical
+                // edges. Do not invent a third-head or full skip-path oracle.
+                let head = match (ascii, bt) {
+                    (true, true) => '^',
+                    (true, false) => 'v',
+                    (false, true) => '↑',
+                    (false, false) => '↓',
+                };
+                for id in ["B", "C"] {
+                    let (x, y) = nodes[id];
+                    let head_y = if bt { y + 2 } else { y.checked_sub(2).unwrap() };
+                    assert!(
+                        lines[head_y].chars().skip(x).take(7).any(|ch| ch == head),
+                        "actual target head {id}: {direction}/{style:?}/{optimized}\n{frame}"
+                    );
+                }
+                for (label, source, target) in [
+                    ("this edge label is …", "A", "B"),
+                    ("another long wrap…", "B", "C"),
+                    ("skip", "A", "B"),
+                ] {
+                    assert_eq!(
+                        frame.matches(label).count(),
+                        1,
+                        "complete caption {label:?}: {direction}/{style:?}/{optimized}\n{frame}"
+                    );
+                    let y = lines.iter().position(|row| row.contains(label)).unwrap();
+                    let source_y = nodes[source].1;
+                    let target_y = nodes[target].1;
+                    let local = if bt {
+                        y > target_y + 1 && y + 1 < source_y
+                    } else {
+                        y > source_y + 1 && y + 1 < target_y
+                    };
+                    assert!(local, "caption {label:?} left its source corridor: {direction}/{style:?}/{optimized}\n{frame}");
+                }
+                for id in ["A", "B"] {
+                    let (x, y) = nodes[id];
+                    let stem_y = if bt { y - 2 } else { y + 2 };
+                    let stem = lines[stem_y].chars().nth(x + 3).unwrap();
+                    let source_facing = if ascii {
+                        matches!(stem, '|' | '+' | ':')
+                    } else if bt {
+                        matches!(stem, '│' | '┬' | '├' | '┤' | '┼' | '┌' | '┐')
+                    } else {
+                        matches!(stem, '│' | '┴' | '├' | '┤' | '┼' | '└' | '┘')
+                    };
+                    assert!(
+                        source_facing,
+                        "source port {id} erased: {direction}/{style:?}/{optimized}\n{frame}"
+                    );
                 }
             }
         }

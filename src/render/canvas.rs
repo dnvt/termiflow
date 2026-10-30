@@ -276,6 +276,7 @@ pub fn resolve_overlap(existing: char, new: char, s: &StyleChars) -> char {
 /// The canvas is a grid of characters that can be drawn to and then
 /// converted to a string for display.
 #[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Canvas {
     pub width: usize,
     pub height: usize,

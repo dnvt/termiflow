@@ -20,7 +20,7 @@ use super::edge::{
 };
 use super::labels::{
     draw_convergent_edge_label, draw_cycle_edge_label, draw_detour_edge_label, draw_edge_label,
-    draw_routed_edge_label, format_edge_label_with_limit, pad_string,
+    draw_routed_edge_label, format_edge_label_with_limit, pad_string, ConvergentLabelContext,
 };
 use super::outcome::RenderOutcome;
 use super::portal_projection::{
@@ -740,6 +740,7 @@ fn render_frame(
     // Draw edge labels (route-aware for precomputed paths, heuristic for fallback paths)
     canvas.set_write_stage("edge-label");
     let mut edge_label_placements = Vec::new();
+    let mut convergent_label_context = ConvergentLabelContext::default();
     // Back-edge labels go last so they never displace a forward edge's label.
     let label_order = graph
         .edges
@@ -773,7 +774,7 @@ fn render_frame(
             .then(|| detour_route(graph, &canvas, edge_idx))
             .flatten();
         if let Some(route) = detour.as_ref() {
-            if let Some(placement) = draw_detour_edge_label(
+            let placement = draw_detour_edge_label(
                 &mut canvas,
                 route,
                 label,
@@ -782,14 +783,21 @@ fn render_frame(
                 config,
                 edge_idx,
                 edge,
+            );
+            if matches!(
+                graph.direction,
+                Direction::TD | Direction::TB | Direction::BT
             ) {
+                convergent_label_context.observe_legacy(placement.as_ref());
+            }
+            if let Some(placement) = placement {
                 edge_label_placements.push(placement);
             }
             continue;
         }
 
         if let Some(route) = layout_snapshot.route(EdgeId::from_index(edge_idx)) {
-            if let Some(placement) = draw_routed_edge_label(
+            let placement = draw_routed_edge_label(
                 &mut canvas,
                 route,
                 label,
@@ -798,14 +806,21 @@ fn render_frame(
                 config,
                 edge_idx,
                 edge,
+            );
+            if matches!(
+                graph.direction,
+                Direction::TD | Direction::TB | Direction::BT
             ) {
+                convergent_label_context.observe_legacy(placement.as_ref());
+            }
+            if let Some(placement) = placement {
                 edge_label_placements.push(placement);
             }
             continue;
         }
 
         if edge.is_back_edge {
-            if let Some(placement) = draw_cycle_edge_label(
+            let placement = draw_cycle_edge_label(
                 &mut canvas,
                 from,
                 graph,
@@ -815,7 +830,14 @@ fn render_frame(
                 config,
                 edge_idx,
                 edge,
+            );
+            if matches!(
+                graph.direction,
+                Direction::TD | Direction::TB | Direction::BT
             ) {
+                convergent_label_context.observe_legacy(placement.as_ref());
+            }
+            if let Some(placement) = placement {
                 edge_label_placements.push(placement);
                 continue;
             }
@@ -835,22 +857,32 @@ fn render_frame(
                 edge_idx,
                 edge,
                 graph,
+                &mut convergent_label_context,
             ) {
                 edge_label_placements.push(placement);
             }
-        } else if let Some(placement) = draw_edge_label(
-            &mut canvas,
-            from,
-            to,
-            label,
-            graph.direction,
-            &chars,
-            config,
-            edge_idx,
-            edge,
-            graph,
-        ) {
-            edge_label_placements.push(placement);
+        } else {
+            let placement = draw_edge_label(
+                &mut canvas,
+                from,
+                to,
+                label,
+                graph.direction,
+                &chars,
+                config,
+                edge_idx,
+                edge,
+                graph,
+            );
+            if matches!(
+                graph.direction,
+                Direction::TD | Direction::TB | Direction::BT
+            ) {
+                convergent_label_context.observe_legacy(placement.as_ref());
+            }
+            if let Some(placement) = placement {
+                edge_label_placements.push(placement);
+            }
         }
     }
 
